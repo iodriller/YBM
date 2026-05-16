@@ -13,17 +13,20 @@ Implemented:
 - Strict configuration models with safe default capability policies
 - SQLite persistence, repositories, audit logging, and redaction
 - Minimal Telegram Bot API polling wrapper, update normalizer, allowlist checks, command parsing, and task intake
+- Minimal Telegram command responses for status, task lists, task details, logs, and screenshot capability state
 - Telegram voice download/transcription service with transcript artifacts
 - LLM provider abstraction and structured planner with plan persistence
 - Capability policy engine with approval requests
 - Gated tool executor and minimal durable task worker
+- Minimal VS Code bridge endpoints, extension state sync, and terminal command queue
+- Generic terminal coding-assistant adapter
 - Basic FastAPI health endpoint
 
 Not implemented yet:
 
-- VS Code bridge runtime
 - Real tool adapters beyond test/static adapters
-- Notification delivery for status/log/screenshot commands
+- Real screenshot capture and artifact delivery
+- Full VS Code terminal output capture; current extension records dispatch observations only
 
 ## Development
 

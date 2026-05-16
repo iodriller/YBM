@@ -9,13 +9,26 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:agentControl.showStatus",
+    "onCommand:agentControl.syncState",
+    "onCommand:agentControl.createTerminal"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
       {
         "command": "agentControl.showStatus",
         "title": "Agent Control: Show Status"
+      },
+      {
+        "command": "agentControl.syncState",
+        "title": "Agent Control: Sync State"
+      },
+      {
+        "command": "agentControl.createTerminal",
+        "title": "Agent Control: Create Terminal"
       }
     ],
     "configuration": {
@@ -39,4 +52,3 @@
     "typescript": "^5.5.0"
   }
 }
-

@@ -131,6 +131,18 @@ adapters:
       - "rm -rf"
       - "del /s"
       - "format "
+  coding_assistant:
+    enabled: false
+    command_template: []
+    working_dir: null
+    timeout_seconds: 900
+    output_limit_chars: 12000
+    rate_limit_patterns:
+      - "rate limit"
+      - "too many requests"
+    usage_limit_patterns:
+      - "usage limit"
+      - "quota exceeded"
   desktop:
     screenshot_enabled: false
     control_enabled: false

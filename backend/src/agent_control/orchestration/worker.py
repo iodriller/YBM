@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 from agent_control.llm import PlannerService
 from agent_control.orchestration.executor import ToolExecutor
 from agent_control.schemas import (
+    ApprovalRequest,
+    ApprovalStatus,
     AuditEventType,
     PlanStep,
     TaskRecord,
     TaskStatus,
     ToolCallRequest,
     ToolResultStatus,
+    utc_now,
 )
 from agent_control.storage.audit import AuditLogger
 from agent_control.storage.repositories import Repositories
@@ -46,6 +51,9 @@ class TaskWorker:
         if task.status == TaskStatus.RUNNING:
             return await self._process_running(task)
 
+        if task.status == TaskStatus.AWAITING_APPROVAL:
+            return await self._process_awaiting_approval(task)
+
         return task
 
     async def _process_planned(self, task: TaskRecord) -> TaskRecord:
@@ -57,6 +65,7 @@ class TaskWorker:
 
         approval_steps = [step for step in plan.steps if step.requires_approval]
         if approval_steps:
+            self.repositories.tasks.set_current_step(task.id, approval_steps[0].id)
             for step in approval_steps:
                 self._create_step_approval(task, step)
             return self._transition(task, TaskStatus.AWAITING_APPROVAL, "approval_required")
@@ -93,7 +102,8 @@ class TaskWorker:
             input=step.tool_input,
             requires_approval=step.requires_approval,
         )
-        result = await self.executor.execute(request)
+        step_approved = self._step_is_approved(task.id, step.id)
+        result = await self.executor.execute(request, approved=step_approved)
         if result.status == ToolResultStatus.SUCCEEDED:
             next_step = self._next_runnable_step(plan.steps, step.id)
             if next_step is None:
@@ -107,12 +117,30 @@ class TaskWorker:
             return self._transition(task, TaskStatus.BLOCKED, "tool_policy_denied")
         return self._transition(task, TaskStatus.FAILED, "tool_failed")
 
+    async def _process_awaiting_approval(self, task: TaskRecord) -> TaskRecord:
+        approvals = self.repositories.approvals.list_for_task(task.id)
+        if not approvals:
+            return self._transition(task, TaskStatus.BLOCKED, "awaiting_approval_without_request")
+        terminal_denials = {ApprovalStatus.REJECTED, ApprovalStatus.CANCELLED, ApprovalStatus.EXPIRED}
+        if any(approval.status in terminal_denials for approval in approvals):
+            return self._transition(task, TaskStatus.BLOCKED, "approval_not_granted")
+        if any(approval.status == ApprovalStatus.PENDING for approval in approvals):
+            return task
+        if not task.plan_id:
+            return self._transition(task, TaskStatus.BLOCKED, "approved_task_missing_plan")
+        plan = self.repositories.plans.get(task.plan_id)
+        if plan is None:
+            return self._transition(task, TaskStatus.BLOCKED, "approved_plan_not_found")
+        if task.current_step_id is None:
+            next_step = next((step for step in plan.steps if step.tool_name), None)
+            if next_step is None:
+                return self._transition(task, TaskStatus.COMPLETED, "approved_plan_only_task_completed")
+            self.repositories.tasks.set_current_step(task.id, next_step.id)
+        return self._transition(task, TaskStatus.RUNNING, "approval_granted")
+
     def _create_step_approval(self, task: TaskRecord, step: PlanStep) -> None:
         if not step.required_capabilities:
             return
-        from agent_control.schemas import ApprovalRequest
-        from datetime import timedelta
-        from agent_control.schemas import utc_now
 
         approval = ApprovalRequest(
             task_id=task.id,
@@ -128,6 +156,12 @@ class TaskWorker:
             actor="orchestrator",
             task_id=task.id,
             payload={"approval_id": approval.id, "step_id": step.id},
+        )
+
+    def _step_is_approved(self, task_id: str, step_id: str) -> bool:
+        return any(
+            approval.status == ApprovalStatus.APPROVED and approval.action_payload.get("id") == step_id
+            for approval in self.repositories.approvals.list_for_task(task_id)
         )
 
     @staticmethod

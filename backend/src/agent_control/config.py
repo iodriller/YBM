@@ -103,6 +103,16 @@ class TerminalAdapterConfig(StrictBaseModel):
     blocked_command_patterns: list[str] = Field(default_factory=lambda: ["rm -rf", "del /s", "format "])
 
 
+class CodingAssistantAdapterConfig(StrictBaseModel):
+    enabled: bool = False
+    command_template: list[str] = Field(default_factory=list)
+    working_dir: str | None = None
+    timeout_seconds: int = Field(default=900, ge=1)
+    output_limit_chars: int = Field(default=12000, ge=100)
+    rate_limit_patterns: list[str] = Field(default_factory=lambda: ["rate limit", "too many requests"])
+    usage_limit_patterns: list[str] = Field(default_factory=lambda: ["usage limit", "quota exceeded"])
+
+
 class DesktopAdapterConfig(StrictBaseModel):
     screenshot_enabled: bool = False
     control_enabled: bool = False
@@ -118,6 +128,7 @@ class STTAdapterConfig(StrictBaseModel):
 class AdaptersConfig(StrictBaseModel):
     vscode: VSCodeAdapterConfig = Field(default_factory=VSCodeAdapterConfig)
     terminal: TerminalAdapterConfig = Field(default_factory=TerminalAdapterConfig)
+    coding_assistant: CodingAssistantAdapterConfig = Field(default_factory=CodingAssistantAdapterConfig)
     desktop: DesktopAdapterConfig = Field(default_factory=DesktopAdapterConfig)
     stt: STTAdapterConfig = Field(default_factory=STTAdapterConfig)
 

@@ -48,6 +48,20 @@ README.md
 .env.example
 ```
 
+## 2.1 Retroactive Quality Gates
+
+Maintain these gates as the implementation evolves:
+
+- Add `.gitignore` entries for bytecode, caches, local databases, artifacts, `.env`, virtualenvs, build output, and node modules.
+- Never commit `__pycache__` or `.pyc` files.
+- Scope matching must not allow prefix escapes such as `C:/safe_evil` matching `C:/safe`.
+- Tool completion audit records must include the task ID.
+- A task in `awaiting_approval` must be able to resume after the relevant approval is granted.
+- Telegram status/log/screenshot commands are not complete until they produce notification responses.
+- VS Code terminal control is not complete until the backend can enqueue terminal commands and the extension can poll and dispatch them.
+- VS Code terminal output capture through official APIs is limited; rely on terminal-agent subprocess adapters for full stdout/stderr.
+- `CREATE TABLE IF NOT EXISTS` is acceptable for the local MVP, but migration versioning is required before serious use.
+
 ## 3. Step 1 - Bootstrap The Project
 
 ### 3.1 Create folders
@@ -396,13 +410,42 @@ Implement durable task execution, state transitions, task signals, pause/resume/
 
 Implement the TypeScript extension and backend bridge for workspace state, diagnostics, terminal creation, terminal output, and heartbeat.
 
+Minimum implementation:
+
+- Add backend bridge state models for heartbeat, workspace state, and terminal output observations.
+- Add FastAPI endpoints for:
+  - `POST /vscode/heartbeat`
+  - `POST /vscode/state`
+  - `GET /vscode/state`
+  - `POST /vscode/terminal-output`
+- Require `X-Agent-Control-Token` when the configured VS Code bridge token env var is set.
+- Update the VS Code extension to collect workspace folders, active file, diagnostics count, and send state to the backend.
+- Add a local extension command to create a terminal as the future hook for backend-requested terminal work.
+- Add backend tests for state update, state retrieval, and auth denial.
+- Add a terminal-command queue:
+  - `POST /vscode/terminal-commands`
+  - `GET /vscode/terminal-commands?instance_id=...`
+- Update the extension to poll queued commands, create/reuse terminals, send text, and post a dispatch observation.
+
 ## 12. Step 10 - Implement Coding Assistant Adapter
 
 Implement the generic terminal-agent adapter with command templates, output streaming, state detection, and limit detection.
 
+Minimum implementation:
+
+- Add a coding-assistant adapter config section with `enabled`, `command_template`, `working_dir`, `timeout_seconds`, `output_limit_chars`, and limit-detection patterns.
+- Implement `GenericTerminalAgentAdapter` using `asyncio.create_subprocess_exec` with `shell=False`.
+- Fill `{prompt}` placeholders from structured tool input.
+- Classify successful completion, generic failure, rate limit, and usage limit.
+- Return a `ToolCallResult` with stdout, stderr, return code, and detected state.
+- Keep execution behind `ToolExecutor` and policy checks; Telegram and planner code must not call the adapter directly.
+- Add tests using a local Python subprocess, not a real coding assistant.
+
 ## 13. Step 11 - Implement Observation And Artifacts
 
 Implement screenshot adapter, artifact service, retention policies, and Telegram artifact delivery.
+
+Also implement Telegram command responses for `/status`, `/tasks`, `/task <id>`, `/logs <id>`, and `/screenshot`. Until the screenshot adapter exists, `/screenshot` must explicitly report whether `desktop.screenshot` is disabled or enabled-but-not-yet-implemented.
 
 ## 14. Step 12 - Implement Recovery And Resume
 
@@ -425,4 +468,3 @@ The MVP is done when:
 - A configured terminal agent can run when terminal access is enabled.
 - Screenshots work only when enabled.
 - All important actions are audited.
-

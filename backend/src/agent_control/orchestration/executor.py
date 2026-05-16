@@ -66,6 +66,7 @@ class ToolExecutor:
                 payload={"approval_id": approval.id, "tool_request_id": request.id},
             )
             return self._complete(
+                request,
                 ToolCallResult(
                     request_id=request.id,
                     status=ToolResultStatus.NEEDS_APPROVAL,
@@ -75,6 +76,7 @@ class ToolExecutor:
 
         if not decision.allowed:
             return self._complete(
+                request,
                 ToolCallResult(
                     request_id=request.id,
                     status=ToolResultStatus.DENIED,
@@ -86,6 +88,7 @@ class ToolExecutor:
         adapter = self.adapters.get(request.tool_name)
         if adapter is None:
             return self._complete(
+                request,
                 ToolCallResult(
                     request_id=request.id,
                     status=ToolResultStatus.FAILED,
@@ -95,9 +98,10 @@ class ToolExecutor:
             )
 
         try:
-            return self._complete(await adapter.execute(request))
+            return self._complete(request, await adapter.execute(request))
         except Exception as exc:
             return self._complete(
+                request,
                 ToolCallResult(
                     request_id=request.id,
                     status=ToolResultStatus.FAILED,
@@ -106,11 +110,12 @@ class ToolExecutor:
                 )
             )
 
-    def _complete(self, result: ToolCallResult) -> ToolCallResult:
+    def _complete(self, request: ToolCallRequest, result: ToolCallResult) -> ToolCallResult:
         self.repositories.tool_invocations.complete(result)
         self.audit.append(
             AuditEventType.TOOL_COMPLETED,
             actor="orchestrator",
+            task_id=request.task_id,
             payload=result.model_dump(mode="json"),
         )
         return result

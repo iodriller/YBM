@@ -80,7 +80,17 @@ class PolicyEngine:
         if not request.scope_target:
             return False
         normalized = request.scope_target.replace("\\", "/").lower()
-        return any(normalized.startswith(scope.replace("\\", "/").lower()) for scope in policy.scopes)
+        return any(PolicyEngine._matches_scope(normalized, scope) for scope in policy.scopes)
+
+    @staticmethod
+    def _matches_scope(normalized_target: str, scope: str) -> bool:
+        raw_scope = scope.replace("\\", "/").lower()
+        if raw_scope == "/":
+            return normalized_target.startswith("/")
+        normalized_scope = raw_scope.rstrip("/")
+        if not normalized_scope:
+            return False
+        return normalized_target == normalized_scope or normalized_target.startswith(f"{normalized_scope}/")
 
     @staticmethod
     def _patterns_allowed(request: ToolCallRequest, policy: CapabilityPolicy) -> bool:

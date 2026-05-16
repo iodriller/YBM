@@ -28,6 +28,19 @@ The first useful version targets Telegram plus VS Code. Future versions can add 
 - Desktop visibility: screenshot-only adapter, disabled by default
 - Desktop control: out of MVP and disabled
 
+## 3.1 Gap Review Items
+
+These items were found during implementation review and should stay explicit in the plan:
+
+- Keep bytecode, caches, local databases, artifacts, `.env`, and dependency folders out of git.
+- Scope checks must be path-boundary aware; prefix-only checks are not acceptable.
+- Tool completion audit events must include the task ID.
+- Tasks waiting for approval must have a minimal resume path after approval.
+- Telegram commands such as `/status`, `/tasks`, `/task`, `/logs`, and `/screenshot` need notification-layer responses before MVP completion.
+- VS Code terminal control needs an explicit backend command queue; extensions should poll and dispatch commands instead of relying on UI scraping.
+- VS Code terminal output capture through official APIs is limited; record command dispatch and use terminal-agent subprocess adapters for reliable output.
+- The initial database bootstrap is acceptable for MVP, but real schema versioning/migrations are needed before broader use.
+
 ## 4. Phase 0 - Project Bootstrap
 
 Create the project structure, package metadata, safe config examples, and baseline docs.
@@ -180,14 +193,16 @@ Primary outputs:
 - VS Code extension.
 - Authenticated localhost bridge.
 - Workspace observation commands.
-- Terminal creation and output streaming.
+- Terminal command queue, terminal creation, and command-dispatch observations.
 - Extension heartbeat.
 
 Success criteria:
 
 - Backend can see VS Code connection status.
 - Backend can request workspace state.
-- Terminal actions remain blocked unless enabled.
+- Backend can enqueue terminal commands for the extension to dispatch.
+- Terminal actions remain blocked unless enabled and routed through policy.
+- Bridge requests are authenticated when a bridge token is configured.
 
 ## 13. Phase 9 - Coding Assistant Adapter
 
@@ -205,6 +220,7 @@ Success criteria:
 - The orchestrator can start a configured terminal assistant.
 - Assistant output is persisted as task history.
 - Rate limits can trigger wait or fallback behavior.
+- The adapter is never called directly by channel code; it runs only behind policy-gated tool execution.
 
 ## 14. Phase 10 - Observation, Screenshots, And Artifacts
 
@@ -299,4 +315,3 @@ Success criteria:
 - Add multi-agent scheduling.
 - Add distributed workers with Redis, Dramatiq, or Temporal.
 - Add richer Codex, Copilot, and VS Code assistant adapters where official APIs allow.
-

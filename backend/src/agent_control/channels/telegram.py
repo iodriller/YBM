@@ -6,16 +6,18 @@ from typing import Any
 
 import httpx
 
-from agent_control.config import TelegramConfig
+from agent_control.config import AppSettings, TelegramConfig
 from agent_control.schemas import (
     ApprovalStatus,
     AuditEventType,
     Artifact,
     ArtifactType,
+    Capability,
     ChannelType,
     CommandEnvelope,
     InboundMessage,
     MessageKind,
+    OutboundMessage,
     TaskRecord,
     TaskSignal,
     TaskStatus,
@@ -33,6 +35,7 @@ class TelegramUpdateResult:
     command: CommandEnvelope | None = None
     signal: TaskSignal | None = None
     task: TaskRecord | None = None
+    outbound_message: OutboundMessage | None = None
     denial_reason: str | None = None
 
 
@@ -98,7 +101,10 @@ class TelegramPollingRunner:
         results: list[TelegramUpdateResult] = []
         next_offset = offset
         for update in updates:
-            results.append(self.intake.handle_update(update))
+            result = self.intake.handle_update(update)
+            results.append(result)
+            if result.outbound_message and result.outbound_message.text:
+                await self.client.send_message(result.outbound_message.chat_id, result.outbound_message.text)
             update_id = update.get("update_id")
             if isinstance(update_id, int):
                 next_offset = update_id + 1
@@ -238,10 +244,17 @@ class TelegramAdapter:
 
 
 class TelegramIntakeService:
-    def __init__(self, adapter: TelegramAdapter, repositories: Repositories, audit: AuditLogger) -> None:
+    def __init__(
+        self,
+        adapter: TelegramAdapter,
+        repositories: Repositories,
+        audit: AuditLogger,
+        settings: AppSettings | None = None,
+    ) -> None:
         self.adapter = adapter
         self.repositories = repositories
         self.audit = audit
+        self.settings = settings
 
     def handle_update(self, update: dict[str, Any]) -> TelegramUpdateResult:
         result = self.adapter.normalize_update(update)
@@ -276,11 +289,13 @@ class TelegramIntakeService:
 
         if result.command:
             signal = self._apply_command(result.command)
+            outbound = self._command_response(result.command, signal)
             return TelegramUpdateResult(
                 authorized=True,
                 inbound_message=result.inbound_message,
                 command=result.command,
                 signal=signal,
+                outbound_message=outbound,
             )
 
         return result
@@ -295,6 +310,51 @@ class TelegramIntakeService:
         if name in {"pause", "resume", "cancel"} and args:
             return self._create_task_signal(args[0], name, command.source, payload)
         return None
+
+    def _command_response(self, command: CommandEnvelope, signal: TaskSignal | None) -> OutboundMessage | None:
+        if command.type != "telegram.command":
+            return None
+        payload = command.payload
+        name = payload.get("command")
+        chat_id = str(payload.get("chat_id"))
+        args = payload.get("args") or []
+
+        if name == "status":
+            recent = self.repositories.tasks.list_recent(20)
+            active = [task for task in recent if task.status in {TaskStatus.RUNNING, TaskStatus.AWAITING_APPROVAL, TaskStatus.RETRYING}]
+            return self._out(chat_id, f"{len(recent)} recent task(s), {len(active)} active.")
+        if name == "tasks":
+            tasks = self.repositories.tasks.list_recent(10)
+            if not tasks:
+                return self._out(chat_id, "No tasks found.")
+            lines = [f"{task.id} | {task.status.value} | {task.objective[:80]}" for task in tasks]
+            return self._out(chat_id, "\n".join(lines))
+        if name == "task" and args:
+            task = self.repositories.tasks.get(args[0])
+            if not task:
+                return self._out(chat_id, f"Task not found: {args[0]}")
+            return self._out(chat_id, f"{task.id}\nstatus: {task.status.value}\nobjective: {task.objective}")
+        if name == "logs" and args:
+            events = self.repositories.audit.list_for_task(args[0])[-10:]
+            if not events:
+                return self._out(chat_id, f"No logs found for {args[0]}.")
+            lines = [f"{event.created_at.isoformat()} | {event.type.value} | {event.actor}" for event in events]
+            return self._out(chat_id, "\n".join(lines))
+        if name == "screenshot":
+            policy = self.settings.capabilities.get(Capability.DESKTOP_SCREENSHOT) if self.settings else None
+            enabled = bool(policy and policy.enabled)
+            if not enabled:
+                return self._out(chat_id, "desktop.screenshot is disabled.")
+            return self._out(chat_id, "desktop.screenshot is enabled, but screenshot capture is not implemented yet.")
+        if name in {"pause", "resume", "cancel"}:
+            if signal:
+                return self._out(chat_id, f"{name} signal recorded for {signal.task_id}.")
+            return self._out(chat_id, f"Usage: /{name} <task_id>")
+        return None
+
+    @staticmethod
+    def _out(chat_id: str, text: str) -> OutboundMessage:
+        return OutboundMessage(channel=ChannelType.TELEGRAM, chat_id=chat_id, text=text)
 
     def _apply_callback(self, payload: dict[str, Any], actor: str) -> TaskSignal | None:
         if payload.get("kind") == "approval":

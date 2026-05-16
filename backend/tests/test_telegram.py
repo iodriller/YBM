@@ -1,18 +1,24 @@
 from __future__ import annotations
 
-from agent_control.channels.telegram import TelegramAdapter, TelegramIntakeService
-from agent_control.config import TelegramConfig
+import pytest
+
+from agent_control.channels.telegram import TelegramAdapter, TelegramIntakeService, TelegramPollingRunner
+from agent_control.config import AppSettings, TelegramConfig
 from agent_control.schemas import AuditEventType, TaskStatus
 from agent_control.storage import AuditLogger, Database, Repositories
 
 
-def _service(tmp_path, config: TelegramConfig) -> tuple[TelegramIntakeService, Repositories]:
+def _service(
+    tmp_path,
+    config: TelegramConfig,
+    settings: AppSettings | None = None,
+) -> tuple[TelegramIntakeService, Repositories]:
     database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
     database.initialize()
     repos = Repositories.for_database(database)
     audit = AuditLogger(repos.audit)
     adapter = TelegramAdapter(config, audit)
-    return TelegramIntakeService(adapter, repos, audit), repos
+    return TelegramIntakeService(adapter, repos, audit, settings=settings), repos
 
 
 def test_telegram_text_update_creates_task(tmp_path) -> None:
@@ -84,3 +90,115 @@ def test_telegram_pause_command_updates_task(tmp_path) -> None:
     assert result.signal is not None
     assert updated is not None
     assert updated.status == TaskStatus.PAUSED
+
+
+def test_telegram_tasks_command_returns_summary(tmp_path) -> None:
+    service, repos = _service(
+        tmp_path,
+        TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
+    )
+    task = repos.tasks.create("Build app")
+
+    result = service.handle_update(
+        {
+            "message": {
+                "message_id": 3,
+                "from": {"id": 42},
+                "chat": {"id": 100},
+                "text": "/tasks",
+            }
+        }
+    )
+
+    assert result.outbound_message is not None
+    assert task.id in (result.outbound_message.text or "")
+
+
+def test_telegram_logs_command_returns_recent_events(tmp_path) -> None:
+    service, repos = _service(
+        tmp_path,
+        TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
+    )
+    task = repos.tasks.create("Build app")
+    service.audit.append(
+        AuditEventType.TASK_CREATED,
+        actor="test",
+        task_id=task.id,
+        payload={"objective": task.objective},
+    )
+
+    result = service.handle_update(
+        {
+            "message": {
+                "message_id": 4,
+                "from": {"id": 42},
+                "chat": {"id": 100},
+                "text": f"/logs {task.id}",
+            }
+        }
+    )
+
+    assert result.outbound_message is not None
+    assert "task_created" in (result.outbound_message.text or "")
+
+
+def test_telegram_screenshot_command_reports_disabled(tmp_path) -> None:
+    service, _ = _service(
+        tmp_path,
+        TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
+        settings=AppSettings(_env_file=None),
+    )
+
+    result = service.handle_update(
+        {
+            "message": {
+                "message_id": 5,
+                "from": {"id": 42},
+                "chat": {"id": 100},
+                "text": "/screenshot",
+            }
+        }
+    )
+
+    assert result.outbound_message is not None
+    assert result.outbound_message.text == "desktop.screenshot is disabled."
+
+
+class FakeTelegramClient:
+    def __init__(self, updates: list[dict]) -> None:
+        self.updates = updates
+        self.sent: list[tuple[str | int, str]] = []
+
+    async def get_updates(self, offset: int | None = None, timeout: int = 30) -> list[dict]:
+        return self.updates
+
+    async def send_message(self, chat_id: str | int, text: str) -> dict:
+        self.sent.append((chat_id, text))
+        return {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_polling_runner_sends_outbound_command_response(tmp_path) -> None:
+    service, _ = _service(
+        tmp_path,
+        TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
+    )
+    client = FakeTelegramClient(
+        [
+            {
+                "update_id": 10,
+                "message": {
+                    "message_id": 6,
+                    "from": {"id": 42},
+                    "chat": {"id": 100},
+                    "text": "/status",
+                },
+            }
+        ]
+    )
+    runner = TelegramPollingRunner(client, service)  # type: ignore[arg-type]
+
+    next_offset, _ = await runner.poll_once()
+
+    assert next_offset == 11
+    assert client.sent == [("100", "0 recent task(s), 0 active.")]
