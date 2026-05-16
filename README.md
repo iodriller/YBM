@@ -25,13 +25,14 @@ Implemented:
 - Windows setup scripts and local setup documentation
 - Basic FastAPI health endpoint
 - Built-in FastAPI admin UI for safe config summary, task monitoring, audit logs, VS Code bridge state, and gated task controls
+- Admin configuration writes for Telegram and the default OpenAI-compatible orchestrator LLM profile
 
 Not implemented yet:
 
 - Real tool adapters beyond test/static adapters
 - Full VS Code terminal output capture; current extension records dispatch observations only
 - Production process wrapper for Telegram polling and task workers
-- Persistent editable configuration from the admin UI
+- Persistent editable configuration for every capability and adapter
 
 ## Development
 
@@ -71,6 +72,11 @@ If `AGENT_ADMIN_TOKEN` is set, open:
 ```text
 http://127.0.0.1:8765/admin?token=<token>
 ```
+
+Getting started docs:
+
+- [Admin, Telegram, and LLM setup](docs/GETTING_STARTED_ADMIN_TELEGRAM_LLM.md)
+- [Minimal end-to-end test](docs/MINIMAL_END_TO_END_TEST.md)
 
 Run Telegram polling:
 

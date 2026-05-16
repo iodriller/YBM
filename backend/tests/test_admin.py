@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import yaml
 
 from agent_control.admin import create_admin_router
 from agent_control.config import AppSettings
 from agent_control.main import app, vscode_store
-from agent_control.schemas import AuditEventType, Capability
+from agent_control.schemas import AuditEventType, Capability, TaskStatus
 from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.tools.vscode_bridge import VSCodeBridgeStore
 
@@ -66,7 +67,7 @@ def test_admin_task_signal_updates_task(tmp_path) -> None:
 
     assert response.status_code == 200
     assert updated is not None
-    assert updated.status.value == "paused"
+    assert updated.status == TaskStatus.PAUSED
 
 
 def test_admin_rejects_vscode_terminal_command_by_default(monkeypatch, tmp_path) -> None:
@@ -96,3 +97,82 @@ def test_admin_can_queue_vscode_terminal_command_when_enabled(tmp_path) -> None:
 
     assert response.status_code == 200
     assert store.terminal_commands[0].command == "echo hi"
+
+
+def test_admin_writes_llm_runtime_config(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
+    local_app = FastAPI()
+    local_app.include_router(
+        create_admin_router(
+            lambda: AppSettings(_env_file=None),
+            lambda: repositories,
+            VSCodeBridgeStore(),
+        )
+    )
+    client = TestClient(local_app)
+
+    response = client.post(
+        "/admin/api/config/llm",
+        json={
+            "profile_name": "local",
+            "default_profile": "local",
+            "provider": "openai_compatible",
+            "model": "local-coder",
+            "base_url": "http://127.0.0.1:1234/v1",
+            "api_key_env": "",
+        },
+    )
+    saved = yaml.safe_load((tmp_path / "config" / "config.yaml").read_text(encoding="utf-8"))
+
+    assert response.status_code == 200
+    assert saved["llm"]["default_profile"] == "local"
+    assert saved["llm"]["profiles"]["local"]["base_url"] == "http://127.0.0.1:1234/v1"
+    assert saved["llm"]["profiles"]["local"]["api_key_env"] is None
+
+
+def test_admin_writes_telegram_runtime_config(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
+    local_app = FastAPI()
+    local_app.include_router(
+        create_admin_router(
+            lambda: AppSettings(_env_file=None),
+            lambda: repositories,
+            VSCodeBridgeStore(),
+        )
+    )
+    client = TestClient(local_app)
+
+    response = client.post(
+        "/admin/api/config/telegram",
+        json={
+            "enabled": True,
+            "token_env": "TELEGRAM_BOT_TOKEN",
+            "allowed_user_ids": [123],
+            "allowed_chat_ids": [456],
+            "polling": True,
+        },
+    )
+    saved = yaml.safe_load((tmp_path / "config" / "config.yaml").read_text(encoding="utf-8"))
+
+    assert response.status_code == 200
+    assert saved["channels"]["telegram"]["enabled"] is True
+    assert saved["channels"]["telegram"]["allowed_user_ids"] == [123]
+
+
+def test_admin_llm_test_requires_configured_profile(tmp_path) -> None:
+    repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
+    local_app = FastAPI()
+    local_app.include_router(
+        create_admin_router(
+            lambda: AppSettings(_env_file=None),
+            lambda: repositories,
+            VSCodeBridgeStore(),
+        )
+    )
+    client = TestClient(local_app)
+
+    response = client.post("/admin/api/llm/test", json={})
+
+    assert response.status_code == 400

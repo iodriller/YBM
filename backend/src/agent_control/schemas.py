@@ -123,6 +123,7 @@ class ArtifactType(StrEnum):
 
 class AuditEventType(StrEnum):
     MESSAGE_RECEIVED = "message_received"
+    CONFIG_UPDATED = "config_updated"
     TASK_CREATED = "task_created"
     TASK_STATE_CHANGED = "task_state_changed"
     PLAN_CREATED = "plan_created"

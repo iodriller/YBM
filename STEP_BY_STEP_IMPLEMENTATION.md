@@ -494,12 +494,16 @@ Minimum implementation:
 - Add `/admin/api/audit` with optional task filtering.
 - Add `/admin/api/vscode` for heartbeat, workspace state, pending terminal commands, and recent terminal observations.
 - Add task control endpoints for pause, resume, and cancel by recording structured task signals and updating task status.
+- Add config endpoints for Telegram and the default orchestrator LLM profile.
+- Write non-secret config to `config/config.yaml`, and keep API keys and bot tokens in `.env` or process environment variables.
+- Add a one-click LLM health test that uses the configured default LLM profile.
 - Add optional admin token enforcement through `server.admin_token_env`.
 - Do not allow terminal command dispatch unless:
   - `adapters.vscode.enabled` is true.
   - `terminal.run` is enabled.
   - `terminal.run` does not require approval for direct admin dispatch.
 - Document that persistent config editing is intentionally deferred until a config persistence model exists.
+- Document the minimal Telegram-to-task end-to-end test.
 - Add tests for the page, summary endpoint, task signals, default terminal-command rejection, and enabled terminal-command queueing.
 
 ## 17. MVP Done Definition

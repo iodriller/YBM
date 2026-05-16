@@ -2,17 +2,22 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import os
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from pydantic import Field
+import yaml
 
 from agent_control.config import AppSettings
+from agent_control.llm.providers import OpenAICompatibleProvider
 from agent_control.schemas import AuditEventType, Capability, StrictBaseModel
 from agent_control.storage.audit import AuditLogger
 from agent_control.storage.repositories import Repositories
 from agent_control.tools.vscode_bridge import VSCodeBridgeStore, VSCodeTerminalCommand
+
+CONFIG_FILE_PATH = Path("config/config.yaml")
 
 
 class AdminTerminalCommandRequest(StrictBaseModel):
@@ -24,6 +29,26 @@ class AdminTerminalCommandRequest(StrictBaseModel):
 
 class AdminTaskSignalRequest(StrictBaseModel):
     signal: str = Field(pattern="^(pause|resume|cancel)$")
+
+
+class AdminLLMConfigRequest(StrictBaseModel):
+    profile_name: str = Field(default="default", min_length=1, max_length=80)
+    default_profile: str = Field(default="default", min_length=1, max_length=80)
+    provider: str = Field(default="openai_compatible", min_length=1, max_length=80)
+    model: str = Field(min_length=1, max_length=200)
+    base_url: str | None = None
+    api_key_env: str | None = None
+    timeout_seconds: int = Field(default=60, ge=1, le=3600)
+    max_tokens: int = Field(default=4096, ge=1, le=262144)
+    temperature: float = Field(default=0.2, ge=0.0, le=2.0)
+
+
+class AdminTelegramConfigRequest(StrictBaseModel):
+    enabled: bool | None = None
+    token_env: str | None = Field(default=None, min_length=1, max_length=120)
+    allowed_user_ids: list[int] | None = None
+    allowed_chat_ids: list[int] | None = None
+    polling: bool | None = None
 
 
 SettingsLoader = Callable[[], AppSettings]
@@ -68,9 +93,24 @@ def create_admin_router(
             "tasks": [task.model_dump(mode="json") for task in tasks],
             "audit": [event.model_dump(mode="json") for event in audit_events],
             "vscode": _vscode_summary(vscode_store),
+            "integrations": {
+                "telegram": {
+                    "enabled": loaded.channels.telegram.enabled,
+                    "token_env": loaded.channels.telegram.token_env,
+                    "token_present": bool(os.getenv(loaded.channels.telegram.token_env)),
+                    "allowed_user_count": len(loaded.channels.telegram.allowed_user_ids),
+                    "allowed_chat_count": len(loaded.channels.telegram.allowed_chat_ids),
+                },
+                "llm": {
+                    "default_profile": loaded.llm.default_profile,
+                    "profile_count": len(loaded.llm.profiles),
+                    "default_profile_configured": loaded.llm.default_profile in loaded.llm.profiles,
+                },
+            },
             "admin": {
                 "enabled": loaded.server.admin_enabled,
                 "token_required": bool(os.getenv(loaded.server.admin_token_env)),
+                "config_file": str(CONFIG_FILE_PATH),
             },
         }
 
@@ -158,6 +198,57 @@ def create_admin_router(
         )
         return {"signal": signal.model_dump(mode="json"), "task": updated.model_dump(mode="json")}
 
+    @router.post("/api/config/llm")
+    def admin_update_llm_config(request: Request, payload: AdminLLMConfigRequest) -> dict[str, Any]:
+        loaded = require_admin(request)
+        config = _read_config_file()
+        llm = config.setdefault("llm", {})
+        profiles = llm.setdefault("profiles", {})
+        llm["default_profile"] = payload.default_profile
+        profiles[payload.profile_name] = {
+            "provider": payload.provider,
+            "model": payload.model,
+            "base_url": _blank_to_none(payload.base_url),
+            "api_key_env": _blank_to_none(payload.api_key_env),
+            "timeout_seconds": payload.timeout_seconds,
+            "max_tokens": payload.max_tokens,
+            "temperature": payload.temperature,
+        }
+        _write_config_file(config)
+        _audit_config_update(repositories_loader(), loaded, "llm", payload.model_dump(mode="json"))
+        return {"config_file": str(CONFIG_FILE_PATH), "llm": llm}
+
+    @router.post("/api/config/telegram")
+    def admin_update_telegram_config(request: Request, payload: AdminTelegramConfigRequest) -> dict[str, Any]:
+        loaded = require_admin(request)
+        config = _read_config_file()
+        telegram = config.setdefault("channels", {}).setdefault("telegram", {})
+        patch = payload.model_dump(exclude_unset=True)
+        for key, value in patch.items():
+            if value is not None:
+                telegram[key] = value
+        _write_config_file(config)
+        _audit_config_update(repositories_loader(), loaded, "telegram", patch)
+        return {"config_file": str(CONFIG_FILE_PATH), "telegram": telegram}
+
+    @router.post("/api/llm/test")
+    async def admin_test_llm(request: Request) -> dict[str, Any]:
+        loaded = require_admin(request)
+        profile = loaded.llm.profiles.get(loaded.llm.default_profile)
+        if profile is None:
+            raise HTTPException(status_code=400, detail="default LLM profile is not configured")
+        if profile.provider != "openai_compatible":
+            raise HTTPException(status_code=400, detail=f"unsupported LLM provider: {profile.provider}")
+        try:
+            provider = OpenAICompatibleProvider(profile)
+            output = await provider.generate_text(
+                "You are a health check endpoint. Return a short plain text response.",
+                "Reply with: ok",
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return {"profile": loaded.llm.default_profile, "output_preview": output[:500]}
+
     return router
 
 
@@ -179,6 +270,42 @@ def _vscode_summary(store: VSCodeBridgeStore) -> dict[str, Any]:
         "pending_terminal_commands": len(store.terminal_commands),
         "terminal_outputs": [output.model_dump(mode="json") for output in store.terminal_outputs[-20:]],
     }
+
+
+def _read_config_file() -> dict[str, Any]:
+    if not CONFIG_FILE_PATH.exists():
+        return {}
+    loaded = yaml.safe_load(CONFIG_FILE_PATH.read_text(encoding="utf-8"))
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise HTTPException(status_code=400, detail=f"{CONFIG_FILE_PATH} must contain a YAML object")
+    return loaded
+
+
+def _write_config_file(config: dict[str, Any]) -> None:
+    CONFIG_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_FILE_PATH.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+
+def _blank_to_none(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _audit_config_update(
+    repositories: Repositories,
+    settings: AppSettings,
+    section: str,
+    payload: dict[str, Any],
+) -> None:
+    AuditLogger(repositories.audit, settings.logging.redact_patterns).append(
+        AuditEventType.CONFIG_UPDATED,
+        actor="admin",
+        payload={"section": section, "config_file": str(CONFIG_FILE_PATH), "patch": payload},
+    )
 
 
 _ADMIN_HTML = """
@@ -244,6 +371,8 @@ _ADMIN_HTML = """
     .muted { color: var(--muted); }
     .danger { color: var(--danger); }
     .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .field { display: grid; gap: 4px; margin-bottom: 10px; }
+    label { font-size: 12px; color: var(--muted); }
     table { width: 100%; border-collapse: collapse; }
     th, td { padding: 8px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
     th { font-size: 12px; color: var(--muted); font-weight: 600; }
@@ -289,6 +418,30 @@ _ADMIN_HTML = """
         <button onclick="queueCommand()">Queue</button>
       </div>
       <div id="command-result" class="muted"></div>
+    </section>
+    <section class="panel">
+      <h2>Orchestrator LLM</h2>
+      <div class="field"><label>Profile</label><input id="llm-profile" value="default"></div>
+      <div class="field"><label>Default Profile</label><input id="llm-default-profile" value="default"></div>
+      <div class="field"><label>Provider</label><input id="llm-provider" value="openai_compatible"></div>
+      <div class="field"><label>Model</label><input id="llm-model" placeholder="model name"></div>
+      <div class="field"><label>Base URL</label><input id="llm-base-url" placeholder="http://127.0.0.1:1234/v1"></div>
+      <div class="field"><label>API Key Env</label><input id="llm-api-key-env" placeholder="OPENAI_API_KEY"></div>
+      <div class="row">
+        <button onclick="saveLLM()">Save</button>
+        <button onclick="testLLM()">Test</button>
+      </div>
+      <div id="llm-result" class="muted"></div>
+    </section>
+    <section class="panel">
+      <h2>Telegram</h2>
+      <div class="field"><label>Enabled</label><input id="telegram-enabled" type="checkbox"></div>
+      <div class="field"><label>Token Env</label><input id="telegram-token-env" value="TELEGRAM_BOT_TOKEN"></div>
+      <div class="field"><label>User IDs</label><input id="telegram-user-ids" placeholder="123,456"></div>
+      <div class="field"><label>Chat IDs</label><input id="telegram-chat-ids" placeholder="123,456"></div>
+      <div class="field"><label>Polling</label><input id="telegram-polling" type="checkbox" checked></div>
+      <div class="row"><button onclick="saveTelegram()">Save</button></div>
+      <div id="telegram-result" class="muted"></div>
     </section>
     <section class="panel wide">
       <h2>Capabilities</h2>
@@ -388,6 +541,31 @@ _ADMIN_HTML = """
       `;
     }
 
+    function populateConfigForms(config) {
+      const llm = config.llm || {};
+      const profileName = llm.default_profile || "default";
+      const profile = (llm.profiles || {})[profileName] || {};
+      document.getElementById("llm-profile").value = profileName;
+      document.getElementById("llm-default-profile").value = profileName;
+      document.getElementById("llm-provider").value = profile.provider || "openai_compatible";
+      document.getElementById("llm-model").value = profile.model || "";
+      document.getElementById("llm-base-url").value = profile.base_url || "";
+      document.getElementById("llm-api-key-env").value = profile.api_key_env || "";
+
+      const telegram = (config.channels || {}).telegram || {};
+      document.getElementById("telegram-enabled").checked = Boolean(telegram.enabled);
+      document.getElementById("telegram-token-env").value = telegram.token_env || "TELEGRAM_BOT_TOKEN";
+      document.getElementById("telegram-polling").checked = telegram.polling !== false;
+    }
+
+    function parseIds(value) {
+      return value.split(",")
+        .map(item => item.trim())
+        .filter(Boolean)
+        .map(item => Number(item))
+        .filter(item => Number.isInteger(item));
+    }
+
     async function refresh() {
       const status = document.getElementById("status");
       try {
@@ -404,6 +582,7 @@ _ADMIN_HTML = """
           admin: data.admin
         });
         document.getElementById("vscode").textContent = jsonBlock(data.vscode);
+        populateConfigForms(data.config);
         renderCapabilities(data.config);
         renderTasks(data.tasks || []);
         renderAudit(data.audit || []);
@@ -434,6 +613,58 @@ _ADMIN_HTML = """
         body: JSON.stringify({signal})
       });
       await refresh();
+    }
+
+    async function saveLLM() {
+      const result = document.getElementById("llm-result");
+      try {
+        await api("/admin/api/config/llm", {
+          method: "POST",
+          body: JSON.stringify({
+            profile_name: document.getElementById("llm-profile").value,
+            default_profile: document.getElementById("llm-default-profile").value,
+            provider: document.getElementById("llm-provider").value,
+            model: document.getElementById("llm-model").value,
+            base_url: document.getElementById("llm-base-url").value,
+            api_key_env: document.getElementById("llm-api-key-env").value
+          })
+        });
+        result.textContent = "Saved. Restart long-running processes to reload config.";
+        await refresh();
+      } catch (error) {
+        result.textContent = error.message;
+      }
+    }
+
+    async function testLLM() {
+      const result = document.getElementById("llm-result");
+      result.textContent = "Testing";
+      try {
+        const data = await api("/admin/api/llm/test", {method: "POST", body: "{}"});
+        result.textContent = data.output_preview;
+      } catch (error) {
+        result.textContent = error.message;
+      }
+    }
+
+    async function saveTelegram() {
+      const result = document.getElementById("telegram-result");
+      const payload = {
+        enabled: document.getElementById("telegram-enabled").checked,
+        token_env: document.getElementById("telegram-token-env").value,
+        polling: document.getElementById("telegram-polling").checked
+      };
+      const userIds = parseIds(document.getElementById("telegram-user-ids").value);
+      const chatIds = parseIds(document.getElementById("telegram-chat-ids").value);
+      if (userIds.length) payload.allowed_user_ids = userIds;
+      if (chatIds.length) payload.allowed_chat_ids = chatIds;
+      try {
+        await api("/admin/api/config/telegram", {method: "POST", body: JSON.stringify(payload)});
+        result.textContent = "Saved. Restart Telegram polling to reload config.";
+        await refresh();
+      } catch (error) {
+        result.textContent = error.message;
+      }
     }
 
     refresh();

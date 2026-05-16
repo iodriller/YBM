@@ -310,17 +310,20 @@ Primary outputs:
 
 - FastAPI-served `/admin` page with no separate frontend build.
 - Redacted effective configuration view.
+- Minimal config writer for Telegram and the default orchestrator LLM profile.
 - Capability, adapter, and connection status view.
 - Recent task and audit log views.
 - VS Code bridge state view.
 - Pause, resume, and cancel controls for tasks.
 - Gated VS Code terminal command queue for explicitly enabled local setups.
 - Optional admin token enforcement for deployments that are not purely local.
+- Setup docs for Telegram, cloud LLMs, local OpenAI-compatible LLMs, and the minimal end-to-end test.
 
 Success criteria:
 
 - The dashboard works after starting the backend.
 - Secrets are never rendered in the UI.
+- API keys and bot tokens stay in environment variables, not in generated YAML config.
 - Terminal dispatch is rejected by default.
 - Task controls write task signals and audit state changes.
 
