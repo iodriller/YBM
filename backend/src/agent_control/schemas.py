@@ -1,0 +1,342 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from enum import StrEnum
+from typing import Any
+from uuid import uuid4
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def new_id(prefix: str) -> str:
+    return f"{prefix}_{uuid4().hex}"
+
+
+class StrictBaseModel(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        str_strip_whitespace=True,
+        validate_assignment=True,
+        use_enum_values=False,
+    )
+
+
+class ChannelType(StrEnum):
+    TELEGRAM = "telegram"
+    SLACK = "slack"
+    DISCORD = "discord"
+    WEB = "web"
+    CLI = "cli"
+
+
+class MessageKind(StrEnum):
+    TEXT = "text"
+    VOICE = "voice"
+    IMAGE = "image"
+    DOCUMENT = "document"
+    CALLBACK = "callback"
+    SYSTEM = "system"
+
+
+class TaskStatus(StrEnum):
+    RECEIVED = "received"
+    INTERPRETING = "interpreting"
+    CLARIFYING = "clarifying"
+    PLANNED = "planned"
+    AWAITING_APPROVAL = "awaiting_approval"
+    RUNNING = "running"
+    PAUSED = "paused"
+    RETRYING = "retrying"
+    BLOCKED = "blocked"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+
+
+class SubtaskStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    BLOCKED = "blocked"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class RiskLevel(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class Capability(StrEnum):
+    TELEGRAM_RECEIVE = "telegram.receive"
+    TELEGRAM_SEND = "telegram.send"
+    LLM_GENERATE = "llm.generate"
+    STT_TRANSCRIBE = "stt.transcribe"
+    TTS_SYNTHESIZE = "tts.synthesize"
+    VSCODE_READ_STATE = "vscode.read_state"
+    VSCODE_WRITE_FILES = "vscode.write_files"
+    TERMINAL_RUN = "terminal.run"
+    FILESYSTEM_READ = "filesystem.read"
+    FILESYSTEM_WRITE = "filesystem.write"
+    DESKTOP_SCREENSHOT = "desktop.screenshot"
+    DESKTOP_CONTROL = "desktop.control"
+    BROWSER_OPEN = "browser.open"
+    BROWSER_CONTROL = "browser.control"
+    GITHUB_READ = "github.read"
+    GITHUB_PUSH = "github.push"
+    DEPENDENCIES_INSTALL = "dependencies.install"
+
+
+class ApprovalStatus(StrEnum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+    CANCELLED = "cancelled"
+
+
+class ToolResultStatus(StrEnum):
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    DENIED = "denied"
+    NEEDS_APPROVAL = "needs_approval"
+    RATE_LIMITED = "rate_limited"
+    TIMEOUT = "timeout"
+
+
+class ArtifactType(StrEnum):
+    TEXT_LOG = "text_log"
+    JSON = "json"
+    SCREENSHOT = "screenshot"
+    VOICE = "voice"
+    TRANSCRIPT = "transcript"
+    GENERATED_FILE = "generated_file"
+    EXTERNAL_LINK = "external_link"
+
+
+class AuditEventType(StrEnum):
+    MESSAGE_RECEIVED = "message_received"
+    TASK_CREATED = "task_created"
+    TASK_STATE_CHANGED = "task_state_changed"
+    PLAN_CREATED = "plan_created"
+    POLICY_DECISION = "policy_decision"
+    APPROVAL_REQUESTED = "approval_requested"
+    APPROVAL_DECIDED = "approval_decided"
+    TOOL_REQUESTED = "tool_requested"
+    TOOL_COMPLETED = "tool_completed"
+    ARTIFACT_CREATED = "artifact_created"
+    ERROR = "error"
+
+
+class ErrorClass(StrEnum):
+    TRANSIENT = "transient"
+    POLICY_DENIED = "policy_denied"
+    APPROVAL_TIMEOUT = "approval_timeout"
+    VALIDATION_FAILED = "validation_failed"
+    ADAPTER_FAILED = "adapter_failed"
+    RATE_LIMITED = "rate_limited"
+    USAGE_LIMITED = "usage_limited"
+    FATAL = "fatal"
+
+
+class Attachment(StrictBaseModel):
+    id: str = Field(default_factory=lambda: new_id("att"))
+    kind: MessageKind
+    file_id: str | None = None
+    file_name: str | None = None
+    mime_type: str | None = None
+    size_bytes: int | None = Field(default=None, ge=0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class VoiceAttachment(Attachment):
+    kind: MessageKind = MessageKind.VOICE
+    duration_seconds: int | None = Field(default=None, ge=0)
+    transcript: str | None = None
+
+
+class InboundMessage(StrictBaseModel):
+    id: str = Field(default_factory=lambda: new_id("msg"))
+    channel: ChannelType
+    kind: MessageKind
+    sender_id: str
+    chat_id: str
+    text: str | None = None
+    attachments: list[Attachment] = Field(default_factory=list)
+    received_at: datetime = Field(default_factory=utc_now)
+    correlation_id: str = Field(default_factory=lambda: new_id("corr"))
+    raw: dict[str, Any] | None = None
+
+
+class OutboundMessage(StrictBaseModel):
+    id: str = Field(default_factory=lambda: new_id("out"))
+    channel: ChannelType
+    chat_id: str
+    text: str | None = None
+    artifact_ids: list[str] = Field(default_factory=list)
+    reply_to_message_id: str | None = None
+    correlation_id: str = Field(default_factory=lambda: new_id("corr"))
+
+
+class CommandEnvelope(StrictBaseModel):
+    id: str = Field(default_factory=lambda: new_id("cmd"))
+    type: str
+    source: str
+    payload: dict[str, Any]
+    created_at: datetime = Field(default_factory=utc_now)
+    correlation_id: str = Field(default_factory=lambda: new_id("corr"))
+
+
+class ApprovalGate(StrictBaseModel):
+    capability: Capability
+    risk_level: RiskLevel
+    summary: str
+    required_before_step: str | None = None
+
+
+class PlanStep(StrictBaseModel):
+    id: str = Field(default_factory=lambda: new_id("step"))
+    title: str
+    description: str
+    required_capabilities: list[Capability] = Field(default_factory=list)
+    risk_level: RiskLevel = RiskLevel.LOW
+    requires_approval: bool = False
+    expected_output: str | None = None
+
+
+class PlanModel(StrictBaseModel):
+    id: str = Field(default_factory=lambda: new_id("plan"))
+    objective: str
+    assumptions: list[str] = Field(default_factory=list)
+    required_capabilities: list[Capability] = Field(default_factory=list)
+    approval_gates: list[ApprovalGate] = Field(default_factory=list)
+    steps: list[PlanStep] = Field(default_factory=list)
+    success_criteria: list[str] = Field(default_factory=list)
+
+    @field_validator("steps")
+    @classmethod
+    def plan_requires_steps(cls, value: list[PlanStep]) -> list[PlanStep]:
+        if not value:
+            raise ValueError("plan must contain at least one step")
+        return value
+
+
+class TaskRecord(StrictBaseModel):
+    id: str = Field(default_factory=lambda: new_id("task"))
+    objective: str
+    status: TaskStatus = TaskStatus.RECEIVED
+    conversation_id: str | None = None
+    plan_id: str | None = None
+    current_step_id: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SubtaskRecord(StrictBaseModel):
+    id: str = Field(default_factory=lambda: new_id("subtask"))
+    task_id: str
+    title: str
+    status: SubtaskStatus = SubtaskStatus.PENDING
+    dependencies: list[str] = Field(default_factory=list)
+    retry_count: int = Field(default=0, ge=0)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class TaskSignal(StrictBaseModel):
+    id: str = Field(default_factory=lambda: new_id("sig"))
+    task_id: str
+    signal: str
+    actor: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class ToolCallRequest(StrictBaseModel):
+    id: str = Field(default_factory=lambda: new_id("toolreq"))
+    task_id: str
+    tool_name: str
+    capability: Capability
+    risk_level: RiskLevel = RiskLevel.LOW
+    scope_target: str | None = None
+    input: dict[str, Any] = Field(default_factory=dict)
+    timeout_seconds: int = Field(default=60, ge=1)
+    idempotency_key: str = Field(default_factory=lambda: new_id("idem"))
+    requires_approval: bool = False
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class ToolCallResult(StrictBaseModel):
+    id: str = Field(default_factory=lambda: new_id("toolres"))
+    request_id: str
+    status: ToolResultStatus
+    output: dict[str, Any] = Field(default_factory=dict)
+    error_class: ErrorClass | None = None
+    error_message: str | None = None
+    artifact_ids: list[str] = Field(default_factory=list)
+    completed_at: datetime = Field(default_factory=utc_now)
+
+
+class ToolObservation(StrictBaseModel):
+    id: str = Field(default_factory=lambda: new_id("obs"))
+    task_id: str
+    tool_name: str
+    content: dict[str, Any]
+    observed_at: datetime = Field(default_factory=utc_now)
+
+
+class ApprovalRequest(StrictBaseModel):
+    id: str = Field(default_factory=lambda: new_id("approval"))
+    task_id: str
+    capability: Capability
+    risk_level: RiskLevel
+    summary: str
+    action_payload: dict[str, Any] = Field(default_factory=dict)
+    status: ApprovalStatus = ApprovalStatus.PENDING
+    expires_at: datetime
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class ApprovalDecision(StrictBaseModel):
+    id: str = Field(default_factory=lambda: new_id("approval_decision"))
+    approval_request_id: str
+    status: ApprovalStatus
+    actor: str
+    reason: str | None = None
+    decided_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("status")
+    @classmethod
+    def decision_must_be_terminal(cls, value: ApprovalStatus) -> ApprovalStatus:
+        if value == ApprovalStatus.PENDING:
+            raise ValueError("approval decision cannot remain pending")
+        return value
+
+
+class Artifact(StrictBaseModel):
+    id: str = Field(default_factory=lambda: new_id("artifact"))
+    task_id: str | None = None
+    type: ArtifactType
+    uri: str | None = None
+    content_preview: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class AuditEvent(StrictBaseModel):
+    id: str = Field(default_factory=lambda: new_id("audit"))
+    type: AuditEventType
+    actor: str
+    task_id: str | None = None
+    correlation_id: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+

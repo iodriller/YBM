@@ -1,0 +1,42 @@
+{
+  "name": "agent-control-bridge",
+  "displayName": "Agent Control Bridge",
+  "description": "Companion VS Code bridge for the configurable agentic control system.",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "agentControl.showStatus",
+        "title": "Agent Control: Show Status"
+      }
+    ],
+    "configuration": {
+      "title": "Agent Control Bridge",
+      "properties": {
+        "agentControl.bridgeUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8765",
+          "description": "Local backend URL for the Agent Control bridge."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.5.0"
+  }
+}
+

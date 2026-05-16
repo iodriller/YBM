@@ -1,0 +1,141 @@
+server:
+  host: "127.0.0.1"
+  port: 8765
+  public_base_url: null
+
+identity:
+  instance_name: "local-agent-control"
+  owner_label: "local-user"
+
+channels:
+  telegram:
+    enabled: false
+    token_env: "TELEGRAM_BOT_TOKEN"
+    allowed_user_ids: []
+    allowed_chat_ids: []
+    polling: true
+
+llm:
+  default_profile: "default"
+  profiles:
+    default:
+      provider: "openai_compatible"
+      model: "gpt-4.1-mini"
+      base_url: "https://api.openai.com/v1"
+      api_key_env: "OPENAI_API_KEY"
+      timeout_seconds: 60
+      max_tokens: 4096
+      temperature: 0.2
+
+capabilities:
+  telegram.receive:
+    enabled: true
+    scopes: []
+    requires_approval: false
+    max_risk_level: "low"
+  telegram.send:
+    enabled: true
+    scopes: []
+    requires_approval: false
+    max_risk_level: "low"
+  terminal.run:
+    enabled: false
+    scopes: []
+    requires_approval: true
+    max_risk_level: "medium"
+  filesystem.read:
+    enabled: false
+    scopes: []
+    requires_approval: true
+    max_risk_level: "low"
+  filesystem.write:
+    enabled: false
+    scopes: []
+    requires_approval: true
+    max_risk_level: "high"
+  vscode.read_state:
+    enabled: false
+    scopes: []
+    requires_approval: false
+    max_risk_level: "low"
+  vscode.write_files:
+    enabled: false
+    scopes: []
+    requires_approval: true
+    max_risk_level: "high"
+  desktop.screenshot:
+    enabled: false
+    scopes: []
+    requires_approval: true
+    max_risk_level: "medium"
+  desktop.control:
+    enabled: false
+    scopes: []
+    requires_approval: true
+    max_risk_level: "critical"
+  browser.open:
+    enabled: false
+    scopes: []
+    requires_approval: true
+    max_risk_level: "medium"
+  browser.control:
+    enabled: false
+    scopes: []
+    requires_approval: true
+    max_risk_level: "critical"
+  github.push:
+    enabled: false
+    scopes: []
+    requires_approval: true
+    max_risk_level: "critical"
+  dependencies.install:
+    enabled: false
+    scopes: []
+    requires_approval: true
+    max_risk_level: "high"
+
+approval_policy:
+  default_timeout_seconds: 900
+  require_approval_at_or_above: "medium"
+  approval_token_ttl_seconds: 900
+
+storage:
+  database_url: "sqlite:///./agent_control.db"
+  artifact_dir: ".agent_control/artifacts"
+
+logging:
+  level: "INFO"
+  json_logs: true
+  redact_patterns:
+    - "token"
+    - "api_key"
+    - "secret"
+    - "password"
+
+limits:
+  max_parallel_tasks: 1
+  max_retries: 3
+  tool_timeout_seconds: 900
+  max_log_chars: 12000
+
+adapters:
+  vscode:
+    enabled: false
+    bridge_host: "127.0.0.1"
+    bridge_port: 8766
+    auth_token_env: "VSCODE_BRIDGE_TOKEN"
+  terminal:
+    enabled: false
+    allowed_working_dirs: []
+    blocked_command_patterns:
+      - "rm -rf"
+      - "del /s"
+      - "format "
+  desktop:
+    screenshot_enabled: false
+    control_enabled: false
+    screenshot_interval_seconds: 10
+  stt:
+    enabled: false
+    provider: "local_whisper"
+    model: "base"
