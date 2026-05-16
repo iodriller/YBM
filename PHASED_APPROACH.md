@@ -238,6 +238,8 @@ Success criteria:
 - `/screenshot` works only when enabled.
 - Denied screenshot attempts are audited.
 - Task summaries can include artifact references.
+- Screenshot artifacts are persisted to local artifact storage.
+- Telegram can deliver screenshot artifacts when produced by `/screenshot`.
 
 ## 15. Phase 11 - Error Recovery, Limits, And Resume
 
@@ -256,6 +258,7 @@ Success criteria:
 - Transient failures retry.
 - Repeated failures request intervention.
 - Usage limits pause or switch tools according to configuration.
+- Retry state is persisted on the task so it survives process restarts.
 
 ## 16. Phase 12 - Tests And Security Validation
 
@@ -293,6 +296,8 @@ Success criteria:
 - A fresh local setup can run from documented steps.
 - Safe config works without terminal, filesystem write, browser, desktop control, or Git push.
 - Enabling any invasive capability requires an explicit config change.
+- Windows scripts exist for database initialization, backend startup, tests, and VS Code extension packaging.
+- A local Telegram polling script exists for MVP operation.
 
 ## 18. MVP Acceptance Criteria
 

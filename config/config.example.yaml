@@ -117,6 +117,7 @@ limits:
   max_retries: 3
   tool_timeout_seconds: 900
   max_log_chars: 12000
+  retry_backoff_seconds: 30
 
 adapters:
   vscode:
@@ -147,6 +148,7 @@ adapters:
     screenshot_enabled: false
     control_enabled: false
     screenshot_interval_seconds: 10
+    screenshot_format: "png"
   stt:
     enabled: false
     provider: "local_whisper"

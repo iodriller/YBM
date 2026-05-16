@@ -6,7 +6,19 @@ from agent_control.config import AppSettings, CapabilityPolicy
 from agent_control.llm import PlannerService, StaticPlanProvider
 from agent_control.orchestration import StaticToolAdapter, TaskWorker, ToolExecutor
 from agent_control.policy import PolicyEngine
-from agent_control.schemas import ApprovalStatus, Capability, PlanModel, PlanStep, RiskLevel, TaskStatus
+from agent_control.recovery import RetryPolicy
+from agent_control.schemas import (
+    ApprovalStatus,
+    Capability,
+    ErrorClass,
+    PlanModel,
+    PlanStep,
+    RiskLevel,
+    TaskStatus,
+    ToolCallRequest,
+    ToolCallResult,
+    ToolResultStatus,
+)
 from agent_control.storage import AuditLogger, Database, Repositories
 
 
@@ -135,3 +147,59 @@ async def test_worker_resumes_after_step_approval(tmp_path) -> None:
     assert running.status == TaskStatus.RUNNING
     assert completed.status == TaskStatus.COMPLETED
     assert adapter.requests
+
+
+class TransientFailureAdapter:
+    async def execute(self, request: ToolCallRequest) -> ToolCallResult:
+        return ToolCallResult(
+            request_id=request.id,
+            status=ToolResultStatus.TIMEOUT,
+            error_class=ErrorClass.TRANSIENT,
+            error_message="temporary failure",
+        )
+
+
+@pytest.mark.asyncio
+async def test_worker_marks_retrying_for_transient_failure(tmp_path) -> None:
+    repos, audit = _repos(tmp_path)
+    task = repos.tasks.create("Run retry step")
+    plan = repos.plans.create(
+        task.id,
+        PlanModel(
+            objective="Run retry step",
+            steps=[
+                PlanStep(
+                    title="Retryable",
+                    description="A retryable step.",
+                    required_capabilities=[Capability.LLM_GENERATE],
+                    tool_name="llm",
+                )
+            ],
+            success_criteria=["Step completed."],
+        ),
+    )
+    repos.tasks.attach_plan(task.id, plan.id)
+    settings = AppSettings(
+        _env_file=None,
+        capabilities={
+            Capability.LLM_GENERATE: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.LOW,
+            )
+        },
+        limits={"max_retries": 1, "retry_backoff_seconds": 1},
+    )
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"llm": TransientFailureAdapter()},
+    )
+    worker = TaskWorker(repos, audit, executor=executor, retry_policy=RetryPolicy(settings.limits))
+
+    running = await worker.process_task(task.id)
+    retrying = await worker.process_task(running.id)
+
+    assert retrying.status == TaskStatus.RETRYING
+    assert retrying.metadata["retry_count"] == 1

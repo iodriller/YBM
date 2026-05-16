@@ -20,13 +20,16 @@ Implemented:
 - Gated tool executor and minimal durable task worker
 - Minimal VS Code bridge endpoints, extension state sync, and terminal command queue
 - Generic terminal coding-assistant adapter
+- File-backed artifacts, optional screenshot capture, and Telegram screenshot artifact delivery
+- Retry policy with durable retry metadata
+- Windows setup scripts and local setup documentation
 - Basic FastAPI health endpoint
 
 Not implemented yet:
 
 - Real tool adapters beyond test/static adapters
-- Real screenshot capture and artifact delivery
 - Full VS Code terminal output capture; current extension records dispatch observations only
+- Production process wrapper for Telegram polling and task workers
 
 ## Development
 
@@ -41,6 +44,24 @@ Run tests:
 ```powershell
 $env:PYTHONPATH='backend/src'
 pytest backend/tests
+```
+
+Initialize the local database:
+
+```powershell
+.\scripts\init_db.ps1
+```
+
+Run the backend:
+
+```powershell
+.\scripts\run_backend.ps1
+```
+
+Run Telegram polling:
+
+```powershell
+.\scripts\run_telegram_polling.ps1
 ```
 
 ## Safety Defaults

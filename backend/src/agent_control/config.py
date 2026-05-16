@@ -88,6 +88,7 @@ class LimitsConfig(StrictBaseModel):
     max_retries: int = Field(default=3, ge=0)
     tool_timeout_seconds: int = Field(default=900, ge=1)
     max_log_chars: int = Field(default=12000, ge=100)
+    retry_backoff_seconds: int = Field(default=30, ge=1)
 
 
 class VSCodeAdapterConfig(StrictBaseModel):
@@ -117,6 +118,7 @@ class DesktopAdapterConfig(StrictBaseModel):
     screenshot_enabled: bool = False
     control_enabled: bool = False
     screenshot_interval_seconds: int = Field(default=10, ge=1)
+    screenshot_format: Literal["png"] = "png"
 
 
 class STTAdapterConfig(StrictBaseModel):

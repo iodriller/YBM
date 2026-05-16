@@ -447,13 +447,37 @@ Implement screenshot adapter, artifact service, retention policies, and Telegram
 
 Also implement Telegram command responses for `/status`, `/tasks`, `/task <id>`, `/logs <id>`, and `/screenshot`. Until the screenshot adapter exists, `/screenshot` must explicitly report whether `desktop.screenshot` is disabled or enabled-but-not-yet-implemented.
 
+Minimum implementation:
+
+- Add a file-backed artifact service that stores artifact bytes under `storage.artifact_dir`.
+- Add a screenshot service behind `desktop.screenshot`, disabled by default.
+- Use Pillow for local screenshot capture when enabled.
+- Store screenshots as `ArtifactType.SCREENSHOT`.
+- Deliver screenshot artifacts through Telegram polling when an outbound message references screenshot artifact IDs.
+- Add tests with a fake screenshot adapter.
+
 ## 14. Step 12 - Implement Recovery And Resume
 
 Implement error classification, retries, backoff, usage-limit handling, and human intervention summaries.
 
+Minimum implementation:
+
+- Add a retry policy using `limits.max_retries` and `limits.retry_backoff_seconds`.
+- Retry only transient, rate-limit, usage-limit, and timeout results.
+- Persist retry count, next retry time, and last retry reason in task metadata.
+- Move exhausted retries to `blocked` with an intervention summary.
+- Add tests for retrying on transient failures.
+
 ## 15. Step 13 - Package For Local Use
 
 Add startup scripts, local setup docs, extension packaging, and Windows-specific instructions.
+
+Minimum implementation:
+
+- Add PowerShell scripts for backend startup, database initialization, test execution, and VS Code extension packaging.
+- Add a PowerShell script for Telegram polling.
+- Add `docs/LOCAL_SETUP.md` with safe local setup instructions.
+- Keep scripts non-destructive and local-first.
 
 ## 16. MVP Done Definition
 

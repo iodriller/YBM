@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from agent_control.llm import PlannerService
 from agent_control.orchestration.executor import ToolExecutor
+from agent_control.recovery import RetryPolicy
 from agent_control.schemas import (
     ApprovalRequest,
     ApprovalStatus,
@@ -26,11 +27,13 @@ class TaskWorker:
         audit: AuditLogger,
         planner: PlannerService | None = None,
         executor: ToolExecutor | None = None,
+        retry_policy: RetryPolicy | None = None,
     ) -> None:
         self.repositories = repositories
         self.audit = audit
         self.planner = planner
         self.executor = executor
+        self.retry_policy = retry_policy
 
     async def process_task(self, task_id: str) -> TaskRecord:
         task = self.repositories.tasks.get(task_id)
@@ -53,6 +56,9 @@ class TaskWorker:
 
         if task.status == TaskStatus.AWAITING_APPROVAL:
             return await self._process_awaiting_approval(task)
+
+        if task.status == TaskStatus.RETRYING:
+            return self._process_retrying(task)
 
         return task
 
@@ -115,7 +121,16 @@ class TaskWorker:
             return self._transition(task, TaskStatus.AWAITING_APPROVAL, "tool_approval_required")
         if result.status == ToolResultStatus.DENIED:
             return self._transition(task, TaskStatus.BLOCKED, "tool_policy_denied")
+        retry = self._retry_decision(task, result)
+        if retry:
+            return retry
         return self._transition(task, TaskStatus.FAILED, "tool_failed")
+
+    def _process_retrying(self, task: TaskRecord) -> TaskRecord:
+        next_retry_at = task.metadata.get("next_retry_at")
+        if next_retry_at and datetime.fromisoformat(next_retry_at) > utc_now():
+            return task
+        return self._transition(task, TaskStatus.RUNNING, "retry_due")
 
     async def _process_awaiting_approval(self, task: TaskRecord) -> TaskRecord:
         approvals = self.repositories.approvals.list_for_task(task.id)
@@ -163,6 +178,30 @@ class TaskWorker:
             approval.status == ApprovalStatus.APPROVED and approval.action_payload.get("id") == step_id
             for approval in self.repositories.approvals.list_for_task(task_id)
         )
+
+    def _retry_decision(self, task: TaskRecord, result: "ToolCallResult") -> TaskRecord | None:
+        if self.retry_policy is None:
+            return None
+        current_retry_count = int(task.metadata.get("retry_count", 0))
+        decision = self.retry_policy.evaluate(result, current_retry_count)
+        if not decision.retry:
+            if decision.reason == "retry_limit_reached":
+                metadata = {
+                    **task.metadata,
+                    "retry_count": decision.retry_count,
+                    "intervention_summary": self.retry_policy.intervention_summary(result),
+                }
+                return self.repositories.tasks.update_metadata(task.id, metadata, TaskStatus.BLOCKED)
+            return None
+        metadata = {
+            **task.metadata,
+            "retry_count": decision.retry_count,
+            "last_retry_reason": decision.reason,
+            "next_retry_at": decision.next_retry_at,
+        }
+        updated = self.repositories.tasks.update_metadata(task.id, metadata, TaskStatus.RETRYING)
+        self.audit.task_state_changed("orchestrator", task.id, task.status, updated.status)
+        return updated
 
     @staticmethod
     def _next_runnable_step(steps: list[PlanStep], current_step_id: str) -> PlanStep | None:

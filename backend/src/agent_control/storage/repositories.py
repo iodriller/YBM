@@ -181,6 +181,29 @@ class TaskRepository:
             raise KeyError(f"task not found: {task_id}")
         return self._row_to_task(row)
 
+    def update_metadata(
+        self,
+        task_id: str,
+        metadata: dict[str, Any],
+        status: TaskStatus | None = None,
+    ) -> TaskRecord:
+        now = utc_now()
+        with self.database.connect() as connection:
+            if status is None:
+                connection.execute(
+                    "UPDATE tasks SET metadata_json = ?, updated_at = ? WHERE id = ?",
+                    (_dump(metadata), _dt(now), task_id),
+                )
+            else:
+                connection.execute(
+                    "UPDATE tasks SET metadata_json = ?, status = ?, updated_at = ? WHERE id = ?",
+                    (_dump(metadata), status.value, _dt(now), task_id),
+                )
+            row = connection.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"task not found: {task_id}")
+        return self._row_to_task(row)
+
     @staticmethod
     def _row_to_task(row: sqlite3.Row) -> TaskRecord:
         return TaskRecord(
@@ -393,6 +416,21 @@ class ArtifactRepository:
             )
             for row in rows
         ]
+
+    def get(self, artifact_id: str) -> Artifact | None:
+        with self.database.connect() as connection:
+            row = connection.execute("SELECT * FROM artifacts WHERE id = ?", (artifact_id,)).fetchone()
+        if row is None:
+            return None
+        return Artifact(
+            id=row["id"],
+            task_id=row["task_id"],
+            type=row["artifact_type"],
+            uri=row["uri"],
+            content_preview=row["content_preview"],
+            metadata=_load(row["metadata_json"], {}),
+            created_at=row["created_at"],
+        )
 
 
 class AuditRepository:

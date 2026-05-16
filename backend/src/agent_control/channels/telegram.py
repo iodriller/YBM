@@ -25,6 +25,7 @@ from agent_control.schemas import (
 )
 from agent_control.storage.audit import AuditLogger
 from agent_control.storage.repositories import Repositories
+from agent_control.observation.screenshot import ScreenshotService
 from agent_control.tools.stt import STTAdapter
 
 
@@ -62,6 +63,20 @@ class TelegramBotApi:
 
     async def send_message(self, chat_id: str | int, text: str) -> dict[str, Any]:
         return await self._post("sendMessage", {"chat_id": chat_id, "text": text})
+
+    async def send_photo_file(self, chat_id: str | int, path: str, caption: str | None = None) -> dict[str, Any]:
+        payload = {"chat_id": str(chat_id)}
+        if caption:
+            payload["caption"] = caption
+        url = f"{self.base_url}/bot{self.token}/sendPhoto"
+        with open(path, "rb") as photo:
+            async with httpx.AsyncClient(timeout=60) as client:
+                response = await client.post(url, data=payload, files={"photo": photo})
+                response.raise_for_status()
+                data = response.json()
+        if not data.get("ok"):
+            raise RuntimeError("Telegram Bot API call failed: sendPhoto")
+        return data
 
     async def get_file(self, file_id: str) -> dict[str, Any]:
         data = await self._post("getFile", {"file_id": file_id})
@@ -105,10 +120,18 @@ class TelegramPollingRunner:
             results.append(result)
             if result.outbound_message and result.outbound_message.text:
                 await self.client.send_message(result.outbound_message.chat_id, result.outbound_message.text)
+            if result.outbound_message and result.outbound_message.artifact_ids:
+                await self._send_artifacts(result.outbound_message)
             update_id = update.get("update_id")
             if isinstance(update_id, int):
                 next_offset = update_id + 1
         return next_offset, results
+
+    async def _send_artifacts(self, outbound_message: "OutboundMessage") -> None:
+        for artifact_id in outbound_message.artifact_ids:
+            artifact = self.intake.repositories.artifacts.get(artifact_id)
+            if artifact and artifact.type == ArtifactType.SCREENSHOT and artifact.uri:
+                await self.client.send_photo_file(outbound_message.chat_id, artifact.uri, artifact.content_preview)
 
 
 class TelegramAdapter:
@@ -250,11 +273,13 @@ class TelegramIntakeService:
         repositories: Repositories,
         audit: AuditLogger,
         settings: AppSettings | None = None,
+        screenshot_service: ScreenshotService | None = None,
     ) -> None:
         self.adapter = adapter
         self.repositories = repositories
         self.audit = audit
         self.settings = settings
+        self.screenshot_service = screenshot_service
 
     def handle_update(self, update: dict[str, Any]) -> TelegramUpdateResult:
         result = self.adapter.normalize_update(update)
@@ -345,7 +370,15 @@ class TelegramIntakeService:
             enabled = bool(policy and policy.enabled)
             if not enabled:
                 return self._out(chat_id, "desktop.screenshot is disabled.")
-            return self._out(chat_id, "desktop.screenshot is enabled, but screenshot capture is not implemented yet.")
+            if not self.screenshot_service:
+                return self._out(chat_id, "desktop.screenshot is enabled, but screenshot capture is not configured.")
+            artifact = self.screenshot_service.capture()
+            return OutboundMessage(
+                channel=ChannelType.TELEGRAM,
+                chat_id=chat_id,
+                text="Screenshot captured.",
+                artifact_ids=[artifact.id],
+            )
         if name in {"pause", "resume", "cancel"}:
             if signal:
                 return self._out(chat_id, f"{name} signal recorded for {signal.task_id}.")
