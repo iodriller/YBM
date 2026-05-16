@@ -208,6 +208,8 @@ class PlanStep(StrictBaseModel):
     required_capabilities: list[Capability] = Field(default_factory=list)
     risk_level: RiskLevel = RiskLevel.LOW
     requires_approval: bool = False
+    tool_name: str | None = None
+    tool_input: dict[str, Any] = Field(default_factory=dict)
     expected_output: str | None = None
 
 
@@ -340,3 +342,10 @@ class AuditEvent(StrictBaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
 
+
+class TranscriptionResult(StrictBaseModel):
+    text: str
+    language: str | None = None
+    duration_seconds: float | None = Field(default=None, ge=0)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)

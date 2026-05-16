@@ -11,15 +11,19 @@ Implemented:
 - Detailed step-by-step implementation plan
 - Pydantic schemas for commands, tasks, plans, tools, approvals, artifacts, and audit events
 - Strict configuration models with safe default capability policies
+- SQLite persistence, repositories, audit logging, and redaction
+- Minimal Telegram Bot API polling wrapper, update normalizer, allowlist checks, command parsing, and task intake
+- Telegram voice download/transcription service with transcript artifacts
+- LLM provider abstraction and structured planner with plan persistence
+- Capability policy engine with approval requests
+- Gated tool executor and minimal durable task worker
 - Basic FastAPI health endpoint
 
 Not implemented yet:
 
-- Persistence
-- Telegram runtime adapter
-- LLM calls
 - VS Code bridge runtime
-- Task worker loop
+- Real tool adapters beyond test/static adapters
+- Notification delivery for status/log/screenshot commands
 
 ## Development
 
@@ -39,4 +43,3 @@ pytest backend/tests
 ## Safety Defaults
 
 The example config disables terminal execution, filesystem access, VS Code access, desktop screenshots, desktop control, browser automation, dependency installation, and Git pushes.
-
