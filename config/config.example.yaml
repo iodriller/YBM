@@ -2,6 +2,8 @@ server:
   host: "127.0.0.1"
   port: 8765
   public_base_url: null
+  admin_enabled: true
+  admin_token_env: "AGENT_ADMIN_TOKEN"
 
 identity:
   instance_name: "local-agent-control"

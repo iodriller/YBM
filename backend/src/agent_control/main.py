@@ -1,6 +1,8 @@
 from fastapi import Depends, FastAPI, Header
 
+from agent_control.admin import create_admin_router
 from agent_control.config import load_settings
+from agent_control.storage import Database, Repositories
 from agent_control.tools.vscode_bridge import (
     VSCodeBridgeStore,
     VSCodeHeartbeat,
@@ -12,6 +14,16 @@ from agent_control.tools.vscode_bridge import (
 
 app = FastAPI(title="Agent Control Backend")
 vscode_store = VSCodeBridgeStore()
+
+
+def get_repositories() -> Repositories:
+    settings = load_settings()
+    database = Database(settings.storage.database_url)
+    database.initialize()
+    return Repositories.for_database(database)
+
+
+app.include_router(create_admin_router(load_settings, get_repositories, vscode_store))
 
 
 @app.get("/health")

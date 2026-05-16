@@ -24,12 +24,14 @@ Implemented:
 - Retry policy with durable retry metadata
 - Windows setup scripts and local setup documentation
 - Basic FastAPI health endpoint
+- Built-in FastAPI admin UI for safe config summary, task monitoring, audit logs, VS Code bridge state, and gated task controls
 
 Not implemented yet:
 
 - Real tool adapters beyond test/static adapters
 - Full VS Code terminal output capture; current extension records dispatch observations only
 - Production process wrapper for Telegram polling and task workers
+- Persistent editable configuration from the admin UI
 
 ## Development
 
@@ -56,6 +58,18 @@ Run the backend:
 
 ```powershell
 .\scripts\run_backend.ps1
+```
+
+Open the admin UI:
+
+```text
+http://127.0.0.1:8765/admin
+```
+
+If `AGENT_ADMIN_TOKEN` is set, open:
+
+```text
+http://127.0.0.1:8765/admin?token=<token>
 ```
 
 Run Telegram polling:

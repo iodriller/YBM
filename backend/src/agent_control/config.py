@@ -13,6 +13,8 @@ class ServerConfig(StrictBaseModel):
     host: str = "127.0.0.1"
     port: int = Field(default=8765, ge=1, le=65535)
     public_base_url: str | None = None
+    admin_enabled: bool = True
+    admin_token_env: str = "AGENT_ADMIN_TOKEN"
 
 
 class IdentityConfig(StrictBaseModel):

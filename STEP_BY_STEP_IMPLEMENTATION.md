@@ -26,6 +26,7 @@ backend/
       config.py
       schemas.py
       main.py
+      admin.py
       policy/
       storage/
       channels/
@@ -60,6 +61,8 @@ Maintain these gates as the implementation evolves:
 - Telegram status/log/screenshot commands are not complete until they produce notification responses.
 - VS Code terminal control is not complete until the backend can enqueue terminal commands and the extension can poll and dispatch them.
 - VS Code terminal output capture through official APIs is limited; rely on terminal-agent subprocess adapters for full stdout/stderr.
+- Admin UI control actions must remain capability-gated; the dashboard may observe by default, but it must not bypass adapter and capability configuration.
+- Admin UI should support an optional token for non-default deployments.
 - `CREATE TABLE IF NOT EXISTS` is acceptable for the local MVP, but migration versioning is required before serious use.
 
 ## 3. Step 1 - Bootstrap The Project
@@ -479,7 +482,27 @@ Minimum implementation:
 - Add `docs/LOCAL_SETUP.md` with safe local setup instructions.
 - Keep scripts non-destructive and local-first.
 
-## 16. MVP Done Definition
+## 16. Step 14 - Implement Admin Control Web UI
+
+Add a built-in FastAPI admin UI for local monitoring and configuration visibility.
+
+Minimum implementation:
+
+- Add `/admin` as a simple HTML page served by the backend.
+- Add `/admin/api/summary` for redacted configuration, recent tasks, recent audit events, and VS Code bridge status.
+- Add `/admin/api/tasks` for recent task inspection.
+- Add `/admin/api/audit` with optional task filtering.
+- Add `/admin/api/vscode` for heartbeat, workspace state, pending terminal commands, and recent terminal observations.
+- Add task control endpoints for pause, resume, and cancel by recording structured task signals and updating task status.
+- Add optional admin token enforcement through `server.admin_token_env`.
+- Do not allow terminal command dispatch unless:
+  - `adapters.vscode.enabled` is true.
+  - `terminal.run` is enabled.
+  - `terminal.run` does not require approval for direct admin dispatch.
+- Document that persistent config editing is intentionally deferred until a config persistence model exists.
+- Add tests for the page, summary endpoint, task signals, default terminal-command rejection, and enabled terminal-command queueing.
+
+## 17. MVP Done Definition
 
 The MVP is done when:
 
@@ -492,3 +515,4 @@ The MVP is done when:
 - A configured terminal agent can run when terminal access is enabled.
 - Screenshots work only when enabled.
 - All important actions are audited.
+- The admin UI shows redacted config, tasks, audit logs, and VS Code bridge status without enabling unsafe actions by default.

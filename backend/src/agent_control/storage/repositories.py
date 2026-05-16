@@ -466,6 +466,14 @@ class AuditRepository:
             ).fetchall()
         return [self._row_to_event(row) for row in rows]
 
+    def list_recent(self, limit: int = 50) -> list[AuditEvent]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM audit_events ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [self._row_to_event(row) for row in rows]
+
     def list_by_type(self, event_type: AuditEventType) -> list[AuditEvent]:
         with self.database.connect() as connection:
             rows = connection.execute(

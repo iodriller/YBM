@@ -14,6 +14,7 @@ The first useful version targets Telegram plus VS Code. Future versions can add 
 - Assistant-agnostic: Codex, Copilot, terminal agents, VS Code extensions, and local tools are adapters.
 - Auditable: important decisions, tool calls, approvals, failures, and artifacts are persisted.
 - Recoverable: long-running tasks can pause, resume, retry, or ask for human intervention.
+- Operable: local status, task control, audit review, and integration health should be visible through a simple admin surface.
 
 ## 3. MVP Defaults
 
@@ -27,6 +28,7 @@ The first useful version targets Telegram plus VS Code. Future versions can add 
 - Voice transcription: pluggable STT adapter
 - Desktop visibility: screenshot-only adapter, disabled by default
 - Desktop control: out of MVP and disabled
+- Admin UI: built into FastAPI for local monitoring and gated manual controls
 
 ## 3.1 Gap Review Items
 
@@ -39,6 +41,7 @@ These items were found during implementation review and should stay explicit in 
 - Telegram commands such as `/status`, `/tasks`, `/task`, `/logs`, and `/screenshot` need notification-layer responses before MVP completion.
 - VS Code terminal control needs an explicit backend command queue; extensions should poll and dispatch commands instead of relying on UI scraping.
 - VS Code terminal output capture through official APIs is limited; record command dispatch and use terminal-agent subprocess adapters for reliable output.
+- Admin UI actions must not bypass capability policy; terminal dispatch remains blocked unless explicitly enabled and approval-free.
 - The initial database bootstrap is acceptable for MVP, but real schema versioning/migrations are needed before broader use.
 
 ## 4. Phase 0 - Project Bootstrap
@@ -299,7 +302,29 @@ Success criteria:
 - Windows scripts exist for database initialization, backend startup, tests, and VS Code extension packaging.
 - A local Telegram polling script exists for MVP operation.
 
-## 18. MVP Acceptance Criteria
+## 18. Phase 14 - Admin Control Web UI
+
+Add an operator-facing web surface to monitor and control the local system.
+
+Primary outputs:
+
+- FastAPI-served `/admin` page with no separate frontend build.
+- Redacted effective configuration view.
+- Capability, adapter, and connection status view.
+- Recent task and audit log views.
+- VS Code bridge state view.
+- Pause, resume, and cancel controls for tasks.
+- Gated VS Code terminal command queue for explicitly enabled local setups.
+- Optional admin token enforcement for deployments that are not purely local.
+
+Success criteria:
+
+- The dashboard works after starting the backend.
+- Secrets are never rendered in the UI.
+- Terminal dispatch is rejected by default.
+- Task controls write task signals and audit state changes.
+
+## 19. MVP Acceptance Criteria
 
 - Telegram text creates a persisted task.
 - Telegram voice creates a transcribed persisted task.
@@ -309,14 +334,15 @@ Success criteria:
 - Generic terminal assistant runs only when terminal access is enabled.
 - Screenshots work only when explicitly enabled.
 - Important decisions and actions are audited.
+- Admin UI shows redacted config, tasks, audit events, and VS Code bridge health.
 
-## 19. Later Roadmap
+## 20. Later Roadmap
 
 - Add Slack and Discord channel adapters.
 - Add browser automation adapter.
 - Add GitHub issue and pull request adapter.
 - Add stronger desktop streaming.
-- Add web dashboard.
+- Expand web dashboard with persistent config editing, worker controls, and richer charts.
 - Add multi-agent scheduling.
 - Add distributed workers with Redis, Dramatiq, or Temporal.
 - Add richer Codex, Copilot, and VS Code assistant adapters where official APIs allow.
