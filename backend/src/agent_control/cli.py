@@ -12,6 +12,7 @@ from agent_control.channels.telegram import (
     load_telegram_token,
 )
 from agent_control.config import load_settings
+from agent_control.llm import LLMMessageClassifier, build_default_llm_provider
 from agent_control.storage import AuditLogger, Database, Repositories
 
 
@@ -38,7 +39,9 @@ async def poll_telegram() -> None:
     settings = load_settings()
     repositories, audit = build_repositories()
     adapter = TelegramAdapter(settings.channels.telegram, audit)
-    service = TelegramIntakeService(adapter, repositories, audit, settings=settings)
+    provider = build_default_llm_provider(settings)
+    classifier = LLMMessageClassifier(provider) if provider else None
+    service = TelegramIntakeService(adapter, repositories, audit, settings=settings, classifier=classifier)
     client = TelegramBotApi(load_telegram_token(settings.channels.telegram))
     runner = TelegramPollingRunner(client, service)
     offset: int | None = None

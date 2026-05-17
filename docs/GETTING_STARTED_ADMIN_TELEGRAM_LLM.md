@@ -53,7 +53,7 @@ Base URL: https://api.openai.com/v1
 API Key Env: OPENAI_API_KEY
 ```
 
-Click `Save`, then `Test`.
+Click `Save`, then `Test`. Telegram text task spawning uses this orchestrator LLM for classification, so this test must pass before text messages can create tasks.
 
 ### Local LLM On A 3080
 
@@ -133,19 +133,25 @@ The admin UI currently shows:
 - Default LLM profile state.
 - Recent tasks.
 - Recent audit events.
+- Audit filters for raw Telegram messages, access decisions, classifications, spawned tasks, failed spawns, policy decisions, config changes, and tool events.
 - VS Code bridge heartbeat/state.
 - Pending VS Code terminal commands.
+- Capability access modes.
+- Database path and table counts.
 
 The admin UI can currently control:
 
 - Pause/resume/cancel task status.
 - Telegram runtime config.
 - Default orchestrator LLM profile config.
+- VS Code bridge config.
+- Capability access modes such as off, read-only, write access, and full access.
 - VS Code terminal command queue only when explicitly enabled and approval-free.
 
 ## 5. Current Boundaries
 
-- Telegram text input creates persisted tasks.
+- Telegram text input creates persisted tasks only after authorized messages are classified as tasks by the configured orchestrator LLM.
+- Empty Telegram allowlists deny all messages and show an admin warning.
 - Telegram command responses work for `/status`, `/tasks`, `/task <id>`, `/logs <id>`, and `/screenshot`.
 - The admin LLM `Test` button verifies the configured provider connection.
 - Automatic background planning/execution is not yet packaged as a production service.

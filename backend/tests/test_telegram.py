@@ -4,8 +4,9 @@ import pytest
 
 from agent_control.channels.telegram import TelegramAdapter, TelegramIntakeService, TelegramPollingRunner
 from agent_control.config import AppSettings, CapabilityPolicy, DesktopAdapterConfig, StorageConfig, TelegramConfig
+from agent_control.llm import StaticMessageClassifier
 from agent_control.observation import ArtifactService, ScreenshotService
-from agent_control.schemas import AuditEventType, TaskStatus
+from agent_control.schemas import AuditEventType, MessageClassification, TaskStatus, TaskType
 from agent_control.schemas import Capability, RiskLevel
 from agent_control.storage import AuditLogger, Database, Repositories
 
@@ -15,19 +16,28 @@ def _service(
     config: TelegramConfig,
     settings: AppSettings | None = None,
     screenshot_service: ScreenshotService | None = None,
+    classifier=None,
 ) -> tuple[TelegramIntakeService, Repositories]:
     database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
     database.initialize()
     repos = Repositories.for_database(database)
     audit = AuditLogger(repos.audit)
     adapter = TelegramAdapter(config, audit)
-    return TelegramIntakeService(adapter, repos, audit, settings=settings, screenshot_service=screenshot_service), repos
+    return TelegramIntakeService(
+        adapter,
+        repos,
+        audit,
+        settings=settings,
+        screenshot_service=screenshot_service,
+        classifier=classifier,
+    ), repos
 
 
 def test_telegram_text_update_creates_task(tmp_path) -> None:
     service, repos = _service(
         tmp_path,
         TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
+        classifier=StaticMessageClassifier(),
     )
 
     result = service.handle_update(
@@ -44,7 +54,89 @@ def test_telegram_text_update_creates_task(tmp_path) -> None:
     assert result.authorized is True
     assert result.task is not None
     assert result.task.objective == "Build a todo app"
+    assert result.task.metadata["task_type"] == TaskType.DEVELOPMENT.value
+    assert result.outbound_message is not None
+    assert "Task spawned:" in (result.outbound_message.text or "")
     assert repos.tasks.get(result.task.id) is not None
+
+
+def test_telegram_caption_update_creates_task(tmp_path) -> None:
+    service, repos = _service(
+        tmp_path,
+        TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
+        classifier=StaticMessageClassifier(),
+    )
+
+    result = service.handle_update(
+        {
+            "message": {
+                "message_id": 8,
+                "from": {"id": 42},
+                "chat": {"id": 100},
+                "caption": "Build from forwarded caption",
+                "forward_origin": {"type": "user", "sender_user": {"id": 99}},
+            }
+        }
+    )
+
+    assert result.task is not None
+    assert result.task.objective == "Build from forwarded caption"
+    assert repos.tasks.get(result.task.id) is not None
+
+
+def test_telegram_classifier_can_reject_task_spawn(tmp_path) -> None:
+    service, repos = _service(
+        tmp_path,
+        TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
+        classifier=StaticMessageClassifier(
+            MessageClassification(
+                is_task=False,
+                task_type=TaskType.QUESTION,
+                confidence=0.9,
+                reason="question only",
+            )
+        ),
+    )
+
+    result = service.handle_update(
+        {
+            "message": {
+                "message_id": 9,
+                "from": {"id": 42},
+                "chat": {"id": 100},
+                "text": "what is the status?",
+            }
+        }
+    )
+
+    events = repos.audit.list_by_type(AuditEventType.TASK_SPAWN_FAILED)
+
+    assert result.task is None
+    assert result.outbound_message is not None
+    assert "No task spawned" in (result.outbound_message.text or "")
+    assert events[0].payload["reason"] == "question only"
+
+
+def test_telegram_without_classifier_does_not_spawn_task(tmp_path) -> None:
+    service, repos = _service(
+        tmp_path,
+        TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
+    )
+
+    result = service.handle_update(
+        {
+            "message": {
+                "message_id": 10,
+                "from": {"id": 42},
+                "chat": {"id": 100},
+                "text": "Build a todo app",
+            }
+        }
+    )
+
+    assert result.task is None
+    assert result.outbound_message is not None
+    assert repos.tasks.list_recent() == []
 
 
 def test_telegram_unauthorized_update_is_denied_and_audited(tmp_path) -> None:
@@ -64,10 +156,32 @@ def test_telegram_unauthorized_update_is_denied_and_audited(tmp_path) -> None:
         }
     )
 
-    events = repos.audit.list_by_type(AuditEventType.POLICY_DECISION)
+    events = repos.audit.list_by_type(AuditEventType.TELEGRAM_ACCESS_DECISION)
 
     assert result.authorized is False
     assert events[0].payload["allowed"] is False
+
+
+def test_telegram_empty_allowlist_is_denied_and_audited(tmp_path) -> None:
+    service, repos = _service(
+        tmp_path,
+        TelegramConfig(enabled=True),
+    )
+
+    result = service.handle_update(
+        {
+            "message": {
+                "message_id": 11,
+                "from": {"id": 42},
+                "chat": {"id": 100},
+                "text": "Build a todo app",
+            }
+        }
+    )
+    events = repos.audit.list_by_type(AuditEventType.TELEGRAM_ACCESS_DECISION)
+
+    assert result.authorized is False
+    assert events[0].payload["reason"] == "allowlist_empty"
 
 
 def test_telegram_pause_command_updates_task(tmp_path) -> None:

@@ -56,7 +56,7 @@ async function collectState() {
     active_file: activeFile,
     open_files: openFiles,
     diagnostics_count: diagnosticsCount,
-    metadata: { app_name: vscode.env.appName },
+    metadata: { app_name: vscode.env.appName, bridge_url: bridgeUrl() },
   };
 }
 

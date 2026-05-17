@@ -3,16 +3,17 @@
 The smallest useful end-to-end test right now is:
 
 ```text
-Telegram message -> backend polling -> persisted task -> admin UI visibility -> Telegram /tasks response
+Telegram message -> backend polling -> LLM classification -> persisted task -> admin UI visibility -> Telegram /tasks response
 ```
 
-This proves Telegram auth, polling, persistence, audit logging, and admin monitoring are connected.
+This proves Telegram auth, polling, orchestrator LLM classification, persistence, audit logging, and admin monitoring are connected.
 
 ## Prerequisites
 
 - Backend dependencies installed.
 - A Telegram bot token from `BotFather`.
 - Your Telegram user ID and chat ID.
+- A configured orchestrator LLM profile that supports structured JSON output.
 
 ## 1. Add The Telegram Token
 
@@ -37,7 +38,13 @@ Open:
 http://127.0.0.1:8765/admin
 ```
 
-## 3. Configure Telegram In Admin
+## 3. Configure The Orchestrator LLM
+
+In the Orchestrator LLM panel, configure either a cloud or local OpenAI-compatible endpoint and click `Test`.
+
+The test must pass before Telegram text can spawn tasks, because text messages are classified by the orchestrator LLM.
+
+## 4. Configure Telegram In Admin
 
 In the Telegram panel:
 
@@ -51,7 +58,7 @@ Polling: checked
 
 Click `Save`.
 
-## 4. Start Telegram Polling
+## 5. Start Telegram Polling
 
 Terminal 2:
 
@@ -59,7 +66,7 @@ Terminal 2:
 .\scripts\run_telegram_polling.ps1
 ```
 
-## 5. Send A Task From Telegram
+## 6. Send A Task From Telegram
 
 Send this to your bot:
 
@@ -76,10 +83,11 @@ Then send:
 Expected result:
 
 - `/tasks` replies with the new task.
+- The first message receives `Task spawned: <task_id>`.
 - The admin UI Tasks section shows the task.
-- The admin UI Audit section shows message/task events.
+- The admin UI Audit section shows raw message, classification, and spawned task events.
 
-## 6. Check From PowerShell
+## 7. Check From PowerShell
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8765/admin/api/summary | ConvertTo-Json -Depth 8
@@ -92,29 +100,6 @@ tasks[0].objective
 integrations.telegram.enabled
 integrations.telegram.token_present
 ```
-
-## 7. Optional LLM Smoke Test
-
-In the admin UI, configure the Orchestrator LLM section.
-
-For local LLM:
-
-```text
-Provider: openai_compatible
-Base URL: http://127.0.0.1:<your-port>/v1
-Model: exact model name from your local server
-API Key Env: blank unless required
-```
-
-Click `Save`, then `Test`.
-
-Expected result:
-
-```text
-ok
-```
-
-This validates LLM connectivity only. It does not yet prove full autonomous coding execution.
 
 ## 8. Stop The Test
 

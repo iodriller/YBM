@@ -311,6 +311,10 @@ Primary outputs:
 - FastAPI-served `/admin` page with no separate frontend build.
 - Redacted effective configuration view.
 - Minimal config writer for Telegram and the default orchestrator LLM profile.
+- LLM-based Telegram task classification visibility.
+- Readable audit filters for Telegram, classification, policy, config, and tool events.
+- Capability access-mode controls for off, read-only, write access, and full access.
+- SQLite database summary and VS Code database viewer recommendation.
 - Capability, adapter, and connection status view.
 - Recent task and audit log views.
 - VS Code bridge state view.

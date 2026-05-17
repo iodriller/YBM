@@ -93,6 +93,23 @@ class Capability(StrEnum):
     DEPENDENCIES_INSTALL = "dependencies.install"
 
 
+class TaskType(StrEnum):
+    DEVELOPMENT = "development"
+    CONFIGURATION = "configuration"
+    ADMIN_CONTROL = "admin_control"
+    DESKTOP_OBSERVATION = "desktop_observation"
+    QUESTION = "question"
+    STATUS_REQUEST = "status_request"
+    OTHER = "other"
+
+
+class CapabilityAccessMode(StrEnum):
+    OFF = "off"
+    READ_ONLY = "read_only"
+    WRITE_ACCESS = "write_access"
+    FULL_ACCESS = "full_access"
+
+
 class ApprovalStatus(StrEnum):
     PENDING = "pending"
     APPROVED = "approved"
@@ -124,6 +141,9 @@ class ArtifactType(StrEnum):
 class AuditEventType(StrEnum):
     MESSAGE_RECEIVED = "message_received"
     CONFIG_UPDATED = "config_updated"
+    TELEGRAM_ACCESS_DECISION = "telegram_access_decision"
+    MESSAGE_CLASSIFIED = "message_classified"
+    TASK_SPAWN_FAILED = "task_spawn_failed"
     TASK_CREATED = "task_created"
     TASK_STATE_CHANGED = "task_state_changed"
     PLAN_CREATED = "plan_created"
@@ -193,6 +213,37 @@ class CommandEnvelope(StrictBaseModel):
     payload: dict[str, Any]
     created_at: datetime = Field(default_factory=utc_now)
     correlation_id: str = Field(default_factory=lambda: new_id("corr"))
+
+
+class MessageClassification(StrictBaseModel):
+    is_task: bool
+    task_type: TaskType = TaskType.OTHER
+    normalized_objective: str | None = None
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    reason: str
+
+
+class CapabilityAccessSummary(StrictBaseModel):
+    name: str
+    mode: CapabilityAccessMode
+    capabilities: list[Capability] = Field(default_factory=list)
+    requires_approval: bool = True
+
+
+class FormattedAuditEvent(StrictBaseModel):
+    id: str
+    type: AuditEventType
+    category: str
+    formatted_time: str
+    actor: str
+    task_id: str | None = None
+    title: str
+    summary: str
+    decision: str | None = None
+    reason: str | None = None
+    task_type: str | None = None
+    source: str | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
 
 
 class ApprovalGate(StrictBaseModel):

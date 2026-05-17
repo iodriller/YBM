@@ -26,6 +26,8 @@ Implemented:
 - Basic FastAPI health endpoint
 - Built-in FastAPI admin UI for safe config summary, task monitoring, audit logs, VS Code bridge state, and gated task controls
 - Admin configuration writes for Telegram and the default OpenAI-compatible orchestrator LLM profile
+- LLM-based Telegram task classification with readable audit events
+- Admin audit filters, capability access modes, and database summary
 
 Not implemented yet:
 
@@ -77,6 +79,7 @@ Getting started docs:
 
 - [Admin, Telegram, and LLM setup](docs/GETTING_STARTED_ADMIN_TELEGRAM_LLM.md)
 - [Minimal end-to-end test](docs/MINIMAL_END_TO_END_TEST.md)
+- [Database inspection](docs/DATABASE_INSPECTION.md)
 
 Run Telegram polling:
 

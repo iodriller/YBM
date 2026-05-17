@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import os
 from typing import Any
@@ -7,6 +8,7 @@ from typing import Any
 import httpx
 
 from agent_control.config import AppSettings, TelegramConfig
+from agent_control.llm.classifier import MessageClassifier
 from agent_control.schemas import (
     ApprovalStatus,
     AuditEventType,
@@ -16,6 +18,7 @@ from agent_control.schemas import (
     ChannelType,
     CommandEnvelope,
     InboundMessage,
+    MessageClassification,
     MessageKind,
     OutboundMessage,
     TaskRecord,
@@ -29,11 +32,18 @@ from agent_control.observation.screenshot import ScreenshotService
 from agent_control.tools.stt import STTAdapter
 
 
+def _preview(value: str | None, limit: int = 240) -> str | None:
+    if value is None:
+        return None
+    return value if len(value) <= limit else f"{value[: limit - 3]}..."
+
+
 @dataclass(frozen=True)
 class TelegramUpdateResult:
     authorized: bool
     inbound_message: InboundMessage | None = None
     command: CommandEnvelope | None = None
+    classification: MessageClassification | None = None
     signal: TaskSignal | None = None
     task: TaskRecord | None = None
     outbound_message: OutboundMessage | None = None
@@ -116,7 +126,7 @@ class TelegramPollingRunner:
         results: list[TelegramUpdateResult] = []
         next_offset = offset
         for update in updates:
-            result = self.intake.handle_update(update)
+            result = await self.intake.handle_update_async(update)
             results.append(result)
             if result.outbound_message and result.outbound_message.text:
                 await self.client.send_message(result.outbound_message.chat_id, result.outbound_message.text)
@@ -152,11 +162,12 @@ class TelegramAdapter:
         user_id = sender.get("id")
         chat_id = chat.get("id")
 
-        if not self._is_authorized(user_id, chat_id):
-            self._audit_policy("telegram", "unauthorized_message", user_id, chat_id)
+        text = self._message_text(message)
+        allowed, reason = self._authorization_decision(user_id, chat_id)
+        if not allowed:
+            self._audit_telegram_access(False, reason, user_id, chat_id, text, message)
             return TelegramUpdateResult(authorized=False, denial_reason="unauthorized")
 
-        text = message.get("text")
         voice = message.get("voice")
         kind = MessageKind.VOICE if voice else MessageKind.TEXT
         attachments = []
@@ -189,9 +200,18 @@ class TelegramAdapter:
         if self.audit:
             self.audit.append(
                 AuditEventType.MESSAGE_RECEIVED,
-                actor=f"telegram:{user_id}",
+                actor=f"telegram:user:{user_id}",
                 correlation_id=inbound.correlation_id,
-                payload={"message_id": inbound.id, "kind": inbound.kind.value, "chat_id": inbound.chat_id},
+                payload={
+                    "message_id": inbound.id,
+                    "kind": inbound.kind.value,
+                    "sender_id": inbound.sender_id,
+                    "chat_id": inbound.chat_id,
+                    "text": text,
+                    "text_preview": _preview(text),
+                    "has_forward_origin": "forward_origin" in message or "forward_from" in message,
+                    "forward_origin": message.get("forward_origin") or message.get("forward_from"),
+                },
             )
         return TelegramUpdateResult(authorized=True, inbound_message=inbound)
 
@@ -202,8 +222,9 @@ class TelegramAdapter:
         user_id = sender.get("id")
         chat_id = chat.get("id")
 
-        if not self._is_authorized(user_id, chat_id):
-            self._audit_policy("telegram", "unauthorized_callback", user_id, chat_id)
+        allowed, reason = self._authorization_decision(user_id, chat_id)
+        if not allowed:
+            self._audit_telegram_access(False, reason, user_id, chat_id, None, callback)
             return TelegramUpdateResult(authorized=False, denial_reason="unauthorized")
 
         data = callback.get("data") or ""
@@ -215,18 +236,23 @@ class TelegramAdapter:
         )
         return TelegramUpdateResult(authorized=True, command=command)
 
-    def _is_authorized(self, user_id: int | None, chat_id: int | None) -> bool:
+    @staticmethod
+    def _message_text(message: dict[str, Any]) -> str | None:
+        value = message.get("text") or message.get("caption")
+        return str(value) if value is not None else None
+
+    def _authorization_decision(self, user_id: int | None, chat_id: int | None) -> tuple[bool, str]:
         if not self.config.enabled:
-            return False
+            return False, "telegram_disabled"
         has_user_allowlist = bool(self.config.allowed_user_ids)
         has_chat_allowlist = bool(self.config.allowed_chat_ids)
         if not has_user_allowlist and not has_chat_allowlist:
-            return False
+            return False, "allowlist_empty"
         if has_user_allowlist and user_id not in self.config.allowed_user_ids:
-            return False
+            return False, "user_not_allowed"
         if has_chat_allowlist and chat_id not in self.config.allowed_chat_ids:
-            return False
-        return True
+            return False, "chat_not_allowed"
+        return True, "allowed"
 
     def _command_from_text(self, text: str, inbound: InboundMessage) -> CommandEnvelope:
         parts = text.strip().split()
@@ -252,16 +278,29 @@ class TelegramAdapter:
             return {"kind": "task", "task_id": parts[1], "action": parts[2]}
         return {"kind": "unknown", "data": data}
 
-    def _audit_policy(self, actor: str, reason: str, user_id: int | None, chat_id: int | None) -> None:
+    def _audit_telegram_access(
+        self,
+        allowed: bool,
+        reason: str,
+        user_id: int | None,
+        chat_id: int | None,
+        text: str | None,
+        raw: dict[str, Any],
+    ) -> None:
         if self.audit:
             self.audit.append(
-                AuditEventType.POLICY_DECISION,
-                actor=actor,
+                AuditEventType.TELEGRAM_ACCESS_DECISION,
+                actor="telegram",
                 payload={
-                    "allowed": False,
+                    "allowed": allowed,
                     "reason": reason,
                     "user_id": user_id,
                     "chat_id": chat_id,
+                    "telegram_enabled": self.config.enabled,
+                    "allowed_user_ids": self.config.allowed_user_ids,
+                    "allowed_chat_ids": self.config.allowed_chat_ids,
+                    "text_preview": _preview(text),
+                    "message_id": raw.get("message_id") or raw.get("id"),
                 },
             )
 
@@ -274,14 +313,23 @@ class TelegramIntakeService:
         audit: AuditLogger,
         settings: AppSettings | None = None,
         screenshot_service: ScreenshotService | None = None,
+        classifier: MessageClassifier | None = None,
     ) -> None:
         self.adapter = adapter
         self.repositories = repositories
         self.audit = audit
         self.settings = settings
         self.screenshot_service = screenshot_service
+        self.classifier = classifier
 
     def handle_update(self, update: dict[str, Any]) -> TelegramUpdateResult:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.handle_update_async(update))
+        raise RuntimeError("handle_update cannot run inside an active event loop; use handle_update_async")
+
+    async def handle_update_async(self, update: dict[str, Any]) -> TelegramUpdateResult:
         result = self.adapter.normalize_update(update)
         if not result.authorized:
             return result
@@ -293,24 +341,8 @@ class TelegramIntakeService:
             )
             self.repositories.messages.create(result.inbound_message, conversation_id)
 
-            if result.command is None and result.inbound_message.text:
-                task = self.repositories.tasks.create(
-                    result.inbound_message.text,
-                    conversation_id=conversation_id,
-                    metadata={"source_message_id": result.inbound_message.id},
-                )
-                self.audit.append(
-                    AuditEventType.TASK_CREATED,
-                    actor=f"telegram:{result.inbound_message.sender_id}",
-                    task_id=task.id,
-                    correlation_id=result.inbound_message.correlation_id,
-                    payload={"objective": task.objective, "conversation_id": conversation_id},
-                )
-                return TelegramUpdateResult(
-                    authorized=True,
-                    inbound_message=result.inbound_message,
-                    task=task,
-                )
+            if result.command is None:
+                return await self._classify_and_spawn(result.inbound_message, conversation_id)
 
         if result.command:
             signal = self._apply_command(result.command)
@@ -324,6 +356,100 @@ class TelegramIntakeService:
             )
 
         return result
+
+    async def _classify_and_spawn(self, inbound: InboundMessage, conversation_id: str) -> TelegramUpdateResult:
+        actor = f"telegram:user:{inbound.sender_id}"
+        if not inbound.text:
+            return self._spawn_failed(inbound, "message has no text content", actor)
+        if self.classifier is None:
+            return self._spawn_failed(inbound, "message classifier is not configured", actor)
+
+        try:
+            classification = await self.classifier.classify(inbound)
+        except Exception as exc:
+            return self._spawn_failed(inbound, f"classification failed: {exc}", actor)
+
+        self.audit.append(
+            AuditEventType.MESSAGE_CLASSIFIED,
+            actor=actor,
+            correlation_id=inbound.correlation_id,
+            payload={
+                "message_id": inbound.id,
+                "chat_id": inbound.chat_id,
+                "sender_id": inbound.sender_id,
+                "text": inbound.text,
+                "is_task": classification.is_task,
+                "task_type": classification.task_type.value,
+                "normalized_objective": classification.normalized_objective,
+                "confidence": classification.confidence,
+                "reason": classification.reason,
+            },
+        )
+
+        if not classification.is_task:
+            return self._spawn_failed(inbound, classification.reason, actor, classification)
+
+        objective = (classification.normalized_objective or inbound.text).strip()
+        task = self.repositories.tasks.create(
+            objective,
+            conversation_id=conversation_id,
+            metadata={
+                "source_message_id": inbound.id,
+                "source_channel": inbound.channel.value,
+                "task_type": classification.task_type.value,
+                "classification_confidence": classification.confidence,
+                "classification_reason": classification.reason,
+                "original_message_text": inbound.text,
+            },
+        )
+        self.audit.append(
+            AuditEventType.TASK_CREATED,
+            actor=actor,
+            task_id=task.id,
+            correlation_id=inbound.correlation_id,
+            payload={
+                "objective": task.objective,
+                "conversation_id": conversation_id,
+                "task_type": classification.task_type.value,
+                "source_message_id": inbound.id,
+                "classification_confidence": classification.confidence,
+                "classification_reason": classification.reason,
+            },
+        )
+        return TelegramUpdateResult(
+            authorized=True,
+            inbound_message=inbound,
+            classification=classification,
+            task=task,
+            outbound_message=self._out(inbound.chat_id, f"Task spawned: {task.id}"),
+        )
+
+    def _spawn_failed(
+        self,
+        inbound: InboundMessage,
+        reason: str,
+        actor: str,
+        classification: MessageClassification | None = None,
+    ) -> TelegramUpdateResult:
+        self.audit.append(
+            AuditEventType.TASK_SPAWN_FAILED,
+            actor=actor,
+            correlation_id=inbound.correlation_id,
+            payload={
+                "message_id": inbound.id,
+                "chat_id": inbound.chat_id,
+                "sender_id": inbound.sender_id,
+                "text": inbound.text,
+                "reason": reason,
+                "classification": classification.model_dump(mode="json") if classification else None,
+            },
+        )
+        return TelegramUpdateResult(
+            authorized=True,
+            inbound_message=inbound,
+            classification=classification,
+            outbound_message=self._out(inbound.chat_id, f"No task spawned: {reason}"),
+        )
 
     def _apply_command(self, command: CommandEnvelope) -> TaskSignal | None:
         payload = command.payload
@@ -526,10 +652,15 @@ class TelegramVoiceIntakeService:
         )
         self.audit.append(
             AuditEventType.TASK_CREATED,
-            actor=f"telegram:{result.inbound_message.sender_id}",
+            actor=f"telegram:user:{result.inbound_message.sender_id}",
             task_id=task.id,
             correlation_id=result.inbound_message.correlation_id,
-            payload={"objective": task.objective, "conversation_id": conversation_id},
+            payload={
+                "objective": task.objective,
+                "conversation_id": conversation_id,
+                "task_type": "voice",
+                "source_message_id": result.inbound_message.id,
+            },
         )
 
         return TelegramUpdateResult(authorized=True, inbound_message=result.inbound_message, task=task)

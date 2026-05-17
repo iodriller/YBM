@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Literal
 
@@ -205,6 +206,10 @@ class AppSettings(BaseSettings):
                     "enabled": self.channels.telegram.enabled,
                     "token_env": self.channels.telegram.token_env,
                     "token": "***" if self.channels.telegram.token else None,
+                    "token_present": bool(self.channels.telegram.token)
+                    or bool(os.getenv(self.channels.telegram.token_env)),
+                    "allowed_user_ids": self.channels.telegram.allowed_user_ids,
+                    "allowed_chat_ids": self.channels.telegram.allowed_chat_ids,
                     "allowed_user_count": len(self.channels.telegram.allowed_user_ids),
                     "allowed_chat_count": len(self.channels.telegram.allowed_chat_ids),
                     "polling": self.channels.telegram.polling,
@@ -219,6 +224,8 @@ class AppSettings(BaseSettings):
                         "base_url": profile.base_url,
                         "api_key_env": profile.api_key_env,
                         "api_key": "***" if profile.api_key else None,
+                        "api_key_present": bool(profile.api_key)
+                        or bool(profile.api_key_env and os.getenv(profile.api_key_env)),
                         "timeout_seconds": profile.timeout_seconds,
                         "max_tokens": profile.max_tokens,
                         "temperature": profile.temperature,

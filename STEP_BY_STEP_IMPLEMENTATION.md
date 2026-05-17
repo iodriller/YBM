@@ -497,6 +497,10 @@ Minimum implementation:
 - Add config endpoints for Telegram and the default orchestrator LLM profile.
 - Write non-secret config to `config/config.yaml`, and keep API keys and bot tokens in `.env` or process environment variables.
 - Add a one-click LLM health test that uses the configured default LLM profile.
+- Add LLM-based Telegram message classification before task spawning.
+- Add readable audit formatting and audit category filters.
+- Add UI-managed capability access modes: off, read-only, write access, full access.
+- Add database summary and VS Code SQLite viewer recommendation.
 - Add optional admin token enforcement through `server.admin_token_env`.
 - Do not allow terminal command dispatch unless:
   - `adapters.vscode.enabled` is true.

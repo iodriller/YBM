@@ -7,7 +7,7 @@ from typing import Protocol, TypeVar
 import httpx
 from pydantic import BaseModel, ValidationError
 
-from agent_control.config import LLMProfileConfig
+from agent_control.config import AppSettings, LLMProfileConfig
 from agent_control.schemas import PlanModel
 
 T = TypeVar("T", bound=BaseModel)
@@ -83,6 +83,15 @@ class OpenAICompatibleProvider:
         if self.profile.api_key_env:
             return os.getenv(self.profile.api_key_env)
         return None
+
+
+def build_default_llm_provider(settings: AppSettings) -> LLMProvider | None:
+    profile = settings.llm.profiles.get(settings.llm.default_profile)
+    if profile is None:
+        return None
+    if profile.provider != "openai_compatible":
+        raise ValueError(f"unsupported LLM provider: {profile.provider}")
+    return OpenAICompatibleProvider(profile)
 
 
 class StaticPlanProvider:
