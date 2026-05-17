@@ -34,6 +34,8 @@ Safe defaults keep terminal execution, filesystem access, VS Code access, deskto
 .\scripts\run_backend.ps1
 ```
 
+This also starts LocalDeploy from `C:\for fun\LocalDeploy` when the local LLM API is not already running.
+
 Backend health check:
 
 ```powershell
@@ -62,7 +64,15 @@ After setting `TELEGRAM_BOT_TOKEN` and enabling/configuring Telegram allowlists:
 .\scripts\run_telegram_polling.ps1
 ```
 
-## 8. Current Limits
+## 8. Run Task Worker
+
+```powershell
+.\scripts\run_worker.ps1
+```
+
+The worker is required for persisted tasks to be planned and executed.
+
+## 9. Current Limits
 
 - Screenshot capture uses Pillow and is disabled by default.
-- VS Code terminal dispatch records observations, but full terminal stdout capture should use the generic terminal-agent adapter.
+- VS Code terminal stdout capture depends on VS Code shell integration. Without it, the bridge records dispatch completion only.

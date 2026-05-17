@@ -5,6 +5,7 @@ import pytest
 from agent_control.config import AppSettings, CapabilityPolicy
 from agent_control.llm import PlannerService, StaticPlanProvider
 from agent_control.orchestration import StaticToolAdapter, TaskWorker, ToolExecutor
+from agent_control.orchestration.default_plans import build_default_vscode_development_plan
 from agent_control.policy import PolicyEngine
 from agent_control.recovery import RetryPolicy
 from agent_control.schemas import (
@@ -15,6 +16,7 @@ from agent_control.schemas import (
     PlanStep,
     RiskLevel,
     TaskStatus,
+    TaskType,
     ToolCallRequest,
     ToolCallResult,
     ToolResultStatus,
@@ -203,3 +205,41 @@ async def test_worker_marks_retrying_for_transient_failure(tmp_path) -> None:
 
     assert retrying.status == TaskStatus.RETRYING
     assert retrying.metadata["retry_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_worker_default_vscode_development_plan_runs_when_enabled(tmp_path) -> None:
+    repos, audit = _repos(tmp_path)
+    task = repos.tasks.create("Ask Copilot to inspect the failing test", metadata={"task_type": TaskType.DEVELOPMENT.value})
+    settings = AppSettings(
+        _env_file=None,
+        adapters={"vscode": {"enabled": True}},
+        capabilities={
+            Capability.VSCODE_WRITE_FILES: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.HIGH,
+            )
+        },
+    )
+    adapter = StaticToolAdapter()
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"vscode.copilot_terminal": adapter},
+    )
+    worker = TaskWorker(
+        repos,
+        audit,
+        executor=executor,
+        default_plan_factory=lambda item: build_default_vscode_development_plan(settings, item),
+    )
+
+    running = await worker.process_task(task.id)
+    completed = await worker.process_task(task.id)
+
+    assert running.status == TaskStatus.RUNNING
+    assert completed.status == TaskStatus.COMPLETED
+    assert adapter.requests[0].tool_name == "vscode.copilot_terminal"
+    assert adapter.requests[0].capability == Capability.VSCODE_WRITE_FILES

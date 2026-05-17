@@ -67,6 +67,8 @@ class PolicyEngine:
         )
 
     def _requires_approval(self, request: ToolCallRequest, policy: CapabilityPolicy) -> bool:
+        if not request.requires_approval and not policy.requires_approval:
+            return False
         return (
             request.requires_approval
             or policy.requires_approval

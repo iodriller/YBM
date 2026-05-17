@@ -83,25 +83,100 @@ async function get<T>(path: string): Promise<T> {
   return (await response.json()) as T;
 }
 
+type TerminalCommand = {
+  id: string;
+  terminal_id: string;
+  command: string;
+  cwd?: string;
+  capture_output?: boolean;
+};
+
 async function pollTerminalCommands(terminals: Map<string, vscode.Terminal>): Promise<void> {
-  const commands = await get<Array<{ id: string; terminal_id: string; command: string; cwd?: string }>>(
+  const commands = await get<TerminalCommand[]>(
     `/vscode/terminal-commands?instance_id=${encodeURIComponent(vscode.env.machineId)}`,
   );
   for (const command of commands) {
-    let terminal = terminals.get(command.terminal_id);
-    if (!terminal) {
-      terminal = vscode.window.createTerminal({
-        name: command.terminal_id,
-        cwd: command.cwd,
-      });
-      terminals.set(command.terminal_id, terminal);
-    }
-    terminal.show();
-    terminal.sendText(command.command, true);
-    await post("/vscode/terminal-output", {
-      instance_id: vscode.env.machineId,
-      terminal_id: command.terminal_id,
-      content: `dispatched:${command.id}`,
-    });
+    await dispatchTerminalCommand(terminals, command);
   }
+}
+
+async function dispatchTerminalCommand(
+  terminals: Map<string, vscode.Terminal>,
+  command: TerminalCommand,
+): Promise<void> {
+  let terminal = terminals.get(command.terminal_id);
+  if (!terminal) {
+    terminal = vscode.window.createTerminal({
+      name: command.terminal_id,
+      cwd: command.cwd,
+    });
+    terminals.set(command.terminal_id, terminal);
+  }
+
+  terminal.show();
+  if (command.capture_output !== false && (await runWithShellIntegration(terminal, command))) {
+    return;
+  }
+
+  terminal.sendText(command.command, true);
+  await reportTerminalOutput(command, `dispatched:${command.id}\nTerminal output capture unavailable. Enable VS Code shell integration to capture command output.`, true);
+}
+
+async function runWithShellIntegration(terminal: vscode.Terminal, command: TerminalCommand): Promise<boolean> {
+  const integration = await waitForShellIntegration(terminal);
+  if (!integration) {
+    return false;
+  }
+
+  const execution = integration.executeCommand(command.command);
+  let content = "";
+  const endPromise = new Promise<number | undefined>((resolve) => {
+    const disposable = vscode.window.onDidEndTerminalShellExecution((event) => {
+      if (event.execution === execution) {
+        disposable.dispose();
+        resolve(event.exitCode);
+      }
+    });
+  });
+
+  for await (const chunk of execution.read()) {
+    content += chunk;
+    if (content.length > 12000) {
+      content = content.slice(content.length - 12000);
+    }
+  }
+
+  const exitCode = await endPromise;
+  await reportTerminalOutput(command, content || `completed:${command.id}`, true, exitCode);
+  return true;
+}
+
+async function waitForShellIntegration(terminal: vscode.Terminal): Promise<vscode.TerminalShellIntegration | undefined> {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    if (terminal.shellIntegration) {
+      return terminal.shellIntegration;
+    }
+    await delay(100);
+  }
+  return undefined;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function reportTerminalOutput(
+  command: TerminalCommand,
+  content: string,
+  isFinal: boolean,
+  exitCode?: number,
+): Promise<void> {
+  await post("/vscode/terminal-output", {
+    instance_id: vscode.env.machineId,
+    terminal_id: command.terminal_id,
+    command_id: command.id,
+    content,
+    is_final: isFinal,
+    exit_code: exitCode,
+  });
 }

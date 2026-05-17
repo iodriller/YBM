@@ -56,6 +56,12 @@ def vscode_terminal_output(output: VSCodeTerminalOutput) -> VSCodeTerminalOutput
     return vscode_store.add_terminal_output(output)
 
 
+@app.get("/vscode/terminal-output", dependencies=[Depends(_vscode_auth)])
+def get_vscode_terminal_output(command_id: str | None = None) -> dict[str, list[dict]]:
+    outputs = vscode_store.list_terminal_outputs(command_id)
+    return {"outputs": [output.model_dump(mode="json") for output in outputs]}
+
+
 @app.post("/vscode/terminal-commands", dependencies=[Depends(_vscode_auth)])
 def enqueue_vscode_terminal_command(command: VSCodeTerminalCommand) -> VSCodeTerminalCommand:
     return vscode_store.enqueue_terminal_command(command)

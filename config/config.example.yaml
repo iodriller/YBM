@@ -18,9 +18,17 @@ channels:
     polling: true
 
 llm:
-  default_profile: "default"
+  default_profile: "localdeploy_gemma3_4b"
   profiles:
-    default:
+    localdeploy_gemma3_4b:
+      provider: "openai_compatible"
+      model: "gemma3_4b_ollama_safe"
+      base_url: "http://127.0.0.1:8000/v1"
+      api_key_env: null
+      timeout_seconds: 180
+      max_tokens: 1024
+      temperature: 0.2
+    openai_saved:
       provider: "openai_compatible"
       model: "gpt-4.1-mini"
       base_url: "https://api.openai.com/v1"

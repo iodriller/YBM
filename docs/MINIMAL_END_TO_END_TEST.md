@@ -3,7 +3,7 @@
 The smallest useful end-to-end test right now is:
 
 ```text
-Telegram message -> backend polling -> LLM classification -> persisted task -> admin UI visibility -> Telegram /tasks response
+Telegram message -> backend polling -> local LLM classification -> persisted task -> worker pickup -> admin UI visibility -> Telegram /tasks response
 ```
 
 This proves Telegram auth, polling, orchestrator LLM classification, persistence, audit logging, and admin monitoring are connected.
@@ -13,7 +13,7 @@ This proves Telegram auth, polling, orchestrator LLM classification, persistence
 - Backend dependencies installed.
 - A Telegram bot token from `BotFather`.
 - Your Telegram user ID and chat ID.
-- A configured orchestrator LLM profile that supports structured JSON output.
+- LocalDeploy running or startable from `C:\for fun\LocalDeploy`.
 
 ## 1. Add The Telegram Token
 
@@ -38,11 +38,11 @@ Open:
 http://127.0.0.1:8765/admin
 ```
 
-## 3. Configure The Orchestrator LLM
+## 3. Confirm The Local Orchestrator LLM
 
-In the Orchestrator LLM panel, configure either a cloud or local OpenAI-compatible endpoint and click `Test`.
+The default profile is `localdeploy_gemma3_4b`, pointing at `http://127.0.0.1:8000/v1`. In the Orchestrator LLM panel, click `Test`.
 
-The test must pass before Telegram text can spawn tasks, because text messages are classified by the orchestrator LLM.
+The test must pass before Telegram text can spawn tasks, because text messages are classified by the local orchestrator LLM.
 
 ## 4. Configure Telegram In Admin
 
@@ -66,7 +66,15 @@ Terminal 2:
 .\scripts\run_telegram_polling.ps1
 ```
 
-## 6. Send A Task From Telegram
+## 6. Start The Worker
+
+Terminal 3:
+
+```powershell
+.\scripts\run_worker.ps1
+```
+
+## 7. Send A Task From Telegram
 
 Send this to your bot:
 
@@ -84,10 +92,10 @@ Expected result:
 
 - `/tasks` replies with the new task.
 - The first message receives `Task spawned: <task_id>`.
-- The admin UI Tasks section shows the task.
+- The admin UI Tasks section shows the task activity moving from queued to active or completed.
 - The admin UI Audit section shows raw message, classification, and spawned task events.
 
-## 7. Check From PowerShell
+## 8. Check From PowerShell
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8765/admin/api/summary | ConvertTo-Json -Depth 8
@@ -101,8 +109,8 @@ integrations.telegram.enabled
 integrations.telegram.token_present
 ```
 
-## 8. Stop The Test
+## 9. Stop The Test
 
-Stop polling and backend with `Ctrl+C` in their terminals.
+Stop polling, worker, and backend with `Ctrl+C` in their terminals.
 
 If the backend was launched in the background, stop the Python process that is running uvicorn.

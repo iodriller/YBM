@@ -11,6 +11,7 @@ from pydantic import Field
 from agent_control.config_sync import CONFIG_FILE_PATH, ConfigManager, env_bool, env_json, read_env_value
 from agent_control.config import AppSettings
 from agent_control.llm.providers import OpenAICompatibleProvider
+from agent_control.orchestration.signals import apply_task_signal
 from agent_control.policy import apply_access_modes_to_config, summarize_access_modes
 from agent_control.schemas import AuditEventType, Capability, CapabilityAccessMode, StrictBaseModel
 from agent_control.storage.audit import AuditLogger
@@ -240,22 +241,21 @@ def create_admin_router(
         if task is None:
             raise HTTPException(status_code=404, detail="task not found")
 
-        from agent_control.schemas import TaskSignal, TaskStatus
-
-        signal = TaskSignal(task_id=task_id, signal=payload.signal, actor="admin", payload=payload.model_dump())
-        repositories.task_signals.create(signal)
-        target_status = {
-            "pause": TaskStatus.PAUSED,
-            "resume": TaskStatus.RECEIVED,
-            "cancel": TaskStatus.CANCELLED,
-        }[payload.signal]
-        updated = repositories.tasks.update_status(task_id, target_status)
-        AuditLogger(repositories.audit, loaded.logging.redact_patterns).task_state_changed(
-            actor="admin",
-            task_id=task_id,
-            old_status=task.status,
-            new_status=updated.status,
-        )
+        audit = AuditLogger(repositories.audit, loaded.logging.redact_patterns)
+        try:
+            signal, _, _ = apply_task_signal(
+                repositories,
+                audit,
+                task_id,
+                payload.signal,
+                "admin",
+                payload.model_dump(mode="json"),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        updated = repositories.tasks.get(task_id)
+        if updated is None:
+            raise HTTPException(status_code=404, detail="task not found")
         return {"signal": signal.model_dump(mode="json"), "task": updated.model_dump(mode="json")}
 
     @router.post("/api/config/llm")
@@ -537,6 +537,7 @@ _ADMIN_HTML = """
       font: inherit;
     }
     button { cursor: pointer; }
+    button:disabled { cursor: not-allowed; opacity: 0.45; }
     button.primary { border-color: var(--accent); color: var(--accent); }
     button.active {
       border-color: var(--success);
@@ -575,6 +576,18 @@ _ADMIN_HTML = """
     .cap-list { display: flex; flex-wrap: wrap; gap: 6px; }
     .badge { border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; font-size: 12px; }
     .badge.soft { background: var(--chip); }
+    .activity { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
+    .activity-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: 0 0 auto; }
+    .activity.active .activity-dot { background: var(--accent); animation: pulse 1.1s ease-in-out infinite; }
+    .activity.waiting .activity-dot { background: #9a6700; }
+    .activity.paused .activity-dot { background: var(--muted); }
+    .activity.done .activity-dot { background: var(--success); }
+    .activity.bad .activity-dot { background: var(--danger); }
+    .task-meta { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    @keyframes pulse {
+      0%, 100% { opacity: 0.45; }
+      50% { opacity: 1; }
+    }
     .audit-toolbar { margin-bottom: 12px; }
     .audit-list { display: grid; gap: 10px; }
     .audit-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; display: grid; gap: 8px; }
@@ -714,6 +727,37 @@ _ADMIN_HTML = """
         .replace(/\\b\\w/g, char => char.toUpperCase());
     }
 
+    function activityForStatus(status) {
+      const active = ["interpreting", "planned", "running", "retrying"];
+      if (active.includes(status)) return {label: status === "planned" ? "Ready" : labelize(status), className: "active"};
+      if (status === "awaiting_approval") return {label: "Waiting Approval", className: "waiting"};
+      if (status === "received") return {label: "Queued", className: ""};
+      if (status === "paused") return {label: "Paused", className: "paused"};
+      if (status === "completed") return {label: "Done", className: "done"};
+      if (status === "cancelled") return {label: "Cancelled", className: "bad"};
+      if (status === "failed" || status === "blocked") return {label: labelize(status), className: "bad"};
+      return {label: labelize(status), className: ""};
+    }
+
+    function taskActionDisabled(task, action) {
+      const terminal = ["completed", "cancelled", "failed"];
+      if (terminal.includes(task.status)) return true;
+      if (action === "pause") return task.status === "paused";
+      if (action === "resume") return task.status !== "paused" && task.status !== "blocked";
+      return false;
+    }
+
+    function taskUpdatedLabel(task) {
+      if (!task.updated_at) return "";
+      const updated = new Date(task.updated_at);
+      if (Number.isNaN(updated.getTime())) return "";
+      const seconds = Math.max(0, Math.floor((Date.now() - updated.getTime()) / 1000));
+      if (seconds < 60) return `${seconds}s ago`;
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return `${minutes}m ago`;
+      return `${Math.floor(minutes / 60)}h ago`;
+    }
+
     async function api(path, options = {}) {
       const response = await fetch(path, {
         ...options,
@@ -780,19 +824,34 @@ _ADMIN_HTML = """
       }
       document.getElementById("tasks").innerHTML = `
         <table>
-          <thead><tr><th>ID</th><th>Status</th><th>Objective</th><th>Actions</th></tr></thead>
-          <tbody>${tasks.map(task => `
-            <tr>
-              <td><code>${escapeHtml(task.id)}</code></td>
-              <td>${escapeHtml(task.status)}</td>
-              <td>${escapeHtml(task.objective)}</td>
+          <thead><tr><th>ID</th><th>Activity</th><th>Objective</th><th>Actions</th></tr></thead>
+          <tbody>${tasks.map(task => {
+            const activity = activityForStatus(task.status);
+            const type = (task.metadata || {}).task_type;
+            return `
+              <tr>
+              <td>
+                <code>${escapeHtml(task.id)}</code>
+                <div class="task-meta">${escapeHtml(taskUpdatedLabel(task))}</div>
+              </td>
+              <td>
+                <span class="activity ${escapeHtml(activity.className)}">
+                  <span class="activity-dot"></span>
+                  <span>${escapeHtml(activity.label)}</span>
+                </span>
+                ${task.current_step_id ? `<div class="task-meta">step ${escapeHtml(task.current_step_id)}</div>` : ""}
+              </td>
+              <td>
+                ${escapeHtml(task.objective)}
+                ${type ? `<div class="task-meta">${escapeHtml(labelize(type))}</div>` : ""}
+              </td>
               <td class="row">
-                <button onclick="taskSignal(${JSON.stringify(task.id)}, 'pause')">Pause</button>
-                <button onclick="taskSignal(${JSON.stringify(task.id)}, 'resume')">Resume</button>
-                <button onclick="taskSignal(${JSON.stringify(task.id)}, 'cancel')">Cancel</button>
+                <button ${taskActionDisabled(task, "pause") ? "disabled" : ""} onclick="taskSignal(${JSON.stringify(task.id)}, 'pause')">Pause</button>
+                <button ${taskActionDisabled(task, "resume") ? "disabled" : ""} onclick="taskSignal(${JSON.stringify(task.id)}, 'resume')">Resume</button>
+                <button ${taskActionDisabled(task, "cancel") ? "disabled" : ""} onclick="taskSignal(${JSON.stringify(task.id)}, 'cancel')">Cancel</button>
               </td>
             </tr>
-          `).join("")}</tbody>
+          `}).join("")}</tbody>
         </table>
       `;
     }
@@ -948,11 +1007,16 @@ _ADMIN_HTML = """
     }
 
     async function taskSignal(taskId, signal) {
-      await api(`/admin/api/tasks/${taskId}/signals`, {
-        method: "POST",
-        body: JSON.stringify({signal})
-      });
-      await refresh();
+      const status = document.getElementById("status");
+      try {
+        await api(`/admin/api/tasks/${taskId}/signals`, {
+          method: "POST",
+          body: JSON.stringify({signal})
+        });
+        await refresh();
+      } catch (error) {
+        status.innerHTML = `<span class="danger">${error.message}</span>`;
+      }
     }
 
     async function saveLLM() {

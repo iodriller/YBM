@@ -38,6 +38,12 @@ Not implemented yet:
 
 ## Development
 
+Default local LLM:
+
+- Keep `OPENAI_API_KEY` saved in `.env` for fallback.
+- The active default profile is `localdeploy_gemma3_4b`, which calls LocalDeploy at `http://127.0.0.1:8000/v1` with model `gemma3_4b_ollama_safe`.
+- `.\scripts\run_backend.ps1`, `.\scripts\run_telegram_polling.ps1`, and `.\scripts\run_worker.ps1` start `C:\for fun\LocalDeploy\api_server.py` automatically if it is not already running.
+
 Compile backend source:
 
 ```powershell
@@ -86,6 +92,16 @@ Run Telegram polling:
 ```powershell
 .\scripts\run_telegram_polling.ps1
 ```
+
+Run the task worker that picks up persisted tasks:
+
+```powershell
+.\scripts\run_worker.ps1
+```
+
+Flow docs:
+
+- [Telegram to task worker flow](docs/TASK_FLOW.md)
 
 ## Safety Defaults
 

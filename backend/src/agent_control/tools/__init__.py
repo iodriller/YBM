@@ -2,6 +2,7 @@ from agent_control.tools.coding_assistant import GenericTerminalAgentAdapter
 from agent_control.tools.stt import DisabledSTTAdapter, STTAdapter, StaticSTTAdapter
 from agent_control.tools.vscode_bridge import (
     VSCodeBridgeStore,
+    VSCodeBridgeTerminalAdapter,
     VSCodeHeartbeat,
     VSCodeTerminalCommand,
     VSCodeTerminalOutput,
@@ -14,6 +15,7 @@ __all__ = [
     "STTAdapter",
     "StaticSTTAdapter",
     "VSCodeBridgeStore",
+    "VSCodeBridgeTerminalAdapter",
     "VSCodeHeartbeat",
     "VSCodeTerminalOutput",
     "VSCodeTerminalCommand",

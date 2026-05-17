@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Any
 
 from fastapi import Header, HTTPException
+import httpx
 from pydantic import Field
 
 from agent_control.config import VSCodeAdapterConfig
 from agent_control.config_sync import read_env_value
-from agent_control.schemas import StrictBaseModel, new_id, utc_now
+from agent_control.schemas import ErrorClass, StrictBaseModel, ToolCallRequest, ToolCallResult, ToolResultStatus, new_id, utc_now
 
 
 class VSCodeHeartbeat(StrictBaseModel):
@@ -33,6 +35,9 @@ class VSCodeTerminalOutput(StrictBaseModel):
     instance_id: str
     terminal_id: str
     content: str
+    command_id: str | None = None
+    is_final: bool = False
+    exit_code: int | None = None
     observed_at: datetime = Field(default_factory=utc_now)
 
 
@@ -42,6 +47,7 @@ class VSCodeTerminalCommand(StrictBaseModel):
     terminal_id: str = "agent-control"
     instance_id: str | None = None
     cwd: str | None = None
+    capture_output: bool = True
     created_at: datetime = Field(default_factory=utc_now)
 
 
@@ -64,6 +70,11 @@ class VSCodeBridgeStore:
         self.terminal_outputs.append(output)
         return output
 
+    def list_terminal_outputs(self, command_id: str | None = None) -> list[VSCodeTerminalOutput]:
+        if command_id is None:
+            return list(self.terminal_outputs)
+        return [output for output in self.terminal_outputs if output.command_id == command_id]
+
     def enqueue_terminal_command(self, command: VSCodeTerminalCommand) -> VSCodeTerminalCommand:
         self.terminal_commands.append(command)
         return command
@@ -84,3 +95,119 @@ def require_vscode_bridge_token(config: VSCodeAdapterConfig, token: str | None =
     expected = read_env_value(config.auth_token_env)
     if expected and token != expected:
         raise HTTPException(status_code=401, detail="invalid VS Code bridge token")
+
+
+class VSCodeBridgeTerminalAdapter:
+    def __init__(
+        self,
+        config: VSCodeAdapterConfig,
+        backend_base_url: str,
+        command_template: list[str] | None = None,
+    ) -> None:
+        self.config = config
+        self.backend_base_url = backend_base_url.rstrip("/")
+        self.command_template = command_template
+
+    async def execute(self, request: ToolCallRequest) -> ToolCallResult:
+        if not self.config.enabled:
+            return self._failed(request, "VS Code adapter is disabled")
+
+        command_text = self._command_text(request)
+        if not command_text:
+            return self._failed(request, "VS Code command input is empty")
+
+        command = VSCodeTerminalCommand(
+            command=command_text,
+            terminal_id=str(request.input.get("terminal_id") or "agent-control-copilot"),
+            instance_id=request.input.get("instance_id"),
+            cwd=request.input.get("cwd"),
+            capture_output=bool(request.input.get("capture_output", True)),
+        )
+
+        headers = self._headers()
+        try:
+            async with httpx.AsyncClient(timeout=request.timeout_seconds) as client:
+                response = await client.post(
+                    f"{self.backend_base_url}/vscode/terminal-commands",
+                    headers=headers,
+                    json=command.model_dump(mode="json"),
+                )
+                response.raise_for_status()
+                queued = dict(response.json())
+                output = await self._wait_for_output(client, command.id, headers, request)
+        except TimeoutError:
+            return ToolCallResult(
+                request_id=request.id,
+                status=ToolResultStatus.TIMEOUT,
+                error_class=ErrorClass.TRANSIENT,
+                error_message="timed out waiting for VS Code bridge terminal output",
+                output={"command_id": command.id},
+            )
+        except Exception as exc:
+            return self._failed(request, str(exc), command_id=command.id)
+
+        return ToolCallResult(
+            request_id=request.id,
+            status=ToolResultStatus.SUCCEEDED,
+            output={
+                "command_id": command.id,
+                "queued": queued,
+                "terminal_output": output,
+            },
+        )
+
+    def _command_text(self, request: ToolCallRequest) -> str:
+        explicit = request.input.get("command")
+        if explicit:
+            return str(explicit)
+
+        prompt = str(request.input.get("prompt") or "").strip()
+        if not prompt:
+            return ""
+
+        if self.command_template:
+            quoted = _powershell_single_quote(prompt)
+            return " ".join(part.replace("{prompt}", quoted).replace("{prompt_raw}", prompt) for part in self.command_template)
+
+        return f"gh copilot suggest -t shell -- {_powershell_single_quote(prompt)}"
+
+    async def _wait_for_output(
+        self,
+        client: httpx.AsyncClient,
+        command_id: str,
+        headers: dict[str, str],
+        request: ToolCallRequest,
+    ) -> list[dict[str, Any]]:
+        deadline = asyncio.get_running_loop().time() + request.timeout_seconds
+        latest: list[dict[str, Any]] = []
+        while asyncio.get_running_loop().time() < deadline:
+            response = await client.get(
+                f"{self.backend_base_url}/vscode/terminal-output",
+                headers=headers,
+                params={"command_id": command_id},
+            )
+            response.raise_for_status()
+            latest = list(response.json().get("outputs", []))
+            if any(output.get("is_final") for output in latest):
+                return latest
+            await asyncio.sleep(1)
+        raise TimeoutError
+
+    def _headers(self) -> dict[str, str]:
+        token = read_env_value(self.config.auth_token_env)
+        return {"X-Agent-Control-Token": token} if token else {}
+
+    @staticmethod
+    def _failed(request: ToolCallRequest, message: str, command_id: str | None = None) -> ToolCallResult:
+        output = {"command_id": command_id} if command_id else {}
+        return ToolCallResult(
+            request_id=request.id,
+            status=ToolResultStatus.FAILED,
+            output=output,
+            error_class=ErrorClass.ADAPTER_FAILED,
+            error_message=message,
+        )
+
+
+def _powershell_single_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"

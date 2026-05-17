@@ -145,6 +145,17 @@ class TaskRepository:
             ).fetchall()
         return [self._row_to_task(row) for row in rows]
 
+    def list_by_statuses(self, statuses: list[TaskStatus], limit: int = 20) -> list[TaskRecord]:
+        if not statuses:
+            return []
+        placeholders = ",".join("?" for _ in statuses)
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM tasks WHERE status IN ({placeholders}) ORDER BY created_at ASC LIMIT ?",
+                [*(status.value for status in statuses), limit],
+            ).fetchall()
+        return [self._row_to_task(row) for row in rows]
+
     def update_status(self, task_id: str, status: TaskStatus) -> TaskRecord:
         now = utc_now()
         with self.database.connect() as connection:

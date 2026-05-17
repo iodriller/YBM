@@ -53,3 +53,34 @@ def test_vscode_terminal_command_queue(monkeypatch) -> None:
     assert pending.json() == []
     assert taken.json()[0]["command"] == "echo hi"
     assert empty.json() == []
+
+
+def test_vscode_terminal_output_can_be_filtered_by_command(monkeypatch) -> None:
+    monkeypatch.delenv("VSCODE_BRIDGE_TOKEN", raising=False)
+    vscode_store.terminal_outputs = []
+    client = TestClient(app)
+
+    first = client.post(
+        "/vscode/terminal-output",
+        json={
+            "instance_id": "machine",
+            "terminal_id": "agent-control",
+            "command_id": "cmd_1",
+            "content": "first",
+            "is_final": True,
+        },
+    )
+    client.post(
+        "/vscode/terminal-output",
+        json={
+            "instance_id": "machine",
+            "terminal_id": "agent-control",
+            "command_id": "cmd_2",
+            "content": "second",
+            "is_final": True,
+        },
+    )
+    filtered = client.get("/vscode/terminal-output?command_id=cmd_1")
+
+    assert first.status_code == 200
+    assert filtered.json()["outputs"] == [first.json()]

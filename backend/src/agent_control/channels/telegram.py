@@ -9,6 +9,7 @@ import httpx
 from agent_control.config import AppSettings, TelegramConfig
 from agent_control.config_sync import read_env_value
 from agent_control.llm.classifier import MessageClassifier
+from agent_control.orchestration.signals import apply_task_signal
 from agent_control.schemas import (
     ApprovalStatus,
     AuditEventType,
@@ -540,23 +541,7 @@ class TelegramIntakeService:
         actor: str,
         payload: dict[str, Any],
     ) -> TaskSignal:
-        signal = TaskSignal(task_id=task_id, signal=action, actor=actor, payload=payload)
-        self.repositories.task_signals.create(signal)
-
-        target_status = {
-            "pause": TaskStatus.PAUSED,
-            "resume": TaskStatus.RECEIVED,
-            "cancel": TaskStatus.CANCELLED,
-        }[action]
-        existing = self.repositories.tasks.get(task_id)
-        if existing:
-            updated = self.repositories.tasks.update_status(task_id, target_status)
-            self.audit.task_state_changed(
-                actor=actor,
-                task_id=task_id,
-                old_status=existing.status,
-                new_status=updated.status,
-            )
+        signal, _, _ = apply_task_signal(self.repositories, self.audit, task_id, action, actor, payload)
         return signal
 
 

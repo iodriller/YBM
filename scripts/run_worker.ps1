@@ -5,4 +5,5 @@ $env:PYTHONPATH = "$Root\backend\src"
 
 & "$Root\scripts\start_localdeploy.ps1"
 
-python -m uvicorn agent_control.main:app --host 127.0.0.1 --port 8765
+python -m agent_control.cli run-worker
+

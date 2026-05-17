@@ -74,6 +74,31 @@ def test_admin_task_signal_updates_task(tmp_path) -> None:
     assert updated.status == TaskStatus.PAUSED
 
 
+def test_admin_task_resume_restores_paused_status(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    task = repositories.tasks.create("resume me")
+    task = repositories.tasks.update_status(task.id, TaskStatus.RUNNING)
+    local_app = FastAPI()
+    local_app.include_router(
+        create_admin_router(
+            lambda: AppSettings(_env_file=None),
+            lambda: repositories,
+            VSCodeBridgeStore(),
+        )
+    )
+    client = TestClient(local_app)
+
+    paused = client.post(f"/admin/api/tasks/{task.id}/signals", json={"signal": "pause"})
+    resumed = client.post(f"/admin/api/tasks/{task.id}/signals", json={"signal": "resume"})
+    updated = repositories.tasks.get(task.id)
+
+    assert paused.status_code == 200
+    assert resumed.status_code == 200
+    assert updated is not None
+    assert updated.status == TaskStatus.RUNNING
+
+
 def test_admin_rejects_vscode_terminal_command_by_default(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
     monkeypatch.setenv("AGENT_STORAGE__DATABASE_URL", f"sqlite:///{tmp_path / 'admin.db'}")

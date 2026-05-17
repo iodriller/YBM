@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
 from datetime import datetime, timedelta
 
 from agent_control.llm import PlannerService
@@ -9,6 +11,7 @@ from agent_control.schemas import (
     ApprovalRequest,
     ApprovalStatus,
     AuditEventType,
+    PlanModel,
     PlanStep,
     TaskRecord,
     TaskStatus,
@@ -19,6 +22,17 @@ from agent_control.schemas import (
 from agent_control.storage.audit import AuditLogger
 from agent_control.storage.repositories import Repositories
 
+DefaultPlanFactory = Callable[[TaskRecord], PlanModel | None]
+
+WORKABLE_STATUSES = [
+    TaskStatus.RECEIVED,
+    TaskStatus.INTERPRETING,
+    TaskStatus.PLANNED,
+    TaskStatus.AWAITING_APPROVAL,
+    TaskStatus.RUNNING,
+    TaskStatus.RETRYING,
+]
+
 
 class TaskWorker:
     def __init__(
@@ -28,22 +42,72 @@ class TaskWorker:
         planner: PlannerService | None = None,
         executor: ToolExecutor | None = None,
         retry_policy: RetryPolicy | None = None,
+        config_context: str = "No extra capability context provided.",
+        default_plan_factory: DefaultPlanFactory | None = None,
     ) -> None:
         self.repositories = repositories
         self.audit = audit
         self.planner = planner
         self.executor = executor
         self.retry_policy = retry_policy
+        self.config_context = config_context
+        self.default_plan_factory = default_plan_factory
+
+    async def process_next(self) -> TaskRecord | None:
+        tasks = self.repositories.tasks.list_by_statuses(WORKABLE_STATUSES, limit=1)
+        if not tasks:
+            return None
+        try:
+            return await self.process_task(tasks[0].id)
+        except Exception as exc:
+            latest = self.repositories.tasks.get(tasks[0].id)
+            if latest is None:
+                raise
+            metadata = {**latest.metadata, "last_worker_error": str(exc)}
+            failed = self.repositories.tasks.update_metadata(latest.id, metadata, TaskStatus.FAILED)
+            self.audit.task_state_changed("worker", latest.id, latest.status, failed.status)
+            self.audit.append(
+                AuditEventType.ERROR,
+                actor="worker",
+                task_id=latest.id,
+                payload={"error": str(exc), "status": failed.status.value},
+            )
+            return failed
+
+    async def run_forever(self, poll_interval_seconds: float = 3.0) -> None:
+        while True:
+            processed = await self.process_next()
+            if processed is None:
+                await asyncio.sleep(poll_interval_seconds)
 
     async def process_task(self, task_id: str) -> TaskRecord:
         task = self.repositories.tasks.get(task_id)
         if task is None:
             raise KeyError(f"task not found: {task_id}")
 
-        if task.status == TaskStatus.RECEIVED:
-            if self.planner is None:
+        if task.status in {TaskStatus.RECEIVED, TaskStatus.INTERPRETING}:
+            default_plan = self.default_plan_factory(task) if self.default_plan_factory else None
+            if default_plan is not None:
+                self.repositories.plans.create(task_id, default_plan)
+                updated = self.repositories.tasks.attach_plan(task_id, default_plan.id, TaskStatus.PLANNED)
+                self.audit.append(
+                    AuditEventType.PLAN_CREATED,
+                    actor="worker",
+                    task_id=task_id,
+                    payload={
+                        "plan_id": default_plan.id,
+                        "step_count": len(default_plan.steps),
+                        "required_capabilities": [
+                            capability.value for capability in default_plan.required_capabilities
+                        ],
+                        "source": "default_vscode_development_plan",
+                    },
+                )
+                self.audit.task_state_changed("worker", task_id, task.status, updated.status)
+            elif self.planner is None:
                 return task
-            await self.planner.plan_task(task_id)
+            else:
+                await self.planner.plan_task(task_id, self.config_context)
             task = self.repositories.tasks.get(task_id)
             if task is None:
                 raise KeyError(f"task not found after planning: {task_id}")
@@ -100,16 +164,25 @@ class TaskWorker:
         if not step.required_capabilities:
             return self._transition(task, TaskStatus.BLOCKED, "current_step_missing_capability")
 
+        latest = self.repositories.tasks.get(task.id)
+        if latest is None or latest.status in {TaskStatus.PAUSED, TaskStatus.CANCELLED}:
+            return latest or task
+
         request = ToolCallRequest(
             task_id=task.id,
             tool_name=step.tool_name,
             capability=step.required_capabilities[0],
             risk_level=step.risk_level,
+            scope_target=step.tool_input.get("scope_target"),
             input=step.tool_input,
+            timeout_seconds=int(step.tool_input.get("timeout_seconds", 60)),
             requires_approval=step.requires_approval,
         )
         step_approved = self._step_is_approved(task.id, step.id)
         result = await self.executor.execute(request, approved=step_approved)
+        latest = self.repositories.tasks.get(task.id)
+        if latest is None or latest.status in {TaskStatus.PAUSED, TaskStatus.CANCELLED}:
+            return latest or task
         if result.status == ToolResultStatus.SUCCEEDED:
             next_step = self._next_runnable_step(plan.steps, step.id)
             if next_step is None:
