@@ -30,7 +30,11 @@ def build_default_vscode_development_plan(settings: AppSettings, task: TaskRecor
                 requires_approval=policy.requires_approval,
                 tool_name="vscode.copilot_terminal",
                 tool_input={
-                    "prompt": task.objective,
+                    "prompt": (
+                        "Answer this development request concisely. If code is requested, include the code "
+                        "and any minimal run instructions. Do not modify files or ask for permissions; return "
+                        f"the answer as terminal text.\n\nRequest: {task.objective}"
+                    ),
                     "terminal_id": "agent-control-copilot",
                     "capture_output": True,
                     "timeout_seconds": 180,

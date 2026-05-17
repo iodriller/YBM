@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 import yaml
 
 from agent_control.admin import create_admin_router
-from agent_control.config import AppSettings
+from agent_control.config import AppSettings, default_capability_policies
 from agent_control.main import app, vscode_store
 from agent_control.schemas import AuditEventType, Capability, CapabilityAccessMode, TaskStatus
 from agent_control.storage import AuditLogger, Database, Repositories
@@ -114,7 +114,11 @@ def test_admin_rejects_vscode_terminal_command_by_default(monkeypatch, tmp_path)
 def test_admin_can_queue_vscode_terminal_command_when_enabled(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'admin.db'}"
     repositories = _repositories(database_url)
-    settings = AppSettings(_env_file=None, adapters={"vscode": {"enabled": True}})
+    settings = AppSettings(
+        _env_file=None,
+        adapters={"vscode": {"enabled": True}},
+        capabilities=default_capability_policies(),
+    )
     settings.capabilities[Capability.TERMINAL_RUN].enabled = True
     settings.capabilities[Capability.TERMINAL_RUN].requires_approval = False
     store = VSCodeBridgeStore()

@@ -7,7 +7,8 @@ from agent_control.config import AppSettings
 from agent_control.schemas import Capability
 
 
-def test_default_invasive_capabilities_are_disabled() -> None:
+def test_default_invasive_capabilities_are_disabled(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
     settings = AppSettings(_env_file=None)
 
     invasive = [

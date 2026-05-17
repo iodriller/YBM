@@ -22,13 +22,31 @@ Start from `config/config.example.yaml`.
 
 Safe defaults keep terminal execution, filesystem access, VS Code access, desktop screenshots, browser automation, dependency installation, and Git pushes disabled.
 
-## 3. Initialize Local Database
+## 3. Start The Stack
+
+```powershell
+.\scripts\start_stack.ps1
+```
+
+This initializes the database and starts LocalDeploy, backend, Telegram polling, and worker.
+
+## 4. Stop The Stack
+
+```powershell
+.\scripts\stop_stack.ps1
+```
+
+## 5. Lower-Level Commands
+
+Use these only when debugging individual processes.
+
+Initialize local database:
 
 ```powershell
 .\scripts\init_db.ps1
 ```
 
-## 4. Run Backend
+Run backend:
 
 ```powershell
 .\scripts\run_backend.ps1
@@ -42,13 +60,25 @@ Backend health check:
 Invoke-RestMethod http://127.0.0.1:8765/health
 ```
 
-## 5. Run Tests
+Run Telegram polling:
+
+```powershell
+.\scripts\run_telegram_polling.ps1
+```
+
+Run task worker:
+
+```powershell
+.\scripts\run_worker.ps1
+```
+
+## 6. Run Tests
 
 ```powershell
 .\scripts\run_tests.ps1
 ```
 
-## 6. Package VS Code Extension
+## 7. Package VS Code Extension
 
 ```powershell
 .\scripts\package_vscode_extension.ps1
@@ -56,23 +86,7 @@ Invoke-RestMethod http://127.0.0.1:8765/health
 
 The extension sends workspace state to the local backend and polls for queued terminal commands.
 
-## 7. Run Telegram Polling
-
-After setting `TELEGRAM_BOT_TOKEN` and enabling/configuring Telegram allowlists:
-
-```powershell
-.\scripts\run_telegram_polling.ps1
-```
-
-## 8. Run Task Worker
-
-```powershell
-.\scripts\run_worker.ps1
-```
-
-The worker is required for persisted tasks to be planned and executed.
-
-## 9. Current Limits
+## 8. Current Limits
 
 - Screenshot capture uses Pillow and is disabled by default.
 - VS Code terminal stdout capture depends on VS Code shell integration. Without it, the bridge records dispatch completion only.

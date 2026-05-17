@@ -25,11 +25,8 @@ TELEGRAM_BOT_TOKEN=your_bot_token_here
 
 ## 2. Start Backend And Admin UI
 
-Terminal 1:
-
 ```powershell
-.\scripts\init_db.ps1
-.\scripts\run_backend.ps1
+.\scripts\start_stack.ps1
 ```
 
 Open:
@@ -58,23 +55,7 @@ Polling: checked
 
 Click `Save`.
 
-## 5. Start Telegram Polling
-
-Terminal 2:
-
-```powershell
-.\scripts\run_telegram_polling.ps1
-```
-
-## 6. Start The Worker
-
-Terminal 3:
-
-```powershell
-.\scripts\run_worker.ps1
-```
-
-## 7. Send A Task From Telegram
+## 5. Send A Task From Telegram
 
 Send this to your bot:
 
@@ -93,9 +74,10 @@ Expected result:
 - `/tasks` replies with the new task.
 - The first message receives `Task spawned: <task_id>`.
 - The admin UI Tasks section shows the task activity moving from queued to active or completed.
+- When the worker reaches a terminal state, Telegram receives the task result or failure details.
 - The admin UI Audit section shows raw message, classification, and spawned task events.
 
-## 8. Check From PowerShell
+## 6. Check From PowerShell
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8765/admin/api/summary | ConvertTo-Json -Depth 8
@@ -109,8 +91,8 @@ integrations.telegram.enabled
 integrations.telegram.token_present
 ```
 
-## 9. Stop The Test
+## 7. Stop The Test
 
-Stop polling, worker, and backend with `Ctrl+C` in their terminals.
-
-If the backend was launched in the background, stop the Python process that is running uvicorn.
+```powershell
+.\scripts\stop_stack.ps1
+```

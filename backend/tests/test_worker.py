@@ -161,6 +161,14 @@ class TransientFailureAdapter:
         )
 
 
+class RecordingNotifier:
+    def __init__(self) -> None:
+        self.tasks = []
+
+    async def notify(self, task) -> None:
+        self.tasks.append(task)
+
+
 @pytest.mark.asyncio
 async def test_worker_marks_retrying_for_transient_failure(tmp_path) -> None:
     repos, audit = _repos(tmp_path)
@@ -243,3 +251,51 @@ async def test_worker_default_vscode_development_plan_runs_when_enabled(tmp_path
     assert completed.status == TaskStatus.COMPLETED
     assert adapter.requests[0].tool_name == "vscode.copilot_terminal"
     assert adapter.requests[0].capability == Capability.VSCODE_WRITE_FILES
+
+
+@pytest.mark.asyncio
+async def test_worker_notifies_once_on_completion(tmp_path) -> None:
+    repos, audit = _repos(tmp_path)
+    task = repos.tasks.create("Run safe step", metadata={"source_chat_id": "100"})
+    plan = repos.plans.create(
+        task.id,
+        PlanModel(
+            objective="Run safe step",
+            steps=[
+                PlanStep(
+                    title="Summarize",
+                    description="Run a safe LLM step.",
+                    required_capabilities=[Capability.LLM_GENERATE],
+                    tool_name="llm",
+                )
+            ],
+            success_criteria=["Step completed."],
+        ),
+    )
+    repos.tasks.attach_plan(task.id, plan.id)
+    settings = AppSettings(
+        _env_file=None,
+        capabilities={
+            Capability.LLM_GENERATE: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.LOW,
+            )
+        },
+    )
+    notifier = RecordingNotifier()
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"llm": StaticToolAdapter({"text": "done"})},
+    )
+    worker = TaskWorker(repos, audit, executor=executor, notification_sink=notifier)
+
+    await worker.process_next()
+    await worker.process_next()
+    await worker.process_next()
+
+    assert len(notifier.tasks) == 1
+    assert notifier.tasks[0].status == TaskStatus.COMPLETED
+    assert repos.tasks.get(task.id).metadata["notified_statuses"] == [TaskStatus.COMPLETED.value]

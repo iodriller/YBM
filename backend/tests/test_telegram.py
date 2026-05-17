@@ -3,8 +3,9 @@ from __future__ import annotations
 import pytest
 
 from agent_control.channels.telegram import TelegramAdapter, TelegramIntakeService, TelegramPollingRunner
+from agent_control.channels.responder import StaticTelegramResponder
 from agent_control.config import AppSettings, CapabilityPolicy, DesktopAdapterConfig, StorageConfig, TelegramConfig
-from agent_control.llm import StaticMessageClassifier
+from agent_control.llm import LLMMessageClassifier, StaticMessageClassifier
 from agent_control.observation import ArtifactService, ScreenshotService
 from agent_control.schemas import AuditEventType, MessageClassification, TaskStatus, TaskType
 from agent_control.schemas import Capability, RiskLevel
@@ -115,6 +116,93 @@ def test_telegram_classifier_can_reject_task_spawn(tmp_path) -> None:
     assert result.outbound_message is not None
     assert "No task spawned" in (result.outbound_message.text or "")
     assert events[0].payload["reason"] == "question only"
+
+
+def test_telegram_non_task_question_gets_llm_response(tmp_path) -> None:
+    responder = StaticTelegramResponder("I can answer questions and route development tasks.")
+    service, repos = _service(
+        tmp_path,
+        TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
+        classifier=StaticMessageClassifier(
+            MessageClassification(
+                is_task=False,
+                task_type=TaskType.QUESTION,
+                confidence=0.9,
+                reason="question only",
+            )
+        ),
+    )
+    service.responder = responder
+
+    result = service.handle_update(
+        {
+            "message": {
+                "message_id": 12,
+                "from": {"id": 42},
+                "chat": {"id": 100},
+                "text": "what can you do?",
+            }
+        }
+    )
+
+    assert result.task is None
+    assert result.outbound_message is not None
+    assert result.outbound_message.text == "I can answer questions and route development tasks."
+    assert repos.audit.list_by_type(AuditEventType.TASK_SPAWN_FAILED) == []
+
+
+def test_telegram_plain_status_does_not_require_slash(tmp_path) -> None:
+    service, repos = _service(
+        tmp_path,
+        TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
+    )
+    task = repos.tasks.create("Build app")
+
+    result = service.handle_update(
+        {
+            "message": {
+                "message_id": 13,
+                "from": {"id": 42},
+                "chat": {"id": 100},
+                "text": "status",
+            }
+        }
+    )
+
+    assert result.outbound_message is not None
+    assert task.id in (result.outbound_message.text or "")
+
+
+class FailingClassifierProvider:
+    async def generate_structured(self, system_prompt, user_prompt, output_model):
+        raise ValueError("bad json")
+
+    async def generate_text(self, system_prompt, user_prompt):
+        return "unused"
+
+
+def test_llm_classifier_fallback_allows_direct_greeting_response(tmp_path) -> None:
+    service, _ = _service(
+        tmp_path,
+        TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
+        classifier=LLMMessageClassifier(FailingClassifierProvider()),
+    )
+    service.responder = StaticTelegramResponder("Hello. I can answer questions or route tasks.")
+
+    result = service.handle_update(
+        {
+            "message": {
+                "message_id": 14,
+                "from": {"id": 42},
+                "chat": {"id": 100},
+                "text": "Hi",
+            }
+        }
+    )
+
+    assert result.task is None
+    assert result.outbound_message is not None
+    assert result.outbound_message.text == "Hello. I can answer questions or route tasks."
 
 
 def test_telegram_without_classifier_does_not_spawn_task(tmp_path) -> None:

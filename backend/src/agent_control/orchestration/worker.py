@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from datetime import datetime, timedelta
+from typing import Protocol
 
 from agent_control.llm import PlannerService
 from agent_control.orchestration.executor import ToolExecutor
@@ -16,6 +17,7 @@ from agent_control.schemas import (
     TaskRecord,
     TaskStatus,
     ToolCallRequest,
+    ToolCallResult,
     ToolResultStatus,
     utc_now,
 )
@@ -23,6 +25,11 @@ from agent_control.storage.audit import AuditLogger
 from agent_control.storage.repositories import Repositories
 
 DefaultPlanFactory = Callable[[TaskRecord], PlanModel | None]
+
+
+class TaskNotificationSink(Protocol):
+    async def notify(self, task: TaskRecord) -> None:
+        ...
 
 WORKABLE_STATUSES = [
     TaskStatus.RECEIVED,
@@ -32,6 +39,14 @@ WORKABLE_STATUSES = [
     TaskStatus.RUNNING,
     TaskStatus.RETRYING,
 ]
+
+NOTIFIABLE_STATUSES = {
+    TaskStatus.AWAITING_APPROVAL,
+    TaskStatus.BLOCKED,
+    TaskStatus.CANCELLED,
+    TaskStatus.COMPLETED,
+    TaskStatus.FAILED,
+}
 
 
 class TaskWorker:
@@ -44,6 +59,7 @@ class TaskWorker:
         retry_policy: RetryPolicy | None = None,
         config_context: str = "No extra capability context provided.",
         default_plan_factory: DefaultPlanFactory | None = None,
+        notification_sink: TaskNotificationSink | None = None,
     ) -> None:
         self.repositories = repositories
         self.audit = audit
@@ -52,13 +68,16 @@ class TaskWorker:
         self.retry_policy = retry_policy
         self.config_context = config_context
         self.default_plan_factory = default_plan_factory
+        self.notification_sink = notification_sink
 
     async def process_next(self) -> TaskRecord | None:
         tasks = self.repositories.tasks.list_by_statuses(WORKABLE_STATUSES, limit=1)
         if not tasks:
             return None
         try:
-            return await self.process_task(tasks[0].id)
+            processed = await self.process_task(tasks[0].id)
+            await self._notify_if_needed(processed)
+            return processed
         except Exception as exc:
             latest = self.repositories.tasks.get(tasks[0].id)
             if latest is None:
@@ -72,6 +91,7 @@ class TaskWorker:
                 task_id=latest.id,
                 payload={"error": str(exc), "status": failed.status.value},
             )
+            await self._notify_if_needed(failed)
             return failed
 
     async def run_forever(self, poll_interval_seconds: float = 3.0) -> None:
@@ -180,6 +200,7 @@ class TaskWorker:
         )
         step_approved = self._step_is_approved(task.id, step.id)
         result = await self.executor.execute(request, approved=step_approved)
+        task = self._record_tool_result(task.id, step.tool_name, result)
         latest = self.repositories.tasks.get(task.id)
         if latest is None or latest.status in {TaskStatus.PAUSED, TaskStatus.CANCELLED}:
             return latest or task
@@ -252,7 +273,7 @@ class TaskWorker:
             for approval in self.repositories.approvals.list_for_task(task_id)
         )
 
-    def _retry_decision(self, task: TaskRecord, result: "ToolCallResult") -> TaskRecord | None:
+    def _retry_decision(self, task: TaskRecord, result: ToolCallResult) -> TaskRecord | None:
         if self.retry_policy is None:
             return None
         current_retry_count = int(task.metadata.get("retry_count", 0))
@@ -276,6 +297,33 @@ class TaskWorker:
         self.audit.task_state_changed("orchestrator", task.id, task.status, updated.status)
         return updated
 
+    async def _notify_if_needed(self, task: TaskRecord) -> None:
+        if self.notification_sink is None or task.status not in NOTIFIABLE_STATUSES:
+            return
+        notified = set(task.metadata.get("notified_statuses", []))
+        if task.status.value in notified:
+            return
+        await self.notification_sink.notify(task)
+        latest = self.repositories.tasks.get(task.id)
+        if latest is None:
+            return
+        updated_notified = sorted({*latest.metadata.get("notified_statuses", []), task.status.value})
+        self.repositories.tasks.update_metadata(
+            task.id,
+            {**latest.metadata, "notified_statuses": updated_notified},
+        )
+
+    def _record_tool_result(self, task_id: str, tool_name: str, result: ToolCallResult) -> TaskRecord:
+        latest = self.repositories.tasks.get(task_id)
+        if latest is None:
+            raise KeyError(f"task not found: {task_id}")
+        metadata = {
+            **latest.metadata,
+            "last_tool_name": tool_name,
+            "last_tool_result": _trim_result(result),
+        }
+        return self.repositories.tasks.update_metadata(task_id, metadata)
+
     @staticmethod
     def _next_runnable_step(steps: list[PlanStep], current_step_id: str) -> PlanStep | None:
         found = False
@@ -296,3 +344,18 @@ class TaskWorker:
             payload={"reason": reason, "status": status.value},
         )
         return updated
+
+
+def _trim_result(result: ToolCallResult) -> dict:
+    payload = result.model_dump(mode="json")
+    return _trim_value(payload)
+
+
+def _trim_value(value):
+    if isinstance(value, str):
+        return value if len(value) <= 4000 else f"{value[:3997]}..."
+    if isinstance(value, list):
+        return [_trim_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _trim_value(item) for key, item in value.items()}
+    return value

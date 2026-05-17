@@ -11,6 +11,8 @@ from agent_control.channels.telegram import (
     TelegramPollingRunner,
     load_telegram_token,
 )
+from agent_control.channels.responder import LLMTelegramResponder
+from agent_control.channels.telegram_notifications import TelegramTaskNotifier
 from agent_control.config import load_settings
 from agent_control.llm import LLMMessageClassifier, build_default_llm_provider
 from agent_control.llm.planner import PlannerService
@@ -47,7 +49,15 @@ async def poll_telegram() -> None:
     adapter = TelegramAdapter(settings.channels.telegram, audit)
     provider = build_default_llm_provider(settings)
     classifier = LLMMessageClassifier(provider) if provider else None
-    service = TelegramIntakeService(adapter, repositories, audit, settings=settings, classifier=classifier)
+    responder = LLMTelegramResponder(provider, settings, repositories) if provider else None
+    service = TelegramIntakeService(
+        adapter,
+        repositories,
+        audit,
+        settings=settings,
+        classifier=classifier,
+        responder=responder,
+    )
     client = TelegramBotApi(load_telegram_token(settings.channels.telegram))
     runner = TelegramPollingRunner(client, service)
     offset: int | None = None
@@ -75,6 +85,7 @@ async def run_worker() -> None:
         retry_policy=RetryPolicy(settings.limits),
         config_context=_worker_config_context(settings),
         default_plan_factory=lambda task: build_default_vscode_development_plan(settings, task),
+        notification_sink=_telegram_notifier(settings),
     )
     await worker.run_forever()
 
@@ -88,6 +99,15 @@ def _worker_adapters(settings) -> dict[str, object]:
         adapters["vscode.terminal_command"] = vscode
         adapters["vscode.copilot_terminal"] = vscode
     return adapters
+
+
+def _telegram_notifier(settings) -> TelegramTaskNotifier | None:
+    if not settings.channels.telegram.enabled:
+        return None
+    try:
+        return TelegramTaskNotifier(TelegramBotApi(load_telegram_token(settings.channels.telegram)))
+    except RuntimeError:
+        return None
 
 
 def _backend_base_url(settings) -> str:

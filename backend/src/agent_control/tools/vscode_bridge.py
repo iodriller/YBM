@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+import os
+from pathlib import Path
 from typing import Any
 
 from fastapi import Header, HTTPException
@@ -127,6 +129,8 @@ class VSCodeBridgeTerminalAdapter:
         headers = self._headers()
         try:
             async with httpx.AsyncClient(timeout=request.timeout_seconds) as client:
+                if bool(request.input.get("allow_local_fallback", True)) and not await self._bridge_connected(client, headers):
+                    return await self._execute_local(request, command_text)
                 response = await client.post(
                     f"{self.backend_base_url}/vscode/terminal-commands",
                     headers=headers,
@@ -156,6 +160,67 @@ class VSCodeBridgeTerminalAdapter:
             },
         )
 
+    async def _bridge_connected(self, client: httpx.AsyncClient, headers: dict[str, str]) -> bool:
+        try:
+            response = await client.get(f"{self.backend_base_url}/vscode/state", headers=headers)
+            response.raise_for_status()
+            return response.json() is not None
+        except Exception:
+            return False
+
+    async def _execute_local(self, request: ToolCallRequest, command_text: str) -> ToolCallResult:
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                command_text,
+                cwd=request.input.get("cwd"),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                process.communicate(),
+                timeout=request.timeout_seconds,
+            )
+        except TimeoutError:
+            return ToolCallResult(
+                request_id=request.id,
+                status=ToolResultStatus.TIMEOUT,
+                error_class=ErrorClass.TRANSIENT,
+                error_message="timed out waiting for local Copilot CLI fallback",
+            )
+        except Exception as exc:
+            return self._failed(request, f"local Copilot CLI fallback failed: {exc}")
+
+        stdout = stdout_bytes.decode(errors="replace")
+        stderr = stderr_bytes.decode(errors="replace")
+        content = "\n".join(part for part in [stdout.strip(), stderr.strip()] if part)
+        status = ToolResultStatus.SUCCEEDED if process.returncode == 0 else ToolResultStatus.FAILED
+        return ToolCallResult(
+            request_id=request.id,
+            status=status,
+            output={
+                "command_id": None,
+                "queued": None,
+                "terminal_output": [
+                    {
+                        "instance_id": "local-worker",
+                        "terminal_id": request.input.get("terminal_id") or "agent-control-copilot",
+                        "content": content,
+                        "command_id": None,
+                        "is_final": True,
+                        "exit_code": process.returncode,
+                        "source": "local_copilot_cli_fallback",
+                    }
+                ],
+            },
+            error_class=None if status == ToolResultStatus.SUCCEEDED else ErrorClass.ADAPTER_FAILED,
+            error_message=None if status == ToolResultStatus.SUCCEEDED else "local Copilot CLI fallback failed",
+        )
+
     def _command_text(self, request: ToolCallRequest) -> str:
         explicit = request.input.get("command")
         if explicit:
@@ -169,7 +234,10 @@ class VSCodeBridgeTerminalAdapter:
             quoted = _powershell_single_quote(prompt)
             return " ".join(part.replace("{prompt}", quoted).replace("{prompt_raw}", prompt) for part in self.command_template)
 
-        return f"gh copilot suggest -t shell -- {_powershell_single_quote(prompt)}"
+        copilot = _copilot_executable()
+        if copilot:
+            return f"& {_powershell_single_quote(str(copilot))} -p {_powershell_single_quote(prompt)}"
+        return f"gh copilot -p {_powershell_single_quote(prompt)}"
 
     async def _wait_for_output(
         self,
@@ -211,3 +279,15 @@ class VSCodeBridgeTerminalAdapter:
 
 def _powershell_single_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
+
+
+def _copilot_executable() -> Path | None:
+    local_app_data = os.getenv("LOCALAPPDATA")
+    if not local_app_data:
+        return None
+    winget_root = Path(local_app_data) / "Microsoft" / "WinGet" / "Packages"
+    matches = sorted(winget_root.glob("GitHub.Copilot_*/*copilot.exe"), reverse=True)
+    for candidate in matches:
+        if candidate.is_file():
+            return candidate
+    return None

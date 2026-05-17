@@ -8,6 +8,7 @@ import httpx
 
 from agent_control.config import AppSettings, TelegramConfig
 from agent_control.config_sync import read_env_value
+from agent_control.channels.responder import TelegramResponder
 from agent_control.llm.classifier import MessageClassifier
 from agent_control.orchestration.signals import apply_task_signal
 from agent_control.schemas import (
@@ -25,6 +26,7 @@ from agent_control.schemas import (
     TaskRecord,
     TaskSignal,
     TaskStatus,
+    TaskType,
     VoiceAttachment,
 )
 from agent_control.storage.audit import AuditLogger
@@ -315,6 +317,7 @@ class TelegramIntakeService:
         settings: AppSettings | None = None,
         screenshot_service: ScreenshotService | None = None,
         classifier: MessageClassifier | None = None,
+        responder: TelegramResponder | None = None,
     ) -> None:
         self.adapter = adapter
         self.repositories = repositories
@@ -322,6 +325,7 @@ class TelegramIntakeService:
         self.settings = settings
         self.screenshot_service = screenshot_service
         self.classifier = classifier
+        self.responder = responder
 
     def handle_update(self, update: dict[str, Any]) -> TelegramUpdateResult:
         try:
@@ -343,6 +347,13 @@ class TelegramIntakeService:
             self.repositories.messages.create(result.inbound_message, conversation_id)
 
             if result.command is None:
+                plain_response = self._plain_text_command_response(result.inbound_message)
+                if plain_response is not None:
+                    return TelegramUpdateResult(
+                        authorized=True,
+                        inbound_message=result.inbound_message,
+                        outbound_message=plain_response,
+                    )
                 return await self._classify_and_spawn(result.inbound_message, conversation_id)
 
         if result.command:
@@ -388,6 +399,14 @@ class TelegramIntakeService:
         )
 
         if not classification.is_task:
+            outbound = await self._non_task_response(inbound, classification)
+            if outbound is not None:
+                return TelegramUpdateResult(
+                    authorized=True,
+                    inbound_message=inbound,
+                    classification=classification,
+                    outbound_message=outbound,
+                )
             return self._spawn_failed(inbound, classification.reason, actor, classification)
 
         objective = (classification.normalized_objective or inbound.text).strip()
@@ -397,6 +416,8 @@ class TelegramIntakeService:
             metadata={
                 "source_message_id": inbound.id,
                 "source_channel": inbound.channel.value,
+                "source_chat_id": inbound.chat_id,
+                "source_sender_id": inbound.sender_id,
                 "task_type": classification.task_type.value,
                 "classification_confidence": classification.confidence,
                 "classification_reason": classification.reason,
@@ -424,6 +445,21 @@ class TelegramIntakeService:
             task=task,
             outbound_message=self._out(inbound.chat_id, f"Task spawned: {task.id}"),
         )
+
+    async def _non_task_response(
+        self,
+        inbound: InboundMessage,
+        classification: MessageClassification,
+    ) -> OutboundMessage | None:
+        if classification.task_type == TaskType.STATUS_REQUEST:
+            return self._out(inbound.chat_id, self._status_summary())
+        if self.responder is None:
+            return None
+        try:
+            answer = await self.responder.answer(inbound)
+        except Exception as exc:
+            return self._spawn_failed(inbound, f"response generation failed: {exc}", f"telegram:user:{inbound.sender_id}", classification).outbound_message
+        return self._out(inbound.chat_id, answer[:3900])
 
     def _spawn_failed(
         self,
@@ -472,9 +508,7 @@ class TelegramIntakeService:
         args = payload.get("args") or []
 
         if name == "status":
-            recent = self.repositories.tasks.list_recent(20)
-            active = [task for task in recent if task.status in {TaskStatus.RUNNING, TaskStatus.AWAITING_APPROVAL, TaskStatus.RETRYING}]
-            return self._out(chat_id, f"{len(recent)} recent task(s), {len(active)} active.")
+            return self._out(chat_id, self._status_summary())
         if name == "tasks":
             tasks = self.repositories.tasks.list_recent(10)
             if not tasks:
@@ -511,6 +545,27 @@ class TelegramIntakeService:
                 return self._out(chat_id, f"{name} signal recorded for {signal.task_id}.")
             return self._out(chat_id, f"Usage: /{name} <task_id>")
         return None
+
+    def _plain_text_command_response(self, inbound: InboundMessage) -> OutboundMessage | None:
+        text = (inbound.text or "").strip().lower()
+        if text in {"status", "task status", "tasks status", "what is the status"}:
+            return self._out(inbound.chat_id, self._status_summary())
+        if text in {"tasks", "list tasks", "show tasks"}:
+            tasks = self.repositories.tasks.list_recent(10)
+            if not tasks:
+                return self._out(inbound.chat_id, "No tasks found.")
+            lines = [f"{task.id} | {task.status.value} | {task.objective[:80]}" for task in tasks]
+            return self._out(inbound.chat_id, "\n".join(lines))
+        return None
+
+    def _status_summary(self) -> str:
+        recent = self.repositories.tasks.list_recent(20)
+        active_statuses = {TaskStatus.RECEIVED, TaskStatus.INTERPRETING, TaskStatus.PLANNED, TaskStatus.RUNNING, TaskStatus.AWAITING_APPROVAL, TaskStatus.RETRYING}
+        active = [task for task in recent if task.status in active_statuses]
+        lines = [f"{len(recent)} recent task(s), {len(active)} active."]
+        for task in recent[:5]:
+            lines.append(f"{task.id} | {task.status.value} | {task.objective[:80]}")
+        return "\n".join(lines)
 
     @staticmethod
     def _out(chat_id: str, text: str) -> OutboundMessage:
@@ -622,6 +677,9 @@ class TelegramVoiceIntakeService:
             conversation_id=conversation_id,
             metadata={
                 "source_message_id": result.inbound_message.id,
+                "source_channel": result.inbound_message.channel.value,
+                "source_chat_id": result.inbound_message.chat_id,
+                "source_sender_id": result.inbound_message.sender_id,
                 "transcript_artifact_id": artifact.id,
                 "voice_file_id": voice.file_id,
             },

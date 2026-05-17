@@ -1,4 +1,7 @@
 import * as vscode from "vscode";
+import * as http from "http";
+import * as https from "https";
+import { exec } from "child_process";
 
 export function activate(context: vscode.ExtensionContext) {
   const terminals = new Map<string, vscode.Terminal>();
@@ -35,7 +38,7 @@ function bridgeToken(): string | undefined {
 }
 
 async function sendHeartbeat(): Promise<void> {
-  await post("/vscode/heartbeat", await collectState());
+  await post("/vscode/state", await collectState());
 }
 
 async function syncState(): Promise<void> {
@@ -66,11 +69,7 @@ async function post(path: string, payload: unknown): Promise<void> {
   if (token) {
     headers["X-Agent-Control-Token"] = token;
   }
-  await fetch(`${bridgeUrl()}${path}`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(payload),
-  });
+  await requestJson("POST", path, headers, payload);
 }
 
 async function get<T>(path: string): Promise<T> {
@@ -79,8 +78,57 @@ async function get<T>(path: string): Promise<T> {
   if (token) {
     headers["X-Agent-Control-Token"] = token;
   }
-  const response = await fetch(`${bridgeUrl()}${path}`, { headers });
-  return (await response.json()) as T;
+  return (await requestJson("GET", path, headers)) as T;
+}
+
+function requestJson(
+  method: "GET" | "POST",
+  path: string,
+  headers: Record<string, string>,
+  payload?: unknown,
+): Promise<unknown> {
+  const body = payload === undefined ? undefined : JSON.stringify(payload);
+  const url = new URL(`${bridgeUrl()}${path}`);
+  const client = url.protocol === "https:" ? https : http;
+  return new Promise((resolve, reject) => {
+    const request = client.request(
+      url,
+      {
+        method,
+        headers: {
+          ...headers,
+          ...(body ? { "content-length": Buffer.byteLength(body).toString() } : {}),
+        },
+      },
+      (response) => {
+        let data = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => {
+          data += chunk;
+        });
+        response.on("end", () => {
+          if ((response.statusCode ?? 500) >= 400) {
+            reject(new Error(`${method} ${path} failed with ${response.statusCode}: ${data}`));
+            return;
+          }
+          if (!data) {
+            resolve(undefined);
+            return;
+          }
+          try {
+            resolve(JSON.parse(data));
+          } catch (error) {
+            reject(error);
+          }
+        });
+      },
+    );
+    request.on("error", reject);
+    if (body) {
+      request.write(body);
+    }
+    request.end();
+  });
 }
 
 type TerminalCommand = {
@@ -115,6 +163,10 @@ async function dispatchTerminalCommand(
 
   terminal.show();
   if (command.capture_output !== false && (await runWithShellIntegration(terminal, command))) {
+    return;
+  }
+
+  if (command.capture_output !== false && (await runWithChildProcess(command))) {
     return;
   }
 
@@ -163,6 +215,30 @@ async function waitForShellIntegration(terminal: vscode.Terminal): Promise<vscod
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function runWithChildProcess(command: TerminalCommand): Promise<boolean> {
+  return new Promise((resolve) => {
+    exec(
+      command.command,
+      {
+        cwd: command.cwd,
+        windowsHide: true,
+        timeout: 180000,
+        maxBuffer: 1024 * 1024,
+        shell: "powershell.exe",
+      },
+      (error, stdout, stderr) => {
+        const content = `${stdout || ""}${stderr ? `\n${stderr}` : ""}`.trim();
+        const exitCode = typeof (error as { code?: unknown } | null)?.code === "number"
+          ? (error as { code: number }).code
+          : error
+            ? 1
+            : 0;
+        void reportTerminalOutput(command, content || `completed:${command.id}`, true, exitCode).then(() => resolve(true));
+      },
+    );
+  });
 }
 
 async function reportTerminalOutput(

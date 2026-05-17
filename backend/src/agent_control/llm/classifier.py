@@ -30,11 +30,17 @@ class LLMMessageClassifier:
                 confidence=1.0,
                 reason="message has no text content",
             )
-        return await self.provider.generate_structured(
-            CLASSIFIER_SYSTEM_PROMPT,
-            _classification_prompt(message),
-            MessageClassification,
-        )
+        try:
+            return await self.provider.generate_structured(
+                CLASSIFIER_SYSTEM_PROMPT,
+                _classification_prompt(message),
+                MessageClassification,
+            )
+        except Exception as exc:
+            fallback = heuristic_classification(message)
+            return fallback.model_copy(
+                update={"reason": f"{fallback.reason}; LLM classifier fallback after: {exc}"}
+            )
 
 
 class StaticMessageClassifier:
@@ -70,3 +76,77 @@ Return:
 - task_type as one of the allowed enum values.
 - normalized_objective as the concise work objective when is_task is true.
 - reason explaining the decision."""
+
+
+def heuristic_classification(message: InboundMessage) -> MessageClassification:
+    text = (message.text or "").strip()
+    lowered = text.lower()
+    if not text:
+        return MessageClassification(
+            is_task=False,
+            task_type=TaskType.OTHER,
+            confidence=1.0,
+            reason="message has no text content",
+        )
+
+    if lowered in {"hi", "hello", "hey", "yo", "thanks", "thank you"}:
+        return MessageClassification(
+            is_task=False,
+            task_type=TaskType.OTHER,
+            confidence=0.85,
+            reason="short conversational message",
+        )
+
+    if lowered in {"status", "task status", "tasks status", "what is the status"}:
+        return MessageClassification(
+            is_task=False,
+            task_type=TaskType.STATUS_REQUEST,
+            confidence=0.9,
+            reason="status request",
+        )
+
+    if any(phrase in lowered for phrase in {"what can you do", "what are your capabilities", "help", "who are you"}):
+        return MessageClassification(
+            is_task=False,
+            task_type=TaskType.QUESTION,
+            confidence=0.85,
+            reason="capability or help question",
+        )
+
+    task_markers = (
+        "build",
+        "create",
+        "write",
+        "implement",
+        "fix",
+        "change",
+        "update",
+        "inspect",
+        "run",
+        "generate",
+        "make",
+    )
+    if any(marker in lowered for marker in task_markers):
+        task_type = TaskType.CONFIGURATION if "config" in lowered or "setting" in lowered else TaskType.DEVELOPMENT
+        return MessageClassification(
+            is_task=True,
+            task_type=task_type,
+            normalized_objective=text,
+            confidence=0.65,
+            reason="heuristic actionable task request",
+        )
+
+    if lowered.endswith("?"):
+        return MessageClassification(
+            is_task=False,
+            task_type=TaskType.QUESTION,
+            confidence=0.75,
+            reason="question",
+        )
+
+    return MessageClassification(
+        is_task=False,
+        task_type=TaskType.OTHER,
+        confidence=0.55,
+        reason="no clear actionable task marker",
+    )

@@ -13,7 +13,7 @@ Implemented:
 - Strict configuration models with safe default capability policies
 - SQLite persistence, repositories, audit logging, and redaction
 - Minimal Telegram Bot API polling wrapper, update normalizer, allowlist checks, command parsing, and task intake
-- Minimal Telegram command responses for status, task lists, task details, logs, and screenshot capability state
+- Telegram gateway responses for direct questions, plain `status`, task lists, task details, logs, and screenshot capability state
 - Telegram voice download/transcription service with transcript artifacts
 - LLM provider abstraction and structured planner with plan persistence
 - Capability policy engine with approval requests
@@ -28,21 +28,43 @@ Implemented:
 - Admin configuration writes for Telegram and the default OpenAI-compatible orchestrator LLM profile
 - LLM-based Telegram task classification with readable audit events
 - Admin audit filters, capability access modes, and database summary
+- One-command local stack launcher for LocalDeploy, backend, Telegram polling, and worker
+- Worker completion notifications back to Telegram with tool output summaries
 
 Not implemented yet:
 
 - Real tool adapters beyond test/static adapters
-- Full VS Code terminal output capture; current extension records dispatch observations only
-- Production process wrapper for Telegram polling and task workers
+- Direct GitHub Copilot Chat panel response capture through VS Code APIs
 - Persistent editable configuration for every capability and adapter
 
 ## Development
 
-Default local LLM:
+Start the whole local stack:
+
+```powershell
+.\scripts\start_stack.ps1
+```
+
+This initializes SQLite, starts LocalDeploy if needed, starts the backend, starts Telegram polling, and starts the worker. Open:
+
+```text
+http://127.0.0.1:8765/admin
+```
+
+Stop the YBM background processes started by the stack script:
+
+```powershell
+.\scripts\stop_stack.ps1
+```
+
+Default local LLM and gateway behavior:
 
 - Keep `OPENAI_API_KEY` saved in `.env` for fallback.
 - The active default profile is `localdeploy_gemma3_4b`, which calls LocalDeploy at `http://127.0.0.1:8000/v1` with model `gemma3_4b_ollama_safe`.
-- `.\scripts\run_backend.ps1`, `.\scripts\run_telegram_polling.ps1`, and `.\scripts\run_worker.ps1` start `C:\for fun\LocalDeploy\api_server.py` automatically if it is not already running.
+- Non-task Telegram messages get a direct local LLM answer with concise runtime context.
+- Plain `status` and `/status` return deterministic task state.
+- Development tasks route to the VS Code/GitHub Copilot terminal handoff when VS Code write access is enabled, with a local Copilot CLI fallback when the bridge is not connected.
+- Worker results are sent back to the source Telegram chat.
 
 Compile backend source:
 
@@ -57,24 +79,6 @@ $env:PYTHONPATH='backend/src'
 pytest backend/tests
 ```
 
-Initialize the local database:
-
-```powershell
-.\scripts\init_db.ps1
-```
-
-Run the backend:
-
-```powershell
-.\scripts\run_backend.ps1
-```
-
-Open the admin UI:
-
-```text
-http://127.0.0.1:8765/admin
-```
-
 If `AGENT_ADMIN_TOKEN` is set, open:
 
 ```text
@@ -87,17 +91,7 @@ Getting started docs:
 - [Minimal end-to-end test](docs/MINIMAL_END_TO_END_TEST.md)
 - [Database inspection](docs/DATABASE_INSPECTION.md)
 
-Run Telegram polling:
-
-```powershell
-.\scripts\run_telegram_polling.ps1
-```
-
-Run the task worker that picks up persisted tasks:
-
-```powershell
-.\scripts\run_worker.ps1
-```
+Lower-level scripts still exist for debugging: `init_db.ps1`, `run_backend.ps1`, `run_telegram_polling.ps1`, and `run_worker.ps1`.
 
 Flow docs:
 
