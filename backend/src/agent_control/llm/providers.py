@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-import os
 from typing import Protocol, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
 
 from agent_control.config import AppSettings, LLMProfileConfig
+from agent_control.config_sync import read_env_value
 from agent_control.schemas import PlanModel
 
 T = TypeVar("T", bound=BaseModel)
@@ -81,7 +81,7 @@ class OpenAICompatibleProvider:
         if self.profile.api_key:
             return self.profile.api_key.get_secret_value()
         if self.profile.api_key_env:
-            return os.getenv(self.profile.api_key_env)
+            return read_env_value(self.profile.api_key_env)
         return None
 
 

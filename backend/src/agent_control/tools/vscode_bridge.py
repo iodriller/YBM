@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime
-import os
 from typing import Any
 
 from fastapi import Header, HTTPException
 from pydantic import Field
 
 from agent_control.config import VSCodeAdapterConfig
+from agent_control.config_sync import read_env_value
 from agent_control.schemas import StrictBaseModel, new_id, utc_now
 
 
@@ -81,6 +81,6 @@ class VSCodeBridgeStore:
 
 
 def require_vscode_bridge_token(config: VSCodeAdapterConfig, token: str | None = Header(default=None, alias="X-Agent-Control-Token")) -> None:
-    expected = os.getenv(config.auth_token_env)
+    expected = read_env_value(config.auth_token_env)
     if expected and token != expected:
         raise HTTPException(status_code=401, detail="invalid VS Code bridge token")

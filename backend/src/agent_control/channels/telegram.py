@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-import os
 from typing import Any
 
 import httpx
 
 from agent_control.config import AppSettings, TelegramConfig
+from agent_control.config_sync import read_env_value
 from agent_control.llm.classifier import MessageClassifier
 from agent_control.schemas import (
     ApprovalStatus,
@@ -53,7 +53,7 @@ class TelegramUpdateResult:
 def load_telegram_token(config: TelegramConfig) -> str:
     if config.token:
         return config.token.get_secret_value()
-    token = os.getenv(config.token_env)
+    token = read_env_value(config.token_env)
     if not token:
         raise RuntimeError(f"Telegram token not found in {config.token_env}")
     return token

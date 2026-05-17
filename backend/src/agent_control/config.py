@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict, YamlConfigSettingsSource
 
+from agent_control.config_sync import read_env_file, read_env_value
 from agent_control.schemas import Capability, RiskLevel, StrictBaseModel
 
 
@@ -189,10 +190,10 @@ class AppSettings(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
+        _load_env_file_into_process()
         return (
             init_settings,
             env_settings,
-            dotenv_settings,
             YamlConfigSettingsSource(settings_cls),
             file_secret_settings,
         )
@@ -207,7 +208,7 @@ class AppSettings(BaseSettings):
                     "token_env": self.channels.telegram.token_env,
                     "token": "***" if self.channels.telegram.token else None,
                     "token_present": bool(self.channels.telegram.token)
-                    or bool(os.getenv(self.channels.telegram.token_env)),
+                    or bool(read_env_value(self.channels.telegram.token_env)),
                     "allowed_user_ids": self.channels.telegram.allowed_user_ids,
                     "allowed_chat_ids": self.channels.telegram.allowed_chat_ids,
                     "allowed_user_count": len(self.channels.telegram.allowed_user_ids),
@@ -225,7 +226,7 @@ class AppSettings(BaseSettings):
                         "api_key_env": profile.api_key_env,
                         "api_key": "***" if profile.api_key else None,
                         "api_key_present": bool(profile.api_key)
-                        or bool(profile.api_key_env and os.getenv(profile.api_key_env)),
+                        or bool(profile.api_key_env and read_env_value(profile.api_key_env)),
                         "timeout_seconds": profile.timeout_seconds,
                         "max_tokens": profile.max_tokens,
                         "temperature": profile.temperature,
@@ -259,3 +260,8 @@ def load_settings(config_path: str | Path | None = None, **overrides: Any) -> Ap
 
         return RuntimePathSettings(**overrides)
     return AppSettings(**overrides)
+
+
+def _load_env_file_into_process() -> None:
+    for key, value in read_env_file().items():
+        os.environ.setdefault(key, value)

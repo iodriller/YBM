@@ -56,6 +56,30 @@ class ConfigManager:
         self.env_path.write_text("\n".join(next_lines).rstrip() + "\n", encoding="utf-8")
 
 
+def read_env_file(env_path: Path = ENV_FILE_PATH) -> dict[str, str]:
+    if not env_path.exists():
+        return {}
+    values: dict[str, str] = {}
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            continue
+        key, raw_value = line.split("=", 1)
+        key = key.strip()
+        value = raw_value.strip()
+        if value.startswith('"') and value.endswith('"'):
+            try:
+                value = str(json.loads(value))
+            except json.JSONDecodeError:
+                value = value[1:-1]
+        values[key] = value
+    return values
+
+
+def read_env_value(key: str, env_path: Path = ENV_FILE_PATH) -> str | None:
+    return os.getenv(key) or read_env_file(env_path).get(key)
+
+
 def _env_value(value: str) -> str:
     if any(char.isspace() for char in value) or "#" in value:
         return json.dumps(value)

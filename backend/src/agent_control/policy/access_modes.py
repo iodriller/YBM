@@ -10,52 +10,118 @@ from agent_control.schemas import Capability, CapabilityAccessMode, CapabilityAc
 @dataclass(frozen=True)
 class AccessGroup:
     name: str
+    label: str
     read_capabilities: tuple[Capability, ...] = ()
     write_capabilities: tuple[Capability, ...] = ()
     read_risk: RiskLevel = RiskLevel.LOW
     write_risk: RiskLevel = RiskLevel.HIGH
+    options: tuple[CapabilityAccessMode, ...] = (
+        CapabilityAccessMode.OFF,
+        CapabilityAccessMode.READ_ONLY,
+        CapabilityAccessMode.WRITE_ACCESS,
+        CapabilityAccessMode.FULL_ACCESS,
+    )
+    option_labels: dict[CapabilityAccessMode, str] | None = None
 
 
 ACCESS_GROUPS = {
     "filesystem": AccessGroup(
         name="filesystem",
+        label="File system",
         read_capabilities=(Capability.FILESYSTEM_READ,),
         write_capabilities=(Capability.FILESYSTEM_WRITE,),
         write_risk=RiskLevel.HIGH,
+        option_labels={
+            CapabilityAccessMode.OFF: "Off",
+            CapabilityAccessMode.READ_ONLY: "Read-only",
+            CapabilityAccessMode.WRITE_ACCESS: "Write with approval",
+            CapabilityAccessMode.FULL_ACCESS: "Full write",
+        },
     ),
     "vscode": AccessGroup(
         name="vscode",
+        label="VS Code bridge",
         read_capabilities=(Capability.VSCODE_READ_STATE,),
         write_capabilities=(Capability.VSCODE_WRITE_FILES,),
         write_risk=RiskLevel.HIGH,
+        option_labels={
+            CapabilityAccessMode.OFF: "Off",
+            CapabilityAccessMode.READ_ONLY: "Read state",
+            CapabilityAccessMode.WRITE_ACCESS: "Write with approval",
+            CapabilityAccessMode.FULL_ACCESS: "Full write",
+        },
     ),
-    "desktop": AccessGroup(
-        name="desktop",
+    "desktop_screenshot": AccessGroup(
+        name="desktop_screenshot",
+        label="Desktop screenshots",
         read_capabilities=(Capability.DESKTOP_SCREENSHOT,),
+        options=(CapabilityAccessMode.OFF, CapabilityAccessMode.READ_ONLY),
+        option_labels={
+            CapabilityAccessMode.OFF: "Off",
+            CapabilityAccessMode.READ_ONLY: "On",
+        },
+    ),
+    "desktop_control": AccessGroup(
+        name="desktop_control",
+        label="Desktop control",
         write_capabilities=(Capability.DESKTOP_CONTROL,),
         write_risk=RiskLevel.CRITICAL,
+        options=(CapabilityAccessMode.OFF, CapabilityAccessMode.WRITE_ACCESS, CapabilityAccessMode.FULL_ACCESS),
+        option_labels={
+            CapabilityAccessMode.OFF: "Off",
+            CapabilityAccessMode.WRITE_ACCESS: "Control with approval",
+            CapabilityAccessMode.FULL_ACCESS: "Full control",
+        },
     ),
     "browser": AccessGroup(
         name="browser",
+        label="Browser",
         read_capabilities=(Capability.BROWSER_OPEN,),
         write_capabilities=(Capability.BROWSER_CONTROL,),
         write_risk=RiskLevel.CRITICAL,
+        option_labels={
+            CapabilityAccessMode.OFF: "Off",
+            CapabilityAccessMode.READ_ONLY: "Open only",
+            CapabilityAccessMode.WRITE_ACCESS: "Control with approval",
+            CapabilityAccessMode.FULL_ACCESS: "Full control",
+        },
     ),
     "github": AccessGroup(
         name="github",
+        label="GitHub",
         read_capabilities=(Capability.GITHUB_READ,),
         write_capabilities=(Capability.GITHUB_PUSH,),
         write_risk=RiskLevel.CRITICAL,
+        option_labels={
+            CapabilityAccessMode.OFF: "Off",
+            CapabilityAccessMode.READ_ONLY: "Read-only",
+            CapabilityAccessMode.WRITE_ACCESS: "Push with approval",
+            CapabilityAccessMode.FULL_ACCESS: "Full push",
+        },
     ),
     "terminal": AccessGroup(
         name="terminal",
+        label="Terminal",
         write_capabilities=(Capability.TERMINAL_RUN,),
         write_risk=RiskLevel.MEDIUM,
+        options=(CapabilityAccessMode.OFF, CapabilityAccessMode.WRITE_ACCESS, CapabilityAccessMode.FULL_ACCESS),
+        option_labels={
+            CapabilityAccessMode.OFF: "Off",
+            CapabilityAccessMode.WRITE_ACCESS: "Run with approval",
+            CapabilityAccessMode.FULL_ACCESS: "Full run",
+        },
     ),
     "dependencies": AccessGroup(
         name="dependencies",
+        label="Dependency installs",
         write_capabilities=(Capability.DEPENDENCIES_INSTALL,),
         write_risk=RiskLevel.HIGH,
+        options=(CapabilityAccessMode.OFF, CapabilityAccessMode.WRITE_ACCESS, CapabilityAccessMode.FULL_ACCESS),
+        option_labels={
+            CapabilityAccessMode.OFF: "Off",
+            CapabilityAccessMode.WRITE_ACCESS: "Install with approval",
+            CapabilityAccessMode.FULL_ACCESS: "Full install",
+        },
     ),
 }
 
@@ -68,6 +134,10 @@ def apply_access_modes_to_config(config: dict[str, Any], modes: dict[str, Capabi
     capabilities = config.setdefault("capabilities", {})
     for name, mode in modes.items():
         group = ACCESS_GROUPS.get(name)
+        if group is None and name == "desktop":
+            for legacy_group_name in ("desktop_screenshot", "desktop_control"):
+                _apply_group(capabilities, ACCESS_GROUPS[legacy_group_name], mode)
+            continue
         if group is None:
             continue
         _apply_group(capabilities, group, mode)
@@ -91,8 +161,16 @@ def _summarize_group(settings: AppSettings, group: AccessGroup) -> CapabilityAcc
 
     return CapabilityAccessSummary(
         name=group.name,
+        label=group.label,
         mode=mode,
         capabilities=all_caps,
+        options=[
+            {
+                "value": option.value,
+                "label": (group.option_labels or {}).get(option, option.value.replace("_", " ").title()),
+            }
+            for option in group.options
+        ],
         requires_approval=write_requires_approval,
     )
 

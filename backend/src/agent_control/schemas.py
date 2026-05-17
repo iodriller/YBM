@@ -225,8 +225,10 @@ class MessageClassification(StrictBaseModel):
 
 class CapabilityAccessSummary(StrictBaseModel):
     name: str
+    label: str | None = None
     mode: CapabilityAccessMode
     capabilities: list[Capability] = Field(default_factory=list)
+    options: list[dict[str, str]] = Field(default_factory=list)
     requires_approval: bool = True
 
 

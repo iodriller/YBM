@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from pydantic import Field
 
-from agent_control.config_sync import CONFIG_FILE_PATH, ConfigManager, env_bool, env_json
+from agent_control.config_sync import CONFIG_FILE_PATH, ConfigManager, env_bool, env_json, read_env_value
 from agent_control.config import AppSettings
 from agent_control.llm.providers import OpenAICompatibleProvider
 from agent_control.policy import apply_access_modes_to_config, summarize_access_modes
@@ -85,7 +85,7 @@ def create_admin_router(
 
     def require_admin(request: Request) -> AppSettings:
         loaded = settings()
-        expected = os.getenv(loaded.server.admin_token_env)
+        expected = read_env_value(loaded.server.admin_token_env)
         provided = request.headers.get("X-Agent-Control-Admin-Token") or request.query_params.get("token")
         if expected and provided != expected:
             raise HTTPException(status_code=401, detail="invalid admin token")
@@ -118,7 +118,7 @@ def create_admin_router(
                 "telegram": {
                     "enabled": loaded.channels.telegram.enabled,
                     "token_env": loaded.channels.telegram.token_env,
-                    "token_present": bool(os.getenv(loaded.channels.telegram.token_env)),
+                    "token_present": bool(read_env_value(loaded.channels.telegram.token_env)),
                     "allowed_user_ids": loaded.channels.telegram.allowed_user_ids,
                     "allowed_chat_ids": loaded.channels.telegram.allowed_chat_ids,
                     "allowed_user_count": len(loaded.channels.telegram.allowed_user_ids),
@@ -132,7 +132,7 @@ def create_admin_router(
             },
             "admin": {
                 "enabled": loaded.server.admin_enabled,
-                "token_required": bool(os.getenv(loaded.server.admin_token_env)),
+                "token_required": bool(read_env_value(loaded.server.admin_token_env)),
                 "config_file": str(CONFIG_FILE_PATH),
             },
         }
@@ -448,7 +448,7 @@ def _config_warnings(settings: AppSettings) -> list[str]:
         warnings.append("Telegram is enabled but no allowed user IDs or chat IDs are configured; all messages will be denied.")
     if settings.llm.default_profile not in settings.llm.profiles:
         warnings.append("Default orchestrator LLM profile is not configured; Telegram task classification will fail.")
-    if os.getenv("AGENT_CAPABILITIES"):
+    if read_env_value("AGENT_CAPABILITIES"):
         warnings.append("AGENT_CAPABILITIES is set in the environment and may override access-mode changes saved to YAML.")
     return warnings
 
@@ -499,6 +499,9 @@ _ADMIN_HTML = """
       --border: #d0d7de;
       --accent: #0969da;
       --danger: #cf222e;
+      --success: #1a7f37;
+      --success-bg: #dafbe1;
+      --chip: #f6f8fa;
     }
     @media (prefers-color-scheme: dark) {
       :root {
@@ -509,6 +512,9 @@ _ADMIN_HTML = """
         --border: #30363d;
         --accent: #58a6ff;
         --danger: #ff7b72;
+        --success: #3fb950;
+        --success-bg: #17301f;
+        --chip: #21262d;
       }
     }
     * { box-sizing: border-box; }
@@ -532,6 +538,12 @@ _ADMIN_HTML = """
     }
     button { cursor: pointer; }
     button.primary { border-color: var(--accent); color: var(--accent); }
+    button.active {
+      border-color: var(--success);
+      background: var(--success-bg);
+      color: var(--success);
+      font-weight: 600;
+    }
     .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 16px; }
     .panel {
       grid-column: span 6;
@@ -554,15 +566,24 @@ _ADMIN_HTML = """
     th { font-size: 12px; color: var(--muted); font-weight: 600; }
     code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; }
     pre { white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow: auto; }
-    .capability {
-      display: grid;
-      grid-template-columns: minmax(180px, 1fr) auto auto;
-      gap: 8px;
-      padding: 6px 0;
-      border-bottom: 1px solid var(--border);
-      align-items: center;
-    }
+    .access-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+    .access-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; display: grid; gap: 10px; }
+    .access-card-title { display: flex; justify-content: space-between; gap: 8px; align-items: start; }
+    .access-card h3 { margin: 0; font-size: 14px; }
+    .mode-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+    .mode-button { font-size: 12px; padding: 6px 8px; }
+    .cap-list { display: flex; flex-wrap: wrap; gap: 6px; }
     .badge { border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; font-size: 12px; }
+    .badge.soft { background: var(--chip); }
+    .audit-toolbar { margin-bottom: 12px; }
+    .audit-list { display: grid; gap: 10px; }
+    .audit-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; display: grid; gap: 8px; }
+    .audit-card-header { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
+    .audit-title { font-weight: 650; }
+    .audit-summary { color: var(--text); }
+    .audit-meta { display: flex; flex-wrap: wrap; gap: 6px; color: var(--muted); font-size: 12px; }
+    .audit-decision { border-left: 3px solid var(--accent); padding-left: 8px; color: var(--muted); }
+    details.audit-details > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
     .enabled { color: #1a7f37; }
     .disabled { color: var(--muted); }
     @media (max-width: 800px) {
@@ -643,7 +664,7 @@ _ADMIN_HTML = """
     </section>
     <section class="panel wide">
       <h2>Audit</h2>
-      <div class="row">
+      <div class="audit-toolbar row">
         <select id="audit-category">
           <option value="">All categories</option>
           <option value="raw_telegram">Raw Telegram</option>
@@ -656,15 +677,22 @@ _ADMIN_HTML = """
           <option value="tool">Tool Events</option>
         </select>
         <input id="audit-query" placeholder="search audit">
-        <button onclick="loadAudit()">Filter</button>
+        <button onclick="loadAudit(true)">Filter</button>
+        <button onclick="clearAuditFilters()">Clear</button>
       </div>
-      <div id="audit"></div>
+      <div id="audit-count" class="muted"></div>
+      <div id="audit" class="audit-list"></div>
+      <div class="row" style="margin-top: 10px;">
+        <button id="audit-more" onclick="viewMoreAudit()">View more</button>
+      </div>
     </section>
   </main>
   <script>
     const params = new URLSearchParams(window.location.search);
     const token = params.get("token");
     const headers = token ? {"X-Agent-Control-Admin-Token": token} : {};
+    let auditLimit = 20;
+    let auditCustomView = false;
 
     function jsonBlock(value) {
       return JSON.stringify(value, null, 2);
@@ -680,6 +708,12 @@ _ADMIN_HTML = """
       })[char]);
     }
 
+    function labelize(value) {
+      return String(value || "")
+        .replace(/[_.]+/g, " ")
+        .replace(/\\b\\w/g, char => char.toUpperCase());
+    }
+
     async function api(path, options = {}) {
       const response = await fetch(path, {
         ...options,
@@ -693,17 +727,50 @@ _ADMIN_HTML = """
 
     function renderAccessModes(accessModes) {
       const modes = accessModes || {};
-      document.getElementById("access-modes").innerHTML = Object.entries(modes).map(([name, item]) => `
-        <div class="capability">
-          <code>${escapeHtml(name)}</code>
-          <select data-access-mode="${escapeHtml(name)}">
-            ${["off", "read_only", "write_access", "full_access"].map(mode => `
-              <option value="${mode}" ${item.mode === mode ? "selected" : ""}>${mode.replace("_", " ")}</option>
-            `).join("")}
-          </select>
-          <span class="badge">${escapeHtml((item.capabilities || []).join(", "))}</span>
+      document.getElementById("access-modes").innerHTML = `
+        <div class="access-grid">
+          ${Object.entries(modes).map(([name, item]) => {
+            const options = item.options || [
+              {value: "off", label: "Off"},
+              {value: "read_only", label: "Read-only"},
+              {value: "write_access", label: "Write with approval"},
+              {value: "full_access", label: "Full access"}
+            ];
+            return `
+              <div class="access-card">
+                <div class="access-card-title">
+                  <div>
+                    <h3>${escapeHtml(item.label || labelize(name))}</h3>
+                    <div class="muted">${escapeHtml(name)}</div>
+                  </div>
+                  <span class="badge ${item.mode === "off" ? "" : "soft"}">${escapeHtml(labelize(item.mode))}</span>
+                </div>
+                <div class="mode-buttons">
+                  ${options.map(option => `
+                    <button
+                      type="button"
+                      class="mode-button ${item.mode === option.value ? "active" : ""}"
+                      data-access-mode-group="${escapeHtml(name)}"
+                      data-mode="${escapeHtml(option.value)}"
+                      onclick="setAccessMode(${JSON.stringify(name)}, ${JSON.stringify(option.value)})"
+                    >${escapeHtml(option.label || labelize(option.value))}</button>
+                  `).join("")}
+                </div>
+                <div class="cap-list">
+                  ${(item.capabilities || []).map(capability => `<span class="badge soft">${escapeHtml(capability)}</span>`).join("")}
+                </div>
+              </div>
+            `;
+          }).join("")}
         </div>
-      `).join("");
+      `;
+    }
+
+    function setAccessMode(group, mode) {
+      document.querySelectorAll("[data-access-mode-group]").forEach(button => {
+        if (button.getAttribute("data-access-mode-group") !== group) return;
+        button.classList.toggle("active", button.getAttribute("data-mode") === mode);
+      });
     }
 
     function renderTasks(tasks) {
@@ -731,39 +798,71 @@ _ADMIN_HTML = """
     }
 
     function renderAudit(events) {
+      document.getElementById("audit-count").textContent = `Showing ${events.length} audit event${events.length === 1 ? "" : "s"}`;
+      const more = document.getElementById("audit-more");
+      if (more) {
+        more.style.display = events.length >= auditLimit ? "inline-flex" : "none";
+      }
       if (!events.length) {
         document.getElementById("audit").innerHTML = "<div class='muted'>No audit events found.</div>";
         return;
       }
       document.getElementById("audit").innerHTML = `
-        <table>
-          <thead><tr><th>Time</th><th>Category</th><th>Summary</th><th>Decision</th><th>Reason</th><th>Task</th></tr></thead>
-          <tbody>${events.map(event => `
-            <tr>
-              <td>${escapeHtml(event.formatted_time || event.created_at)}</td>
-              <td><span class="badge">${escapeHtml(event.category || event.type)}</span><br>${escapeHtml(event.actor)}</td>
-              <td>${escapeHtml(event.summary || event.title)}</td>
-              <td>${escapeHtml(event.decision || "")}</td>
-              <td>${escapeHtml(event.reason || "")}</td>
-              <td><code>${escapeHtml(event.task_id || "")}</code></td>
-            </tr>
-            <tr>
-              <td></td>
-              <td colspan="5"><pre>${escapeHtml(jsonBlock(event.details || {}))}</pre></td>
-            </tr>
-          `).join("")}</tbody>
-        </table>
+        ${events.map(event => `
+          <article class="audit-card">
+            <div class="audit-card-header">
+              <div>
+                <div class="audit-title">${escapeHtml(event.title || labelize(event.category || event.type))}</div>
+                <div class="audit-meta">
+                  <span>${escapeHtml(event.formatted_time || event.created_at || "")}</span>
+                  <span>${escapeHtml(event.actor || "")}</span>
+                  ${event.source ? `<span>${escapeHtml(event.source)}</span>` : ""}
+                  ${event.task_type ? `<span>task: ${escapeHtml(labelize(event.task_type))}</span>` : ""}
+                  ${event.task_id ? `<span><code>${escapeHtml(event.task_id)}</code></span>` : ""}
+                </div>
+              </div>
+              <span class="badge soft">${escapeHtml(labelize(event.category || event.type))}</span>
+            </div>
+            <div class="audit-summary">${escapeHtml(event.summary || "")}</div>
+            ${(event.decision || event.reason) ? `
+              <div class="audit-decision">
+                ${event.decision ? `<strong>${escapeHtml(labelize(event.decision))}</strong>` : ""}
+                ${event.reason ? `<span>${escapeHtml(event.reason)}</span>` : ""}
+              </div>
+            ` : ""}
+            <details class="audit-details">
+              <summary>Details</summary>
+              <pre>${escapeHtml(jsonBlock(event.details || {}))}</pre>
+            </details>
+          </article>
+        `).join("")}
       `;
     }
 
-    async function loadAudit() {
+    async function loadAudit(reset = false) {
+      if (reset) auditLimit = 20;
+      auditCustomView = true;
       const params = new URLSearchParams();
       const category = document.getElementById("audit-category").value;
       const q = document.getElementById("audit-query").value;
       if (category) params.set("category", category);
       if (q) params.set("q", q);
+      params.set("limit", String(auditLimit));
       const data = await api(`/admin/api/audit?${params.toString()}`);
       renderAudit(data.events || []);
+    }
+
+    async function viewMoreAudit() {
+      auditLimit += 20;
+      await loadAudit(false);
+    }
+
+    async function clearAuditFilters() {
+      document.getElementById("audit-category").value = "";
+      document.getElementById("audit-query").value = "";
+      auditLimit = 20;
+      auditCustomView = false;
+      await refresh();
     }
 
     function populateConfigForms(config) {
@@ -823,7 +922,10 @@ _ADMIN_HTML = """
         populateConfigForms(data.config);
         renderAccessModes(data.access_modes || {});
         renderTasks(data.tasks || []);
-        renderAudit(data.audit || []);
+        if (!auditCustomView) {
+          auditLimit = 20;
+          renderAudit(data.audit || []);
+        }
       } catch (error) {
         status.innerHTML = `<span class="danger">${error.message}</span>`;
       }
@@ -927,8 +1029,8 @@ _ADMIN_HTML = """
 
     async function saveAccessModes() {
       const modes = {};
-      document.querySelectorAll("[data-access-mode]").forEach(select => {
-        modes[select.getAttribute("data-access-mode")] = select.value;
+      document.querySelectorAll("[data-access-mode-group].active").forEach(button => {
+        modes[button.getAttribute("data-access-mode-group")] = button.getAttribute("data-mode");
       });
       await api("/admin/api/config/access-modes", {
         method: "POST",
