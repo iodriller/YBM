@@ -254,6 +254,47 @@ async def test_worker_default_vscode_development_plan_runs_when_enabled(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_worker_default_web_app_plan_uses_workspace_adapter(tmp_path) -> None:
+    repos, audit = _repos(tmp_path)
+    task = repos.tasks.create(
+        "Create a simple hello world web app and launch it",
+        metadata={"task_type": TaskType.DEVELOPMENT.value},
+    )
+    settings = AppSettings(
+        _env_file=None,
+        adapters={"workspace": {"enabled": True, "root_dir": str(tmp_path / "workspaces"), "open_browser": False}},
+        capabilities={
+            Capability.FILESYSTEM_WRITE: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.HIGH,
+            )
+        },
+    )
+    adapter = StaticToolAdapter({"url": "http://127.0.0.1:8890/", "workspace_dir": str(tmp_path / "workspaces")})
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"workspace.web_app": adapter},
+    )
+    worker = TaskWorker(
+        repos,
+        audit,
+        executor=executor,
+        default_plan_factory=lambda item: build_default_vscode_development_plan(settings, item),
+    )
+
+    running = await worker.process_task(task.id)
+    completed = await worker.process_task(task.id)
+
+    assert running.status == TaskStatus.RUNNING
+    assert completed.status == TaskStatus.COMPLETED
+    assert adapter.requests[0].tool_name == "workspace.web_app"
+    assert adapter.requests[0].capability == Capability.FILESYSTEM_WRITE
+
+
+@pytest.mark.asyncio
 async def test_worker_notifies_once_on_completion(tmp_path) -> None:
     repos, audit = _repos(tmp_path)
     task = repos.tasks.create("Run safe step", metadata={"source_chat_id": "100"})

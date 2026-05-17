@@ -9,7 +9,7 @@ from agent_control.storage.repositories import Repositories
 
 
 class TelegramResponder(Protocol):
-    async def answer(self, message: InboundMessage) -> str:
+    async def answer(self, message: InboundMessage, conversation_id: str | None = None) -> str:
         ...
 
 
@@ -19,10 +19,10 @@ class LLMTelegramResponder:
         self.settings = settings
         self.repositories = repositories
 
-    async def answer(self, message: InboundMessage) -> str:
+    async def answer(self, message: InboundMessage, conversation_id: str | None = None) -> str:
         return await self.provider.generate_text(
             _system_prompt(),
-            _user_prompt(message, _gateway_context(self.settings, self.repositories)),
+            _user_prompt(message, _gateway_context(self.settings, self.repositories, conversation_id)),
         )
 
 
@@ -31,7 +31,7 @@ class StaticTelegramResponder:
         self.response = response
         self.messages: list[InboundMessage] = []
 
-    async def answer(self, message: InboundMessage) -> str:
+    async def answer(self, message: InboundMessage, conversation_id: str | None = None) -> str:
         self.messages.append(message)
         return self.response
 
@@ -54,7 +54,7 @@ Telegram message:
 Reply in plain text suitable for Telegram."""
 
 
-def _gateway_context(settings: AppSettings, repositories: Repositories) -> str:
+def _gateway_context(settings: AppSettings, repositories: Repositories, conversation_id: str | None = None) -> str:
     tasks = repositories.tasks.list_recent(5)
     active_statuses = {TaskStatus.RECEIVED, TaskStatus.INTERPRETING, TaskStatus.PLANNED, TaskStatus.RUNNING, TaskStatus.RETRYING, TaskStatus.AWAITING_APPROVAL}
     active_count = len([task for task in tasks if task.status in active_statuses])
@@ -70,12 +70,15 @@ def _gateway_context(settings: AppSettings, repositories: Repositories) -> str:
 
     screenshot_policy = settings.capabilities.get(Capability.DESKTOP_SCREENSHOT)
     screenshot_enabled = bool(screenshot_policy and screenshot_policy.enabled)
+    memory_record = repositories.conversation_memory.get(conversation_id) if conversation_id else None
+    memory = memory_record.get("summary") if memory_record else None
 
     return f"""LLM profile: {settings.llm.default_profile}
 Telegram receive/send: enabled
 VS Code/GitHub Copilot terminal route: {'enabled' if vscode_enabled else 'disabled'} ({vscode_approval})
 Terminal command route: {'enabled' if terminal_enabled else 'disabled'} ({terminal_approval})
 Desktop screenshots: {'enabled' if screenshot_enabled else 'disabled'}
+Conversation memory: {memory or 'No durable user facts yet.'}
 Recent tasks: {len(tasks)}
 Active tasks: {active_count}
 Recent task list:

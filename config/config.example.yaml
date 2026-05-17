@@ -135,6 +135,12 @@ adapters:
     bridge_host: "127.0.0.1"
     bridge_port: 8766
     auth_token_env: "VSCODE_BRIDGE_TOKEN"
+  workspace:
+    enabled: true
+    root_dir: ".agent_control/workspaces"
+    web_host: "127.0.0.1"
+    web_port_start: 8890
+    open_browser: true
   terminal:
     enabled: false
     allowed_working_dirs: []

@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime
 import os
 from pathlib import Path
+import re
 from typing import Any
 
 from fastapi import Header, HTTPException
@@ -170,21 +171,23 @@ class VSCodeBridgeTerminalAdapter:
 
     async def _execute_local(self, request: ToolCallRequest, command_text: str) -> ToolCallResult:
         try:
-            process = await asyncio.create_subprocess_exec(
-                "powershell.exe",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                command_text,
-                cwd=request.input.get("cwd"),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                process.communicate(),
-                timeout=request.timeout_seconds,
-            )
+            returncode, content = await _run_powershell(command_text, request.input.get("cwd"), request.timeout_seconds)
+            retried = False
+            prompt = str(request.input.get("prompt") or "").strip()
+            if returncode != 0 and prompt and not request.input.get("command"):
+                retry_prompt = (
+                    "The previous Copilot CLI attempt failed. Do not create, edit, or execute files. "
+                    "Return the answer as plain text only, including code blocks and minimal run instructions.\n\n"
+                    f"Request: {prompt}"
+                )
+                retry_command = self._command_text_for_prompt(retry_prompt)
+                retry_code, retry_content = await _run_powershell(retry_command, request.input.get("cwd"), request.timeout_seconds)
+                content = (
+                    "First attempt failed; retried once with a plain-text-only prompt.\n\n"
+                    f"First attempt output:\n{content}\n\nRetry output:\n{retry_content}"
+                ).strip()
+                returncode = retry_code
+                retried = True
         except TimeoutError:
             return ToolCallResult(
                 request_id=request.id,
@@ -195,16 +198,16 @@ class VSCodeBridgeTerminalAdapter:
         except Exception as exc:
             return self._failed(request, f"local Copilot CLI fallback failed: {exc}")
 
-        stdout = stdout_bytes.decode(errors="replace")
-        stderr = stderr_bytes.decode(errors="replace")
-        content = "\n".join(part for part in [stdout.strip(), stderr.strip()] if part)
-        status = ToolResultStatus.SUCCEEDED if process.returncode == 0 else ToolResultStatus.FAILED
+        usage = _extract_copilot_usage(content)
+        status = ToolResultStatus.SUCCEEDED if returncode == 0 else _failed_status(content)
         return ToolCallResult(
             request_id=request.id,
             status=status,
             output={
                 "command_id": None,
                 "queued": None,
+                "usage": usage,
+                "retried": retried,
                 "terminal_output": [
                     {
                         "instance_id": "local-worker",
@@ -212,12 +215,12 @@ class VSCodeBridgeTerminalAdapter:
                         "content": content,
                         "command_id": None,
                         "is_final": True,
-                        "exit_code": process.returncode,
+                        "exit_code": returncode,
                         "source": "local_copilot_cli_fallback",
                     }
                 ],
             },
-            error_class=None if status == ToolResultStatus.SUCCEEDED else ErrorClass.ADAPTER_FAILED,
+            error_class=None if status == ToolResultStatus.SUCCEEDED else _error_class(content),
             error_message=None if status == ToolResultStatus.SUCCEEDED else "local Copilot CLI fallback failed",
         )
 
@@ -234,6 +237,9 @@ class VSCodeBridgeTerminalAdapter:
             quoted = _powershell_single_quote(prompt)
             return " ".join(part.replace("{prompt}", quoted).replace("{prompt_raw}", prompt) for part in self.command_template)
 
+        return self._command_text_for_prompt(prompt)
+
+    def _command_text_for_prompt(self, prompt: str) -> str:
         copilot = _copilot_executable()
         if copilot:
             return f"& {_powershell_single_quote(str(copilot))} -p {_powershell_single_quote(prompt)}"
@@ -291,3 +297,51 @@ def _copilot_executable() -> Path | None:
         if candidate.is_file():
             return candidate
     return None
+
+
+async def _run_powershell(command_text: str, cwd: str | None, timeout_seconds: int) -> tuple[int, str]:
+    process = await asyncio.create_subprocess_exec(
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        command_text,
+        cwd=cwd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout_bytes, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)
+    stdout = stdout_bytes.decode(errors="replace")
+    stderr = stderr_bytes.decode(errors="replace")
+    content = "\n".join(part for part in [stdout.strip(), stderr.strip()] if part)
+    return int(process.returncode or 0), content
+
+
+def _extract_copilot_usage(content: str) -> dict[str, str]:
+    usage: dict[str, str] = {}
+    for line in content.splitlines():
+        stripped = line.strip()
+        if re.search(r"\bRequests\b", stripped, re.IGNORECASE):
+            usage["requests"] = stripped
+        elif re.search(r"\bTokens\b", stripped, re.IGNORECASE):
+            usage["tokens"] = stripped
+        elif re.search(r"(usage|quota|rate).{0,30}(limit|exceeded|remaining)", stripped, re.IGNORECASE):
+            usage.setdefault("limit", stripped)
+    return usage
+
+
+def _failed_status(content: str) -> ToolResultStatus:
+    lowered = content.lower()
+    if "rate limit" in lowered or "too many requests" in lowered:
+        return ToolResultStatus.RATE_LIMITED
+    return ToolResultStatus.FAILED
+
+
+def _error_class(content: str) -> ErrorClass:
+    lowered = content.lower()
+    if "usage limit" in lowered or "quota exceeded" in lowered:
+        return ErrorClass.USAGE_LIMITED
+    if "rate limit" in lowered or "too many requests" in lowered:
+        return ErrorClass.RATE_LIMITED
+    return ErrorClass.ADAPTER_FAILED

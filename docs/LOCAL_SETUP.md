@@ -20,7 +20,7 @@ VSCODE_BRIDGE_TOKEN=...
 
 Start from `config/config.example.yaml`.
 
-Safe defaults keep terminal execution, filesystem access, VS Code access, desktop screenshots, browser automation, dependency installation, and Git pushes disabled.
+Safe defaults keep terminal execution, filesystem access, VS Code access, desktop screenshots, browser automation, dependency installation, and Git pushes disabled. The workspace adapter itself is available by default, but it only executes when `filesystem.write` is enabled for generated files.
 
 ## 3. Start The Stack
 
@@ -28,7 +28,7 @@ Safe defaults keep terminal execution, filesystem access, VS Code access, deskto
 .\scripts\start_stack.ps1
 ```
 
-This initializes the database and starts LocalDeploy, backend, Telegram polling, and worker.
+This initializes the database and starts LocalDeploy, backend, Telegram polling, and worker. Generated task files default to `.agent_control/workspaces`.
 
 ## 4. Stop The Stack
 
@@ -90,3 +90,4 @@ The extension sends workspace state to the local backend and polls for queued te
 
 - Screenshot capture uses Pillow and is disabled by default.
 - VS Code terminal stdout capture depends on VS Code shell integration. Without it, the bridge records dispatch completion only.
+- Direct Copilot Chat panel scraping is not implemented; Copilot routing uses VS Code terminal command dispatch or the local Copilot CLI fallback.

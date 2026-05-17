@@ -7,6 +7,11 @@ from agent_control.schemas import Capability, PlanModel, PlanStep, RiskLevel, Ta
 def build_default_vscode_development_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | None:
     if task.metadata.get("task_type") != TaskType.DEVELOPMENT.value:
         return None
+
+    workspace_plan = _build_workspace_web_app_plan(settings, task)
+    if workspace_plan is not None:
+        return workspace_plan
+
     if not settings.adapters.vscode.enabled:
         return None
 
@@ -43,4 +48,53 @@ def build_default_vscode_development_plan(settings: AppSettings, task: TaskRecor
             )
         ],
         success_criteria=["The VS Code bridge accepted the command and reported a final terminal output record."],
+    )
+
+
+def _build_workspace_web_app_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | None:
+    if not settings.adapters.workspace.enabled:
+        return None
+    if not _looks_like_launchable_web_app(task.objective):
+        return None
+
+    policy = settings.capabilities.get(Capability.FILESYSTEM_WRITE)
+    if policy is None or not policy.enabled:
+        return None
+
+    return PlanModel(
+        objective=task.objective,
+        assumptions=[
+            "The task asks for a visible local web-app result.",
+            f"Generated files are limited to {settings.adapters.workspace.root_dir}.",
+        ],
+        required_capabilities=[Capability.FILESYSTEM_WRITE],
+        steps=[
+            PlanStep(
+                title="Create and launch local web app preview",
+                description="Create a task workspace, write a minimal web app, start a localhost static server, and return the URL.",
+                required_capabilities=[Capability.FILESYSTEM_WRITE],
+                risk_level=RiskLevel.HIGH,
+                requires_approval=policy.requires_approval,
+                tool_name="workspace.web_app",
+                tool_input={
+                    "objective": task.objective,
+                    "scope_target": settings.adapters.workspace.root_dir,
+                    "web_port_start": settings.adapters.workspace.web_port_start,
+                    "open_browser": settings.adapters.workspace.open_browser,
+                    "timeout_seconds": 60,
+                },
+                expected_output="A local workspace path plus an HTTP preview URL.",
+            )
+        ],
+        success_criteria=["The generated web app is available at a localhost URL and the workspace path is reported."],
+    )
+
+
+def _looks_like_launchable_web_app(objective: str) -> bool:
+    lowered = objective.lower()
+    web_markers = ("web app", "website", "webpage", "web page", "html", "browser app")
+    launch_markers = ("launch", "start", "serve", "run it", "open it", "show me", "preview", "url")
+    creation_markers = ("create", "build", "make", "write")
+    return any(marker in lowered for marker in web_markers) and (
+        any(marker in lowered for marker in launch_markers) or any(marker in lowered for marker in creation_markers)
     )

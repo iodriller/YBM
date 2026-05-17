@@ -55,6 +55,24 @@ class ConfigManager:
 
         self.env_path.write_text("\n".join(next_lines).rstrip() + "\n", encoding="utf-8")
 
+    def remove_env_keys(self, keys: list[str]) -> None:
+        if not self.env_path.exists():
+            return
+        targets = set(keys)
+        current_lines = self.env_path.read_text(encoding="utf-8").splitlines()
+        next_lines: list[str] = []
+        for line in current_lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in line:
+                next_lines.append(line)
+                continue
+            key = line.split("=", 1)[0].strip()
+            if key in targets:
+                os.environ.pop(key, None)
+                continue
+            next_lines.append(line)
+        self.env_path.write_text("\n".join(next_lines).rstrip() + "\n", encoding="utf-8")
+
 
 def read_env_file(env_path: Path = ENV_FILE_PATH) -> dict[str, str]:
     if not env_path.exists():

@@ -45,6 +45,10 @@ class AdminLLMConfigRequest(StrictBaseModel):
     api_key_value: str | None = None
 
 
+class AdminLLMPresetRequest(StrictBaseModel):
+    preset: str = Field(min_length=1, max_length=80)
+
+
 class AdminTelegramConfigRequest(StrictBaseModel):
     enabled: bool | None = None
     token_env: str | None = Field(default=None, min_length=1, max_length=120)
@@ -62,12 +66,46 @@ class AdminVSCodeConfigRequest(StrictBaseModel):
     bridge_token: str | None = None
 
 
+class AdminWorkspaceConfigRequest(StrictBaseModel):
+    enabled: bool | None = None
+    root_dir: str | None = None
+    web_host: str | None = None
+    web_port_start: int | None = Field(default=None, ge=1, le=65535)
+    open_browser: bool | None = None
+
+
 class AdminAccessModesRequest(StrictBaseModel):
     modes: dict[str, CapabilityAccessMode]
 
 
 SettingsLoader = Callable[[], AppSettings]
 RepositoriesLoader = Callable[[], Repositories]
+
+
+LLM_PRESETS: dict[str, dict[str, Any]] = {
+    "localdeploy_gemma3_4b": {
+        "label": "LocalDeploy Gemma 3 4B",
+        "profile_name": "localdeploy_gemma3_4b",
+        "provider": "openai_compatible",
+        "model": "gemma3_4b_ollama_safe",
+        "base_url": "http://127.0.0.1:8000/v1",
+        "api_key_env": None,
+        "timeout_seconds": 180,
+        "max_tokens": 1024,
+        "temperature": 0.2,
+    },
+    "openai_gpt41": {
+        "label": "OpenAI GPT-4.1",
+        "profile_name": "openai_saved",
+        "provider": "openai_compatible",
+        "model": "gpt-4.1",
+        "base_url": "https://api.openai.com/v1",
+        "api_key_env": "OPENAI_API_KEY",
+        "timeout_seconds": 60,
+        "max_tokens": 4096,
+        "temperature": 0.2,
+    },
+}
 
 
 def create_admin_router(
@@ -129,6 +167,10 @@ def create_admin_router(
                     "default_profile": loaded.llm.default_profile,
                     "profile_count": len(loaded.llm.profiles),
                     "default_profile_configured": loaded.llm.default_profile in loaded.llm.profiles,
+                    "presets": [
+                        {**preset, "key": key, "active": loaded.llm.default_profile == preset["profile_name"]}
+                        for key, preset in LLM_PRESETS.items()
+                    ],
                 },
             },
             "admin": {
@@ -291,6 +333,44 @@ def create_admin_router(
         _audit_config_update(repositories_loader(), loaded, "llm", payload.model_dump(mode="json"))
         return {"config_file": str(CONFIG_FILE_PATH), "llm": llm}
 
+    @router.post("/api/config/llm/preset")
+    def admin_select_llm_preset(request: Request, payload: AdminLLMPresetRequest) -> dict[str, Any]:
+        loaded = require_admin(request)
+        preset = LLM_PRESETS.get(payload.preset)
+        if preset is None:
+            raise HTTPException(status_code=400, detail=f"unknown LLM preset: {payload.preset}")
+
+        config = _read_config_file(config_manager)
+        llm = config.setdefault("llm", {})
+        profiles = llm.setdefault("profiles", {})
+        profile_name = preset["profile_name"]
+        llm["default_profile"] = profile_name
+        profiles[profile_name] = {
+            "provider": preset["provider"],
+            "model": preset["model"],
+            "base_url": preset["base_url"],
+            "api_key_env": preset["api_key_env"],
+            "timeout_seconds": preset["timeout_seconds"],
+            "max_tokens": preset["max_tokens"],
+            "temperature": preset["temperature"],
+        }
+        _write_config_file(config_manager, config)
+        config_manager.upsert_env(
+            {
+                "AGENT_LLM__DEFAULT_PROFILE": profile_name,
+                f"AGENT_LLM__PROFILES__{profile_name}__PROVIDER": preset["provider"],
+                f"AGENT_LLM__PROFILES__{profile_name}__MODEL": preset["model"],
+                f"AGENT_LLM__PROFILES__{profile_name}__BASE_URL": preset["base_url"] or "",
+                f"AGENT_LLM__PROFILES__{profile_name}__API_KEY_ENV": preset["api_key_env"] or "",
+                f"AGENT_LLM__PROFILES__{profile_name}__TIMEOUT_SECONDS": str(preset["timeout_seconds"]),
+                f"AGENT_LLM__PROFILES__{profile_name}__MAX_TOKENS": str(preset["max_tokens"]),
+                f"AGENT_LLM__PROFILES__{profile_name}__TEMPERATURE": str(preset["temperature"]),
+            }
+        )
+        config_manager.remove_env_keys(_legacy_default_llm_env_keys())
+        _audit_config_update(repositories_loader(), loaded, "llm_preset", {"preset": payload.preset, "profile": profile_name})
+        return {"config_file": str(CONFIG_FILE_PATH), "preset": payload.preset, "llm": llm}
+
     @router.post("/api/config/telegram")
     def admin_update_telegram_config(request: Request, payload: AdminTelegramConfigRequest) -> dict[str, Any]:
         loaded = require_admin(request)
@@ -346,6 +426,32 @@ def create_admin_router(
             config_manager.upsert_env(env_updates)
         _audit_config_update(repositories_loader(), loaded, "vscode", patch)
         return {"config_file": str(CONFIG_FILE_PATH), "vscode": vscode}
+
+    @router.post("/api/config/workspace")
+    def admin_update_workspace_config(request: Request, payload: AdminWorkspaceConfigRequest) -> dict[str, Any]:
+        loaded = require_admin(request)
+        config = _read_config_file(config_manager)
+        workspace = config.setdefault("adapters", {}).setdefault("workspace", {})
+        patch = payload.model_dump(exclude_unset=True)
+        for key, value in patch.items():
+            if value is not None:
+                workspace[key] = value
+        _write_config_file(config_manager, config)
+        env_updates: dict[str, str | None] = {}
+        if payload.enabled is not None:
+            env_updates["AGENT_ADAPTERS__WORKSPACE__ENABLED"] = env_bool(payload.enabled)
+        if payload.root_dir:
+            env_updates["AGENT_ADAPTERS__WORKSPACE__ROOT_DIR"] = payload.root_dir
+        if payload.web_host:
+            env_updates["AGENT_ADAPTERS__WORKSPACE__WEB_HOST"] = payload.web_host
+        if payload.web_port_start is not None:
+            env_updates["AGENT_ADAPTERS__WORKSPACE__WEB_PORT_START"] = str(payload.web_port_start)
+        if payload.open_browser is not None:
+            env_updates["AGENT_ADAPTERS__WORKSPACE__OPEN_BROWSER"] = env_bool(payload.open_browser)
+        if env_updates:
+            config_manager.upsert_env(env_updates)
+        _audit_config_update(repositories_loader(), loaded, "workspace", patch)
+        return {"config_file": str(CONFIG_FILE_PATH), "workspace": workspace}
 
     @router.post("/api/config/access-modes")
     def admin_update_access_modes(request: Request, payload: AdminAccessModesRequest) -> dict[str, Any]:
@@ -428,6 +534,11 @@ def _blank_to_none(value: str | None) -> str | None:
     return value or None
 
 
+def _legacy_default_llm_env_keys() -> list[str]:
+    fields = ("PROVIDER", "MODEL", "BASE_URL", "API_KEY_ENV", "TIMEOUT_SECONDS", "MAX_TOKENS", "TEMPERATURE")
+    return [f"AGENT_LLM__PROFILES__default__{field}" for field in fields]
+
+
 def _audit_config_update(
     repositories: Repositories,
     settings: AppSettings,
@@ -458,6 +569,7 @@ def _database_summary(settings: AppSettings) -> dict[str, Any]:
     database.initialize()
     tables = [
         "conversations",
+        "conversation_memory",
         "messages",
         "tasks",
         "plans",
@@ -546,6 +658,10 @@ _ADMIN_HTML = """
       font-weight: 600;
     }
     .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 16px; }
+    .status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+    .status-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; background: var(--panel); }
+    .status-card strong { display: block; font-size: 18px; margin-top: 4px; overflow-wrap: anywhere; }
+    .mini-label { color: var(--muted); font-size: 12px; }
     .panel {
       grid-column: span 6;
       background: var(--panel);
@@ -576,6 +692,8 @@ _ADMIN_HTML = """
     .cap-list { display: flex; flex-wrap: wrap; gap: 6px; }
     .badge { border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; font-size: 12px; }
     .badge.soft { background: var(--chip); }
+    .link-list { display: grid; gap: 4px; margin-top: 8px; font-size: 12px; }
+    a { color: var(--accent); }
     .activity { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
     .activity-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: 0 0 auto; }
     .activity.active .activity-dot { background: var(--accent); animation: pulse 1.1s ease-in-out infinite; }
@@ -616,6 +734,10 @@ _ADMIN_HTML = """
     </div>
   </header>
   <main class="grid">
+    <section class="panel wide">
+      <h2>Overview</h2>
+      <div id="overview" class="status-grid"></div>
+    </section>
     <section class="panel">
       <h2>Configuration</h2>
       <div id="warnings" class="warning"></div>
@@ -637,7 +759,27 @@ _ADMIN_HTML = """
       <div id="command-result" class="muted"></div>
     </section>
     <section class="panel">
+      <h2>Local Workspace</h2>
+      <div class="field"><label>Enabled</label><input id="workspace-enabled" type="checkbox"></div>
+      <div class="field"><label>Root Directory</label><input id="workspace-root" placeholder=".agent_control/workspaces"></div>
+      <div class="field"><label>Preview Host</label><input id="workspace-host" placeholder="127.0.0.1"></div>
+      <div class="field"><label>Port Start</label><input id="workspace-port" placeholder="8890"></div>
+      <div class="field"><label>Open Browser</label><input id="workspace-open-browser" type="checkbox"></div>
+      <div class="row"><button onclick="saveWorkspace()">Save Workspace</button></div>
+      <div id="workspace-result" class="muted"></div>
+    </section>
+    <section class="panel">
       <h2>Orchestrator LLM</h2>
+      <div class="field">
+        <label>Preset</label>
+        <div class="row">
+          <select id="llm-preset">
+            <option value="localdeploy_gemma3_4b">LocalDeploy Gemma 3 4B</option>
+            <option value="openai_gpt41">OpenAI GPT-4.1</option>
+          </select>
+          <button onclick="applyLLMPreset()">Use Preset</button>
+        </div>
+      </div>
       <div class="field"><label>Profile</label><input id="llm-profile" value="default"></div>
       <div class="field"><label>Default Profile</label><input id="llm-default-profile" value="default"></div>
       <div class="field"><label>Provider</label><input id="llm-provider" value="openai_compatible"></div>
@@ -665,7 +807,7 @@ _ADMIN_HTML = """
     <section class="panel wide">
       <h2>Capability Access</h2>
       <div id="access-modes"></div>
-      <div class="row"><button onclick="saveAccessModes()">Save Access Modes</button></div>
+      <div class="row"><button onclick="saveAccessModes()">Save Access Modes</button><span id="access-result" class="muted"></span></div>
     </section>
     <section class="panel wide">
       <h2>Database</h2>
@@ -758,6 +900,22 @@ _ADMIN_HTML = """
       return `${Math.floor(minutes / 60)}h ago`;
     }
 
+    function renderOverview(data) {
+      const config = data.config || {};
+      const llm = config.llm || {};
+      const telegram = ((config.channels || {}).telegram) || {};
+      const workspace = (((config.adapters || {}).workspace) || {});
+      const vscode = data.vscode || {};
+      const activeTasks = (data.tasks || []).filter(task => ["received", "interpreting", "planned", "running", "retrying", "awaiting_approval"].includes(task.status)).length;
+      document.getElementById("overview").innerHTML = `
+        <div class="status-card"><span class="mini-label">LLM</span><strong>${escapeHtml(llm.default_profile || "missing")}</strong></div>
+        <div class="status-card"><span class="mini-label">Telegram</span><strong>${telegram.enabled ? "Enabled" : "Disabled"}</strong></div>
+        <div class="status-card"><span class="mini-label">VS Code Bridge</span><strong>${vscode.connected ? "Connected" : "Fallback/Waiting"}</strong></div>
+        <div class="status-card"><span class="mini-label">Active Tasks</span><strong>${activeTasks}</strong></div>
+        <div class="status-card"><span class="mini-label">Workspace</span><strong>${escapeHtml(workspace.root_dir || ".agent_control/workspaces")}</strong></div>
+      `;
+    }
+
     async function api(path, options = {}) {
       const response = await fetch(path, {
         ...options,
@@ -815,6 +973,16 @@ _ADMIN_HTML = """
         if (button.getAttribute("data-access-mode-group") !== group) return;
         button.classList.toggle("active", button.getAttribute("data-mode") === mode);
       });
+      saveAccessModes();
+    }
+
+    function taskResultLinks(task) {
+      const result = ((task.metadata || {}).last_tool_result || {}).output || {};
+      const links = [];
+      if (result.url) links.push(`<a href="${escapeHtml(result.url)}" target="_blank" rel="noreferrer">${escapeHtml(result.url)}</a>`);
+      if (result.workspace_dir) links.push(`<span>Workspace: <code>${escapeHtml(result.workspace_dir)}</code></span>`);
+      if (result.server_pid) links.push(`<span>Server PID: ${escapeHtml(result.server_pid)}</span>`);
+      return links.length ? `<div class="link-list">${links.join("")}</div>` : "";
     }
 
     function renderTasks(tasks) {
@@ -844,6 +1012,7 @@ _ADMIN_HTML = """
               <td>
                 ${escapeHtml(task.objective)}
                 ${type ? `<div class="task-meta">${escapeHtml(labelize(type))}</div>` : ""}
+                ${taskResultLinks(task)}
               </td>
               <td class="row">
                 <button ${taskActionDisabled(task, "pause") ? "disabled" : ""} onclick="taskSignal(${JSON.stringify(task.id)}, 'pause')">Pause</button>
@@ -928,6 +1097,10 @@ _ADMIN_HTML = """
       const llm = config.llm || {};
       const profileName = llm.default_profile || "default";
       const profile = (llm.profiles || {})[profileName] || {};
+      const presetSelect = document.getElementById("llm-preset");
+      if (presetSelect) {
+        presetSelect.value = profileName === "openai_saved" ? "openai_gpt41" : "localdeploy_gemma3_4b";
+      }
       document.getElementById("llm-profile").value = profileName;
       document.getElementById("llm-default-profile").value = profileName;
       document.getElementById("llm-provider").value = profile.provider || "openai_compatible";
@@ -950,6 +1123,13 @@ _ADMIN_HTML = """
       document.getElementById("vscode-port").value = vscode.bridge_port || 8766;
       document.getElementById("vscode-token-env").value = vscode.auth_token_env || "VSCODE_BRIDGE_TOKEN";
       document.getElementById("vscode-token-value").value = "";
+
+      const workspace = ((config.adapters || {}).workspace) || {};
+      document.getElementById("workspace-enabled").checked = workspace.enabled !== false;
+      document.getElementById("workspace-root").value = workspace.root_dir || ".agent_control/workspaces";
+      document.getElementById("workspace-host").value = workspace.web_host || "127.0.0.1";
+      document.getElementById("workspace-port").value = workspace.web_port_start || 8890;
+      document.getElementById("workspace-open-browser").checked = workspace.open_browser !== false;
     }
 
     function parseIds(value) {
@@ -965,6 +1145,7 @@ _ADMIN_HTML = """
       try {
         const data = await api("/admin/api/summary");
         status.textContent = `OK | ${data.config.identity.instance_name}`;
+        renderOverview(data);
         document.getElementById("warnings").innerHTML = (data.warnings || []).map(escapeHtml).join("<br>");
         document.getElementById("config").textContent = jsonBlock({
           server: data.config.server,
@@ -1041,6 +1222,21 @@ _ADMIN_HTML = """
       }
     }
 
+    async function applyLLMPreset() {
+      const result = document.getElementById("llm-result");
+      try {
+        const preset = document.getElementById("llm-preset").value;
+        const data = await api("/admin/api/config/llm/preset", {
+          method: "POST",
+          body: JSON.stringify({preset})
+        });
+        result.textContent = `Selected ${data.preset}. Restart long-running processes to reload config.`;
+        await refresh();
+      } catch (error) {
+        result.textContent = error.message;
+      }
+    }
+
     async function testLLM() {
       const result = document.getElementById("llm-result");
       result.textContent = "Testing";
@@ -1091,16 +1287,43 @@ _ADMIN_HTML = """
       }
     }
 
+    async function saveWorkspace() {
+      const result = document.getElementById("workspace-result");
+      try {
+        await api("/admin/api/config/workspace", {
+          method: "POST",
+          body: JSON.stringify({
+            enabled: document.getElementById("workspace-enabled").checked,
+            root_dir: document.getElementById("workspace-root").value,
+            web_host: document.getElementById("workspace-host").value,
+            web_port_start: Number(document.getElementById("workspace-port").value),
+            open_browser: document.getElementById("workspace-open-browser").checked
+          })
+        });
+        result.textContent = "Workspace config saved. Restart worker to reload config.";
+        await refresh();
+      } catch (error) {
+        result.textContent = error.message;
+      }
+    }
+
     async function saveAccessModes() {
+      const result = document.getElementById("access-result");
+      if (result) result.textContent = "Saving";
       const modes = {};
       document.querySelectorAll("[data-access-mode-group].active").forEach(button => {
         modes[button.getAttribute("data-access-mode-group")] = button.getAttribute("data-mode");
       });
-      await api("/admin/api/config/access-modes", {
-        method: "POST",
-        body: JSON.stringify({modes})
-      });
-      await refresh();
+      try {
+        await api("/admin/api/config/access-modes", {
+          method: "POST",
+          body: JSON.stringify({modes})
+        });
+        if (result) result.textContent = "Saved";
+        await refresh();
+      } catch (error) {
+        if (result) result.textContent = error.message;
+      }
     }
 
     refresh();

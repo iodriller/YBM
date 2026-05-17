@@ -9,6 +9,7 @@ import httpx
 from agent_control.config import AppSettings, TelegramConfig
 from agent_control.config_sync import read_env_value
 from agent_control.channels.responder import TelegramResponder
+from agent_control.channels.memory import update_memory_from_text
 from agent_control.llm.classifier import MessageClassifier
 from agent_control.orchestration.signals import apply_task_signal
 from agent_control.schemas import (
@@ -345,6 +346,8 @@ class TelegramIntakeService:
                 result.inbound_message.chat_id,
             )
             self.repositories.messages.create(result.inbound_message, conversation_id)
+            if result.inbound_message.text:
+                self._update_conversation_memory(conversation_id, result.inbound_message.text)
 
             if result.command is None:
                 plain_response = self._plain_text_command_response(result.inbound_message)
@@ -399,7 +402,7 @@ class TelegramIntakeService:
         )
 
         if not classification.is_task:
-            outbound = await self._non_task_response(inbound, classification)
+            outbound = await self._non_task_response(inbound, classification, conversation_id)
             if outbound is not None:
                 return TelegramUpdateResult(
                     authorized=True,
@@ -450,16 +453,22 @@ class TelegramIntakeService:
         self,
         inbound: InboundMessage,
         classification: MessageClassification,
+        conversation_id: str,
     ) -> OutboundMessage | None:
         if classification.task_type == TaskType.STATUS_REQUEST:
             return self._out(inbound.chat_id, self._status_summary())
         if self.responder is None:
             return None
         try:
-            answer = await self.responder.answer(inbound)
+            answer = await self.responder.answer(inbound, conversation_id)
         except Exception as exc:
             return self._spawn_failed(inbound, f"response generation failed: {exc}", f"telegram:user:{inbound.sender_id}", classification).outbound_message
         return self._out(inbound.chat_id, answer[:3900])
+
+    def _update_conversation_memory(self, conversation_id: str, text: str) -> None:
+        existing = self.repositories.conversation_memory.get(conversation_id)
+        summary, facts = update_memory_from_text(existing, text)
+        self.repositories.conversation_memory.upsert(conversation_id, summary, facts)
 
     def _spawn_failed(
         self,

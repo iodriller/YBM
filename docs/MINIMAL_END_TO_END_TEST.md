@@ -3,10 +3,10 @@
 The smallest useful end-to-end test right now is:
 
 ```text
-Telegram message -> backend polling -> local LLM classification -> persisted task -> worker pickup -> admin UI visibility -> Telegram /tasks response
+Telegram web-app request -> backend polling -> local LLM classification -> persisted task -> worker pickup -> generated workspace -> localhost preview URL -> Telegram result
 ```
 
-This proves Telegram auth, polling, orchestrator LLM classification, persistence, audit logging, and admin monitoring are connected.
+This proves Telegram auth, polling, local LLM classification, persistence, audit logging, worker execution, admin monitoring, and visible local output are connected.
 
 ## Prerequisites
 
@@ -60,7 +60,7 @@ Click `Save`.
 Send this to your bot:
 
 ```text
-minimal e2e test: create a task from Telegram
+create a simple hello world web app and launch it
 ```
 
 Then send:
@@ -74,7 +74,8 @@ Expected result:
 - `/tasks` replies with the new task.
 - The first message receives `Task spawned: <task_id>`.
 - The admin UI Tasks section shows the task activity moving from queued to active or completed.
-- When the worker reaches a terminal state, Telegram receives the task result or failure details.
+- When the worker completes, Telegram receives a localhost URL and workspace path.
+- The generated files are under `.agent_control/workspaces/task_<id>`.
 - The admin UI Audit section shows raw message, classification, and spawned task events.
 
 ## 6. Check From PowerShell

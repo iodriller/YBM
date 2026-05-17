@@ -20,6 +20,7 @@ Implemented:
 - Gated tool executor and minimal durable task worker
 - Minimal VS Code bridge endpoints, extension state sync, and terminal command queue
 - Generic terminal coding-assistant adapter
+- Local generated-workspace adapter that writes files under `.agent_control/workspaces` and launches localhost web previews
 - File-backed artifacts, optional screenshot capture, and Telegram screenshot artifact delivery
 - Retry policy with durable retry metadata
 - Windows setup scripts and local setup documentation
@@ -30,12 +31,12 @@ Implemented:
 - Admin audit filters, capability access modes, and database summary
 - One-command local stack launcher for LocalDeploy, backend, Telegram polling, and worker
 - Worker completion notifications back to Telegram with tool output summaries
+- Concise per-Telegram-chat memory for durable facts such as the user's name
 
 Not implemented yet:
 
-- Real tool adapters beyond test/static adapters
 - Direct GitHub Copilot Chat panel response capture through VS Code APIs
-- Persistent editable configuration for every capability and adapter
+- Persistent editable configuration for every advanced capability and adapter field
 
 ## Development
 
@@ -62,7 +63,9 @@ Default local LLM and gateway behavior:
 - Keep `OPENAI_API_KEY` saved in `.env` for fallback.
 - The active default profile is `localdeploy_gemma3_4b`, which calls LocalDeploy at `http://127.0.0.1:8000/v1` with model `gemma3_4b_ollama_safe`.
 - Non-task Telegram messages get a direct local LLM answer with concise runtime context.
+- The gateway keeps a small per-chat memory summary, not the full conversation.
 - Plain `status` and `/status` return deterministic task state.
+- Requests like `create a hello world web app and launch it` create files under `.agent_control/workspaces/task_<id>`, start a localhost preview, and return the URL.
 - Development tasks route to the VS Code/GitHub Copilot terminal handoff when VS Code write access is enabled, with a local Copilot CLI fallback when the bridge is not connected.
 - Worker results are sent back to the source Telegram chat.
 

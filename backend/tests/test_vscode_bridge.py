@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from agent_control.main import app, vscode_store
+from agent_control.tools.vscode_bridge import _extract_copilot_usage
 
 
 def test_vscode_bridge_updates_and_reads_state(monkeypatch) -> None:
@@ -84,3 +85,10 @@ def test_vscode_terminal_output_can_be_filtered_by_command(monkeypatch) -> None:
 
     assert first.status_code == 200
     assert filtered.json()["outputs"] == [first.json()]
+
+
+def test_copilot_usage_lines_are_extracted() -> None:
+    usage = _extract_copilot_usage("answer\nRequests 1 Premium (14s)\nTokens up 26.0k down 1.0k\n")
+
+    assert usage["requests"] == "Requests 1 Premium (14s)"
+    assert usage["tokens"].startswith("Tokens")

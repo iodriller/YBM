@@ -173,6 +173,30 @@ def test_telegram_plain_status_does_not_require_slash(tmp_path) -> None:
     assert task.id in (result.outbound_message.text or "")
 
 
+def test_telegram_updates_conversation_memory(tmp_path) -> None:
+    service, repos = _service(
+        tmp_path,
+        TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
+    )
+
+    service.handle_update(
+        {
+            "message": {
+                "message_id": 15,
+                "from": {"id": 42},
+                "chat": {"id": 100},
+                "text": "My name is Oney.",
+            }
+        }
+    )
+
+    memory = repos.conversation_memory.get("conv_telegram_100")
+
+    assert memory is not None
+    assert memory["facts"]["user_name"] == "Oney"
+    assert "user name: Oney" in memory["summary"]
+
+
 class FailingClassifierProvider:
     async def generate_structured(self, system_prompt, user_prompt, output_model):
         raise ValueError("bad json")

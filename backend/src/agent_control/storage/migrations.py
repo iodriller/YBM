@@ -26,6 +26,15 @@ SCHEMA_STATEMENTS = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS conversation_memory (
+        conversation_id TEXT PRIMARY KEY,
+        summary TEXT NOT NULL,
+        facts_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(conversation_id) REFERENCES conversations(id)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
         objective TEXT NOT NULL,

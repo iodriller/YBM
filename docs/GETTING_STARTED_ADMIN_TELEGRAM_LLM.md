@@ -13,6 +13,7 @@ That command:
 - starts the FastAPI backend on `127.0.0.1:8765`
 - starts Telegram polling
 - starts the task worker
+- uses `.agent_control/workspaces` as the default generated-file workspace
 
 Open the admin UI:
 
@@ -47,6 +48,11 @@ API Key Env: blank
 
 Keep `OPENAI_API_KEY` in `.env` if you want it saved for fallback. It is not used by the default local profile.
 
+The admin LLM panel has two presets:
+
+- `LocalDeploy Gemma 3 4B`: the default local profile.
+- `OpenAI GPT-4.1`: saved as an optional preset that uses `OPENAI_API_KEY`.
+
 ## Telegram Gateway Behavior
 
 Telegram text is now handled as a gateway:
@@ -54,9 +60,41 @@ Telegram text is now handled as a gateway:
 - Plain `status` and `/status` return deterministic task status.
 - `/tasks`, `/task <id>`, `/logs <id>`, `/pause <id>`, `/resume <id>`, and `/cancel <id>` are command routes.
 - Non-task messages such as `what can you do?` get a direct local LLM answer with current capability and task context.
+- The local LLM receives a short capability/task context plus a concise per-chat memory summary. It does not receive the whole Telegram conversation.
 - Messages classified as executable tasks are persisted and picked up by the worker.
+- Launchable web-app tasks create files in a configurable local workspace and return a preview URL.
 - Development tasks use the VS Code/GitHub Copilot terminal route when VS Code write access is enabled.
 - Worker completion, failure, blocked, cancelled, and approval-needed states are sent back to the source Telegram chat.
+
+## Local Workspace Preview
+
+For a Telegram message like:
+
+```text
+create a simple hello world web app and launch it
+```
+
+the worker creates a directory like:
+
+```text
+.agent_control/workspaces/task_<id>
+```
+
+It writes `index.html` and `README.md`, starts a localhost static server, opens the URL on the computer when enabled, and sends the URL plus workspace path back to Telegram. The same URL and path appear in the admin task row.
+
+Configure it in admin under **Local Workspace**, or in YAML:
+
+```yaml
+adapters:
+  workspace:
+    enabled: true
+    root_dir: .agent_control/workspaces
+    web_host: 127.0.0.1
+    web_port_start: 8890
+    open_browser: true
+```
+
+The generated workspace route requires `filesystem.write` access. In admin, set **File system** to **Full write** for approval-free local previews, or **Write with approval** if you want the worker to pause for approval.
 
 ## Copilot Route
 
@@ -83,6 +121,8 @@ When the WinGet Copilot CLI path is available, the backend uses the full `copilo
 
 VS Code terminal output capture depends on VS Code shell integration. If shell integration is unavailable but the local Copilot CLI is installed, the fallback captures stdout/stderr directly.
 
+Copilot CLI usage lines such as request or token counts are parsed and included in the stored tool result and Telegram completion message when the CLI prints them. If the CLI fails, the fallback retries once with a plain-text-only prompt and returns the error details if it still fails.
+
 ## Useful Debug Commands
 
 ```powershell
@@ -101,8 +141,10 @@ Logs from the one-command stack are written under:
 
 - Telegram intake/classification: `backend/src/agent_control/channels/telegram.py`
 - Direct Telegram LLM answers: `backend/src/agent_control/channels/responder.py`
+- Conversation memory: `backend/src/agent_control/channels/memory.py`
 - Telegram task completion messages: `backend/src/agent_control/channels/telegram_notifications.py`
 - Worker pickup loop: `backend/src/agent_control/orchestration/worker.py`
 - Default VS Code development plan: `backend/src/agent_control/orchestration/default_plans.py`
+- Local workspace previews: `backend/src/agent_control/tools/local_workspace.py`
 - VS Code bridge API and adapter: `backend/src/agent_control/tools/vscode_bridge.py`
 - Flow diagram: `docs/TASK_FLOW.md`

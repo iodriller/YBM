@@ -47,6 +47,10 @@ def _task_message(task: TaskRecord) -> str:
     if command_id:
         lines.append(f"Command: {command_id}")
 
+    usage = _last_usage(task)
+    if usage:
+        lines.append(f"Usage: {usage}")
+
     output = _last_output(task)
     if output:
         lines.append("")
@@ -87,6 +91,19 @@ def _last_output(task: TaskRecord) -> str | None:
             if output.get(key):
                 return str(output[key]).strip()
     return None
+
+
+def _last_usage(task: TaskRecord) -> str | None:
+    result = task.metadata.get("last_tool_result")
+    if not isinstance(result, dict):
+        return None
+    output = result.get("output")
+    if not isinstance(output, dict):
+        return None
+    usage = output.get("usage")
+    if not isinstance(usage, dict) or not usage:
+        return None
+    return " | ".join(str(value) for _, value in sorted(usage.items()))
 
 
 def _last_error(task: TaskRecord) -> str | None:

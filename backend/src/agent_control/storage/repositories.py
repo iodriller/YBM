@@ -96,6 +96,47 @@ class MessageRepository:
         return message
 
 
+class ConversationMemoryRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def get(self, conversation_id: str) -> dict[str, Any] | None:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT summary, facts_json, updated_at FROM conversation_memory WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "conversation_id": conversation_id,
+            "summary": row["summary"],
+            "facts": _load(row["facts_json"], {}),
+            "updated_at": row["updated_at"],
+        }
+
+    def upsert(self, conversation_id: str, summary: str, facts: dict[str, Any]) -> dict[str, Any]:
+        now = _dt(utc_now())
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO conversation_memory (conversation_id, summary, facts_json, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(conversation_id) DO UPDATE SET
+                    summary = excluded.summary,
+                    facts_json = excluded.facts_json,
+                    updated_at = excluded.updated_at
+                """,
+                (conversation_id, summary, _dump(facts), now),
+            )
+        return {
+            "conversation_id": conversation_id,
+            "summary": summary,
+            "facts": facts,
+            "updated_at": now,
+        }
+
+
 class TaskRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
@@ -509,6 +550,7 @@ class AuditRepository:
 @dataclass(frozen=True)
 class Repositories:
     conversations: ConversationRepository
+    conversation_memory: ConversationMemoryRepository
     messages: MessageRepository
     tasks: TaskRepository
     task_signals: TaskSignalRepository
@@ -522,6 +564,7 @@ class Repositories:
     def for_database(cls, database: Database) -> "Repositories":
         return cls(
             conversations=ConversationRepository(database),
+            conversation_memory=ConversationMemoryRepository(database),
             messages=MessageRepository(database),
             tasks=TaskRepository(database),
             task_signals=TaskSignalRepository(database),

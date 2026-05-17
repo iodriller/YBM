@@ -165,6 +165,27 @@ def test_admin_writes_llm_runtime_config(monkeypatch, tmp_path) -> None:
     assert (tmp_path / ".env").read_text(encoding="utf-8").count("AGENT_LLM__DEFAULT_PROFILE=local") == 1
 
 
+def test_admin_selects_llm_preset(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
+    local_app = FastAPI()
+    local_app.include_router(
+        create_admin_router(
+            lambda: AppSettings(_env_file=None),
+            lambda: repositories,
+            VSCodeBridgeStore(),
+        )
+    )
+    client = TestClient(local_app)
+
+    response = client.post("/admin/api/config/llm/preset", json={"preset": "localdeploy_gemma3_4b"})
+    saved = yaml.safe_load((tmp_path / "config" / "config.yaml").read_text(encoding="utf-8"))
+
+    assert response.status_code == 200
+    assert saved["llm"]["default_profile"] == "localdeploy_gemma3_4b"
+    assert saved["llm"]["profiles"]["localdeploy_gemma3_4b"]["base_url"] == "http://127.0.0.1:8000/v1"
+
+
 def test_admin_writes_telegram_runtime_config(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
@@ -245,6 +266,36 @@ def test_admin_writes_vscode_runtime_config(monkeypatch, tmp_path) -> None:
     assert "VSCODE_BRIDGE_TOKEN=secret" in env_text
 
 
+def test_admin_writes_workspace_runtime_config(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
+    local_app = FastAPI()
+    local_app.include_router(
+        create_admin_router(
+            lambda: AppSettings(_env_file=None),
+            lambda: repositories,
+            VSCodeBridgeStore(),
+        )
+    )
+    client = TestClient(local_app)
+
+    response = client.post(
+        "/admin/api/config/workspace",
+        json={
+            "enabled": True,
+            "root_dir": ".agent_control/workspaces",
+            "web_host": "127.0.0.1",
+            "web_port_start": 8890,
+            "open_browser": False,
+        },
+    )
+    saved = yaml.safe_load((tmp_path / "config" / "config.yaml").read_text(encoding="utf-8"))
+
+    assert response.status_code == 200
+    assert saved["adapters"]["workspace"]["root_dir"] == ".agent_control/workspaces"
+    assert saved["adapters"]["workspace"]["open_browser"] is False
+
+
 def test_admin_writes_access_modes(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
@@ -267,6 +318,30 @@ def test_admin_writes_access_modes(monkeypatch, tmp_path) -> None:
     assert response.status_code == 200
     assert saved["capabilities"][Capability.FILESYSTEM_READ.value]["enabled"] is True
     assert saved["capabilities"][Capability.FILESYSTEM_WRITE.value]["enabled"] is False
+
+
+def test_admin_access_modes_sync_desktop_screenshot_adapter(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
+    local_app = FastAPI()
+    local_app.include_router(
+        create_admin_router(
+            lambda: AppSettings(_env_file=None),
+            lambda: repositories,
+            VSCodeBridgeStore(),
+        )
+    )
+    client = TestClient(local_app)
+
+    response = client.post(
+        "/admin/api/config/access-modes",
+        json={"modes": {"desktop_screenshot": CapabilityAccessMode.READ_ONLY.value}},
+    )
+    saved = yaml.safe_load((tmp_path / "config" / "config.yaml").read_text(encoding="utf-8"))
+
+    assert response.status_code == 200
+    assert saved["capabilities"][Capability.DESKTOP_SCREENSHOT.value]["enabled"] is True
+    assert saved["adapters"]["desktop"]["screenshot_enabled"] is True
 
 
 def test_admin_database_summary(tmp_path) -> None:

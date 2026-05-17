@@ -21,7 +21,7 @@ from agent_control.orchestration.default_plans import build_default_vscode_devel
 from agent_control.policy import PolicyEngine
 from agent_control.recovery import RetryPolicy
 from agent_control.storage import AuditLogger, Database, Repositories
-from agent_control.tools import GenericTerminalAgentAdapter, VSCodeBridgeTerminalAdapter
+from agent_control.tools import GenericTerminalAgentAdapter, LocalWorkspaceWebAppAdapter, VSCodeBridgeTerminalAdapter
 
 
 def build_repositories() -> tuple[Repositories, AuditLogger]:
@@ -92,6 +92,8 @@ async def run_worker() -> None:
 
 def _worker_adapters(settings) -> dict[str, object]:
     adapters: dict[str, object] = {}
+    if settings.adapters.workspace.enabled:
+        adapters["workspace.web_app"] = LocalWorkspaceWebAppAdapter(settings.adapters.workspace)
     if settings.adapters.coding_assistant.enabled:
         adapters["coding_assistant"] = GenericTerminalAgentAdapter(settings.adapters.coding_assistant)
     if settings.adapters.vscode.enabled:
@@ -119,6 +121,7 @@ def _backend_base_url(settings) -> str:
 
 def _worker_config_context(settings) -> str:
     return f"""Available worker tools:
+- workspace.web_app: creates files under {settings.adapters.workspace.root_dir}, starts a localhost static preview, and returns the workspace path plus URL. Requires {settings.adapters.workspace.enabled=} and capability filesystem.write.
 - vscode.copilot_terminal: queues a prompt to the VS Code bridge terminal and waits for a final terminal-output record. Requires {settings.adapters.vscode.enabled=} and capability vscode.write_files.
 - vscode.terminal_command: queues an explicit terminal command to the VS Code bridge terminal. Requires {settings.adapters.vscode.enabled=} and capability vscode.write_files or terminal.run depending on the plan.
 - coding_assistant: runs the configured local coding assistant command template. Requires {settings.adapters.coding_assistant.enabled=} and capability terminal.run.

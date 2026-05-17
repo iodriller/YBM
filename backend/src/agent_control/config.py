@@ -102,6 +102,14 @@ class VSCodeAdapterConfig(StrictBaseModel):
     auth_token_env: str = "VSCODE_BRIDGE_TOKEN"
 
 
+class WorkspaceAdapterConfig(StrictBaseModel):
+    enabled: bool = True
+    root_dir: str = ".agent_control/workspaces"
+    web_host: str = "127.0.0.1"
+    web_port_start: int = Field(default=8890, ge=1, le=65535)
+    open_browser: bool = True
+
+
 class TerminalAdapterConfig(StrictBaseModel):
     enabled: bool = False
     allowed_working_dirs: list[str] = Field(default_factory=list)
@@ -133,6 +141,7 @@ class STTAdapterConfig(StrictBaseModel):
 
 class AdaptersConfig(StrictBaseModel):
     vscode: VSCodeAdapterConfig = Field(default_factory=VSCodeAdapterConfig)
+    workspace: WorkspaceAdapterConfig = Field(default_factory=WorkspaceAdapterConfig)
     terminal: TerminalAdapterConfig = Field(default_factory=TerminalAdapterConfig)
     coding_assistant: CodingAssistantAdapterConfig = Field(default_factory=CodingAssistantAdapterConfig)
     desktop: DesktopAdapterConfig = Field(default_factory=DesktopAdapterConfig)

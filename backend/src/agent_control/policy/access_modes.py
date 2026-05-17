@@ -137,10 +137,12 @@ def apply_access_modes_to_config(config: dict[str, Any], modes: dict[str, Capabi
         if group is None and name == "desktop":
             for legacy_group_name in ("desktop_screenshot", "desktop_control"):
                 _apply_group(capabilities, ACCESS_GROUPS[legacy_group_name], mode)
+                _sync_adapter_flag(config, legacy_group_name, mode)
             continue
         if group is None:
             continue
         _apply_group(capabilities, group, mode)
+        _sync_adapter_flag(config, name, mode)
     return config
 
 
@@ -210,3 +212,12 @@ def _policy(enabled: bool, requires_approval: bool, max_risk_level: RiskLevel) -
         requires_approval=requires_approval,
         max_risk_level=max_risk_level,
     ).model_dump(mode="json")
+
+
+def _sync_adapter_flag(config: dict[str, Any], group_name: str, mode: CapabilityAccessMode) -> None:
+    if group_name == "desktop_screenshot":
+        desktop = config.setdefault("adapters", {}).setdefault("desktop", {})
+        desktop["screenshot_enabled"] = mode != CapabilityAccessMode.OFF
+    elif group_name == "desktop_control":
+        desktop = config.setdefault("adapters", {}).setdefault("desktop", {})
+        desktop["control_enabled"] = mode in {CapabilityAccessMode.WRITE_ACCESS, CapabilityAccessMode.FULL_ACCESS}

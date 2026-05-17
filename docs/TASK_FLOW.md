@@ -7,20 +7,27 @@ flowchart TD
     A[Telegram message] --> B[TelegramPollingRunner]
     B --> C[TelegramAdapter allowlist check]
     C --> D[TelegramIntakeService stores message]
-    D --> X{Plain command?}
+    D --> Z[Update concise conversation memory]
+    Z --> X{Plain command?}
     X -->|status/tasks| Y[Deterministic Telegram response]
     X -->|normal text| E[LLMMessageClassifier]
     E -->|is_task=false| F[LLMTelegramResponder answers with runtime context]
     E -->|is_task=true| G[TaskRepository creates task: received]
     G --> H[TaskWorker run-worker loop]
     H --> I{Task type and access}
-    I -->|development + VS Code write enabled| J[Default VS Code development plan]
+    I -->|development + launchable web app + filesystem write| W[Local workspace web app plan]
+    I -->|development + VS Code write enabled| J[Default VS Code/Copilot plan]
     I -->|other| K[PlannerService asks local LLM for plan]
-    J --> L[ToolExecutor policy check]
+    W --> L[ToolExecutor policy check]
+    J --> L
     K --> L
     L -->|approval needed| M[Approval request]
     M --> H
-    L -->|allowed| N[VSCodeBridgeTerminalAdapter]
+    L -->|workspace.web_app| AA[LocalWorkspaceWebAppAdapter]
+    AA --> AB[Write .agent_control/workspaces/task_id files]
+    AB --> AC[Start localhost static preview]
+    AC --> S[Task completed or failed]
+    L -->|vscode.copilot_terminal| N[VSCodeBridgeTerminalAdapter]
     N --> U{VS Code state connected?}
     U -->|yes| O[Backend /vscode/terminal-commands]
     U -->|no| V[Local Copilot CLI fallback]
@@ -70,3 +77,13 @@ gh copilot -p '<task prompt>'
 This requires GitHub CLI Copilot to be installed and authenticated if you want actual Copilot output. VS Code terminal output capture requires VS Code shell integration; without shell integration, the extension records a final dispatch message instead of command stdout.
 
 The remaining gap is direct GitHub Copilot Chat response capture inside VS Code. The public bridge here can open/run terminal commands, but it does not have a stable public API for reading Copilot Chat answers from the chat panel.
+
+## Local Workspace Preview Notes
+
+Launchable web-app requests are routed before Copilot when `filesystem.write` is enabled. The worker writes generated files under:
+
+```text
+.agent_control/workspaces/task_<id>
+```
+
+It then starts a Python static server on the first free port at or after `adapters.workspace.web_port_start` and returns the preview URL to Telegram and the admin task row. The workspace root, host, starting port, and browser-open behavior are configurable in the admin UI under **Local Workspace** or in `config/config.yaml`.
