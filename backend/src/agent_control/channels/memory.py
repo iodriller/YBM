@@ -18,8 +18,8 @@ class ConversationMemoryService:
         repositories: Repositories,
         provider: LLMProvider | None = None,
         *,
-        max_summary_chars: int = 1200,
-        max_recent_turns: int = 6,
+        max_summary_chars: int = 2400,
+        max_recent_turns: int = 10,
         summarization_timeout_seconds: int = 20,
     ) -> None:
         self.repositories = repositories

@@ -598,6 +598,29 @@ class AuditRepository:
             ).fetchall()
         return [self._row_to_event(row) for row in rows]
 
+    def list_by_correlation_id(self, correlation_id: str) -> list[AuditEvent]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM audit_events WHERE correlation_id = ? ORDER BY created_at ASC",
+                (correlation_id,),
+            ).fetchall()
+        return [self._row_to_event(row) for row in rows]
+
+    def list_matching_payload_value(self, key: str, value: str, limit: int = 50) -> list[AuditEvent]:
+        pattern = f'%"{key}": "{value}"%'
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM audit_events
+                WHERE payload_json LIKE ?
+                ORDER BY created_at ASC
+                LIMIT ?
+                """,
+                (pattern, limit),
+            ).fetchall()
+        return [self._row_to_event(row) for row in rows]
+
     def list_recent(self, limit: int = 50) -> list[AuditEvent]:
         with self.database.connect() as connection:
             rows = connection.execute(

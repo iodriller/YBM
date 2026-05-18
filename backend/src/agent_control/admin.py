@@ -140,6 +140,7 @@ def create_admin_router(
         loaded = require_admin(request)
         repositories = repositories_loader()
         tasks = repositories.tasks.list_recent(task_limit)
+        task_total = repositories.tasks.count()
         audit_events = repositories.audit.list_recent(20)
         return {
             "status": "ok",
@@ -148,8 +149,8 @@ def create_admin_router(
             "task_pagination": {
                 "limit": task_limit,
                 "offset": 0,
-                "total": repositories.tasks.count(),
-                "has_more": repositories.tasks.count() > task_limit,
+                "total": task_total,
+                "has_more": task_total > task_limit,
             },
             "audit": [format_audit_event(event).model_dump(mode="json") for event in audit_events],
             "vscode": _vscode_summary(vscode_store),
@@ -214,16 +215,23 @@ def create_admin_router(
         if task is None:
             raise HTTPException(status_code=404, detail="task not found")
         plan = repositories.plans.get(task.plan_id) if task.plan_id else None
-        raw_audit_events = repositories.audit.list_for_task(task_id)
+        raw_audit_events = _task_trace_audit_events(repositories, task.model_dump(mode="json"))
+        tool_invocations = repositories.tool_invocations.list_for_task(task_id)
+        formatted_audit = [format_audit_event(event).model_dump(mode="json") for event in raw_audit_events]
+        raw_audit = [event.model_dump(mode="json") for event in raw_audit_events]
+        plan_payload = plan.model_dump(mode="json") if plan else None
+        trace_context = _trace_context(task.model_dump(mode="json"), plan_payload, raw_audit)
         return {
             "task": task.model_dump(mode="json"),
-            "plan": plan.model_dump(mode="json") if plan else None,
-            "tool_invocations": repositories.tool_invocations.list_for_task(task_id),
+            "context": trace_context,
+            "plan": plan_payload,
+            "timeline": _trace_timeline(formatted_audit, tool_invocations),
+            "tool_invocations": tool_invocations,
             "approvals": [approval.model_dump(mode="json") for approval in repositories.approvals.list_for_task(task_id)],
             "artifacts": [artifact.model_dump(mode="json") for artifact in repositories.artifacts.list_for_task(task_id)],
             "signals": [signal.model_dump(mode="json") for signal in repositories.task_signals.list_for_task(task_id)],
-            "audit": [format_audit_event(event).model_dump(mode="json") for event in raw_audit_events],
-            "raw_audit": [event.model_dump(mode="json") for event in raw_audit_events],
+            "audit": formatted_audit,
+            "raw_audit": raw_audit,
         }
 
     @router.delete("/api/tasks")
@@ -604,6 +612,84 @@ def _audit_config_update(
     )
 
 
+def _task_trace_audit_events(repositories: Repositories, task: dict[str, Any]) -> list:
+    events = repositories.audit.list_for_task(str(task["id"]))
+    seen = {event.id for event in events}
+
+    for event in list(events):
+        if event.correlation_id:
+            for related in repositories.audit.list_by_correlation_id(event.correlation_id):
+                if related.id not in seen:
+                    events.append(related)
+                    seen.add(related.id)
+
+    source_message_id = (task.get("metadata") or {}).get("source_message_id")
+    if source_message_id:
+        for related in repositories.audit.list_matching_payload_value("message_id", str(source_message_id)):
+            if related.id not in seen:
+                events.append(related)
+                seen.add(related.id)
+        for related in repositories.audit.list_matching_payload_value("source_message_id", str(source_message_id)):
+            if related.id not in seen:
+                events.append(related)
+                seen.add(related.id)
+
+    return sorted(events, key=lambda event: event.created_at)
+
+
+def _trace_context(task: dict[str, Any], plan: dict[str, Any] | None, raw_audit: list[dict[str, Any]]) -> dict[str, Any]:
+    classification = next((event for event in raw_audit if event.get("type") == AuditEventType.MESSAGE_CLASSIFIED.value), None)
+    message = next((event for event in raw_audit if event.get("type") == AuditEventType.MESSAGE_RECEIVED.value), None)
+    plan_created = next((event for event in raw_audit if event.get("type") == AuditEventType.PLAN_CREATED.value), None)
+    classification_payload = classification.get("payload", {}) if classification else {}
+    plan_payload = plan_created.get("payload", {}) if plan_created else {}
+    return {
+        "inbound_message": message.get("payload", {}) if message else None,
+        "classification": classification_payload or {
+            "task_type": (task.get("metadata") or {}).get("task_type"),
+            "confidence": (task.get("metadata") or {}).get("classification_confidence"),
+            "reason": (task.get("metadata") or {}).get("classification_reason"),
+            "original_message_text": (task.get("metadata") or {}).get("original_message_text"),
+        },
+        "classifier_llm": classification_payload.get("llm"),
+        "planner_or_default_plan": {
+            "audit_payload": plan_payload,
+            "config_context": plan_payload.get("config_context") or (plan_payload.get("llm") or {}).get("config_context"),
+            "llm": plan_payload.get("llm"),
+            "plan_source": plan_payload.get("source") or "planner",
+        },
+        "plan": plan,
+        "final_metadata": task.get("metadata") or {},
+    }
+
+
+def _trace_timeline(audit_events: list[dict[str, Any]], tool_invocations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for event in audit_events:
+        items.append(
+            {
+                "at": event.get("formatted_time") or event.get("created_at"),
+                "kind": "audit",
+                "title": event.get("title") or event.get("type"),
+                "summary": event.get("summary"),
+                "actor": event.get("actor"),
+                "details": event.get("details"),
+            }
+        )
+    for tool in tool_invocations:
+        items.append(
+            {
+                "at": tool.get("completed_at") or tool.get("created_at"),
+                "kind": "tool",
+                "title": tool.get("tool_name"),
+                "summary": tool.get("status"),
+                "actor": "orchestrator",
+                "details": {"request": tool.get("request"), "result": tool.get("result")},
+            }
+        )
+    return sorted(items, key=lambda item: str(item.get("at") or ""))
+
+
 def _config_warnings(settings: AppSettings) -> list[str]:
     warnings: list[str] = []
     telegram = settings.channels.telegram
@@ -730,8 +816,8 @@ _ADMIN_HTML = """
     .stack { display: grid; gap: 8px; }
     .warning { color: #9a6700; }
     label { font-size: 12px; color: var(--muted); }
-    table { width: 100%; border-collapse: collapse; }
-    th, td { padding: 8px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td { padding: 8px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; overflow-wrap: anywhere; }
     th { font-size: 12px; color: var(--muted); font-weight: 600; }
     code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; }
     pre { white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow: auto; }
@@ -755,26 +841,48 @@ _ADMIN_HTML = """
     .activity.bad .activity-dot { background: var(--danger); }
     .task-meta { color: var(--muted); font-size: 12px; margin-top: 4px; }
     .task-toolbar { margin-bottom: 12px; }
-    .task-details-row td { background: color-mix(in srgb, var(--chip) 55%, transparent); }
+    .task-id { font-size: 12px; }
+    .task-objective { font-weight: 600; }
+    .task-details-row td { background: var(--chip); }
     .trace-panel { display: grid; gap: 12px; padding: 8px 0; }
-    .trace-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }
+    .trace-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; }
     .trace-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--panel); min-width: 0; }
     .trace-card h3 { margin: 0 0 8px; font-size: 13px; }
     .trace-card pre { max-height: 280px; margin: 0; }
-    .trace-step { border-left: 3px solid var(--accent); padding-left: 8px; margin: 8px 0; }
+    .trace-step, .tool-call { border-left: 3px solid var(--accent); padding-left: 8px; margin: 8px 0; }
+    .trace-title { display: flex; gap: 8px; align-items: baseline; justify-content: space-between; }
+    .trace-output { margin-top: 8px; }
     details.trace-details > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+    .kv { display: grid; grid-template-columns: minmax(110px, 190px) minmax(0, 1fr); gap: 5px 10px; margin: 0; }
+    .kv dt { color: var(--muted); font-size: 12px; }
+    .kv dd { margin: 0; min-width: 0; }
+    .kv.compact { grid-template-columns: minmax(90px, 150px) minmax(0, 1fr); }
+    .list-value { margin: 0; padding-left: 18px; }
+    .text-block {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      max-height: 320px;
+      overflow: auto;
+      margin: 4px 0;
+      padding: 8px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg);
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+    }
     @keyframes pulse {
       0%, 100% { opacity: 0.45; }
       50% { opacity: 1; }
     }
     .audit-toolbar { margin-bottom: 12px; }
-    .audit-list { display: grid; gap: 10px; }
-    .audit-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; display: grid; gap: 8px; }
-    .audit-card-header { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
+    .audit-list { display: grid; gap: 6px; }
+    .audit-card { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; display: grid; gap: 5px; }
+    .audit-card-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: start; }
     .audit-title { font-weight: 650; }
-    .audit-summary { color: var(--text); }
+    .audit-summary { color: var(--text); font-size: 13px; line-height: 1.35; }
     .audit-meta { display: flex; flex-wrap: wrap; gap: 6px; color: var(--muted); font-size: 12px; }
-    .audit-decision { border-left: 3px solid var(--accent); padding-left: 8px; color: var(--muted); }
+    .audit-decision { display: inline-flex; gap: 6px; color: var(--muted); font-size: 12px; }
     details.audit-details > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
     .enabled { color: #1a7f37; }
     .disabled { color: var(--muted); }
@@ -941,6 +1049,54 @@ _ADMIN_HTML = """
         .replace(/\\b\\w/g, char => char.toUpperCase());
     }
 
+    function isPlainObject(value) {
+      return value && typeof value === "object" && !Array.isArray(value);
+    }
+
+    function renderText(value) {
+      return `<div class="text-block">${escapeHtml(value)}</div>`;
+    }
+
+    function renderHumanValue(value, depth = 0) {
+      if (value === null || value === undefined || value === "") return `<span class="muted">none</span>`;
+      if (typeof value === "string") {
+        if (value.length > 100 || value.includes("\\n")) return renderText(value);
+        return `<span>${escapeHtml(value)}</span>`;
+      }
+      if (typeof value === "number" || typeof value === "boolean") return `<code>${escapeHtml(value)}</code>`;
+      if (Array.isArray(value)) {
+        if (!value.length) return `<span class="muted">empty</span>`;
+        return `<ol class="list-value">${value.map(item => `<li>${renderHumanValue(item, depth + 1)}</li>`).join("")}</ol>`;
+      }
+      if (isPlainObject(value)) {
+        const entries = Object.entries(value);
+        if (!entries.length) return `<span class="muted">empty</span>`;
+        return `
+          <dl class="kv ${depth > 0 ? "compact" : ""}">
+            ${entries.map(([key, item]) => `
+              <dt>${escapeHtml(labelize(key))}</dt>
+              <dd>${renderHumanValue(item, depth + 1)}</dd>
+            `).join("")}
+          </dl>
+        `;
+      }
+      return `<span>${escapeHtml(String(value))}</span>`;
+    }
+
+    function terminalOutputText(result) {
+      const output = (result || {}).output || {};
+      const terminal = output.terminal_output || [];
+      return terminal
+        .map(item => item && item.content ? String(item.content) : "")
+        .filter(Boolean)
+        .join("\\n\\n");
+    }
+
+    function toolPrompt(tool) {
+      const input = ((tool || {}).request || {}).input || {};
+      return input.prompt || input.command || input.objective || "";
+    }
+
     function activityForStatus(status) {
       const active = ["interpreting", "planned", "running", "retrying"];
       if (active.includes(status)) return {label: status === "planned" ? "Ready" : labelize(status), className: "active"};
@@ -1070,7 +1226,7 @@ _ADMIN_HTML = """
       }
       document.getElementById("tasks").innerHTML = `
         <table>
-          <thead><tr><th>ID</th><th>Activity</th><th>Objective</th><th>Actions</th></tr></thead>
+          <thead><tr><th style="width: 22%;">ID</th><th style="width: 16%;">Activity</th><th>Objective</th><th style="width: 250px;">Actions</th></tr></thead>
           <tbody>${tasks.map(task => {
             const activity = activityForStatus(task.status);
             const type = (task.metadata || {}).task_type;
@@ -1078,7 +1234,7 @@ _ADMIN_HTML = """
             return `
               <tr>
               <td>
-                <code>${escapeHtml(task.id)}</code>
+                <code class="task-id">${escapeHtml(task.id)}</code>
                 <div class="task-meta">${escapeHtml(taskUpdatedLabel(task))}</div>
               </td>
               <td>
@@ -1089,15 +1245,15 @@ _ADMIN_HTML = """
                 ${task.current_step_id ? `<div class="task-meta">step ${escapeHtml(task.current_step_id)}</div>` : ""}
               </td>
               <td>
-                ${escapeHtml(task.objective)}
+                <div class="task-objective">${escapeHtml(task.objective)}</div>
                 ${type ? `<div class="task-meta">${escapeHtml(labelize(type))}</div>` : ""}
                 ${taskResultLinks(task)}
               </td>
               <td class="row">
-                <button ${taskActionDisabled(task, "pause") ? "disabled" : ""} onclick="taskSignal(${JSON.stringify(task.id)}, 'pause')">Pause</button>
-                <button ${taskActionDisabled(task, "resume") ? "disabled" : ""} onclick="taskSignal(${JSON.stringify(task.id)}, 'resume')">Resume</button>
-                <button ${taskActionDisabled(task, "cancel") ? "disabled" : ""} onclick="taskSignal(${JSON.stringify(task.id)}, 'cancel')">Cancel</button>
-                <button onclick="toggleTaskDetails(${JSON.stringify(task.id)})">${expanded ? "Hide details" : "Details"}</button>
+                <button ${taskActionDisabled(task, "pause") ? "disabled" : ""} data-task-id="${escapeHtml(task.id)}" data-task-action="pause">Pause</button>
+                <button ${taskActionDisabled(task, "resume") ? "disabled" : ""} data-task-id="${escapeHtml(task.id)}" data-task-action="resume">Resume</button>
+                <button ${taskActionDisabled(task, "cancel") ? "disabled" : ""} data-task-id="${escapeHtml(task.id)}" data-task-action="cancel">Cancel</button>
+                <button class="primary" data-task-id="${escapeHtml(task.id)}" data-task-details="toggle">${expanded ? "Hide details" : "Details"}</button>
               </td>
             </tr>
             ${expanded ? `
@@ -1114,65 +1270,94 @@ _ADMIN_HTML = """
       const trace = taskTraces.get(taskId);
       if (!trace) return `<div class="trace-panel muted">Loading full task trace...</div>`;
       if (trace.error) return `<div class="trace-panel danger">${escapeHtml(trace.error)}</div>`;
+      const context = trace.context || {};
       const plan = trace.plan || {};
       const steps = plan.steps || [];
       const tools = trace.tool_invocations || [];
-      const audit = trace.audit || [];
+      const timeline = trace.timeline || [];
       return `
         <div class="trace-panel">
           <div class="row">
-            <button onclick="reloadTaskTrace(${JSON.stringify(taskId)})">Reload trace</button>
-            <span class="muted">Shows task metadata, plan prompts, tool request payloads, results, approvals, artifacts, signals, and audit events.</span>
+            <button data-task-id="${escapeHtml(taskId)}" data-task-reload="trace">Reload trace</button>
+            <span class="muted">Full trace: inbound message, classifier prompt/result, orchestrator context, plan, tool prompts, tool outputs, policy/audit, approvals, artifacts, and final metadata.</span>
           </div>
           <div class="trace-grid">
             <div class="trace-card">
-              <h3>Task Context</h3>
-              <pre>${escapeHtml(jsonBlock(trace.task || {}))}</pre>
+              <h3>Context Fed To Orchestrator</h3>
+              ${renderHumanValue({
+                inbound_message: context.inbound_message,
+                classification: context.classification,
+                classifier_llm: context.classifier_llm,
+                planner_or_default_plan: context.planner_or_default_plan
+              })}
             </div>
             <div class="trace-card">
-              <h3>Plan</h3>
-              ${steps.length ? steps.map((step, index) => `
-                <div class="trace-step">
-                  <strong>${index + 1}. ${escapeHtml(step.title || "Step")}</strong>
-                  <div class="task-meta">tool=${escapeHtml(step.tool_name || "none")} capability=${escapeHtml((step.required_capabilities || []).join(", ") || "none")}</div>
-                  ${step.tool_input ? `<details class="trace-details"><summary>Step input / prompt</summary><pre>${escapeHtml(jsonBlock(step.tool_input))}</pre></details>` : ""}
-                </div>
-              `).join("") : `<div class="muted">No plan persisted yet.</div>`}
-              <details class="trace-details"><summary>Raw plan JSON</summary><pre>${escapeHtml(jsonBlock(plan || null))}</pre></details>
+              <h3>Task And Final State</h3>
+              ${renderHumanValue({
+                id: (trace.task || {}).id,
+                status: (trace.task || {}).status,
+                objective: (trace.task || {}).objective,
+                current_step_id: (trace.task || {}).current_step_id,
+                final_metadata: context.final_metadata
+              })}
             </div>
           </div>
           <div class="trace-card">
-            <h3>Tool Calls</h3>
+            <h3>Orchestrator Plan</h3>
+              ${steps.length ? steps.map((step, index) => `
+                <div class="trace-step">
+                  <div class="trace-title">
+                    <strong>${index + 1}. ${escapeHtml(step.title || "Step")}</strong>
+                    <span class="badge soft">${escapeHtml(step.tool_name || "plan only")}</span>
+                  </div>
+                  <div class="task-meta">capability=${escapeHtml((step.required_capabilities || []).join(", ") || "none")} risk=${escapeHtml(step.risk_level || "")}</div>
+                  <div>${escapeHtml(step.description || "")}</div>
+                  ${step.tool_input ? `<details class="trace-details"><summary>Step input / prompt</summary>${renderHumanValue(step.tool_input)}</details>` : ""}
+                </div>
+              `).join("") : `<div class="muted">No plan persisted yet.</div>`}
+              <details class="trace-details"><summary>Raw plan JSON</summary>${renderHumanValue(plan || null)}</details>
+          </div>
+          <div class="trace-card">
+            <h3>Tool Calls And Outputs</h3>
             ${tools.length ? tools.map((tool, index) => `
-              <details class="trace-details" open>
-                <summary>${index + 1}. ${escapeHtml(tool.tool_name)} | ${escapeHtml(tool.status)} | ${escapeHtml(tool.capability)}</summary>
-                <pre>${escapeHtml(jsonBlock({request: tool.request, result: tool.result}))}</pre>
-              </details>
+              <div class="tool-call">
+                <div class="trace-title">
+                  <strong>${index + 1}. ${escapeHtml(tool.tool_name)}</strong>
+                  <span class="badge soft">${escapeHtml(tool.status)} | ${escapeHtml(tool.capability)}</span>
+                </div>
+                <div class="task-meta">created=${escapeHtml(tool.created_at || "")} completed=${escapeHtml(tool.completed_at || "")}</div>
+                ${toolPrompt(tool) ? `<div class="trace-output"><strong>Prompt / command</strong>${renderText(toolPrompt(tool))}</div>` : ""}
+                ${terminalOutputText(tool.result) ? `<div class="trace-output"><strong>Output</strong>${renderText(terminalOutputText(tool.result))}</div>` : ""}
+                <details class="trace-details">
+                  <summary>Full request and result</summary>
+                  ${renderHumanValue({request: tool.request, result: tool.result})}
+                </details>
+              </div>
             `).join("") : `<div class="muted">No tool calls recorded yet.</div>`}
           </div>
           <div class="trace-grid">
             <div class="trace-card">
               <h3>Approvals, Signals, Artifacts</h3>
-              <pre>${escapeHtml(jsonBlock({
+              ${renderHumanValue({
                 approvals: trace.approvals || [],
                 signals: trace.signals || [],
                 artifacts: trace.artifacts || []
-              }))}</pre>
+              })}
             </div>
             <div class="trace-card">
-              <h3>Audit Timeline</h3>
-              ${audit.length ? audit.map(event => `
+              <h3>Timeline</h3>
+              ${timeline.length ? timeline.map(item => `
                 <details class="trace-details">
-                  <summary>${escapeHtml(event.formatted_time || event.created_at || "")} | ${escapeHtml(event.actor || "")} | ${escapeHtml(event.title || event.type)}</summary>
-                  <pre>${escapeHtml(jsonBlock(event.details || event))}</pre>
+                  <summary>${escapeHtml(item.at || "")} | ${escapeHtml(item.kind || "")} | ${escapeHtml(item.title || "")}</summary>
+                  ${renderHumanValue(item.details || item)}
                 </details>
-              `).join("") : `<div class="muted">No audit events for this task.</div>`}
+              `).join("") : `<div class="muted">No timeline items recorded yet.</div>`}
             </div>
           </div>
           <div class="trace-card">
-            <h3>Full Raw Trace</h3>
+            <h3>Raw Trace</h3>
             <details class="trace-details">
-              <summary>Everything returned by the trace API</summary>
+              <summary>JSON for copy/debugging</summary>
               <pre>${escapeHtml(jsonBlock(trace))}</pre>
             </details>
           </div>
@@ -1244,7 +1429,7 @@ _ADMIN_HTML = """
             ` : ""}
             <details class="audit-details" data-audit-id="${escapeHtml(event.id)}" ${expandedAuditIds.has(event.id) ? "open" : ""}>
               <summary>Details</summary>
-              <pre>${escapeHtml(jsonBlock(event.details || {}))}</pre>
+              ${renderHumanValue(event.details || {})}
             </details>
           </article>
         `).join("")}
@@ -1541,10 +1726,31 @@ _ADMIN_HTML = """
     }
 
     document.addEventListener("click", event => {
-      const button = event.target.closest("[data-access-mode-group][data-mode]");
-      if (!button) return;
-      event.preventDefault();
-      setAccessMode(button.getAttribute("data-access-mode-group"), button.getAttribute("data-mode"));
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const taskAction = target.closest("[data-task-id][data-task-action]");
+      if (taskAction) {
+        event.preventDefault();
+        taskSignal(taskAction.getAttribute("data-task-id"), taskAction.getAttribute("data-task-action"));
+        return;
+      }
+      const taskDetails = target.closest("[data-task-id][data-task-details]");
+      if (taskDetails) {
+        event.preventDefault();
+        toggleTaskDetails(taskDetails.getAttribute("data-task-id"));
+        return;
+      }
+      const taskReload = target.closest("[data-task-id][data-task-reload]");
+      if (taskReload) {
+        event.preventDefault();
+        reloadTaskTrace(taskReload.getAttribute("data-task-id"));
+        return;
+      }
+      const accessButton = target.closest("[data-access-mode-group][data-mode]");
+      if (accessButton) {
+        event.preventDefault();
+        setAccessMode(accessButton.getAttribute("data-access-mode-group"), accessButton.getAttribute("data-mode"));
+      }
     });
 
     document.addEventListener("toggle", event => {

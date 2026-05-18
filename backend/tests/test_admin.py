@@ -42,6 +42,9 @@ def test_admin_page_and_summary(monkeypatch, tmp_path) -> None:
     assert summary.status_code == 200
     assert summary.json()["config"]["identity"]["instance_name"] == "local-agent-control"
     assert 'onclick="setAccessMode' not in page.text
+    assert 'onclick="taskSignal' not in page.text
+    assert 'data-task-action="' in page.text
+    assert 'data-task-details="' in page.text
     assert 'data-access-mode-group="' in page.text
 
 
@@ -145,6 +148,7 @@ def test_admin_task_trace_includes_plan_tool_calls_and_audit(tmp_path) -> None:
 
     assert response.status_code == 200
     assert body["task"]["id"] == task.id
+    assert body["context"]["planner_or_default_plan"]["llm"]["user_prompt"] == "user"
     assert body["plan"]["steps"][0]["tool_input"]["prompt"] == "build the app"
     assert body["tool_invocations"][0]["request"]["input"]["prompt"] == "build the app"
     assert body["tool_invocations"][0]["result"]["output"]["terminal_output"][0]["content"] == "created files"
