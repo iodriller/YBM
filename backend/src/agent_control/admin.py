@@ -14,6 +14,8 @@ from agent_control.config import AppSettings
 from agent_control.llm.providers import OpenAICompatibleProvider
 from agent_control.orchestration.signals import apply_task_signal
 from agent_control.policy import apply_access_modes_to_config, summarize_access_modes
+from agent_control.prompts import render_prompt
+from agent_control.runtime_status import service_summary
 from agent_control.schemas import AuditEventType, Capability, CapabilityAccessMode, StrictBaseModel
 from agent_control.storage.audit import AuditLogger
 from agent_control.storage.audit_view import format_audit_event
@@ -161,6 +163,7 @@ def create_admin_router(
             },
             "warnings": _config_warnings(loaded),
             "database": _database_summary(loaded),
+            "services": service_summary(loaded),
             "integrations": {
                 "telegram": {
                     "enabled": loaded.channels.telegram.enabled,
@@ -514,8 +517,8 @@ def create_admin_router(
         try:
             provider = OpenAICompatibleProvider(profile)
             output = await provider.generate_text(
-                "You are a health check endpoint. Return a short plain text response.",
-                "Reply with: ok",
+                render_prompt("base/llm_health_check_system.md"),
+                render_prompt("tasks/llm_health_check_user.md"),
             )
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -1251,6 +1254,9 @@ _ADMIN_HTML = """
       const telegram = ((config.channels || {}).telegram) || {};
       const workspace = (((config.adapters || {}).workspace) || {});
       const vscode = data.vscode || {};
+      const services = Object.fromEntries(((data.services || {}).items || []).map(item => [item.name, item]));
+      const worker = services.worker || {};
+      const polling = services.telegram_polling || {};
       const activeTasks = (data.tasks || []).filter(task => ["received", "interpreting", "planned", "running", "retrying", "awaiting_approval"].includes(task.status)).length;
       const llmOk = Boolean(llm.default_profile && (llm.profiles || {})[llm.default_profile]);
       const telegramOk = Boolean(telegram.enabled);
@@ -1259,10 +1265,26 @@ _ADMIN_HTML = """
       document.getElementById("overview").innerHTML = `
         <div class="status-card ${llmOk ? "good" : "bad"}"><span class="mini-label">LLM</span><strong>${escapeHtml(llm.default_profile || "missing")}</strong></div>
         <div class="status-card ${telegramOk ? "good" : "bad"}"><span class="mini-label">Telegram</span><strong>${telegram.enabled ? "Enabled" : "Disabled"}</strong></div>
+        <div class="status-card ${serviceClass(worker)}"><span class="mini-label">Worker</span><strong>${escapeHtml(serviceLabel(worker))}</strong></div>
+        <div class="status-card ${serviceClass(polling)}"><span class="mini-label">Telegram Polling</span><strong>${escapeHtml(serviceLabel(polling))}</strong></div>
         <div class="status-card ${vscodeOk ? "good" : "bad"}"><span class="mini-label">VS Code Bridge</span><strong>${vscode.connected ? "Connected" : "Not Connected"}</strong></div>
         <div class="status-card ${activeTasks ? "warn" : "good"}"><span class="mini-label">Active Tasks</span><strong>${activeTasks}</strong></div>
         <div class="status-card ${workspaceOk ? "good" : "bad"}"><span class="mini-label">Workspace</span><strong>${escapeHtml(workspace.root_dir || ".agent_control/workspaces")}</strong></div>
       `;
+    }
+
+    function serviceLabel(service) {
+      if (!service || !service.name) return "Unknown";
+      if (!service.expected) return "Disabled";
+      const status = labelize(service.status || "missing");
+      return service.age_seconds === null || service.age_seconds === undefined ? status : `${status} (${service.age_seconds}s)`;
+    }
+
+    function serviceClass(service) {
+      if (!service || !service.name) return "bad";
+      if (!service.expected || service.ok) return "good";
+      if (["starting", "exited"].includes(service.status)) return "warn";
+      return "bad";
     }
 
     async function api(path, options = {}) {

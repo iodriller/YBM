@@ -5,15 +5,13 @@ from collections.abc import Callable
 from pydantic import ValidationError
 
 from agent_control.llm.providers import LLMProvider
+from agent_control.prompts import prompt_text, render_prompt
 from agent_control.schemas import AuditEventType, PlanModel, TaskStatus
 from agent_control.storage.audit import AuditLogger
 from agent_control.storage.repositories import Repositories
 
 
-PLANNER_SYSTEM_PROMPT = """You are the planning layer for a local agentic control system.
-Return only structured JSON matching the requested schema.
-Plans must be conservative, permission-aware, and split into concrete steps.
-Do not assume access to terminal, files, VS Code, desktop, browser, or GitHub unless listed by configuration context."""
+PLANNER_SYSTEM_PROMPT = prompt_text("base/planner_system.md")
 
 
 class PlannerService:
@@ -42,7 +40,11 @@ class PlannerService:
             plan = await self.provider.generate_structured(PLANNER_SYSTEM_PROMPT, user_prompt, PlanModel)
             plan = self._validate_plan(plan)
         except (ValueError, ValidationError) as exc:
-            retry_prompt = f"{user_prompt}\n\nPrevious structured output error:\n{exc}\nReturn corrected JSON only."
+            retry_prompt = render_prompt(
+                "tasks/structured_retry.md",
+                original_prompt=user_prompt,
+                error=exc,
+            )
             plan = await self.provider.generate_structured(PLANNER_SYSTEM_PROMPT, retry_prompt, PlanModel)
             plan = self._validate_plan(plan)
 
@@ -74,11 +76,4 @@ class PlannerService:
 
     @staticmethod
     def _prompt(objective: str, config_context: str) -> str:
-        return f"""Create an execution plan for this objective:
-
-{objective}
-
-Configuration/capability context:
-{config_context}
-
-The plan must include assumptions, required_capabilities, approval_gates when needed, ordered steps, success_criteria, and typed postconditions when the task requires a visible artifact, workspace, URL, or generated adapter proposal."""
+        return render_prompt("tasks/planner_user.md", objective=objective, config_context=config_context)

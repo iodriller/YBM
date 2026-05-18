@@ -13,6 +13,7 @@ from pydantic import Field
 
 from agent_control.config import VSCodeAdapterConfig
 from agent_control.config_sync import read_env_value
+from agent_control.prompts import render_prompt
 from agent_control.schemas import ErrorClass, StrictBaseModel, ToolCallRequest, ToolCallResult, ToolResultStatus, new_id, utc_now
 
 
@@ -185,12 +186,7 @@ class VSCodeBridgeTerminalAdapter:
             retried = False
             prompt = str(request.input.get("prompt") or "").strip()
             if returncode != 0 and prompt and not request.input.get("command"):
-                retry_prompt = (
-                    "The previous Copilot CLI attempt failed. Do not create, edit, or execute files. "
-                    "Return the answer as plain text only, including complete fenced code blocks with "
-                    "filename=... metadata for every file and minimal run instructions.\n\n"
-                    f"Request: {prompt}"
-                )
+                retry_prompt = render_prompt("tools/copilot_plain_text_retry.md", prompt=prompt)
                 retry_command = self._command_text_for_prompt(retry_prompt)
                 retry_code, retry_content = await _run_powershell(retry_command, request.input.get("cwd"), request.timeout_seconds)
                 content = (

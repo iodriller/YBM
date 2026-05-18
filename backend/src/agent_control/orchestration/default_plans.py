@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from agent_control.config import AppSettings
 from agent_control.orchestration.fulfillment import expected_fulfillment
+from agent_control.prompts import render_prompt
 from agent_control.tools.local_workspace import workspace_dir_for_task
 from agent_control.schemas import (
     Capability,
@@ -61,15 +62,15 @@ def build_default_vscode_development_plan(settings: AppSettings, task: TaskRecor
             )
         )
 
-    prompt = (
-        "Work on this development request. "
-        + (
-            f"Use this local workspace for files and commands when tool access allows it: {workspace_dir}. "
-            if workspace_dir
-            else "If code changes are needed, return exact file paths and contents because no local workspace is enabled. "
-        )
-        + "Report what you changed, how to run it, and any errors.\n\n"
-        f"Request: {task.objective}"
+    workspace_instruction = (
+        f"Use this local workspace for files and commands when tool access allows it: {workspace_dir}. "
+        if workspace_dir
+        else "If code changes are needed, return exact file paths and contents because no local workspace is enabled. "
+    )
+    prompt = render_prompt(
+        "tools/copilot_development.md",
+        workspace_instruction=workspace_instruction,
+        objective=task.objective,
     )
     steps.append(
         PlanStep(
@@ -341,42 +342,8 @@ def _looks_like_adapter_request(objective: str) -> bool:
 
 
 def _adapter_copilot_prompt(objective: str) -> str:
-    return f"""Improve the generated adapter proposal in the current directory.
-
-Rules:
-- Keep all work inside the current adapter cache directory.
-- Do not register the adapter in the main application yet.
-- Fill in `adapter.py`, `README.md`, and `test_adapter.py` with a realistic reviewed-proposal implementation.
-- Preserve the scaffold-only safety boundary in the manifest.
-- End with a short summary of changed files and any open review risks.
-
-User request:
-{objective}
-"""
+    return render_prompt("tools/adapter_factory_copilot.md", objective=objective)
 
 
 def _web_app_copilot_prompt(objective: str, workspace_dir: str) -> str:
-    return f"""Create and launch-ready implement this request as a polished local static web app.
-
-Workspace:
-{workspace_dir}
-
-Requirements:
-- Create or update files in the workspace, preferably `index.html`, `styles.css`, and `script.js`.
-- Make the app visually modern and complete enough to inspect in a browser.
-- Keep it static: no dependency install is required.
-- If the CLI cannot write files directly, return complete fenced code blocks with filenames exactly like:
-  ```html filename=index.html
-  ...
-  ```
-  ```css filename=styles.css
-  ...
-  ```
-  ```javascript filename=script.js
-  ...
-  ```
-- End with a short summary of files created and how to run it.
-
-User request:
-{objective}
-"""
+    return render_prompt("tools/copilot_web_app.md", objective=objective, workspace_dir=workspace_dir)

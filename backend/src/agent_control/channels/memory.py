@@ -4,6 +4,7 @@ import asyncio
 from typing import Any
 
 from agent_control.llm.providers import LLMProvider
+from agent_control.prompts import render_prompt
 from agent_control.storage.repositories import Repositories
 
 
@@ -72,23 +73,16 @@ def memory_context(memory_record: dict[str, Any] | None, *, recent_turns: int = 
 
 
 def _summary_system_prompt(max_summary_chars: int) -> str:
-    return f"""Maintain concise memory for a Telegram LLM gateway.
-Return only a compact plain-text memory summary, no JSON and no preamble.
-Keep durable facts, user preferences, project goals, decisions, constraints, and unresolved follow-ups.
-Drop greetings, duplicate wording, and transient chatter.
-Do not invent details.
-Maximum length: {max_summary_chars} characters."""
+    return render_prompt("base/conversation_memory_system.md", max_summary_chars=max_summary_chars)
 
 
 def _summary_user_prompt(existing_summary: str, recent_turns: list[dict[str, str]]) -> str:
     turns = "\n".join(f"{turn['role']}: {turn['text']}" for turn in recent_turns)
-    return f"""Existing memory:
-{existing_summary}
-
-Recent turns:
-{turns}
-
-Update the memory summary."""
+    return render_prompt(
+        "tasks/conversation_memory_user.md",
+        existing_summary=existing_summary,
+        recent_turns=turns,
+    )
 
 
 def _fallback_summary(existing_summary: str, recent_turns: list[dict[str, str]], limit: int) -> str:

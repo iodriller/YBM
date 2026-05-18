@@ -41,6 +41,7 @@ def test_admin_page_and_summary(monkeypatch, tmp_path) -> None:
     assert "Agent Control Admin" in page.text
     assert summary.status_code == 200
     assert summary.json()["config"]["identity"]["instance_name"] == "local-agent-control"
+    assert "services" in summary.json()
     assert 'onclick="setAccessMode' not in page.text
     assert 'onclick="taskSignal' not in page.text
     assert 'data-task-action="' in page.text

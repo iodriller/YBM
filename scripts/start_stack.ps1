@@ -36,7 +36,8 @@ function Test-Pid {
 function Start-StackScript {
   param(
     [string]$Name,
-    [string]$ScriptPath
+    [string]$ScriptPath,
+    [switch]$Supervise
   )
   $pidFile = Join-Path $RunDir "$Name.pid"
   if (Test-Pid $pidFile) {
@@ -46,7 +47,12 @@ function Start-StackScript {
 
   $out = Join-Path $LogDir "$Name.out.log"
   $err = Join-Path $LogDir "$Name.err.log"
-  $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`""
+  if ($Supervise) {
+    $supervisor = Join-Path $Root "scripts\run_supervised.ps1"
+    $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$supervisor`" -Name `"$Name`" -ScriptPath `"$ScriptPath`""
+  } else {
+    $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`""
+  }
   $process = Start-Process `
     -FilePath "powershell.exe" `
     -ArgumentList $arguments `
@@ -56,7 +62,8 @@ function Start-StackScript {
     -RedirectStandardError $err `
     -PassThru
   Set-Content -LiteralPath $pidFile -Value $process.Id
-  Write-Host "Started $Name (pid $($process.Id))"
+  $mode = if ($Supervise) { "supervised" } else { "direct" }
+  Write-Host "Started $Name ($mode pid $($process.Id))"
 }
 
 & "$Root\scripts\start_localdeploy.ps1"
@@ -65,7 +72,7 @@ function Start-StackScript {
 if (Test-HttpOk "http://127.0.0.1:8765/health") {
   Write-Host "backend already running at http://127.0.0.1:8765"
 } else {
-  Start-StackScript -Name "backend" -ScriptPath "$Root\scripts\run_backend.ps1"
+  Start-StackScript -Name "backend" -ScriptPath "$Root\scripts\run_backend.ps1" -Supervise
   for ($i = 0; $i -lt 45; $i++) {
     Start-Sleep -Seconds 1
     if (Test-HttpOk "http://127.0.0.1:8765/health") {
@@ -76,18 +83,18 @@ if (Test-HttpOk "http://127.0.0.1:8765/health") {
 }
 
 if (-not $NoTelegram) {
-  Start-StackScript -Name "telegram_polling" -ScriptPath "$Root\scripts\run_telegram_polling.ps1"
+  Start-StackScript -Name "telegram_polling" -ScriptPath "$Root\scripts\run_telegram_polling.ps1" -Supervise
 }
 
 if (-not $NoWorker) {
-  Start-StackScript -Name "worker" -ScriptPath "$Root\scripts\run_worker.ps1"
+  Start-StackScript -Name "worker" -ScriptPath "$Root\scripts\run_worker.ps1" -Supervise
 }
 
 if (-not $NoAdminUi) {
   if (Test-HttpOk "http://127.0.0.1:8501") {
     Write-Host "admin_ui already running at http://127.0.0.1:8501"
   } else {
-    Start-StackScript -Name "admin_ui" -ScriptPath "$Root\scripts\run_admin_ui.ps1"
+    Start-StackScript -Name "admin_ui" -ScriptPath "$Root\scripts\run_admin_ui.ps1" -Supervise
   }
 }
 

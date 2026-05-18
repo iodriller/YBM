@@ -5,6 +5,7 @@ from typing import Protocol
 from agent_control.channels.memory import memory_context
 from agent_control.config import AppSettings
 from agent_control.llm.providers import LLMProvider
+from agent_control.prompts import render_prompt
 from agent_control.schemas import Capability, InboundMessage, TaskStatus
 from agent_control.storage.repositories import Repositories
 
@@ -38,21 +39,11 @@ class StaticTelegramResponder:
 
 
 def _system_prompt() -> str:
-    return """You are the Telegram gateway for a local agent-control system.
-Answer direct questions concisely.
-Use the provided runtime context for current capabilities and task state.
-Do not claim a capability is enabled unless the context says it is enabled.
-If the user asks for work that should be executed by tools, say it should be sent as a task and mention the relevant enabled route."""
+    return render_prompt("base/telegram_gateway_system.md")
 
 
 def _user_prompt(message: InboundMessage, context: str) -> str:
-    return f"""Runtime context:
-{context}
-
-Telegram message:
-{message.text or ""}
-
-Reply in plain text suitable for Telegram."""
+    return render_prompt("tasks/telegram_gateway_user.md", context=context, message_text=message.text or "")
 
 
 def _gateway_context(settings: AppSettings, repositories: Repositories, conversation_id: str | None = None) -> str:

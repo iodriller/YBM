@@ -9,6 +9,7 @@ from urllib import error, parse, request
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from agent_control.config_sync import read_env_value
 
@@ -16,6 +17,7 @@ from agent_control.config_sync import read_env_value
 DEFAULT_BACKEND_URL = "http://127.0.0.1:8765"
 DEFAULT_TASK_LIMIT = 25
 DEFAULT_AUDIT_LIMIT = 50
+LIVE_REFRESH_SECONDS = 3
 ACTIVE_STATUSES = {"received", "interpreting", "planned", "running", "retrying", "awaiting_approval"}
 TERMINAL_STATUSES = {"completed", "cancelled", "failed"}
 
@@ -27,12 +29,23 @@ def main() -> None:
     state = _connection_state()
     st.title("Agent Control")
     st.caption("Local operator console for Telegram intake, task orchestration, tools, config, and audit.")
-    header_actions = st.columns([1, 1, 6])
+    header_actions = st.columns([1, 1, 1, 5])
     if header_actions[0].button("Refresh", use_container_width=True):
         st.rerun()
     header_actions[1].link_button("Legacy admin", _legacy_admin_url(state["backend_url"], state["token"]), use_container_width=True)
+    live_updates = header_actions[2].toggle("Live", value=True, key="live-updates")
     _show_flash()
 
+    if live_updates and hasattr(st, "fragment"):
+        st.fragment(run_every=f"{LIVE_REFRESH_SECONDS}s")(_render_live_page)(state)
+        return
+
+    _render_live_page(state)
+    if live_updates:
+        _inject_auto_reload(LIVE_REFRESH_SECONDS)
+
+
+def _render_live_page(state: dict[str, str]) -> None:
     try:
         summary = _api_json(state["backend_url"], _summary_path(_current_task_limit()), state["token"])
     except ApiError as exc:
@@ -54,6 +67,13 @@ def main() -> None:
         _render_diagnostics(summary, state)
 
 
+def _inject_auto_reload(seconds: int) -> None:
+    components.html(
+        f"<script>setTimeout(() => window.parent.location.reload(), {seconds * 1000});</script>",
+        height=0,
+    )
+
+
 def _connection_state() -> dict[str, str]:
     backend_url = os.getenv("AGENT_ADMIN_BACKEND_URL", DEFAULT_BACKEND_URL).rstrip("/") or DEFAULT_BACKEND_URL
     token = read_env_value("AGENT_ADMIN_TOKEN") or ""
@@ -65,16 +85,17 @@ def _render_header(summary: dict[str, Any]) -> None:
     telegram = ((config.get("channels") or {}).get("telegram") or {})
     llm = config.get("llm") or {}
     vscode = summary.get("vscode") or {}
+    services = _services_by_name(summary)
     tasks = summary.get("tasks") or []
     active_tasks = len([task for task in tasks if task.get("status") in ACTIVE_STATUSES])
-    workspace = ((config.get("adapters") or {}).get("workspace") or {})
 
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("LLM", llm.get("default_profile") or "missing")
     c2.metric("Telegram", "Enabled" if telegram.get("enabled") else "Disabled")
-    c3.metric("VS Code", _vscode_status_label(vscode))
-    c4.metric("Active Tasks", active_tasks)
-    c5.metric("Workspace", workspace.get("root_dir") or ".agent_control/workspaces")
+    c3.metric("Worker", _service_label(services.get("worker")))
+    c4.metric("Polling", _service_label(services.get("telegram_polling")))
+    c5.metric("VS Code", _vscode_status_label(vscode))
+    c6.metric("Active Tasks", active_tasks)
 
     _render_health(summary)
 
@@ -119,6 +140,14 @@ def _render_operations(summary: dict[str, Any], state: dict[str, str]) -> None:
         st.caption(f"Database: {database.get('path') or database.get('database_url') or 'unknown'}")
         st.caption(f"Workspace root: {workspace.get('root_dir') or 'not configured'}")
         st.caption(f"Telegram allowlist users: {((integrations.get('telegram') or {}).get('allowed_user_count')) or 0}")
+        service_items = (summary.get("services") or {}).get("items") or []
+        if service_items:
+            st.dataframe(
+                _service_frame(service_items),
+                hide_index=True,
+                use_container_width=True,
+                column_config={"Message": st.column_config.TextColumn(width="medium")},
+            )
 
 
 def _render_tasks(summary: dict[str, Any], state: dict[str, str]) -> None:
@@ -540,6 +569,7 @@ def _render_diagnostics(summary: dict[str, Any], state: dict[str, str]) -> None:
         _json_expander("VS Code Bridge", summary.get("vscode") or {})
     with c2:
         _json_expander("Database", summary.get("database") or {})
+    _json_expander("Service Supervisors", summary.get("services") or {})
     _json_expander("Raw Summary", summary)
 
 
@@ -553,6 +583,8 @@ def _runtime_rows(summary: dict[str, Any]) -> pd.DataFrame:
         ("Admin token", "required" if (summary.get("admin") or {}).get("token_required") else "not required"),
         ("LLM profile", llm.get("default_profile")),
         ("Telegram", "enabled" if ((integrations.get("telegram") or {}).get("enabled")) else "disabled"),
+        ("Worker service", _service_label(_services_by_name(summary).get("worker"))),
+        ("Telegram polling service", _service_label(_services_by_name(summary).get("telegram_polling"))),
         ("VS Code adapter", "enabled" if ((adapters.get("vscode") or {}).get("enabled")) else "disabled"),
         ("Workspace", (adapters.get("workspace") or {}).get("root_dir")),
         ("Adapter cache", (adapters.get("adapter_factory") or {}).get("root_dir")),
@@ -582,6 +614,17 @@ def _health_items(summary: dict[str, Any]) -> list[dict[str, str]]:
     adapters = config.get("adapters") or {}
     workspace = adapters.get("workspace") or {}
     database = summary.get("database") or {}
+    services = _services_by_name(summary)
+    service_items = []
+    for service in services.values():
+        state = _service_state(service)
+        service_items.append(
+            {
+                "label": service.get("name", "service").replace("_", " ").title(),
+                "value": _service_label(service),
+                "state": state,
+            }
+        )
 
     return [
         {"label": "Backend", "value": "online", "state": "ok"},
@@ -610,7 +653,56 @@ def _health_items(summary: dict[str, Any]) -> list[dict[str, str]]:
             "value": "ready" if database.get("path") or database.get("database_url") else "unknown",
             "state": "ok" if database.get("path") or database.get("database_url") else "bad",
         },
+        *service_items,
     ]
+
+
+def _services_by_name(summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        str(item.get("name")): item
+        for item in ((summary.get("services") or {}).get("items") or [])
+        if isinstance(item, dict) and item.get("name")
+    }
+
+
+def _service_label(service: dict[str, Any] | None) -> str:
+    if not service:
+        return "Unknown"
+    if not service.get("expected"):
+        return "Disabled"
+    status = str(service.get("status") or "missing").replace("_", " ")
+    age = service.get("age_seconds")
+    suffix = f", {age}s ago" if age is not None else ""
+    return f"{status.title()}{suffix}"
+
+
+def _service_state(service: dict[str, Any] | None) -> str:
+    if not service:
+        return "bad"
+    if not service.get("expected"):
+        return "ok"
+    if service.get("ok"):
+        return "ok"
+    if service.get("status") in {"starting", "exited"}:
+        return "warn"
+    return "bad"
+
+
+def _service_frame(items: list[dict[str, Any]]) -> pd.DataFrame:
+    rows = []
+    for item in items:
+        rows.append(
+            {
+                "Service": str(item.get("name") or "").replace("_", " ").title(),
+                "Expected": "yes" if item.get("expected") else "no",
+                "Status": _service_label(item),
+                "Restarts": item.get("restart_count") or 0,
+                "Supervisor PID": item.get("supervisor_pid") or "",
+                "Child PID": item.get("child_pid") or "",
+                "Message": item.get("message") or "",
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def _vscode_status_label(vscode: dict[str, Any]) -> str:

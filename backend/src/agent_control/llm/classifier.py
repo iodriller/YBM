@@ -3,13 +3,11 @@ from __future__ import annotations
 from typing import Protocol
 
 from agent_control.llm.providers import LLMProvider
+from agent_control.prompts import prompt_text, render_prompt
 from agent_control.schemas import InboundMessage, MessageClassification, TaskType
 
 
-CLASSIFIER_SYSTEM_PROMPT = """You classify inbound messages for a local agentic control system.
-Return only JSON matching the requested schema.
-Classify as a task only when the user is asking the system to do work, change configuration, inspect state, or start a workflow.
-Questions, greetings, and status requests are not tasks unless they ask for an actionable change."""
+CLASSIFIER_SYSTEM_PROMPT = prompt_text("base/classifier_system.md")
 
 
 class MessageClassifier(Protocol):
@@ -62,20 +60,14 @@ class StaticMessageClassifier:
 
 
 def _classification_prompt(message: InboundMessage) -> str:
-    return f"""Classify this inbound message.
-
-Channel: {message.channel.value}
-Kind: {message.kind.value}
-Sender: {message.sender_id}
-Chat: {message.chat_id}
-Text:
-{message.text or ""}
-
-Return:
-- is_task true only if it should spawn a persisted task.
-- task_type as one of the allowed enum values.
-- normalized_objective as the concise work objective when is_task is true.
-- reason explaining the decision."""
+    return render_prompt(
+        "tasks/classifier_user.md",
+        channel=message.channel.value,
+        kind=message.kind.value,
+        sender_id=message.sender_id,
+        chat_id=message.chat_id,
+        text=message.text or "",
+    )
 
 
 def classification_trace(message: InboundMessage) -> dict[str, str]:
