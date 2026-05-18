@@ -774,7 +774,7 @@ _ADMIN_HTML = """
       background: var(--bg);
       color: var(--text);
     }
-    header, main { max-width: 1200px; margin: 0 auto; padding: 20px; }
+    header, main { max-width: min(1500px, calc(100vw - 24px)); margin: 0 auto; padding: 20px 12px; }
     header { display: flex; gap: 16px; align-items: center; justify-content: space-between; }
     h1 { margin: 0; font-size: 24px; }
     h2 { margin: 0 0 12px; font-size: 16px; }
@@ -816,11 +816,12 @@ _ADMIN_HTML = """
     .stack { display: grid; gap: 8px; }
     .warning { color: #9a6700; }
     label { font-size: 12px; color: var(--muted); }
+    .table-scroll { width: 100%; max-width: 100%; overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; table-layout: fixed; }
     th, td { padding: 8px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; overflow-wrap: anywhere; }
     th { font-size: 12px; color: var(--muted); font-weight: 600; }
     code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; }
-    pre { white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow: auto; }
+    pre { white-space: pre-wrap; word-break: break-word; max-height: 360px; max-width: 100%; overflow: auto; }
     .access-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
     .access-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; display: grid; gap: 10px; }
     .access-card-title { display: flex; justify-content: space-between; gap: 8px; align-items: start; }
@@ -828,9 +829,10 @@ _ADMIN_HTML = """
     .mode-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
     .mode-button { font-size: 12px; padding: 6px 8px; }
     .cap-list { display: flex; flex-wrap: wrap; gap: 6px; }
-    .badge { border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; font-size: 12px; }
+    .badge { border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; font-size: 12px; max-width: 100%; overflow-wrap: anywhere; }
     .badge.soft { background: var(--chip); }
     .link-list { display: grid; gap: 4px; margin-top: 8px; font-size: 12px; }
+    .link-list * { overflow-wrap: anywhere; }
     a { color: var(--accent); }
     .activity { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
     .activity-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: 0 0 auto; }
@@ -843,25 +845,65 @@ _ADMIN_HTML = """
     .task-toolbar { margin-bottom: 12px; }
     .task-id { font-size: 12px; }
     .task-objective { font-weight: 600; }
-    .task-details-row td { background: var(--chip); }
-    .trace-panel { display: grid; gap: 12px; padding: 8px 0; }
-    .trace-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; }
-    .trace-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--panel); min-width: 0; }
+    .task-list { display: grid; gap: 10px; max-width: 100%; }
+    .task-card {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      max-width: 100%;
+      min-width: 0;
+      overflow: hidden;
+    }
+    .task-summary-grid {
+      display: grid;
+      grid-template-columns: minmax(180px, 0.9fr) minmax(150px, 0.6fr) minmax(240px, 1.8fr) minmax(220px, auto);
+      gap: 10px;
+      padding: 10px;
+      align-items: start;
+      max-width: 100%;
+      min-width: 0;
+    }
+    .task-cell { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+    .task-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .task-actions button { flex: 0 0 auto; }
+    .task-details-shell {
+      border-top: 1px solid var(--border);
+      background: var(--chip);
+      padding: 12px;
+      max-width: 100%;
+      min-width: 0;
+      overflow: hidden;
+      contain: inline-size;
+    }
+    .task-details-shell * {
+      max-width: 100%;
+      min-width: 0;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .trace-panel { display: grid; gap: 12px; padding: 0; max-width: 100%; min-width: 0; overflow: hidden; }
+    .trace-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 10px; min-width: 0; }
+    .trace-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--panel); min-width: 0; max-width: 100%; overflow: hidden; }
     .trace-card h3 { margin: 0 0 8px; font-size: 13px; }
     .trace-card pre { max-height: 280px; margin: 0; }
     .trace-step, .tool-call { border-left: 3px solid var(--accent); padding-left: 8px; margin: 8px 0; }
-    .trace-title { display: flex; gap: 8px; align-items: baseline; justify-content: space-between; }
+    .trace-title { display: flex; gap: 8px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
+    .trace-title strong { min-width: 0; overflow-wrap: anywhere; }
     .trace-output { margin-top: 8px; }
+    .trace-output strong { display: block; margin-bottom: 4px; }
+    .trace-details { max-width: 100%; overflow: hidden; }
     details.trace-details > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
     .kv { display: grid; grid-template-columns: minmax(110px, 190px) minmax(0, 1fr); gap: 5px 10px; margin: 0; }
     .kv dt { color: var(--muted); font-size: 12px; }
-    .kv dd { margin: 0; min-width: 0; }
+    .kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
     .kv.compact { grid-template-columns: minmax(90px, 150px) minmax(0, 1fr); }
     .list-value { margin: 0; padding-left: 18px; }
     .text-block {
       white-space: pre-wrap;
       overflow-wrap: anywhere;
+      word-break: break-word;
       max-height: 320px;
+      max-width: 100%;
       overflow: auto;
       margin: 4px 0;
       padding: 8px;
@@ -889,6 +931,7 @@ _ADMIN_HTML = """
     @media (max-width: 800px) {
       header { align-items: flex-start; flex-direction: column; }
       .panel { grid-column: span 12; }
+      .task-summary-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -1225,44 +1268,47 @@ _ADMIN_HTML = """
         return;
       }
       document.getElementById("tasks").innerHTML = `
-        <table>
-          <thead><tr><th style="width: 22%;">ID</th><th style="width: 16%;">Activity</th><th>Objective</th><th style="width: 250px;">Actions</th></tr></thead>
-          <tbody>${tasks.map(task => {
+        <div class="task-list">
+          ${tasks.map(task => {
             const activity = activityForStatus(task.status);
             const type = (task.metadata || {}).task_type;
             const expanded = expandedTaskIds.has(task.id);
             return `
-              <tr>
-              <td>
-                <code class="task-id">${escapeHtml(task.id)}</code>
-                <div class="task-meta">${escapeHtml(taskUpdatedLabel(task))}</div>
-              </td>
-              <td>
-                <span class="activity ${escapeHtml(activity.className)}">
-                  <span class="activity-dot"></span>
-                  <span>${escapeHtml(activity.label)}</span>
-                </span>
-                ${task.current_step_id ? `<div class="task-meta">step ${escapeHtml(task.current_step_id)}</div>` : ""}
-              </td>
-              <td>
-                <div class="task-objective">${escapeHtml(task.objective)}</div>
-                ${type ? `<div class="task-meta">${escapeHtml(labelize(type))}</div>` : ""}
-                ${taskResultLinks(task)}
-              </td>
-              <td class="row">
-                <button ${taskActionDisabled(task, "pause") ? "disabled" : ""} data-task-id="${escapeHtml(task.id)}" data-task-action="pause">Pause</button>
-                <button ${taskActionDisabled(task, "resume") ? "disabled" : ""} data-task-id="${escapeHtml(task.id)}" data-task-action="resume">Resume</button>
-                <button ${taskActionDisabled(task, "cancel") ? "disabled" : ""} data-task-id="${escapeHtml(task.id)}" data-task-action="cancel">Cancel</button>
-                <button class="primary" data-task-id="${escapeHtml(task.id)}" data-task-details="toggle">${expanded ? "Hide details" : "Details"}</button>
-              </td>
-            </tr>
-            ${expanded ? `
-              <tr class="task-details-row">
-                <td colspan="4">${renderTaskTrace(task.id)}</td>
-              </tr>
-            ` : ""}
-          `}).join("")}</tbody>
-        </table>
+              <article class="task-card">
+                <div class="task-summary-grid">
+                  <div class="task-cell">
+                    <div class="mini-label">Task</div>
+                    <code class="task-id">${escapeHtml(task.id)}</code>
+                    <div class="task-meta">${escapeHtml(taskUpdatedLabel(task))}</div>
+                  </div>
+                  <div class="task-cell">
+                    <div class="mini-label">Activity</div>
+                    <span class="activity ${escapeHtml(activity.className)}">
+                      <span class="activity-dot"></span>
+                      <span>${escapeHtml(activity.label)}</span>
+                    </span>
+                    ${task.current_step_id ? `<div class="task-meta">step ${escapeHtml(task.current_step_id)}</div>` : ""}
+                  </div>
+                  <div class="task-cell">
+                    <div class="mini-label">Objective</div>
+                    <div class="task-objective">${escapeHtml(task.objective)}</div>
+                    ${type ? `<div class="task-meta">${escapeHtml(labelize(type))}</div>` : ""}
+                    ${taskResultLinks(task)}
+                  </div>
+                  <div class="task-cell">
+                    <div class="mini-label">Actions</div>
+                    <div class="task-actions">
+                      <button ${taskActionDisabled(task, "pause") ? "disabled" : ""} data-task-id="${escapeHtml(task.id)}" data-task-action="pause">Pause</button>
+                      <button ${taskActionDisabled(task, "resume") ? "disabled" : ""} data-task-id="${escapeHtml(task.id)}" data-task-action="resume">Resume</button>
+                      <button ${taskActionDisabled(task, "cancel") ? "disabled" : ""} data-task-id="${escapeHtml(task.id)}" data-task-action="cancel">Cancel</button>
+                      <button class="primary" data-task-id="${escapeHtml(task.id)}" data-task-details="toggle">${expanded ? "Hide details" : "Details"}</button>
+                    </div>
+                  </div>
+                </div>
+                ${expanded ? `<div class="task-details-shell">${renderTaskTrace(task.id)}</div>` : ""}
+              </article>
+          `}).join("")}
+        </div>
       `;
     }
 

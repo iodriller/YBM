@@ -39,6 +39,53 @@ def test_streamlit_admin_extracts_task_links_and_tool_output() -> None:
     assert admin_streamlit._terminal_output_text(result) == "created files\n\nserved app"
 
 
+def test_streamlit_admin_timeline_details_are_human_readable() -> None:
+    timeline = [
+        {
+            "at": "2026-05-18 04:32:48 UTC",
+            "kind": "audit",
+            "title": "Plan Created",
+            "summary": "plan_created",
+            "details": {
+                "config_context": "very long hidden planner context",
+                "source": "default_vscode_development_plan",
+                "plan": {
+                    "id": "plan_1",
+                    "objective": "Create app",
+                    "steps": [
+                        {"title": "Prepare workspace", "tool_name": "workspace.manage"},
+                        {"title": "Ask Copilot", "tool_name": "vscode.copilot_terminal"},
+                    ],
+                },
+            },
+        },
+        {
+            "at": "2026-05-18T04:33:00Z",
+            "kind": "tool",
+            "title": "workspace.manage",
+            "summary": "succeeded",
+            "details": {
+                "request": {
+                    "tool_name": "workspace.manage",
+                    "capability": "filesystem.write",
+                    "input": {"operation": "launch_static"},
+                },
+                "result": {
+                    "status": "succeeded",
+                    "output": {"url": "http://127.0.0.1:8890/", "files": ["index.html"]},
+                },
+            },
+        },
+    ]
+
+    frame = admin_streamlit._timeline_frame(timeline)
+
+    assert "steps: 1. Prepare workspace -> workspace.manage; 2. Ask Copilot -> vscode.copilot_terminal" in frame.iloc[0]["Details"]
+    assert "very long hidden planner context" not in frame.iloc[0]["Details"]
+    assert "operation: launch_static" in frame.iloc[1]["Details"]
+    assert "url: http://127.0.0.1:8890/" in frame.iloc[1]["Details"]
+
+
 def test_streamlit_admin_action_disabled_rules() -> None:
     assert admin_streamlit._action_disabled({"status": "completed"}, "pause") is True
     assert admin_streamlit._action_disabled({"status": "paused"}, "resume") is False

@@ -45,6 +45,9 @@ def test_admin_page_and_summary(monkeypatch, tmp_path) -> None:
     assert 'onclick="taskSignal' not in page.text
     assert 'data-task-action="' in page.text
     assert 'data-task-details="' in page.text
+    assert 'class="task-card"' in page.text
+    assert "contain: inline-size" in page.text
+    assert ".task-details-shell *" in page.text
     assert 'data-access-mode-group="' in page.text
 
 

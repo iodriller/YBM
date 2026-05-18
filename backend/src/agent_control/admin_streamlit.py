@@ -36,17 +36,16 @@ def main() -> None:
         return
 
     _render_header(summary)
-
-    tabs = st.tabs(["Operations", "Tasks", "Configuration", "Audit", "Diagnostics"])
-    with tabs[0]:
-        _render_operations(summary, state)
-    with tabs[1]:
-        _render_tasks(summary, state)
-    with tabs[2]:
+    _render_operations(summary, state)
+    st.divider()
+    _render_tasks(summary, state)
+    st.divider()
+    bottom_left, bottom_right = st.columns([1.15, 1])
+    with bottom_left:
         _render_configuration(summary, state)
-    with tabs[3]:
+    with bottom_right:
         _render_audit(summary, state)
-    with tabs[4]:
+        st.divider()
         _render_diagnostics(summary, state)
 
 
@@ -230,77 +229,115 @@ def _render_task_card(task: dict[str, Any], state: dict[str, str]) -> None:
 
 
 def _render_task_trace(trace: dict[str, Any], key_prefix: str = "trace") -> None:
-    trace_tabs = st.tabs(["Plan", "Tools", "Context", "Related", "Timeline", "Raw"])
-    with trace_tabs[0]:
-        plan = trace.get("plan") or {}
-        steps = plan.get("steps") or []
+    st.markdown("#### Trace")
+    plan = trace.get("plan") or {}
+    steps = plan.get("steps") or []
+    tools = trace.get("tool_invocations") or []
+    timeline = trace.get("timeline") or []
+    audit = trace.get("audit") or []
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Plan Steps", len(steps))
+    c2.metric("Tool Calls", len(tools))
+    c3.metric("Timeline", len(timeline))
+    c4.metric("Audit", len(audit))
+
+    st.markdown("##### Timeline")
+    if timeline:
+        st.dataframe(
+            _timeline_frame(timeline),
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Time": st.column_config.TextColumn(width="small"),
+                "Kind": st.column_config.TextColumn(width="small"),
+                "Title": st.column_config.TextColumn(width="medium"),
+                "Summary": st.column_config.TextColumn(width="medium"),
+                "Details": st.column_config.TextColumn(width="large"),
+            },
+        )
+    else:
+        st.info("No timeline entries.")
+
+    with st.expander(f"Plan ({len(steps)} steps)", expanded=False):
         if not steps:
             st.info("No plan persisted yet.")
         for index, step in enumerate(steps, 1):
             st.markdown(f"**{index}. {step.get('title') or 'Step'}**")
-            st.caption(f"tool={step.get('tool_name') or 'plan only'} | risk={step.get('risk_level')} | capabilities={', '.join(step.get('required_capabilities') or []) or 'none'}")
+            st.caption(
+                f"tool={step.get('tool_name') or 'plan only'} | "
+                f"risk={step.get('risk_level')} | "
+                f"capabilities={', '.join(step.get('required_capabilities') or []) or 'none'}"
+            )
             if step.get("description"):
                 st.write(step["description"])
             if step.get("tool_input"):
-                with st.expander("Step input"):
-                    st.json(step["tool_input"], expanded=False)
-    with trace_tabs[1]:
-        tools = trace.get("tool_invocations") or []
+                st.text_area(
+                    "Step input / prompt",
+                    _json_text(step["tool_input"]),
+                    height=130,
+                    key=f"{key_prefix}-step-input-{index}",
+                    disabled=True,
+                )
+
+    with st.expander(f"Tools Used ({len(tools)} calls)", expanded=False):
         if not tools:
             st.info("No tool calls recorded yet.")
         for index, tool in enumerate(tools, 1):
+            tool_id = str(tool.get("id") or index)
             st.markdown(f"**{index}. {tool.get('tool_name')}**")
             st.caption(f"{tool.get('status')} | {tool.get('capability')} | {tool.get('created_at')} -> {tool.get('completed_at')}")
             prompt = _tool_prompt(tool)
             output = _terminal_output_text((tool.get("result") or {}))
             if prompt:
-                st.text_area("Prompt / command", prompt, height=140, key=f"{key_prefix}-prompt-{tool.get('id')}", disabled=True)
+                st.text_area("Prompt / command", prompt, height=150, key=f"{key_prefix}-prompt-{tool_id}", disabled=True)
             if output:
-                st.text_area("Output", output, height=220, key=f"{key_prefix}-output-{tool.get('id')}", disabled=True)
-            with st.expander("Full request/result"):
-                st.json({"request": tool.get("request"), "result": tool.get("result")}, expanded=False)
-    with trace_tabs[2]:
-        st.json(trace.get("context") or {}, expanded=False)
-    with trace_tabs[3]:
-        st.json(
+                st.text_area("Output", output, height=240, key=f"{key_prefix}-output-{tool_id}", disabled=True)
+            st.text_area(
+                "Full request/result",
+                _json_text({"request": tool.get("request"), "result": tool.get("result")}),
+                height=180,
+                key=f"{key_prefix}-full-tool-{tool_id}",
+                disabled=True,
+            )
+
+    related_left, related_right = st.columns(2)
+    with related_left:
+        _json_expander("Orchestrator Context", trace.get("context") or {})
+    with related_right:
+        _json_expander(
+            "Related Records",
             {
                 "approvals": trace.get("approvals") or [],
                 "signals": trace.get("signals") or [],
                 "artifacts": trace.get("artifacts") or [],
-                "audit": trace.get("audit") or [],
+                "audit": audit,
             },
-            expanded=False,
         )
-    with trace_tabs[4]:
-        timeline = trace.get("timeline") or []
-        if timeline:
-            st.dataframe(pd.DataFrame(timeline), hide_index=True, use_container_width=True)
-        else:
-            st.info("No timeline entries.")
-    with trace_tabs[5]:
-        st.json(trace, expanded=False)
+
+    _json_expander("Raw trace JSON", trace)
 
 
 def _render_configuration(summary: dict[str, Any], state: dict[str, str]) -> None:
     config = summary.get("config") or {}
-    cfg_tabs = st.tabs(["Access", "LLM", "Telegram", "VS Code", "Workspace", "Effective Config"])
-    with cfg_tabs[0]:
-        _render_access_config(summary, state)
-    with cfg_tabs[1]:
+    st.subheader("Configuration")
+    st.caption("Access modes are shown first because they control what the worker can do.")
+    _render_access_config(summary, state)
+    with st.expander("LLM", expanded=False):
         _render_llm_config(summary, state)
-    with cfg_tabs[2]:
+    with st.expander("Telegram", expanded=False):
         _render_telegram_config(config, state)
-    with cfg_tabs[3]:
+    with st.expander("VS Code", expanded=False):
         _render_vscode_config(config, state)
-    with cfg_tabs[4]:
+    with st.expander("Workspace", expanded=False):
         _render_workspace_config(config, state)
-    with cfg_tabs[5]:
+    with st.expander("Effective Config", expanded=False):
         try:
             effective = _api_json(state["backend_url"], "/admin/api/config/effective", state["token"])
-            st.json(effective, expanded=False)
+            st.code(_json_text(effective), language="json")
         except ApiError as exc:
             st.error(str(exc))
-            st.json(config, expanded=False)
+            st.code(_json_text(config), language="json")
 
 
 def _render_access_config(summary: dict[str, Any], state: dict[str, str]) -> None:
@@ -498,20 +535,17 @@ def _render_audit(summary: dict[str, Any], state: dict[str, str]) -> None:
     for event in events:
         with st.expander(f"{event.get('formatted_time') or event.get('created_at')} | {event.get('title') or event.get('type')}"):
             st.write(event.get("summary") or "")
-            st.json(event.get("details") or event, expanded=False)
+            st.code(_json_text(event.get("details") or event), language="json")
 
 
 def _render_diagnostics(summary: dict[str, Any], state: dict[str, str]) -> None:
     st.subheader("Diagnostics")
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown("**VS Code Bridge**")
-        st.json(summary.get("vscode") or {}, expanded=False)
+        _json_expander("VS Code Bridge", summary.get("vscode") or {})
     with c2:
-        st.markdown("**Database**")
-        st.json(summary.get("database") or {}, expanded=False)
-    st.markdown("**Raw Summary**")
-    st.json(summary, expanded=False)
+        _json_expander("Database", summary.get("database") or {})
+    _json_expander("Raw Summary", summary)
 
 
 def _runtime_rows(summary: dict[str, Any]) -> pd.DataFrame:
@@ -549,6 +583,145 @@ def _task_frame(tasks: list[dict[str, Any]]) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+def _timeline_frame(timeline: list[dict[str, Any]]) -> pd.DataFrame:
+    rows = []
+    for item in timeline:
+        rows.append(
+            {
+                "Time": item.get("at") or "",
+                "Kind": item.get("kind") or "",
+                "Title": item.get("title") or "",
+                "Actor": item.get("actor") or "",
+                "Summary": item.get("summary") or "",
+                "Details": _timeline_detail_text(item),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _timeline_detail_text(item: dict[str, Any]) -> str:
+    details = item.get("details")
+    if not isinstance(details, dict):
+        return _clip_text(details or "")
+
+    lines: list[str] = []
+    _add_line(lines, "decision", details.get("decision"))
+    _add_line(lines, "reason", details.get("reason"))
+    _add_line(lines, "status", _status_transition(details))
+    _add_line(lines, "task", details.get("task_id"))
+    _add_line(lines, "objective", details.get("objective") or details.get("normalized_objective"))
+    _add_line(lines, "type", details.get("task_type"))
+    _add_line(lines, "confidence", details.get("confidence") or details.get("classification_confidence"))
+    _add_line(lines, "tool", details.get("tool_name"))
+    _add_line(lines, "operation", _nested_value(details, "input", "operation") or details.get("operation"))
+    _add_line(lines, "capability", details.get("capability"))
+    _add_line(lines, "scope", details.get("scope_target") or _nested_value(details, "input", "scope_target"))
+    _add_line(lines, "workspace", details.get("workspace_dir") or _nested_value(details, "output", "workspace_dir"))
+    _add_line(lines, "url", details.get("url") or details.get("preview_url") or _nested_value(details, "output", "url"))
+    _add_line(lines, "materialized", details.get("materialized_from") or _nested_value(details, "output", "materialized_from"))
+    _add_line(lines, "message", details.get("text_preview") or details.get("text") or details.get("message"))
+
+    request_payload = details.get("request")
+    if isinstance(request_payload, dict):
+        request_input = request_payload.get("input") if isinstance(request_payload.get("input"), dict) else {}
+        _add_line(lines, "tool", request_payload.get("tool_name"))
+        _add_line(lines, "operation", request_input.get("operation"))
+        _add_line(lines, "capability", request_payload.get("capability"))
+        _add_line(lines, "cwd", request_input.get("cwd"))
+        _add_line(lines, "scope", request_payload.get("scope_target") or request_input.get("scope_target"))
+
+    result_payload = details.get("result")
+    if isinstance(result_payload, dict):
+        _add_line(lines, "result", result_payload.get("status"))
+        _add_line(lines, "error", result_payload.get("error_message"))
+        output_payload = result_payload.get("output") if isinstance(result_payload.get("output"), dict) else {}
+        _add_line(lines, "workspace", output_payload.get("workspace_dir"))
+        _add_line(lines, "url", output_payload.get("url"))
+        _add_line(lines, "materialized", output_payload.get("materialized_from"))
+        if isinstance(output_payload.get("files"), list):
+            _add_line(lines, "files", f"{len(output_payload['files'])} file(s)")
+        usage = output_payload.get("usage")
+        if isinstance(usage, dict):
+            _add_line(lines, "usage", "; ".join(str(value) for value in usage.values()))
+        terminal = output_payload.get("terminal_output")
+        if isinstance(terminal, list) and terminal:
+            first = next((item.get("content") for item in terminal if isinstance(item, dict) and item.get("content")), None)
+            _add_line(lines, "output", first)
+
+    if isinstance(details.get("plan"), dict):
+        lines.extend(_plan_summary_lines(details["plan"]))
+    elif isinstance(details.get("steps"), list):
+        lines.extend(_step_summary_lines(details["steps"]))
+
+    output = details.get("output")
+    if isinstance(output, dict):
+        _add_line(lines, "output", output.get("output_text") or output.get("message") or output.get("summary"))
+
+    if not lines:
+        for key, value in details.items():
+            if key in {"llm", "plan", "config_context", "system_prompt", "user_prompt", "prompt", "source_text"}:
+                continue
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                _add_line(lines, key, value)
+            elif isinstance(value, dict):
+                simple = [f"{child_key}={_clip_text(child_value, 80)}" for child_key, child_value in value.items() if isinstance(child_value, (str, int, float, bool))]
+                if simple:
+                    _add_line(lines, key, ", ".join(simple[:4]))
+
+    return "\n".join(lines[:10]) if lines else _clip_text(details)
+
+
+def _plan_summary_lines(plan: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    _add_line(lines, "plan", plan.get("id"))
+    _add_line(lines, "source", plan.get("source"))
+    _add_line(lines, "objective", plan.get("objective"))
+    steps = plan.get("steps") or []
+    if isinstance(steps, list):
+        lines.extend(_step_summary_lines(steps))
+    return lines
+
+
+def _step_summary_lines(steps: list[Any]) -> list[str]:
+    titles = []
+    for index, step in enumerate(steps[:6], 1):
+        if isinstance(step, dict):
+            title = step.get("title") or "Step"
+            tool = step.get("tool_name") or "plan only"
+            titles.append(f"{index}. {title} -> {tool}")
+    if not titles:
+        return []
+    suffix = "" if len(steps) <= 6 else f"; +{len(steps) - 6} more"
+    return [f"steps: {'; '.join(titles)}{suffix}"]
+
+
+def _status_transition(details: dict[str, Any]) -> str | None:
+    old_status = details.get("old_status")
+    new_status = details.get("new_status")
+    if old_status or new_status:
+        return f"{old_status or '?'} -> {new_status or '?'}"
+    return details.get("status")
+
+
+def _nested_value(value: dict[str, Any], parent: str, child: str) -> Any:
+    nested = value.get(parent)
+    if isinstance(nested, dict):
+        return nested.get(child)
+    return None
+
+
+def _add_line(lines: list[str], label: str, value: Any) -> None:
+    if value is None or value == "":
+        return
+    lines.append(f"{label}: {_clip_text(value)}")
+
+
+def _clip_text(value: Any, limit: int = 260) -> str:
+    text = json.dumps(value, ensure_ascii=False, default=str) if isinstance(value, (dict, list)) else str(value)
+    text = " ".join(text.split())
+    return text if len(text) <= limit else f"{text[: limit - 3]}..."
 
 
 def _find_task(tasks: list[dict[str, Any]], task_id: str) -> dict[str, Any] | None:
@@ -713,6 +886,15 @@ def _api_error_detail(raw: str) -> str:
     if isinstance(parsed, dict) and parsed.get("detail"):
         return str(parsed["detail"])
     return raw
+
+
+def _json_text(value: Any) -> str:
+    return json.dumps(value, indent=2, ensure_ascii=False, default=str)
+
+
+def _json_expander(label: str, value: Any, *, expanded: bool = False) -> None:
+    with st.expander(label, expanded=expanded):
+        st.code(_json_text(value), language="json")
 
 
 def _parse_csv_ints(value: str) -> list[int]:

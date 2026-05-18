@@ -84,7 +84,11 @@ if (-not $NoWorker) {
 }
 
 if (-not $NoAdminUi) {
-  Start-StackScript -Name "admin_ui" -ScriptPath "$Root\scripts\run_admin_ui.ps1"
+  if (Test-HttpOk "http://127.0.0.1:8501") {
+    Write-Host "admin_ui already running at http://127.0.0.1:8501"
+  } else {
+    Start-StackScript -Name "admin_ui" -ScriptPath "$Root\scripts\run_admin_ui.ps1"
+  }
 }
 
 Write-Host ""
