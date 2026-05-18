@@ -68,7 +68,7 @@ def test_streamlit_admin_timeline_details_are_human_readable() -> None:
                 "request": {
                     "tool_name": "workspace.manage",
                     "capability": "filesystem.write",
-                    "input": {"operation": "launch_static"},
+                    "input": {"operation": "launch_static", "prompt": "Launch the preview server"},
                 },
                 "result": {
                     "status": "succeeded",
@@ -82,8 +82,38 @@ def test_streamlit_admin_timeline_details_are_human_readable() -> None:
 
     assert "steps: 1. Prepare workspace -> workspace.manage; 2. Ask Copilot -> vscode.copilot_terminal" in frame.iloc[0]["Details"]
     assert "very long hidden planner context" not in frame.iloc[0]["Details"]
+    assert frame.iloc[0]["Source"] == "default_vscode_development_plan"
+    assert frame.iloc[0]["Next"] == "tool executor"
     assert "operation: launch_static" in frame.iloc[1]["Details"]
     assert "url: http://127.0.0.1:8890/" in frame.iloc[1]["Details"]
+    assert frame.iloc[1]["Source"] == "workspace.manage"
+    assert frame.iloc[1]["Next"] == "worker result: succeeded"
+    assert "prompt: Launch the preview server" in frame.iloc[1]["Prompt / Payload"]
+
+    trace_frame = admin_streamlit._trace_timeline_frame(
+        {
+            "timeline": timeline,
+            "plan": {
+                "steps": [
+                    {
+                        "title": "Prepare workspace",
+                        "description": "Create the task workspace",
+                        "tool_name": "workspace.manage",
+                        "risk_level": "high",
+                        "required_capabilities": ["filesystem.write"],
+                        "tool_input": {"operation": "prepare"},
+                        "expected_output": "workspace path",
+                    }
+                ]
+            },
+        }
+    )
+    plan_step = trace_frame[trace_frame["Kind"] == "plan step"].iloc[0]
+    assert plan_step["Title"] == "1. Prepare workspace"
+    assert plan_step["Source"] == "plan"
+    assert plan_step["Next"] == "workspace.manage"
+    assert "step_input:" in plan_step["Prompt / Payload"]
+    assert "capabilities: filesystem.write" in plan_step["Details"]
 
 
 def test_streamlit_admin_action_disabled_rules() -> None:
@@ -98,6 +128,28 @@ def test_streamlit_admin_formats_task_options_and_api_errors() -> None:
     assert admin_streamlit._task_option_label(task) == "Running | Create a detailed local workspace app"
     assert admin_streamlit._api_error_detail('{"detail":"terminal.run capability is disabled"}') == "terminal.run capability is disabled"
     assert admin_streamlit._api_error_detail("plain failure") == "plain failure"
+
+
+def test_streamlit_admin_health_and_connection_helpers() -> None:
+    summary = {
+        "config": {
+            "llm": {"default_profile": "localdeploy_gemma3_4b"},
+            "adapters": {"workspace": {"enabled": True, "root_dir": ".agent_control/workspaces"}},
+        },
+        "integrations": {
+            "telegram": {"enabled": True, "token_present": True},
+            "llm": {"default_profile_configured": True},
+        },
+        "vscode": {"connected": False, "status": "waiting"},
+        "database": {"path": "agent_control.db"},
+    }
+
+    items = {item["label"]: item for item in admin_streamlit._health_items(summary)}
+
+    assert items["Backend"]["state"] == "ok"
+    assert items["VS Code"]["state"] == "bad"
+    assert admin_streamlit._vscode_status_label({"connected": True}) == "Connected"
+    assert admin_streamlit._vscode_status_label({"connected": False, "status": "stale", "last_seen_age_seconds": 120}) == "Stale (120s)"
 
 
 def test_streamlit_admin_smoke_renders_without_backend(tmp_path: Path) -> None:
@@ -128,7 +180,30 @@ def fake_api_json(backend_url, path, token, method="GET", payload=None):
         "task_pagination": {"total": 1, "has_more": False},
         "audit": [],
         "vscode": {"connected": False, "state": None, "heartbeat": None, "terminal_outputs": []},
-        "access_modes": {},
+        "access_modes": {
+            "filesystem": {
+                "label": "File system",
+                "mode": "full_access",
+                "capabilities": ["filesystem.read", "filesystem.write"],
+                "options": [
+                    {"value": "off", "label": "Off"},
+                    {"value": "read_only", "label": "Read-only"},
+                    {"value": "write_access", "label": "Write with approval"},
+                    {"value": "full_access", "label": "Full access"},
+                ],
+            },
+            "vscode": {
+                "label": "VS Code",
+                "mode": "full_access",
+                "capabilities": ["vscode.read_state", "vscode.write_files"],
+                "options": [
+                    {"value": "off", "label": "Off"},
+                    {"value": "read_only", "label": "Read-only"},
+                    {"value": "write_access", "label": "Write with approval"},
+                    {"value": "full_access", "label": "Full access"},
+                ],
+            },
+        },
         "warnings": [],
         "database": {"path": "agent_control.db"},
         "integrations": {"telegram": {"enabled": True, "allowed_user_count": 0}, "llm": {"presets": []}},
@@ -151,7 +226,7 @@ def fake_api_json(backend_url, path, token, method="GET", payload=None):
     if path.startswith("/admin/api/audit"):
         return {"events": []}
     if path.startswith("/admin/api/config/effective"):
-        return {"config": summary["config"], "access_modes": {}, "warnings": []}
+        return {"config": summary["config"], "access_modes": summary["access_modes"], "warnings": []}
     return summary
 
 
@@ -165,3 +240,5 @@ admin_streamlit.main()
     app.run(timeout=10)
 
     assert not app.exception
+    assert app.markdown[0].value
+    assert any("File system" in item.value for item in app.markdown)

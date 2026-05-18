@@ -2,6 +2,8 @@ import * as vscode from "vscode";
 import * as http from "http";
 import * as https from "https";
 import { exec } from "child_process";
+import * as fs from "fs";
+import * as path from "path";
 
 export function activate(context: vscode.ExtensionContext) {
   const terminals = new Map<string, vscode.Terminal>();
@@ -16,15 +18,13 @@ export function activate(context: vscode.ExtensionContext) {
   });
 
   const timer = setInterval(() => {
-    void sendHeartbeat();
-    void pollTerminalCommands(terminals);
-  }, 30000);
+    void bridgeTick(terminals);
+  }, 10000);
 
   context.subscriptions.push(statusCommand, syncCommand, terminalCommand, {
     dispose: () => clearInterval(timer),
   });
-  void sendHeartbeat();
-  void pollTerminalCommands(terminals);
+  void bridgeTick(terminals);
 }
 
 export function deactivate() {}
@@ -34,15 +34,73 @@ function bridgeUrl(): string {
 }
 
 function bridgeToken(): string | undefined {
-  return process.env.VSCODE_BRIDGE_TOKEN;
+  const tokenEnv = vscode.workspace.getConfiguration("agentControl").get("bridgeTokenEnv", "VSCODE_BRIDGE_TOKEN");
+  const configuredToken = vscode.workspace.getConfiguration("agentControl").get("bridgeToken", "");
+  return process.env[tokenEnv] || configuredToken || readWorkspaceEnvValue(tokenEnv);
+}
+
+function readWorkspaceEnvValue(name: string): string | undefined {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  for (const folder of folders) {
+    const envPath = path.join(folder.uri.fsPath, ".env");
+    try {
+      const content = fs.readFileSync(envPath, "utf8");
+      const value = parseEnvValue(content, name);
+      if (value) {
+        return value;
+      }
+    } catch {
+      // Workspace .env is optional.
+    }
+  }
+  return undefined;
+}
+
+function parseEnvValue(content: string, name: string): string | undefined {
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+    const separator = line.indexOf("=");
+    if (separator < 0) {
+      continue;
+    }
+    const key = line.slice(0, separator).trim();
+    if (key !== name) {
+      continue;
+    }
+    let value = line.slice(separator + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    return value || undefined;
+  }
+  return undefined;
 }
 
 async function sendHeartbeat(): Promise<void> {
-  await post("/vscode/state", await collectState());
+  const state = await collectState();
+  await post("/vscode/heartbeat", {
+    instance_id: state.instance_id,
+    workspace_folders: state.workspace_folders,
+    active_file: state.active_file,
+    diagnostics_count: state.diagnostics_count,
+  });
 }
 
 async function syncState(): Promise<void> {
   await post("/vscode/state", await collectState());
+}
+
+async function bridgeTick(terminals: Map<string, vscode.Terminal>): Promise<void> {
+  try {
+    await sendHeartbeat();
+    await syncState();
+    await pollTerminalCommands(terminals);
+  } catch (error) {
+    console.warn("Agent Control bridge sync failed", error);
+  }
 }
 
 async function collectState() {

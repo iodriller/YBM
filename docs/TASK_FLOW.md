@@ -1,5 +1,81 @@
 # Telegram To Worker Flow
 
+## Universal Workflow
+
+This is the intended workflow for every channel and every task type. Telegram is only one intake channel.
+
+```mermaid
+flowchart TD
+    A[Inbound message or command] --> B[Intake adapter]
+    B --> C[Access check and audit]
+    C --> D[Store message and update compact memory]
+    D --> E{Router/classifier decision}
+    E -->|plain status/help/question| F[Direct responder with runtime context]
+    E -->|actionable work| G[Create task: received]
+    G --> H[Worker picks up task]
+    H --> I[Build orchestration context]
+    I --> J[Read tool registry / capability vault]
+    J --> K{Known capability exists?}
+    K -->|yes| L[Create default or LLM plan]
+    K -->|missing but reasonable| M[adapter.factory creates reviewed proposal]
+    K -->|missing or unsafe| N[Block with useful reason]
+    L --> O[Execute plan step]
+    M --> O
+    O --> P[Policy check for capability, scope, risk]
+    P -->|approval needed| Q[Approval request]
+    Q --> O
+    P -->|allowed| R[Run tool/adapter]
+    R --> S[Audit request, decision, result, artifacts]
+    S --> T{More plan steps?}
+    T -->|yes| O
+    T -->|no| U[Validator checks postconditions]
+    U -->|gap found and retry available| V[Repair/retry with explicit gap]
+    V --> O
+    U -->|satisfied| W[Persist final task state]
+    U -->|failed| X[Persist blocked/failed state]
+    W --> Y[Notify source channel and update admin trace]
+    X --> Y
+```
+
+Simple step version:
+
+1. An intake adapter receives the message, checks whether the sender is allowed, stores the message, and updates compact conversation memory.
+2. The classifier/router decides whether this is a direct response, a status/help request, or a persisted task.
+3. For tasks, the worker builds orchestration context from the task, memory, config, and the tool registry/capability vault.
+4. The planner chooses registered tools by exact tool name. For common flows, deterministic default plans are preferred; otherwise the local LLM planner can create a structured plan.
+5. Missing capabilities should route to `adapter.factory` for a proposal, not dynamically import unreviewed runtime code.
+6. Every executable step goes through policy before the tool runs.
+7. Every request, policy decision, tool result, state transition, and important artifact is audited so the admin trace can reconstruct the flow.
+8. A validator checks the outcome against the task postconditions. For visible app tasks this means a workspace and preview URL; other task types need typed postconditions.
+9. The final result, workspace path, preview URL, errors, and usage details are sent back to the source channel and shown in the admin UI.
+
+## Audit Example: Hamster App
+
+I checked the live audit trace for `task_bd26e132de50433aadaf2678ea4db2f4`, objective `Create me a app for hamsters and launch it`.
+
+What happened:
+
+- `message_received`: Telegram stored the raw message.
+- `message_classified`: the classifier marked it as a `development` task. The local LLM returned an invalid response, so the classifier used the actionable-task heuristic fallback.
+- `task_created`: a persisted task was created with source Telegram metadata.
+- `plan_created`: the worker used `default_vscode_development_plan`. The plan context included the registry/capability vault: `workspace.manage`, `adapter.factory`, `vscode.copilot_terminal`, `vscode.terminal_command`, `desktop.screenshot`, plus known gaps like browser control.
+- Plan steps were: prepare workspace, ask Copilot, materialize Copilot app files, launch static preview.
+- For each step, the trace shows `tool_requested`, then `policy_decision`, then `tool_completed`.
+- Copilot could not write files directly because permission was denied in that path, but it returned fenced file code blocks. `workspace.manage` then materialized those into the task workspace.
+- `launch_static` started a local preview at `http://127.0.0.1:8890/`.
+- The task moved from `running` to `completed`, and task metadata recorded `workspace_dir`, `preview_url`, Copilot usage lines, and `notified_statuses`.
+
+## Recommendation
+
+The steps above are all useful, but they should be grouped mentally into four phases:
+
+- Intake: access, storage, memory, classification.
+- Planning: registry/vault context, deterministic or LLM plan, adapter proposal when missing.
+- Execution: policy, tool run, audit, artifacts.
+- Closure: validation, retry/repair, notification.
+
+Do not add a separate vault lookup before every subtask unless a plan is stale or a tool fails as unavailable. The better next improvement is typed tool schemas and typed postconditions per task type, so the validator can reliably say whether the requested action was actually carried out.
+
 ## Diagram
 
 ```mermaid

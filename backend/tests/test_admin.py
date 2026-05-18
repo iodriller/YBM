@@ -46,8 +46,13 @@ def test_admin_page_and_summary(monkeypatch, tmp_path) -> None:
     assert 'data-task-action="' in page.text
     assert 'data-task-details="' in page.text
     assert 'class="task-card"' in page.text
-    assert "contain: inline-size" in page.text
-    assert ".task-details-shell *" in page.text
+    assert 'id="task-trace-modal"' in page.text
+    assert "trace-modal-body" in page.text
+    assert "height: min(920px, calc(100vh - 32px));" in page.text
+    assert "contain: size layout paint" not in page.text
+    assert "contain: layout paint" in page.text
+    assert "activeTraceTaskId" in page.text
+    assert "expandedTaskIds" not in page.text
     assert 'data-access-mode-group="' in page.text
 
 

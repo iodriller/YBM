@@ -38,6 +38,16 @@
           "type": "string",
           "default": "http://127.0.0.1:8765",
           "description": "Local backend URL for the Agent Control bridge."
+        },
+        "agentControl.bridgeTokenEnv": {
+          "type": "string",
+          "default": "VSCODE_BRIDGE_TOKEN",
+          "description": "Environment variable name that stores the Agent Control bridge token. The extension also checks the workspace .env file."
+        },
+        "agentControl.bridgeToken": {
+          "type": "string",
+          "default": "",
+          "description": "Optional Agent Control bridge token override. Prefer using the workspace .env file or environment variable."
         }
       }
     }

@@ -44,6 +44,15 @@ class VSCodeTerminalOutput(StrictBaseModel):
     observed_at: datetime = Field(default_factory=utc_now)
 
 
+_TERMINAL_CONTROL_RE = re.compile(
+    r"\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]"
+)
+
+
+def clean_terminal_output(content: str) -> str:
+    return _TERMINAL_CONTROL_RE.sub("", content).strip()
+
+
 class VSCodeTerminalCommand(StrictBaseModel):
     id: str = Field(default_factory=lambda: new_id("vscode_terminal_command"))
     command: str
@@ -70,6 +79,7 @@ class VSCodeBridgeStore:
         return state
 
     def add_terminal_output(self, output: VSCodeTerminalOutput) -> VSCodeTerminalOutput:
+        output.content = clean_terminal_output(output.content) or output.content
         self.terminal_outputs.append(output)
         return output
 

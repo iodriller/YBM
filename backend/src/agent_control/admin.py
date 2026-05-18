@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime, timezone
 import os
 from typing import Any
 
@@ -534,13 +535,33 @@ def _ensure_terminal_dispatch_allowed(settings: AppSettings) -> None:
 
 
 def _vscode_summary(store: VSCodeBridgeStore) -> dict[str, Any]:
+    latest = _latest_vscode_observed_at(store)
+    age_seconds = None
+    if latest is not None:
+        age_seconds = max(0, int((datetime.now(timezone.utc) - latest.astimezone(timezone.utc)).total_seconds()))
+    connected = age_seconds is not None and age_seconds <= 90
+    status = "connected" if connected else "stale" if latest is not None else "waiting"
     return {
-        "connected": store.heartbeat is not None or store.state is not None,
+        "connected": connected,
+        "status": status,
+        "last_seen_at": latest.isoformat() if latest is not None else None,
+        "last_seen_age_seconds": age_seconds,
         "heartbeat": store.heartbeat.model_dump(mode="json") if store.heartbeat else None,
         "state": store.state.model_dump(mode="json") if store.state else None,
         "pending_terminal_commands": len(store.terminal_commands),
         "terminal_outputs": [output.model_dump(mode="json") for output in store.terminal_outputs[-20:]],
     }
+
+
+def _latest_vscode_observed_at(store: VSCodeBridgeStore) -> datetime | None:
+    candidates = []
+    if store.heartbeat is not None:
+        candidates.append(store.heartbeat.observed_at)
+    if store.state is not None:
+        candidates.append(store.state.observed_at)
+    if not candidates:
+        return None
+    return max(item if item.tzinfo else item.replace(tzinfo=timezone.utc) for item in candidates)
 
 
 def _read_config_file(config_manager: ConfigManager) -> dict[str, Any]:
@@ -798,6 +819,9 @@ _ADMIN_HTML = """
     .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 16px; }
     .status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
     .status-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; background: var(--panel); }
+    .status-card.good { border-color: rgba(26, 127, 55, 0.45); background: var(--success-bg); }
+    .status-card.bad { border-color: rgba(207, 34, 46, 0.45); background: rgba(207, 34, 46, 0.08); }
+    .status-card.warn { border-color: rgba(154, 103, 0, 0.45); background: rgba(154, 103, 0, 0.08); }
     .status-card strong { display: block; font-size: 18px; margin-top: 4px; overflow-wrap: anywhere; }
     .mini-label { color: var(--muted); font-size: 12px; }
     .panel {
@@ -866,21 +890,6 @@ _ADMIN_HTML = """
     .task-cell { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
     .task-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
     .task-actions button { flex: 0 0 auto; }
-    .task-details-shell {
-      border-top: 1px solid var(--border);
-      background: var(--chip);
-      padding: 12px;
-      max-width: 100%;
-      min-width: 0;
-      overflow: hidden;
-      contain: inline-size;
-    }
-    .task-details-shell * {
-      max-width: 100%;
-      min-width: 0;
-      overflow-wrap: anywhere;
-      word-break: break-word;
-    }
     .trace-panel { display: grid; gap: 12px; padding: 0; max-width: 100%; min-width: 0; overflow: hidden; }
     .trace-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 10px; min-width: 0; }
     .trace-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--panel); min-width: 0; max-width: 100%; overflow: hidden; }
@@ -913,6 +922,53 @@ _ADMIN_HTML = """
       font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
       font-size: 12px;
     }
+    body.modal-open { overflow: hidden; }
+    .trace-modal[hidden] { display: none; }
+    .trace-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(0, 0, 0, 0.52);
+    }
+    .trace-modal-panel {
+      width: min(1280px, calc(100vw - 32px));
+      height: min(920px, calc(100vh - 32px));
+      max-height: calc(100vh - 32px);
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--panel);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.32);
+      overflow: hidden;
+    }
+    .trace-modal-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: start;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+    }
+    .trace-modal-title { min-width: 0; overflow-wrap: anywhere; }
+    .trace-modal-title strong { display: block; }
+    .trace-modal-body {
+      min-height: 0;
+      height: 100%;
+      overflow: auto;
+      padding: 12px;
+      background: var(--chip);
+      contain: layout paint;
+    }
+    .trace-modal-body * {
+      max-width: 100%;
+      min-width: 0;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
     @keyframes pulse {
       0%, 100% { opacity: 0.45; }
       50% { opacity: 1; }
@@ -932,6 +988,9 @@ _ADMIN_HTML = """
       header { align-items: flex-start; flex-direction: column; }
       .panel { grid-column: span 12; }
       .task-summary-grid { grid-template-columns: 1fr; }
+      .trace-modal { padding: 8px; }
+      .trace-modal-panel { width: calc(100vw - 16px); height: calc(100vh - 16px); max-height: calc(100vh - 16px); }
+      .trace-modal-body { height: 100%; }
     }
   </style>
 </head>
@@ -1061,6 +1120,21 @@ _ADMIN_HTML = """
       </div>
     </section>
   </main>
+  <div id="task-trace-modal" class="trace-modal" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="task-trace-modal-title">
+    <section class="trace-modal-panel">
+      <div class="trace-modal-header">
+        <div class="trace-modal-title">
+          <strong id="task-trace-modal-title">Task Details</strong>
+          <code id="task-trace-modal-task" class="task-id"></code>
+        </div>
+        <div class="row">
+          <button id="task-trace-modal-reload" type="button">Reload trace</button>
+          <button type="button" data-task-modal-close="true">Close</button>
+        </div>
+      </div>
+      <div id="task-trace-modal-body" class="trace-modal-body"></div>
+    </section>
+  </div>
   <script>
     const params = new URLSearchParams(window.location.search);
     const token = params.get("token");
@@ -1068,9 +1142,9 @@ _ADMIN_HTML = """
     let auditLimit = 20;
     let auditCustomView = false;
     let taskLimit = 5;
-    const expandedTaskIds = new Set();
     const expandedAuditIds = new Set();
     const taskTraces = new Map();
+    let activeTraceTaskId = null;
 
     function jsonBlock(value) {
       return JSON.stringify(value, null, 2);
@@ -1178,12 +1252,16 @@ _ADMIN_HTML = """
       const workspace = (((config.adapters || {}).workspace) || {});
       const vscode = data.vscode || {};
       const activeTasks = (data.tasks || []).filter(task => ["received", "interpreting", "planned", "running", "retrying", "awaiting_approval"].includes(task.status)).length;
+      const llmOk = Boolean(llm.default_profile && (llm.profiles || {})[llm.default_profile]);
+      const telegramOk = Boolean(telegram.enabled);
+      const vscodeOk = Boolean(vscode.connected);
+      const workspaceOk = workspace.enabled !== false && Boolean(workspace.root_dir);
       document.getElementById("overview").innerHTML = `
-        <div class="status-card"><span class="mini-label">LLM</span><strong>${escapeHtml(llm.default_profile || "missing")}</strong></div>
-        <div class="status-card"><span class="mini-label">Telegram</span><strong>${telegram.enabled ? "Enabled" : "Disabled"}</strong></div>
-        <div class="status-card"><span class="mini-label">VS Code Bridge</span><strong>${vscode.connected ? "Connected" : "Fallback/Waiting"}</strong></div>
-        <div class="status-card"><span class="mini-label">Active Tasks</span><strong>${activeTasks}</strong></div>
-        <div class="status-card"><span class="mini-label">Workspace</span><strong>${escapeHtml(workspace.root_dir || ".agent_control/workspaces")}</strong></div>
+        <div class="status-card ${llmOk ? "good" : "bad"}"><span class="mini-label">LLM</span><strong>${escapeHtml(llm.default_profile || "missing")}</strong></div>
+        <div class="status-card ${telegramOk ? "good" : "bad"}"><span class="mini-label">Telegram</span><strong>${telegram.enabled ? "Enabled" : "Disabled"}</strong></div>
+        <div class="status-card ${vscodeOk ? "good" : "bad"}"><span class="mini-label">VS Code Bridge</span><strong>${vscode.connected ? "Connected" : "Not Connected"}</strong></div>
+        <div class="status-card ${activeTasks ? "warn" : "good"}"><span class="mini-label">Active Tasks</span><strong>${activeTasks}</strong></div>
+        <div class="status-card ${workspaceOk ? "good" : "bad"}"><span class="mini-label">Workspace</span><strong>${escapeHtml(workspace.root_dir || ".agent_control/workspaces")}</strong></div>
       `;
     }
 
@@ -1272,7 +1350,6 @@ _ADMIN_HTML = """
           ${tasks.map(task => {
             const activity = activityForStatus(task.status);
             const type = (task.metadata || {}).task_type;
-            const expanded = expandedTaskIds.has(task.id);
             return `
               <article class="task-card">
                 <div class="task-summary-grid">
@@ -1301,11 +1378,10 @@ _ADMIN_HTML = """
                       <button ${taskActionDisabled(task, "pause") ? "disabled" : ""} data-task-id="${escapeHtml(task.id)}" data-task-action="pause">Pause</button>
                       <button ${taskActionDisabled(task, "resume") ? "disabled" : ""} data-task-id="${escapeHtml(task.id)}" data-task-action="resume">Resume</button>
                       <button ${taskActionDisabled(task, "cancel") ? "disabled" : ""} data-task-id="${escapeHtml(task.id)}" data-task-action="cancel">Cancel</button>
-                      <button class="primary" data-task-id="${escapeHtml(task.id)}" data-task-details="toggle">${expanded ? "Hide details" : "Details"}</button>
+                      <button class="primary" data-task-id="${escapeHtml(task.id)}" data-task-details="open">Details</button>
                     </div>
                   </div>
                 </div>
-                ${expanded ? `<div class="task-details-shell">${renderTaskTrace(task.id)}</div>` : ""}
               </article>
           `}).join("")}
         </div>
@@ -1411,33 +1487,67 @@ _ADMIN_HTML = """
       `;
     }
 
-    async function toggleTaskDetails(taskId) {
-      if (expandedTaskIds.has(taskId)) {
-        expandedTaskIds.delete(taskId);
-        await refresh();
-        return;
-      }
-      expandedTaskIds.add(taskId);
-      await refresh();
+    function traceModalElements() {
+      return {
+        modal: document.getElementById("task-trace-modal"),
+        body: document.getElementById("task-trace-modal-body"),
+        title: document.getElementById("task-trace-modal-title"),
+        task: document.getElementById("task-trace-modal-task"),
+        reload: document.getElementById("task-trace-modal-reload")
+      };
+    }
+
+    function showTraceModal(taskId) {
+      const elements = traceModalElements();
+      activeTraceTaskId = taskId;
+      elements.title.textContent = "Task Details";
+      elements.task.textContent = taskId;
+      elements.reload.setAttribute("data-task-id", taskId);
+      elements.reload.setAttribute("data-task-reload", "trace");
+      elements.modal.hidden = false;
+      elements.modal.setAttribute("aria-hidden", "false");
+      document.body.classList.add("modal-open");
+    }
+
+    function closeTraceModal() {
+      const elements = traceModalElements();
+      elements.modal.hidden = true;
+      elements.modal.setAttribute("aria-hidden", "true");
+      elements.body.innerHTML = "";
+      activeTraceTaskId = null;
+      document.body.classList.remove("modal-open");
+    }
+
+    function renderTraceModal(taskId) {
+      const elements = traceModalElements();
+      elements.body.innerHTML = renderTaskTrace(taskId);
+    }
+
+    async function openTaskDetails(taskId) {
+      showTraceModal(taskId);
+      const elements = traceModalElements();
+      elements.body.innerHTML = `<div class="trace-panel muted">Loading full task trace...</div>`;
       if (!taskTraces.has(taskId)) {
         try {
           taskTraces.set(taskId, await api(`/admin/api/tasks/${encodeURIComponent(taskId)}/trace`));
         } catch (error) {
           taskTraces.set(taskId, {error: error.message});
         }
-        await refresh();
       }
+      if (activeTraceTaskId === taskId) renderTraceModal(taskId);
     }
 
     async function reloadTaskTrace(taskId) {
       taskTraces.delete(taskId);
-      await refresh();
+      if (activeTraceTaskId === taskId) {
+        traceModalElements().body.innerHTML = `<div class="trace-panel muted">Reloading full task trace...</div>`;
+      }
       try {
         taskTraces.set(taskId, await api(`/admin/api/tasks/${encodeURIComponent(taskId)}/trace`));
       } catch (error) {
         taskTraces.set(taskId, {error: error.message});
       }
-      await refresh();
+      if (activeTraceTaskId === taskId) renderTraceModal(taskId);
     }
 
     function renderAudit(events) {
@@ -1517,7 +1627,7 @@ _ADMIN_HTML = """
       if (!confirm("Clear completed, failed, blocked, and cancelled tasks plus their task-scoped audit/tool history?")) return;
       await api("/admin/api/tasks?include_active=false", {method: "DELETE"});
       taskLimit = 5;
-      expandedTaskIds.clear();
+      closeTraceModal();
       taskTraces.clear();
       await refresh();
     }
@@ -1526,7 +1636,7 @@ _ADMIN_HTML = """
       if (!confirm("Clear ALL tasks, including active tasks, plus their task-scoped audit/tool history?")) return;
       await api("/admin/api/tasks?include_active=true", {method: "DELETE"});
       taskLimit = 5;
-      expandedTaskIds.clear();
+      closeTraceModal();
       taskTraces.clear();
       await refresh();
     }
@@ -1783,7 +1893,7 @@ _ADMIN_HTML = """
       const taskDetails = target.closest("[data-task-id][data-task-details]");
       if (taskDetails) {
         event.preventDefault();
-        toggleTaskDetails(taskDetails.getAttribute("data-task-id"));
+        openTaskDetails(taskDetails.getAttribute("data-task-id"));
         return;
       }
       const taskReload = target.closest("[data-task-id][data-task-reload]");
@@ -1792,11 +1902,25 @@ _ADMIN_HTML = """
         reloadTaskTrace(taskReload.getAttribute("data-task-id"));
         return;
       }
+      if (target.closest("[data-task-modal-close]")) {
+        event.preventDefault();
+        closeTraceModal();
+        return;
+      }
+      const modal = document.getElementById("task-trace-modal");
+      if (target === modal) {
+        closeTraceModal();
+        return;
+      }
       const accessButton = target.closest("[data-access-mode-group][data-mode]");
       if (accessButton) {
         event.preventDefault();
         setAccessMode(accessButton.getAttribute("data-access-mode-group"), accessButton.getAttribute("data-mode"));
       }
+    });
+
+    document.addEventListener("keydown", event => {
+      if (event.key === "Escape" && activeTraceTaskId) closeTraceModal();
     });
 
     document.addEventListener("toggle", event => {

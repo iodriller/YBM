@@ -87,6 +87,26 @@ def test_vscode_terminal_output_can_be_filtered_by_command(monkeypatch) -> None:
     assert filtered.json()["outputs"] == [first.json()]
 
 
+def test_vscode_terminal_output_strips_shell_control_sequences(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_ADAPTERS__VSCODE__AUTH_TOKEN_ENV", "__TEST_NO_VSCODE_TOKEN__")
+    vscode_store.terminal_outputs = []
+    client = TestClient(app)
+
+    response = client.post(
+        "/vscode/terminal-output",
+        json={
+            "instance_id": "machine",
+            "terminal_id": "agent-control",
+            "command_id": "cmd_1",
+            "content": "\u001b]633;C\u0007agent-control-bridge-ok\u001b[0m",
+            "is_final": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["content"] == "agent-control-bridge-ok"
+
+
 def test_copilot_usage_lines_are_extracted() -> None:
     usage = _extract_copilot_usage("answer\nRequests 1 Premium (14s)\nTokens up 26.0k down 1.0k\n")
 

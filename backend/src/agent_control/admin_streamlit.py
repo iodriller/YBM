@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from html import escape as html_escape
 import json
 import os
 from typing import Any
@@ -20,12 +21,16 @@ TERMINAL_STATUSES = {"completed", "cancelled", "failed"}
 
 
 def main() -> None:
-    st.set_page_config(page_title="Agent Control", layout="wide", initial_sidebar_state="expanded")
+    st.set_page_config(page_title="Agent Control", layout="wide", initial_sidebar_state="collapsed")
     _inject_css()
 
-    state = _sidebar_state()
+    state = _connection_state()
     st.title("Agent Control")
     st.caption("Local operator console for Telegram intake, task orchestration, tools, config, and audit.")
+    header_actions = st.columns([1, 1, 6])
+    if header_actions[0].button("Refresh", use_container_width=True):
+        st.rerun()
+    header_actions[1].link_button("Legacy admin", _legacy_admin_url(state["backend_url"], state["token"]), use_container_width=True)
     _show_flash()
 
     try:
@@ -49,24 +54,10 @@ def main() -> None:
         _render_diagnostics(summary, state)
 
 
-def _sidebar_state() -> dict[str, str]:
-    st.sidebar.header("Connection")
-    backend_url = st.sidebar.text_input(
-        "Backend URL",
-        value=os.getenv("AGENT_ADMIN_BACKEND_URL", DEFAULT_BACKEND_URL),
-        help="FastAPI backend that exposes /admin/api endpoints.",
-    ).rstrip("/")
-    default_token = read_env_value("AGENT_ADMIN_TOKEN") or ""
-    token = st.sidebar.text_input(
-        "Admin token",
-        value=default_token,
-        type="password",
-        help="Uses AGENT_ADMIN_TOKEN from .env when available.",
-    )
-    if st.sidebar.button("Refresh", use_container_width=True):
-        st.rerun()
-    st.sidebar.link_button("Legacy FastAPI admin", _legacy_admin_url(backend_url or DEFAULT_BACKEND_URL, token), use_container_width=True)
-    return {"backend_url": backend_url or DEFAULT_BACKEND_URL, "token": token}
+def _connection_state() -> dict[str, str]:
+    backend_url = os.getenv("AGENT_ADMIN_BACKEND_URL", DEFAULT_BACKEND_URL).rstrip("/") or DEFAULT_BACKEND_URL
+    token = read_env_value("AGENT_ADMIN_TOKEN") or ""
+    return {"backend_url": backend_url, "token": token}
 
 
 def _render_header(summary: dict[str, Any]) -> None:
@@ -81,9 +72,11 @@ def _render_header(summary: dict[str, Any]) -> None:
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("LLM", llm.get("default_profile") or "missing")
     c2.metric("Telegram", "Enabled" if telegram.get("enabled") else "Disabled")
-    c3.metric("VS Code", "Connected" if vscode.get("connected") else "Fallback")
+    c3.metric("VS Code", _vscode_status_label(vscode))
     c4.metric("Active Tasks", active_tasks)
     c5.metric("Workspace", workspace.get("root_dir") or ".agent_control/workspaces")
+
+    _render_health(summary)
 
     warnings = summary.get("warnings") or []
     for warning in warnings:
@@ -107,37 +100,22 @@ def _render_operations(summary: dict[str, Any], state: dict[str, str]) -> None:
             column_config={"Value": st.column_config.TextColumn(width="large")},
         )
 
-        st.subheader("VS Code Command")
-        with st.form("vscode-terminal-command"):
-            command = st.text_area("Terminal command", height=90, placeholder="echo hello")
-            terminal_id = st.text_input("Terminal ID", value="agent-control")
-            instance_id = st.text_input("Instance ID", value="", help="Optional VS Code bridge instance filter.")
-            cwd = st.text_input("Working directory", value="", help="Optional command working directory.")
-            submitted = st.form_submit_button("Queue command")
-        if submitted:
-            if not command.strip():
-                st.error("Command is required.")
-            else:
-                _post_feedback(
-                    state,
-                    "/admin/api/vscode/terminal-commands",
-                    {
-                        "command": command.strip(),
-                        "terminal_id": terminal_id or "agent-control",
-                        "instance_id": instance_id or None,
-                        "cwd": cwd or None,
-                    },
-                    "Command queued.",
-                )
-        st.caption("Requires VS Code adapter plus terminal.run access.")
-
     with right:
-        st.subheader("Quick Links")
+        st.subheader("Connections")
         st.link_button("Backend health", f"{state['backend_url']}/health", use_container_width=True)
         st.link_button("Legacy FastAPI admin", _legacy_admin_url(state["backend_url"], state["token"]), use_container_width=True)
+        st.markdown(f"**VS Code bridge:** {_vscode_status_label(vscode)}")
+        if vscode.get("last_seen_at"):
+            st.caption(f"Last seen: {vscode.get('last_seen_at')} ({vscode.get('last_seen_age_seconds')}s ago)")
+        else:
+            token_env = (((config.get("adapters") or {}).get("vscode") or {}).get("auth_token_env")) or "VSCODE_BRIDGE_TOKEN"
+            st.caption(f"No VS Code heartbeat yet. Open VS Code with the Agent Control Bridge extension enabled; it reads `{token_env}` from process env, VS Code settings, or the workspace `.env`.")
         vscode_state = vscode.get("state") or {}
+        workspace_folders = vscode_state.get("workspace_folders") or []
+        if workspace_folders:
+            st.caption(f"VS Code workspace: {workspace_folders[0]}")
         if vscode_state.get("active_file"):
-            st.code(vscode_state["active_file"], language=None)
+            _wrapped_text(vscode_state["active_file"])
         st.caption(f"Database: {database.get('path') or database.get('database_url') or 'unknown'}")
         st.caption(f"Workspace root: {workspace.get('root_dir') or 'not configured'}")
         st.caption(f"Telegram allowlist users: {((integrations.get('telegram') or {}).get('allowed_user_count')) or 0}")
@@ -214,7 +192,7 @@ def _render_task_card(task: dict[str, Any], state: dict[str, str]) -> None:
                 if value.startswith("http://") or value.startswith("https://"):
                     st.link_button(label, value)
                 else:
-                    st.code(value, language=None)
+                    _wrapped_text(value)
 
         actions = st.columns([1, 1, 1, 5])
         if actions[0].button("Pause", key=f"pause-{task['id']}", disabled=_action_disabled(task, "pause")):
@@ -235,23 +213,27 @@ def _render_task_trace(trace: dict[str, Any], key_prefix: str = "trace") -> None
     tools = trace.get("tool_invocations") or []
     timeline = trace.get("timeline") or []
     audit = trace.get("audit") or []
+    trace_timeline = _trace_timeline_rows(trace)
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Plan Steps", len(steps))
     c2.metric("Tool Calls", len(tools))
-    c3.metric("Timeline", len(timeline))
+    c3.metric("Timeline", len(trace_timeline))
     c4.metric("Audit", len(audit))
 
     st.markdown("##### Timeline")
-    if timeline:
+    if trace_timeline:
         st.dataframe(
-            _timeline_frame(timeline),
+            _trace_timeline_frame(trace),
             hide_index=True,
             use_container_width=True,
             column_config={
                 "Time": st.column_config.TextColumn(width="small"),
                 "Kind": st.column_config.TextColumn(width="small"),
                 "Title": st.column_config.TextColumn(width="medium"),
+                "Source": st.column_config.TextColumn(width="small"),
+                "Next": st.column_config.TextColumn(width="small"),
+                "Prompt / Payload": st.column_config.TextColumn(width="large"),
                 "Summary": st.column_config.TextColumn(width="medium"),
                 "Details": st.column_config.TextColumn(width="large"),
             },
@@ -323,50 +305,55 @@ def _render_configuration(summary: dict[str, Any], state: dict[str, str]) -> Non
     st.subheader("Configuration")
     st.caption("Access modes are shown first because they control what the worker can do.")
     _render_access_config(summary, state)
-    with st.expander("LLM", expanded=False):
-        _render_llm_config(summary, state)
-    with st.expander("Telegram", expanded=False):
-        _render_telegram_config(config, state)
-    with st.expander("VS Code", expanded=False):
-        _render_vscode_config(config, state)
-    with st.expander("Workspace", expanded=False):
-        _render_workspace_config(config, state)
+    st.divider()
+    st.markdown("#### LLM")
+    _render_llm_config(summary, state)
+    st.divider()
+    st.markdown("#### Telegram")
+    _render_telegram_config(config, state)
+    st.divider()
+    st.markdown("#### VS Code")
+    _render_vscode_config(config, state)
+    st.divider()
+    st.markdown("#### Workspace")
+    _render_workspace_config(config, state)
     with st.expander("Effective Config", expanded=False):
         try:
             effective = _api_json(state["backend_url"], "/admin/api/config/effective", state["token"])
-            st.code(_json_text(effective), language="json")
+            _wrapped_json(effective)
         except ApiError as exc:
             st.error(str(exc))
-            st.code(_json_text(config), language="json")
+            _wrapped_json(config)
 
 
 def _render_access_config(summary: dict[str, Any], state: dict[str, str]) -> None:
     access_modes = summary.get("access_modes") or {}
-    selected: dict[str, str] = {}
-    columns = st.columns(2)
-    for index, (name, item) in enumerate(access_modes.items()):
-        with columns[index % 2]:
-            options = item.get("options") or [
-                {"value": "off", "label": "Off"},
-                {"value": "read_only", "label": "Read-only"},
-                {"value": "write_access", "label": "Write with approval"},
-                {"value": "full_access", "label": "Full access"},
-            ]
-            values = [option["value"] for option in options]
-            labels = {option["value"]: option.get("label") or option["value"] for option in options}
-            current = item.get("mode") if item.get("mode") in values else values[0]
-            st.markdown(f"**{item.get('label') or name}**")
-            st.caption(", ".join(item.get("capabilities") or []))
-            selected[name] = st.selectbox(
-                "Mode",
-                values,
-                index=values.index(current),
-                format_func=lambda value, mapping=labels: mapping.get(value, value),
-                key=f"access-{name}",
-                label_visibility="collapsed",
-            )
-    if st.button("Save access modes", type="primary"):
-        _post_feedback(state, "/admin/api/config/access-modes", {"modes": selected}, "Access modes saved.")
+    for name, item in access_modes.items():
+        options = item.get("options") or [
+            {"value": "off", "label": "Off"},
+            {"value": "read_only", "label": "Read-only"},
+            {"value": "write_access", "label": "Write with approval"},
+            {"value": "full_access", "label": "Full access"},
+        ]
+        current = str(item.get("mode") or "off")
+        st.markdown(f"**{item.get('label') or name}**")
+        st.caption(", ".join(item.get("capabilities") or []))
+        mode_columns = st.columns(len(options))
+        for option_index, option in enumerate(options):
+            value = str(option["value"])
+            label = str(option.get("label") or value)
+            is_current = value == current
+            if mode_columns[option_index].button(
+                label,
+                key=f"access-{name}-{value}",
+                type="primary" if is_current else "secondary",
+                disabled=is_current,
+                use_container_width=True,
+            ):
+                modes = {group_name: str(group.get("mode") or "off") for group_name, group in access_modes.items()}
+                modes[name] = value
+                _post_feedback(state, "/admin/api/config/access-modes", {"modes": modes}, f"{item.get('label') or name} set to {label}.")
+        st.divider()
 
 
 def _render_llm_config(summary: dict[str, Any], state: dict[str, str]) -> None:
@@ -374,12 +361,20 @@ def _render_llm_config(summary: dict[str, Any], state: dict[str, str]) -> None:
     llm = config.get("llm") or {}
     integrations = summary.get("integrations") or {}
     presets = ((integrations.get("llm") or {}).get("presets") or [])
-    preset_labels = {preset["key"]: preset.get("label") or preset["key"] for preset in presets}
-    preset = st.selectbox("Preset", list(preset_labels), format_func=lambda key: preset_labels[key]) if preset_labels else None
-    c1, c2 = st.columns([1, 3])
-    if c1.button("Use preset", use_container_width=True, disabled=preset is None):
-        _post_feedback(state, "/admin/api/config/llm/preset", {"preset": preset}, "LLM preset saved. Restart long-running processes.")
-    if c2.button("Test active LLM", use_container_width=True):
+    if presets:
+        preset_columns = st.columns(len(presets))
+        for index, preset in enumerate(presets):
+            label = preset.get("label") or preset["key"]
+            active = bool(preset.get("active"))
+            if preset_columns[index].button(
+                label,
+                type="primary" if active else "secondary",
+                disabled=active,
+                use_container_width=True,
+                key=f"llm-preset-{preset['key']}",
+            ):
+                _post_feedback(state, "/admin/api/config/llm/preset", {"preset": preset["key"]}, "LLM preset saved. Restart long-running processes.")
+    if st.button("Test active LLM", use_container_width=True):
         try:
             response = _api_json(state["backend_url"], "/admin/api/llm/test", state["token"], method="POST", payload={})
             st.success(response.get("output_preview") or "LLM responded.")
@@ -535,7 +530,7 @@ def _render_audit(summary: dict[str, Any], state: dict[str, str]) -> None:
     for event in events:
         with st.expander(f"{event.get('formatted_time') or event.get('created_at')} | {event.get('title') or event.get('type')}"):
             st.write(event.get("summary") or "")
-            st.code(_json_text(event.get("details") or event), language="json")
+            _wrapped_json(event.get("details") or event)
 
 
 def _render_diagnostics(summary: dict[str, Any], state: dict[str, str]) -> None:
@@ -566,6 +561,68 @@ def _runtime_rows(summary: dict[str, Any]) -> pd.DataFrame:
     return pd.DataFrame([{"Setting": key, "Value": value or "not configured"} for key, value in rows])
 
 
+def _render_health(summary: dict[str, Any]) -> None:
+    chips = []
+    for item in _health_items(summary):
+        chips.append(
+            f'<span class="status-chip status-{item["state"]}">'
+            f'<span class="status-dot"></span>'
+            f'<span><strong>{html_escape(item["label"])}</strong>: {html_escape(item["value"])}</span>'
+            f"</span>"
+        )
+    st.markdown(f'<div class="status-strip">{"".join(chips)}</div>', unsafe_allow_html=True)
+
+
+def _health_items(summary: dict[str, Any]) -> list[dict[str, str]]:
+    config = summary.get("config") or {}
+    integrations = summary.get("integrations") or {}
+    telegram = (integrations.get("telegram") or {})
+    llm = (integrations.get("llm") or {})
+    vscode = summary.get("vscode") or {}
+    adapters = config.get("adapters") or {}
+    workspace = adapters.get("workspace") or {}
+    database = summary.get("database") or {}
+
+    return [
+        {"label": "Backend", "value": "online", "state": "ok"},
+        {
+            "label": "LLM",
+            "value": str((config.get("llm") or {}).get("default_profile") or "missing"),
+            "state": "ok" if llm.get("default_profile_configured") else "bad",
+        },
+        {
+            "label": "Telegram",
+            "value": "ready" if telegram.get("enabled") and telegram.get("token_present") else "needs token/config",
+            "state": "ok" if telegram.get("enabled") and telegram.get("token_present") else "bad",
+        },
+        {
+            "label": "VS Code",
+            "value": _vscode_status_label(vscode),
+            "state": "ok" if vscode.get("connected") else "bad",
+        },
+        {
+            "label": "Workspace",
+            "value": str(workspace.get("root_dir") or "missing"),
+            "state": "ok" if workspace.get("enabled") is not False and workspace.get("root_dir") else "bad",
+        },
+        {
+            "label": "Database",
+            "value": "ready" if database.get("path") or database.get("database_url") else "unknown",
+            "state": "ok" if database.get("path") or database.get("database_url") else "bad",
+        },
+    ]
+
+
+def _vscode_status_label(vscode: dict[str, Any]) -> str:
+    status = str(vscode.get("status") or "")
+    if vscode.get("connected"):
+        return "Connected"
+    if status == "stale":
+        age = vscode.get("last_seen_age_seconds")
+        return f"Stale ({age}s)" if age is not None else "Stale"
+    return "Not connected"
+
+
 def _task_frame(tasks: list[dict[str, Any]]) -> pd.DataFrame:
     rows = []
     for task in tasks:
@@ -585,6 +642,59 @@ def _task_frame(tasks: list[dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _trace_timeline_frame(trace: dict[str, Any]) -> pd.DataFrame:
+    return _timeline_frame(_trace_timeline_rows(trace))
+
+
+def _trace_timeline_rows(trace: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = list(trace.get("timeline") or [])
+    plan = trace.get("plan") or {}
+    steps = plan.get("steps") or []
+    if not isinstance(steps, list) or not steps:
+        return rows
+
+    plan_at = _plan_timeline_time(rows)
+    synthetic_steps = []
+    for index, step in enumerate(steps, 1):
+        if not isinstance(step, dict):
+            continue
+        synthetic_steps.append(
+            {
+                "at": plan_at,
+                "kind": "plan step",
+                "title": f"{index}. {step.get('title') or 'Step'}",
+                "summary": step.get("description") or step.get("expected_output") or "",
+                "actor": "planner",
+                "details": {"step_index": index, "step": step},
+            }
+        )
+    return _insert_plan_steps(rows, synthetic_steps)
+
+
+def _plan_timeline_time(rows: list[dict[str, Any]]) -> str:
+    for item in rows:
+        title = str(item.get("title") or "").lower()
+        if "plan" in title:
+            return str(item.get("at") or "")
+    return str(rows[0].get("at") or "") if rows else ""
+
+
+def _insert_plan_steps(rows: list[dict[str, Any]], steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not steps:
+        return rows
+    inserted = False
+    result: list[dict[str, Any]] = []
+    for item in rows:
+        result.append(item)
+        title = str(item.get("title") or "").lower()
+        if not inserted and "plan" in title:
+            result.extend(steps)
+            inserted = True
+    if not inserted:
+        result = steps + result
+    return result
+
+
 def _timeline_frame(timeline: list[dict[str, Any]]) -> pd.DataFrame:
     rows = []
     for item in timeline:
@@ -594,11 +704,97 @@ def _timeline_frame(timeline: list[dict[str, Any]]) -> pd.DataFrame:
                 "Kind": item.get("kind") or "",
                 "Title": item.get("title") or "",
                 "Actor": item.get("actor") or "",
+                "Source": _timeline_source(item),
+                "Next": _timeline_next(item),
+                "Prompt / Payload": _timeline_prompt_text(item),
                 "Summary": item.get("summary") or "",
                 "Details": _timeline_detail_text(item),
             }
         )
     return pd.DataFrame(rows)
+
+
+def _timeline_source(item: dict[str, Any]) -> str:
+    details = item.get("details") if isinstance(item.get("details"), dict) else {}
+    actor = item.get("actor") or ""
+    if item.get("kind") == "plan step":
+        return "plan"
+    if item.get("kind") == "tool":
+        request_payload = details.get("request") if isinstance(details.get("request"), dict) else {}
+        return str(request_payload.get("tool_name") or actor or "orchestrator")
+    if details.get("sender_id"):
+        return f"telegram:{details.get('sender_id')}"
+    if details.get("source"):
+        return str(details["source"])
+    return str(actor or item.get("kind") or "")
+
+
+def _timeline_next(item: dict[str, Any]) -> str:
+    title = str(item.get("title") or "").lower()
+    details = item.get("details") if isinstance(item.get("details"), dict) else {}
+    if item.get("kind") == "plan step":
+        step = details.get("step") if isinstance(details.get("step"), dict) else {}
+        return str(step.get("tool_name") or "plan only")
+    if item.get("kind") == "tool":
+        result_payload = details.get("result") if isinstance(details.get("result"), dict) else {}
+        status = result_payload.get("status") or item.get("summary")
+        return f"worker result: {status}" if status else "worker result"
+    if "telegram message received" in title:
+        return "classifier"
+    if "message classified" in title:
+        return "task spawn" if details.get("is_task") else "direct response"
+    if "task spawned" in title:
+        return "worker planner"
+    if "plan" in title:
+        return "tool executor"
+    if "state" in title:
+        return str(details.get("new_status") or details.get("status") or "state updated")
+    if details.get("tool_name"):
+        return str(details["tool_name"])
+    return ""
+
+
+def _timeline_prompt_text(item: dict[str, Any]) -> str:
+    details = item.get("details")
+    if not isinstance(details, dict):
+        return ""
+
+    prompts: list[str] = []
+    llm = details.get("llm")
+    if isinstance(llm, dict):
+        _add_prompt(prompts, "system", llm.get("system_prompt"))
+        _add_prompt(prompts, "user", llm.get("user_prompt"))
+
+    request_payload = details.get("request") if isinstance(details.get("request"), dict) else {}
+    request_input = request_payload.get("input") if isinstance(request_payload.get("input"), dict) else {}
+    _add_prompt(prompts, "prompt", request_input.get("prompt"))
+    _add_prompt(prompts, "command", request_input.get("command"))
+    _add_prompt(prompts, "objective", request_input.get("objective"))
+    _add_prompt(prompts, "source_text", request_input.get("source_text"))
+
+    step = details.get("step") if isinstance(details.get("step"), dict) else {}
+    step_input = step.get("tool_input") if isinstance(step.get("tool_input"), dict) else {}
+    _add_prompt(prompts, "step_input", step_input)
+
+    _add_prompt(prompts, "message", details.get("text") or details.get("text_preview"))
+    _add_prompt(prompts, "objective", details.get("objective") or details.get("normalized_objective"))
+
+    if not prompts and isinstance(details.get("plan"), dict):
+        plan = details["plan"]
+        _add_prompt(prompts, "objective", plan.get("objective"))
+        steps = plan.get("steps") or []
+        if isinstance(steps, list):
+            _add_prompt(prompts, "steps", "; ".join(
+                f"{step.get('title')} -> {step.get('tool_name')}" for step in steps if isinstance(step, dict)
+            ))
+
+    return "\n".join(prompts[:6])
+
+
+def _add_prompt(lines: list[str], label: str, value: Any) -> None:
+    if value is None or value == "":
+        return
+    lines.append(f"{label}: {_clip_text(value, 520)}")
 
 
 def _timeline_detail_text(item: dict[str, Any]) -> str:
@@ -622,6 +818,14 @@ def _timeline_detail_text(item: dict[str, Any]) -> str:
     _add_line(lines, "url", details.get("url") or details.get("preview_url") or _nested_value(details, "output", "url"))
     _add_line(lines, "materialized", details.get("materialized_from") or _nested_value(details, "output", "materialized_from"))
     _add_line(lines, "message", details.get("text_preview") or details.get("text") or details.get("message"))
+
+    step = details.get("step") if isinstance(details.get("step"), dict) else {}
+    if step:
+        _add_line(lines, "step", f"{details.get('step_index')}. {step.get('title') or 'Step'}")
+        _add_line(lines, "tool", step.get("tool_name"))
+        _add_line(lines, "risk", step.get("risk_level"))
+        _add_line(lines, "capabilities", ", ".join(step.get("required_capabilities") or []))
+        _add_line(lines, "expected", step.get("expected_output"))
 
     request_payload = details.get("request")
     if isinstance(request_payload, dict):
@@ -892,9 +1096,20 @@ def _json_text(value: Any) -> str:
     return json.dumps(value, indent=2, ensure_ascii=False, default=str)
 
 
+def _wrapped_json(value: Any) -> None:
+    _wrapped_text(_json_text(value), css_class="wrapped-json")
+
+
+def _wrapped_text(value: Any, *, css_class: str = "wrapped-text") -> None:
+    st.markdown(
+        f'<pre class="{css_class}">{html_escape(str(value))}</pre>',
+        unsafe_allow_html=True,
+    )
+
+
 def _json_expander(label: str, value: Any, *, expanded: bool = False) -> None:
     with st.expander(label, expanded=expanded):
-        st.code(_json_text(value), language="json")
+        _wrapped_json(value)
 
 
 def _parse_csv_ints(value: str) -> list[int]:
@@ -958,6 +1173,52 @@ def _inject_css() -> None:
         [data-testid="stMetricLabel"] { font-size: 0.78rem; }
         [data-testid="stDataFrame"] { border-radius: 8px; overflow: hidden; }
         div[data-testid="stExpander"] { border-radius: 8px; }
+        .status-strip {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          margin: 0.4rem 0 1rem;
+        }
+        .status-chip {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          border: 1px solid rgba(49, 51, 63, 0.18);
+          border-radius: 999px;
+          padding: 6px 10px;
+          font-size: 0.85rem;
+          max-width: 100%;
+          overflow-wrap: anywhere;
+        }
+        .status-dot {
+          width: 9px;
+          height: 9px;
+          border-radius: 999px;
+          flex: 0 0 auto;
+          background: #9ca3af;
+        }
+        .status-ok .status-dot { background: #16a34a; }
+        .status-ok { border-color: rgba(22, 163, 74, 0.35); background: rgba(22, 163, 74, 0.08); }
+        .status-bad .status-dot { background: #dc2626; }
+        .status-bad { border-color: rgba(220, 38, 38, 0.35); background: rgba(220, 38, 38, 0.08); }
+        .status-warn .status-dot { background: #d97706; }
+        .status-warn { border-color: rgba(217, 119, 6, 0.35); background: rgba(217, 119, 6, 0.08); }
+        .wrapped-json,
+        .wrapped-text {
+          white-space: pre-wrap;
+          overflow-wrap: anywhere;
+          word-break: break-word;
+          overflow-x: hidden;
+          max-width: 100%;
+          max-height: 520px;
+          overflow-y: auto;
+          border: 1px solid rgba(49, 51, 63, 0.18);
+          border-radius: 8px;
+          padding: 10px 12px;
+          background: rgba(250, 250, 250, 0.72);
+          font-size: 0.82rem;
+          line-height: 1.35;
+        }
         .stTabs [data-baseweb="tab-list"] { gap: 6px; }
         .stTabs [data-baseweb="tab"] {
           border-radius: 6px;
