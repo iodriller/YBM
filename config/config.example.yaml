@@ -30,7 +30,7 @@ llm:
       temperature: 0.2
     openai_saved:
       provider: "openai_compatible"
-      model: "gpt-4.1-mini"
+      model: "gpt-4.1"
       base_url: "https://api.openai.com/v1"
       api_key_env: "OPENAI_API_KEY"
       timeout_seconds: 60
@@ -141,6 +141,9 @@ adapters:
     web_host: "127.0.0.1"
     web_port_start: 8890
     open_browser: true
+  adapter_factory:
+    enabled: true
+    root_dir: ".agent_control/adapters"
   terminal:
     enabled: false
     allowed_working_dirs: []

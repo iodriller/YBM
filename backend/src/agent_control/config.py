@@ -110,6 +110,11 @@ class WorkspaceAdapterConfig(StrictBaseModel):
     open_browser: bool = True
 
 
+class AdapterFactoryConfig(StrictBaseModel):
+    enabled: bool = True
+    root_dir: str = ".agent_control/adapters"
+
+
 class TerminalAdapterConfig(StrictBaseModel):
     enabled: bool = False
     allowed_working_dirs: list[str] = Field(default_factory=list)
@@ -142,6 +147,7 @@ class STTAdapterConfig(StrictBaseModel):
 class AdaptersConfig(StrictBaseModel):
     vscode: VSCodeAdapterConfig = Field(default_factory=VSCodeAdapterConfig)
     workspace: WorkspaceAdapterConfig = Field(default_factory=WorkspaceAdapterConfig)
+    adapter_factory: AdapterFactoryConfig = Field(default_factory=AdapterFactoryConfig)
     terminal: TerminalAdapterConfig = Field(default_factory=TerminalAdapterConfig)
     coding_assistant: CodingAssistantAdapterConfig = Field(default_factory=CodingAssistantAdapterConfig)
     desktop: DesktopAdapterConfig = Field(default_factory=DesktopAdapterConfig)

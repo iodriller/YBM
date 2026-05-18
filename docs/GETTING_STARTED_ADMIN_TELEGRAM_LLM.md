@@ -48,6 +48,12 @@ API Key Env: blank
 
 Keep `OPENAI_API_KEY` in `.env` if you want it saved for fallback. It is not used by the default local profile.
 
+Configuration rule:
+
+- Put normal runtime settings in `config/config.yaml`.
+- Put only secrets in `.env`.
+- The admin UI follows that rule: non-secret settings are saved to YAML, and token/key fields are saved to `.env` only when you provide a replacement secret.
+
 The admin LLM panel has two presets:
 
 - `LocalDeploy Gemma 3 4B`: the default local profile.
@@ -60,11 +66,34 @@ Telegram text is now handled as a gateway:
 - Plain `status` and `/status` return deterministic task status.
 - `/tasks`, `/task <id>`, `/logs <id>`, `/pause <id>`, `/resume <id>`, and `/cancel <id>` are command routes.
 - Non-task messages such as `what can you do?` get a direct local LLM answer with current capability and task context.
-- The local LLM receives a short capability/task context plus a concise per-chat memory summary. It does not receive the whole Telegram conversation.
+- The local LLM receives a short capability/task context, a concise LLM-updated per-chat memory summary, and a small recent-turn window. It does not receive the whole Telegram conversation.
 - Messages classified as executable tasks are persisted and picked up by the worker.
-- Launchable web-app tasks create files in a configurable local workspace and return a preview URL.
+- Launchable web-app tasks use Copilot as the creator when VS Code write access is enabled, then materialize files in a configurable local workspace and return a preview URL.
 - Development tasks use the VS Code/GitHub Copilot terminal route when VS Code write access is enabled.
+- Requests for missing tools/adapters can be routed to a generated adapter proposal cache. Those proposals are review artifacts and are not executed until promoted into the registry.
 - Worker completion, failure, blocked, cancelled, and approval-needed states are sent back to the source Telegram chat.
+
+## Conversation Memory
+
+Telegram memory is maintained by `ConversationMemoryService`. It keeps:
+
+- a compact rolling summary
+- a bounded recent-turn window
+- update metadata in SQLite
+
+The summary is updated with the active local LLM profile. Only the existing summary and recent-turn window are sent to the summarizer, so the gateway has continuity without bloating the local model context. If the summarizer fails or times out, the service falls back to a deterministic rolling summary.
+
+## Local Workspace
+
+For general development tasks, the worker prepares a dedicated workspace first when `filesystem.write` is enabled:
+
+```text
+.agent_control/workspaces/task_<id>
+```
+
+That workspace is passed as `cwd` to VS Code/Copilot work so generated code has a predictable place to land.
+
+The workspace tool supports prepare, relative file writes, static preview launch, Copilot-output materialization, and the combined fallback web-app preview operation.
 
 ## Local Workspace Preview
 
@@ -80,7 +109,7 @@ the worker creates a directory like:
 .agent_control/workspaces/task_<id>
 ```
 
-It writes `index.html` and `README.md`, starts a localhost static server, opens the URL on the computer when enabled, and sends the URL plus workspace path back to Telegram. The same URL and path appear in the admin task row.
+When VS Code/Copilot write access is enabled, the worker first asks Copilot to create the app in that workspace. If Copilot cannot write files directly but returns code blocks, the worker materializes those blocks into `index.html`, `styles.css`, and `script.js` as needed. It then starts a localhost static server, opens the URL on the computer when enabled, and sends the URL plus workspace path back to Telegram. The same URL and path appear in the admin task row.
 
 Configure it in admin under **Local Workspace**, or in YAML:
 
@@ -94,7 +123,7 @@ adapters:
     open_browser: true
 ```
 
-The generated workspace route requires `filesystem.write` access. In admin, set **File system** to **Full write** for approval-free local previews, or **Write with approval** if you want the worker to pause for approval.
+The workspace route requires `filesystem.write` access. In admin, set **File system** to **Full write** for approval-free local workspace actions, or **Write with approval** if you want the worker to pause for approval.
 
 ## Copilot Route
 
@@ -123,6 +152,20 @@ VS Code terminal output capture depends on VS Code shell integration. If shell i
 
 Copilot CLI usage lines such as request or token counts are parsed and included in the stored tool result and Telegram completion message when the CLI prints them. If the CLI fails, the fallback retries once with a plain-text-only prompt and returns the error details if it still fails.
 
+## Adapter Factory
+
+`adapter.factory` is the safe path for a missing capability. It scaffolds generated adapter proposals under:
+
+```text
+.agent_control/adapters
+```
+
+If VS Code/Copilot is enabled, the default adapter plan can ask Copilot to refine the proposal in that cache directory. The runtime does not import or execute generated adapters automatically; promotion still means reviewing the proposal, adding tests, moving it into `backend/src/agent_control/tools`, and registering it in `backend/src/agent_control/tools/registry.py`.
+
+## Fulfillment Checks
+
+The worker now validates obvious action postconditions. For app requests that ask to launch, open, preview, start, serve, or provide a URL, the task is not considered done unless a preview URL is produced. If that postcondition is missing, the task is requeued once with a `fulfillment_gap` marker so the orchestrator can route it through the workspace preview path.
+
 ## Useful Debug Commands
 
 ```powershell
@@ -145,6 +188,9 @@ Logs from the one-command stack are written under:
 - Telegram task completion messages: `backend/src/agent_control/channels/telegram_notifications.py`
 - Worker pickup loop: `backend/src/agent_control/orchestration/worker.py`
 - Default VS Code development plan: `backend/src/agent_control/orchestration/default_plans.py`
+- Tool registry: `backend/src/agent_control/tools/registry.py`
+- Adapter factory: `backend/src/agent_control/tools/adapter_factory.py`
+- Fulfillment checks: `backend/src/agent_control/orchestration/fulfillment.py`
 - Local workspace previews: `backend/src/agent_control/tools/local_workspace.py`
 - VS Code bridge API and adapter: `backend/src/agent_control/tools/vscode_bridge.py`
 - Flow diagram: `docs/TASK_FLOW.md`

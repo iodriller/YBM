@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from pydantic import Field
 
-from agent_control.config_sync import CONFIG_FILE_PATH, ConfigManager, env_bool, env_json, read_env_value
+from agent_control.config_sync import CONFIG_FILE_PATH, ConfigManager, read_env_value
 from agent_control.config import AppSettings
 from agent_control.llm.providers import OpenAICompatibleProvider
 from agent_control.orchestration.signals import apply_task_signal
@@ -317,19 +317,12 @@ def create_admin_router(
             "temperature": payload.temperature,
         }
         _write_config_file(config_manager, config)
-        env_updates = {
-            "AGENT_LLM__DEFAULT_PROFILE": payload.default_profile,
-            f"AGENT_LLM__PROFILES__{payload.profile_name}__PROVIDER": payload.provider,
-            f"AGENT_LLM__PROFILES__{payload.profile_name}__MODEL": payload.model,
-            f"AGENT_LLM__PROFILES__{payload.profile_name}__BASE_URL": payload.base_url or "",
-            f"AGENT_LLM__PROFILES__{payload.profile_name}__API_KEY_ENV": payload.api_key_env or "",
-            f"AGENT_LLM__PROFILES__{payload.profile_name}__TIMEOUT_SECONDS": str(payload.timeout_seconds),
-            f"AGENT_LLM__PROFILES__{payload.profile_name}__MAX_TOKENS": str(payload.max_tokens),
-            f"AGENT_LLM__PROFILES__{payload.profile_name}__TEMPERATURE": str(payload.temperature),
-        }
+        config_manager.remove_env_keys(["AGENT_LLM__DEFAULT_PROFILE", *_llm_profile_env_keys(payload.profile_name)])
+        env_updates: dict[str, str | None] = {}
         if payload.api_key_env and payload.api_key_value:
             env_updates[payload.api_key_env] = payload.api_key_value
-        config_manager.upsert_env(env_updates)
+        if env_updates:
+            config_manager.upsert_env(env_updates)
         _audit_config_update(repositories_loader(), loaded, "llm", payload.model_dump(mode="json"))
         return {"config_file": str(CONFIG_FILE_PATH), "llm": llm}
 
@@ -355,19 +348,7 @@ def create_admin_router(
             "temperature": preset["temperature"],
         }
         _write_config_file(config_manager, config)
-        config_manager.upsert_env(
-            {
-                "AGENT_LLM__DEFAULT_PROFILE": profile_name,
-                f"AGENT_LLM__PROFILES__{profile_name}__PROVIDER": preset["provider"],
-                f"AGENT_LLM__PROFILES__{profile_name}__MODEL": preset["model"],
-                f"AGENT_LLM__PROFILES__{profile_name}__BASE_URL": preset["base_url"] or "",
-                f"AGENT_LLM__PROFILES__{profile_name}__API_KEY_ENV": preset["api_key_env"] or "",
-                f"AGENT_LLM__PROFILES__{profile_name}__TIMEOUT_SECONDS": str(preset["timeout_seconds"]),
-                f"AGENT_LLM__PROFILES__{profile_name}__MAX_TOKENS": str(preset["max_tokens"]),
-                f"AGENT_LLM__PROFILES__{profile_name}__TEMPERATURE": str(preset["temperature"]),
-            }
-        )
-        config_manager.remove_env_keys(_legacy_default_llm_env_keys())
+        config_manager.remove_env_keys(["AGENT_LLM__DEFAULT_PROFILE", *_legacy_default_llm_env_keys(), *_llm_profile_env_keys(profile_name)])
         _audit_config_update(repositories_loader(), loaded, "llm_preset", {"preset": payload.preset, "profile": profile_name})
         return {"config_file": str(CONFIG_FILE_PATH), "preset": payload.preset, "llm": llm}
 
@@ -383,18 +364,9 @@ def create_admin_router(
                 telegram[key] = value
         _write_config_file(config_manager, config)
         env_updates: dict[str, str | None] = {}
-        if payload.enabled is not None:
-            env_updates["AGENT_CHANNELS__TELEGRAM__ENABLED"] = env_bool(payload.enabled)
-        if payload.token_env:
-            env_updates["AGENT_CHANNELS__TELEGRAM__TOKEN_ENV"] = payload.token_env
-        if payload.allowed_user_ids is not None:
-            env_updates["AGENT_CHANNELS__TELEGRAM__ALLOWED_USER_IDS"] = env_json(payload.allowed_user_ids)
-        if payload.allowed_chat_ids is not None:
-            env_updates["AGENT_CHANNELS__TELEGRAM__ALLOWED_CHAT_IDS"] = env_json(payload.allowed_chat_ids)
-        if payload.polling is not None:
-            env_updates["AGENT_CHANNELS__TELEGRAM__POLLING"] = env_bool(payload.polling)
         if payload.token_env and payload.bot_token:
             env_updates[payload.token_env] = payload.bot_token
+        config_manager.remove_env_keys(_telegram_config_env_keys())
         if env_updates:
             config_manager.upsert_env(env_updates)
         _audit_config_update(repositories_loader(), loaded, "telegram", patch)
@@ -412,16 +384,9 @@ def create_admin_router(
                 vscode[key] = value
         _write_config_file(config_manager, config)
         env_updates: dict[str, str | None] = {}
-        if payload.enabled is not None:
-            env_updates["AGENT_ADAPTERS__VSCODE__ENABLED"] = env_bool(payload.enabled)
-        if payload.bridge_host:
-            env_updates["AGENT_ADAPTERS__VSCODE__BRIDGE_HOST"] = payload.bridge_host
-        if payload.bridge_port is not None:
-            env_updates["AGENT_ADAPTERS__VSCODE__BRIDGE_PORT"] = str(payload.bridge_port)
-        if payload.auth_token_env:
-            env_updates["AGENT_ADAPTERS__VSCODE__AUTH_TOKEN_ENV"] = payload.auth_token_env
         if payload.auth_token_env and payload.bridge_token:
             env_updates[payload.auth_token_env] = payload.bridge_token
+        config_manager.remove_env_keys(_vscode_config_env_keys())
         if env_updates:
             config_manager.upsert_env(env_updates)
         _audit_config_update(repositories_loader(), loaded, "vscode", patch)
@@ -437,19 +402,7 @@ def create_admin_router(
             if value is not None:
                 workspace[key] = value
         _write_config_file(config_manager, config)
-        env_updates: dict[str, str | None] = {}
-        if payload.enabled is not None:
-            env_updates["AGENT_ADAPTERS__WORKSPACE__ENABLED"] = env_bool(payload.enabled)
-        if payload.root_dir:
-            env_updates["AGENT_ADAPTERS__WORKSPACE__ROOT_DIR"] = payload.root_dir
-        if payload.web_host:
-            env_updates["AGENT_ADAPTERS__WORKSPACE__WEB_HOST"] = payload.web_host
-        if payload.web_port_start is not None:
-            env_updates["AGENT_ADAPTERS__WORKSPACE__WEB_PORT_START"] = str(payload.web_port_start)
-        if payload.open_browser is not None:
-            env_updates["AGENT_ADAPTERS__WORKSPACE__OPEN_BROWSER"] = env_bool(payload.open_browser)
-        if env_updates:
-            config_manager.upsert_env(env_updates)
+        config_manager.remove_env_keys(_workspace_config_env_keys())
         _audit_config_update(repositories_loader(), loaded, "workspace", patch)
         return {"config_file": str(CONFIG_FILE_PATH), "workspace": workspace}
 
@@ -460,6 +413,7 @@ def create_admin_router(
         apply_access_modes_to_config(config, payload.modes)
         _write_config_file(config_manager, config)
         os.environ.pop("AGENT_CAPABILITIES", None)
+        config_manager.remove_env_keys(["AGENT_CAPABILITIES"])
         _audit_config_update(
             repositories_loader(),
             loaded,
@@ -535,8 +489,41 @@ def _blank_to_none(value: str | None) -> str | None:
 
 
 def _legacy_default_llm_env_keys() -> list[str]:
+    return _llm_profile_env_keys("default")
+
+
+def _llm_profile_env_keys(profile_name: str) -> list[str]:
     fields = ("PROVIDER", "MODEL", "BASE_URL", "API_KEY_ENV", "TIMEOUT_SECONDS", "MAX_TOKENS", "TEMPERATURE")
-    return [f"AGENT_LLM__PROFILES__default__{field}" for field in fields]
+    return [f"AGENT_LLM__PROFILES__{profile_name}__{field}" for field in fields]
+
+
+def _telegram_config_env_keys() -> list[str]:
+    return [
+        "AGENT_CHANNELS__TELEGRAM__ENABLED",
+        "AGENT_CHANNELS__TELEGRAM__TOKEN_ENV",
+        "AGENT_CHANNELS__TELEGRAM__ALLOWED_USER_IDS",
+        "AGENT_CHANNELS__TELEGRAM__ALLOWED_CHAT_IDS",
+        "AGENT_CHANNELS__TELEGRAM__POLLING",
+    ]
+
+
+def _vscode_config_env_keys() -> list[str]:
+    return [
+        "AGENT_ADAPTERS__VSCODE__ENABLED",
+        "AGENT_ADAPTERS__VSCODE__BRIDGE_HOST",
+        "AGENT_ADAPTERS__VSCODE__BRIDGE_PORT",
+        "AGENT_ADAPTERS__VSCODE__AUTH_TOKEN_ENV",
+    ]
+
+
+def _workspace_config_env_keys() -> list[str]:
+    return [
+        "AGENT_ADAPTERS__WORKSPACE__ENABLED",
+        "AGENT_ADAPTERS__WORKSPACE__ROOT_DIR",
+        "AGENT_ADAPTERS__WORKSPACE__WEB_HOST",
+        "AGENT_ADAPTERS__WORKSPACE__WEB_PORT_START",
+        "AGENT_ADAPTERS__WORKSPACE__OPEN_BROWSER",
+    ]
 
 
 def _audit_config_update(
@@ -954,7 +941,6 @@ _ADMIN_HTML = """
                       class="mode-button ${item.mode === option.value ? "active" : ""}"
                       data-access-mode-group="${escapeHtml(name)}"
                       data-mode="${escapeHtml(option.value)}"
-                      onclick="setAccessMode(${JSON.stringify(name)}, ${JSON.stringify(option.value)})"
                     >${escapeHtml(option.label || labelize(option.value))}</button>
                   `).join("")}
                 </div>
@@ -968,20 +954,23 @@ _ADMIN_HTML = """
       `;
     }
 
-    function setAccessMode(group, mode) {
+    async function setAccessMode(group, mode) {
       document.querySelectorAll("[data-access-mode-group]").forEach(button => {
         if (button.getAttribute("data-access-mode-group") !== group) return;
         button.classList.toggle("active", button.getAttribute("data-mode") === mode);
       });
-      saveAccessModes();
+      await saveAccessModes();
     }
 
     function taskResultLinks(task) {
       const result = ((task.metadata || {}).last_tool_result || {}).output || {};
       const links = [];
-      if (result.url) links.push(`<a href="${escapeHtml(result.url)}" target="_blank" rel="noreferrer">${escapeHtml(result.url)}</a>`);
-      if (result.workspace_dir) links.push(`<span>Workspace: <code>${escapeHtml(result.workspace_dir)}</code></span>`);
-      if (result.server_pid) links.push(`<span>Server PID: ${escapeHtml(result.server_pid)}</span>`);
+      const previewUrl = result.url || (task.metadata || {}).preview_url;
+      const workspaceDir = result.workspace_dir || (task.metadata || {}).workspace_dir;
+      const serverPid = result.server_pid || (task.metadata || {}).server_pid;
+      if (previewUrl) links.push(`<a href="${escapeHtml(previewUrl)}" target="_blank" rel="noreferrer">${escapeHtml(previewUrl)}</a>`);
+      if (workspaceDir) links.push(`<span>Workspace: <code>${escapeHtml(workspaceDir)}</code></span>`);
+      if (serverPid) links.push(`<span>Server PID: ${escapeHtml(serverPid)}</span>`);
       return links.length ? `<div class="link-list">${links.join("")}</div>` : "";
     }
 
@@ -1325,6 +1314,13 @@ _ADMIN_HTML = """
         if (result) result.textContent = error.message;
       }
     }
+
+    document.addEventListener("click", event => {
+      const button = event.target.closest("[data-access-mode-group][data-mode]");
+      if (!button) return;
+      event.preventDefault();
+      setAccessMode(button.getAttribute("data-access-mode-group"), button.getAttribute("data-mode"));
+    });
 
     refresh();
     setInterval(refresh, 10000);

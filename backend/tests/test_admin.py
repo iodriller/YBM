@@ -30,6 +30,8 @@ def test_admin_page_and_summary(monkeypatch, tmp_path) -> None:
     assert "Agent Control Admin" in page.text
     assert summary.status_code == 200
     assert summary.json()["config"]["identity"]["instance_name"] == "local-agent-control"
+    assert 'onclick="setAccessMode' not in page.text
+    assert 'data-access-mode-group="' in page.text
 
 
 def test_admin_lists_tasks_and_audit(monkeypatch, tmp_path) -> None:
@@ -162,7 +164,7 @@ def test_admin_writes_llm_runtime_config(monkeypatch, tmp_path) -> None:
     assert saved["llm"]["default_profile"] == "local"
     assert saved["llm"]["profiles"]["local"]["base_url"] == "http://127.0.0.1:1234/v1"
     assert saved["llm"]["profiles"]["local"]["api_key_env"] is None
-    assert (tmp_path / ".env").read_text(encoding="utf-8").count("AGENT_LLM__DEFAULT_PROFILE=local") == 1
+    assert not (tmp_path / ".env").exists()
 
 
 def test_admin_selects_llm_preset(monkeypatch, tmp_path) -> None:
@@ -214,8 +216,7 @@ def test_admin_writes_telegram_runtime_config(monkeypatch, tmp_path) -> None:
     assert response.status_code == 200
     assert saved["channels"]["telegram"]["enabled"] is True
     assert saved["channels"]["telegram"]["allowed_user_ids"] == [123]
-    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "AGENT_CHANNELS__TELEGRAM__ALLOWED_USER_IDS=[123]" in env_text
+    assert not (tmp_path / ".env").exists()
 
 
 def test_admin_llm_test_requires_configured_profile(tmp_path) -> None:
@@ -294,6 +295,7 @@ def test_admin_writes_workspace_runtime_config(monkeypatch, tmp_path) -> None:
     assert response.status_code == 200
     assert saved["adapters"]["workspace"]["root_dir"] == ".agent_control/workspaces"
     assert saved["adapters"]["workspace"]["open_browser"] is False
+    assert not (tmp_path / ".env").exists()
 
 
 def test_admin_writes_access_modes(monkeypatch, tmp_path) -> None:

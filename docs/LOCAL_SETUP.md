@@ -20,7 +20,7 @@ VSCODE_BRIDGE_TOKEN=...
 
 Start from `config/config.example.yaml`.
 
-Safe defaults keep terminal execution, filesystem access, VS Code access, desktop screenshots, browser automation, dependency installation, and Git pushes disabled. The workspace adapter itself is available by default, but it only executes when `filesystem.write` is enabled for generated files.
+Safe defaults keep terminal execution, filesystem access, VS Code access, desktop screenshots, browser automation, dependency installation, and Git pushes disabled. The workspace adapter itself is available by default, but it only executes when `filesystem.write` is enabled for task workspaces and generated files.
 
 ## 3. Start The Stack
 
@@ -28,7 +28,9 @@ Safe defaults keep terminal execution, filesystem access, VS Code access, deskto
 .\scripts\start_stack.ps1
 ```
 
-This initializes the database and starts LocalDeploy, backend, Telegram polling, and worker. Generated task files default to `.agent_control/workspaces`.
+This initializes the database and starts LocalDeploy, backend, Telegram polling, and worker. Generated task workspaces default to `.agent_control/workspaces/task_<id>`.
+
+Launchable app requests use Copilot first when VS Code write access is enabled, then the workspace adapter serves the result locally. Generated adapter proposals, when requested, are cached under `.agent_control/adapters` and are not loaded into runtime automatically.
 
 ## 4. Stop The Stack
 

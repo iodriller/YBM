@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from agent_control.channels.memory import memory_context
 from agent_control.config import AppSettings
 from agent_control.llm.providers import LLMProvider
 from agent_control.schemas import Capability, InboundMessage, TaskStatus
@@ -70,15 +71,22 @@ def _gateway_context(settings: AppSettings, repositories: Repositories, conversa
 
     screenshot_policy = settings.capabilities.get(Capability.DESKTOP_SCREENSHOT)
     screenshot_enabled = bool(screenshot_policy and screenshot_policy.enabled)
+    workspace_policy = settings.capabilities.get(Capability.FILESYSTEM_WRITE)
+    workspace_enabled = bool(settings.adapters.workspace.enabled and workspace_policy and workspace_policy.enabled)
+    workspace_approval = "approval-free" if workspace_policy and not workspace_policy.requires_approval else "approval-gated"
+    adapter_factory_enabled = bool(settings.adapters.adapter_factory.enabled and workspace_policy and workspace_policy.enabled)
     memory_record = repositories.conversation_memory.get(conversation_id) if conversation_id else None
-    memory = memory_record.get("summary") if memory_record else None
+    memory = memory_context(memory_record)
 
     return f"""LLM profile: {settings.llm.default_profile}
 Telegram receive/send: enabled
 VS Code/GitHub Copilot terminal route: {'enabled' if vscode_enabled else 'disabled'} ({vscode_approval})
+Local workspaces and localhost previews: {'enabled' if workspace_enabled else 'disabled'} ({workspace_approval}); root={settings.adapters.workspace.root_dir}
+Generated adapter proposal cache: {'enabled' if adapter_factory_enabled else 'disabled'}; root={settings.adapters.adapter_factory.root_dir}
 Terminal command route: {'enabled' if terminal_enabled else 'disabled'} ({terminal_approval})
 Desktop screenshots: {'enabled' if screenshot_enabled else 'disabled'}
-Conversation memory: {memory or 'No durable user facts yet.'}
+Conversation memory:
+{memory}
 Recent tasks: {len(tasks)}
 Active tasks: {active_count}
 Recent task list:

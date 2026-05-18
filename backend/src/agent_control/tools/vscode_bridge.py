@@ -177,7 +177,8 @@ class VSCodeBridgeTerminalAdapter:
             if returncode != 0 and prompt and not request.input.get("command"):
                 retry_prompt = (
                     "The previous Copilot CLI attempt failed. Do not create, edit, or execute files. "
-                    "Return the answer as plain text only, including code blocks and minimal run instructions.\n\n"
+                    "Return the answer as plain text only, including complete fenced code blocks with "
+                    "filename=... metadata for every file and minimal run instructions.\n\n"
                     f"Request: {prompt}"
                 )
                 retry_command = self._command_text_for_prompt(retry_prompt)

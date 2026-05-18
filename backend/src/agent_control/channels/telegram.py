@@ -9,7 +9,7 @@ import httpx
 from agent_control.config import AppSettings, TelegramConfig
 from agent_control.config_sync import read_env_value
 from agent_control.channels.responder import TelegramResponder
-from agent_control.channels.memory import update_memory_from_text
+from agent_control.channels.memory import ConversationMemoryService
 from agent_control.llm.classifier import MessageClassifier
 from agent_control.orchestration.signals import apply_task_signal
 from agent_control.schemas import (
@@ -319,6 +319,7 @@ class TelegramIntakeService:
         screenshot_service: ScreenshotService | None = None,
         classifier: MessageClassifier | None = None,
         responder: TelegramResponder | None = None,
+        memory_service: ConversationMemoryService | None = None,
     ) -> None:
         self.adapter = adapter
         self.repositories = repositories
@@ -327,6 +328,7 @@ class TelegramIntakeService:
         self.screenshot_service = screenshot_service
         self.classifier = classifier
         self.responder = responder
+        self.memory_service = memory_service or ConversationMemoryService(repositories)
 
     def handle_update(self, update: dict[str, Any]) -> TelegramUpdateResult:
         try:
@@ -347,7 +349,7 @@ class TelegramIntakeService:
             )
             self.repositories.messages.create(result.inbound_message, conversation_id)
             if result.inbound_message.text:
-                self._update_conversation_memory(conversation_id, result.inbound_message.text)
+                await self._update_conversation_memory(conversation_id, result.inbound_message.text)
 
             if result.command is None:
                 plain_response = self._plain_text_command_response(result.inbound_message)
@@ -465,10 +467,8 @@ class TelegramIntakeService:
             return self._spawn_failed(inbound, f"response generation failed: {exc}", f"telegram:user:{inbound.sender_id}", classification).outbound_message
         return self._out(inbound.chat_id, answer[:3900])
 
-    def _update_conversation_memory(self, conversation_id: str, text: str) -> None:
-        existing = self.repositories.conversation_memory.get(conversation_id)
-        summary, facts = update_memory_from_text(existing, text)
-        self.repositories.conversation_memory.upsert(conversation_id, summary, facts)
+    async def _update_conversation_memory(self, conversation_id: str, text: str) -> None:
+        await self.memory_service.update_from_user_message(conversation_id, text)
 
     def _spawn_failed(
         self,
@@ -542,7 +542,10 @@ class TelegramIntakeService:
                 return self._out(chat_id, "desktop.screenshot is disabled.")
             if not self.screenshot_service:
                 return self._out(chat_id, "desktop.screenshot is enabled, but screenshot capture is not configured.")
-            artifact = self.screenshot_service.capture()
+            try:
+                artifact = self.screenshot_service.capture()
+            except Exception as exc:
+                return self._out(chat_id, f"Screenshot capture failed: {exc}")
             return OutboundMessage(
                 channel=ChannelType.TELEGRAM,
                 chat_id=chat_id,

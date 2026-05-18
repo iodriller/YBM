@@ -31,7 +31,9 @@ Implemented:
 - Admin audit filters, capability access modes, and database summary
 - One-command local stack launcher for LocalDeploy, backend, Telegram polling, and worker
 - Worker completion notifications back to Telegram with tool output summaries
-- Concise per-Telegram-chat memory for durable facts such as the user's name
+- LLM-backed per-Telegram-chat rolling memory with a concise summary and recent-turn window
+- Copilot-first launchable web-app flow with workspace materialization and localhost preview URLs
+- Capability registry/vault plus generated adapter proposal cache under `.agent_control/adapters`
 
 Not implemented yet:
 
@@ -63,10 +65,11 @@ Default local LLM and gateway behavior:
 - Keep `OPENAI_API_KEY` saved in `.env` for fallback.
 - The active default profile is `localdeploy_gemma3_4b`, which calls LocalDeploy at `http://127.0.0.1:8000/v1` with model `gemma3_4b_ollama_safe`.
 - Non-task Telegram messages get a direct local LLM answer with concise runtime context.
-- The gateway keeps a small per-chat memory summary, not the full conversation.
+- The gateway keeps an LLM-updated per-chat memory summary plus a small recent-turn window, not the full conversation.
 - Plain `status` and `/status` return deterministic task state.
-- Requests like `create a hello world web app and launch it` create files under `.agent_control/workspaces/task_<id>`, start a localhost preview, and return the URL.
+- Requests like `create a hello world web app and launch it` use Copilot as the creator when VS Code write access is enabled, materialize files under `.agent_control/workspaces/task_<id>`, start a localhost preview, and return the URL.
 - Development tasks route to the VS Code/GitHub Copilot terminal handoff when VS Code write access is enabled, with a local Copilot CLI fallback when the bridge is not connected.
+- Missing-tool work can be routed to `adapter.factory`, which creates a reviewable cached adapter proposal under `.agent_control/adapters` without loading it into runtime automatically.
 - Worker results are sent back to the source Telegram chat.
 
 Compile backend source:

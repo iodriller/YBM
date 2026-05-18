@@ -8,12 +8,15 @@ import socket
 import subprocess
 import sys
 import webbrowser
+from typing import Any
 
 from agent_control.config import WorkspaceAdapterConfig
 from agent_control.schemas import ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
 
 
-class LocalWorkspaceWebAppAdapter:
+class LocalWorkspaceAdapter:
+    """General local workspace tool for task files, generated code, and previews."""
+
     def __init__(self, config: WorkspaceAdapterConfig) -> None:
         self.config = config
 
@@ -21,54 +24,155 @@ class LocalWorkspaceWebAppAdapter:
         if not self.config.enabled:
             return _failed(request, "workspace adapter is disabled")
 
+        operation = str(request.input.get("operation") or _default_operation(request.tool_name))
         try:
-            workspace_dir = _workspace_dir(self.config.root_dir, request.task_id)
-            workspace_dir.mkdir(parents=True, exist_ok=True)
-
-            objective = str(request.input.get("objective") or request.input.get("prompt") or "").strip()
-            title = _title_from_objective(objective)
-            files = _write_web_app(workspace_dir, request.task_id, title, objective)
-            port = _free_port(self.config.web_host, int(request.input.get("web_port_start") or self.config.web_port_start))
-            url = f"http://{self.config.web_host}:{port}/"
-            process = _start_static_server(workspace_dir, self.config.web_host, port)
-
-            if bool(request.input.get("open_browser", self.config.open_browser)):
-                webbrowser.open(url)
-
-            content = (
-                "Created and launched a local web app preview.\n"
-                f"URL: {url}\n"
-                f"Workspace: {workspace_dir}\n"
-                f"Server PID: {process.pid}\n"
-                "Files:\n"
-                + "\n".join(f"- {path}" for path in files)
-            )
-            return ToolCallResult(
-                request_id=request.id,
-                status=ToolResultStatus.SUCCEEDED,
-                output={
-                    "url": url,
-                    "workspace_dir": str(workspace_dir),
-                    "server_pid": process.pid,
-                    "files": [str(path) for path in files],
-                    "terminal_output": [
-                        {
-                            "instance_id": "local-worker",
-                            "terminal_id": "workspace-preview",
-                            "content": content,
-                            "command_id": None,
-                            "is_final": True,
-                            "exit_code": 0,
-                            "source": "local_workspace_web_app",
-                        }
-                    ],
-                },
-            )
+            if operation == "prepare":
+                output = self._prepare(request)
+            elif operation == "write_files":
+                output = self._write_files(request)
+            elif operation == "materialize_static_app":
+                output = self._materialize_static_app(request)
+            elif operation == "launch_static":
+                output = self._launch_static(request)
+            elif operation == "web_app_preview":
+                output = self._web_app_preview(request)
+            else:
+                return _failed(request, f"unsupported workspace operation: {operation}")
         except Exception as exc:
-            return _failed(request, f"workspace web app launch failed: {exc}")
+            return _failed(request, f"workspace operation failed: {exc}")
+
+        output["operation"] = operation
+        output["terminal_output"] = [_terminal_output(operation, output)]
+        return ToolCallResult(request_id=request.id, status=ToolResultStatus.SUCCEEDED, output=output)
+
+    def _prepare(self, request: ToolCallRequest) -> dict[str, Any]:
+        workspace_dir = workspace_dir_for_task(self.config.root_dir, request.task_id)
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        objective = str(request.input.get("objective") or "").strip()
+        task_file = workspace_dir / "TASK.md"
+        if not task_file.exists() or bool(request.input.get("refresh_task_file", True)):
+            task_file.write_text(_task_markdown(request.task_id, objective), encoding="utf-8")
+        return {
+            "workspace_dir": str(workspace_dir),
+            "files": [str(task_file)],
+        }
+
+    def _write_files(self, request: ToolCallRequest) -> dict[str, Any]:
+        prepared = self._prepare(request)
+        workspace_dir = Path(prepared["workspace_dir"])
+        files = []
+        for item in request.input.get("files") or []:
+            if not isinstance(item, dict):
+                continue
+            relative_path = str(item.get("path") or "").strip()
+            content = str(item.get("content") or "")
+            if not relative_path:
+                continue
+            target = _safe_child_path(workspace_dir, relative_path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            files.append(str(target))
+        return {
+            "workspace_dir": str(workspace_dir),
+            "files": [*prepared.get("files", []), *files],
+        }
+
+    def _launch_static(self, request: ToolCallRequest) -> dict[str, Any]:
+        prepared = self._prepare(request)
+        workspace_dir = Path(prepared["workspace_dir"])
+        objective = str(request.input.get("objective") or request.input.get("prompt") or "").strip()
+        index_file = workspace_dir / "index.html"
+        fallback_files: list[str] = []
+        if bool(request.input.get("ensure_index", True)) and not index_file.exists():
+            title = _title_from_objective(objective)
+            index_file.write_text(_web_app_html(request.task_id, title, objective), encoding="utf-8")
+            fallback_files.append(str(index_file))
+        port = _free_port(self.config.web_host, int(request.input.get("web_port_start") or self.config.web_port_start))
+        url = f"http://{self.config.web_host}:{port}/"
+        process = _start_static_server(workspace_dir, self.config.web_host, port)
+        if bool(request.input.get("open_browser", self.config.open_browser)):
+            webbrowser.open(url)
+        return {
+            "workspace_dir": str(workspace_dir),
+            "url": url,
+            "server_pid": process.pid,
+            "files": sorted(set([*prepared.get("files", []), *fallback_files])),
+        }
+
+    def _materialize_static_app(self, request: ToolCallRequest) -> dict[str, Any]:
+        prepared = self._prepare(request)
+        workspace_dir = Path(prepared["workspace_dir"])
+        overwrite = bool(request.input.get("overwrite", False))
+        source_text = str(request.input.get("source_text") or request.input.get("assistant_output") or "").strip()
+        objective = str(request.input.get("objective") or request.input.get("prompt") or "").strip()
+
+        parsed_files = _extract_files_from_text(source_text)
+        existing_index = workspace_dir / "index.html"
+        if existing_index.exists() and not overwrite:
+            return {
+                "workspace_dir": str(workspace_dir),
+                "files": sorted(set([*prepared.get("files", []), str(existing_index)])),
+                "materialized_from": "existing_files",
+            }
+
+        files = []
+        if parsed_files:
+            for relative_path, content in parsed_files.items():
+                target = _safe_child_path(workspace_dir, relative_path)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if target.exists() and not overwrite:
+                    files.append(str(target))
+                    continue
+                target.write_text(content, encoding="utf-8")
+                files.append(str(target))
+            materialized_from = "assistant_output"
+        else:
+            title = _title_from_objective(objective)
+            target = workspace_dir / "index.html"
+            target.write_text(_web_app_html(request.task_id, title, objective), encoding="utf-8")
+            files.append(str(target))
+            materialized_from = "fallback_template"
+
+        readme = workspace_dir / "README.md"
+        if not readme.exists() or overwrite:
+            readme.write_text(_web_app_readme(_title_from_objective(objective), request.task_id, objective), encoding="utf-8")
+            files.append(str(readme))
+
+        return {
+            "workspace_dir": str(workspace_dir),
+            "files": sorted(set([*prepared.get("files", []), *files])),
+            "materialized_from": materialized_from,
+        }
+
+    def _web_app_preview(self, request: ToolCallRequest) -> dict[str, Any]:
+        objective = str(request.input.get("objective") or request.input.get("prompt") or "").strip()
+        title = _title_from_objective(objective)
+        write_output = self._write_files(
+            request.model_copy(
+                update={
+                    "input": {
+                        **request.input,
+                        "objective": objective,
+                        "files": [
+                            {"path": "index.html", "content": _web_app_html(request.task_id, title, objective)},
+                            {"path": "README.md", "content": _web_app_readme(title, request.task_id, objective)},
+                        ],
+                    }
+                }
+            )
+        )
+        launch_output = self._launch_static(request)
+        return {
+            **launch_output,
+            "workspace_dir": write_output["workspace_dir"],
+            "files": sorted(set([*write_output.get("files", []), *launch_output.get("files", [])])),
+        }
 
 
-def _workspace_dir(root_dir: str, task_id: str) -> Path:
+LocalWorkspaceWebAppAdapter = LocalWorkspaceAdapter
+
+
+def workspace_dir_for_task(root_dir: str, task_id: str) -> Path:
     root = Path(root_dir).expanduser().resolve()
     workspace = (root / _safe_segment(task_id)).resolve()
     if root != workspace and root not in workspace.parents:
@@ -76,9 +180,80 @@ def _workspace_dir(root_dir: str, task_id: str) -> Path:
     return workspace
 
 
+def _default_operation(tool_name: str) -> str:
+    if tool_name == "workspace.web_app":
+        return "web_app_preview"
+    return "prepare"
+
+
 def _safe_segment(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._")
     return cleaned or "task"
+
+
+def _safe_child_path(workspace_dir: Path, relative_path: str) -> Path:
+    target = (workspace_dir / relative_path).resolve()
+    if workspace_dir != target and workspace_dir not in target.parents:
+        raise ValueError(f"file path escaped workspace: {relative_path}")
+    return target
+
+
+def _extract_files_from_text(source_text: str) -> dict[str, str]:
+    files: dict[str, str] = {}
+    if not source_text:
+        return files
+
+    fence_pattern = re.compile(
+        r"```(?P<lang>[A-Za-z0-9_+.-]*)[ \t]*(?P<meta>[^\n`]*)\n(?P<code>.*?)```",
+        re.DOTALL,
+    )
+    for match in fence_pattern.finditer(source_text):
+        language = (match.group("lang") or "").strip().lower()
+        metadata = match.group("meta") or ""
+        code = match.group("code")
+        filename = _filename_from_fence(metadata) or _filename_before_fence(source_text[: match.start()])
+        if filename is None and language in {"html", "htm"}:
+            filename = "index.html"
+        elif filename is None and language == "css":
+            filename = "styles.css"
+        elif filename is None and language in {"js", "javascript"}:
+            filename = "script.js"
+        if not filename:
+            continue
+        safe = _safe_relative_file(filename)
+        if safe:
+            files[safe] = code.rstrip() + "\n"
+    return files
+
+
+def _filename_from_fence(metadata: str) -> str | None:
+    match = re.search(r"(?:filename|file|path)\s*=\s*['\"]?([^'\"\s`]+)", metadata, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    stripped = metadata.strip()
+    if _looks_like_filename(stripped):
+        return stripped
+    return None
+
+
+def _filename_before_fence(prefix: str) -> str | None:
+    for line in reversed(prefix.splitlines()[-4:]):
+        cleaned = line.strip().strip("`*: ")
+        cleaned = re.sub(r"^(?:file|filename|path)\s*[:=-]\s*", "", cleaned, flags=re.IGNORECASE)
+        if _looks_like_filename(cleaned):
+            return cleaned
+    return None
+
+
+def _looks_like_filename(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9_.\-/ ]+\.(?:html|css|js|mjs|json|md|txt)", value.strip()))
+
+
+def _safe_relative_file(value: str) -> str | None:
+    normalized = value.replace("\\", "/").strip().lstrip("/")
+    if not normalized or ".." in Path(normalized).parts:
+        return None
+    return normalized
 
 
 def _title_from_objective(objective: str) -> str:
@@ -90,12 +265,24 @@ def _title_from_objective(objective: str) -> str:
     return "Generated Web App"
 
 
-def _write_web_app(workspace_dir: Path, task_id: str, title: str, objective: str) -> list[Path]:
-    html_path = workspace_dir / "index.html"
-    readme_path = workspace_dir / "README.md"
+def _task_markdown(task_id: str, objective: str) -> str:
+    return f"""# Task Workspace
+
+Task: `{task_id}`
+
+Objective:
+
+```text
+{objective or "No objective provided."}
+```
+
+Generated at: {datetime.now().isoformat(timespec="seconds")}
+"""
+
+
+def _web_app_html(task_id: str, title: str, objective: str) -> str:
     created_at = datetime.now().isoformat(timespec="seconds")
-    html_path.write_text(
-        f"""<!doctype html>
+    return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -143,7 +330,6 @@ def _write_web_app(workspace_dir: Path, task_id: str, title: str, objective: str
     dl {{ display: grid; grid-template-columns: max-content 1fr; gap: 8px 14px; margin: 24px 0 0; }}
     dt {{ color: var(--muted); }}
     dd {{ margin: 0; overflow-wrap: anywhere; }}
-    .mark {{ color: var(--accent); font-weight: 700; }}
   </style>
 </head>
 <body>
@@ -158,11 +344,11 @@ def _write_web_app(workspace_dir: Path, task_id: str, title: str, objective: str
   </main>
 </body>
 </html>
-""",
-        encoding="utf-8",
-    )
-    readme_path.write_text(
-        f"""# {title}
+"""
+
+
+def _web_app_readme(title: str, task_id: str, objective: str) -> str:
+    return f"""# {title}
 
 Task: `{task_id}`
 
@@ -177,10 +363,7 @@ Run locally from this directory:
 ```powershell
 python -m http.server
 ```
-""",
-        encoding="utf-8",
-    )
-    return [html_path, readme_path]
+"""
 
 
 def _html(value: str) -> str:
@@ -216,6 +399,28 @@ def _start_static_server(workspace_dir: Path, host: str, port: int) -> subproces
         )
     finally:
         log.close()
+
+
+def _terminal_output(operation: str, output: dict[str, Any]) -> dict[str, Any]:
+    lines = [f"Workspace operation completed: {operation}"]
+    if output.get("url"):
+        lines.append(f"URL: {output['url']}")
+    if output.get("workspace_dir"):
+        lines.append(f"Workspace: {output['workspace_dir']}")
+    if output.get("server_pid"):
+        lines.append(f"Server PID: {output['server_pid']}")
+    if output.get("files"):
+        lines.append("Files:")
+        lines.extend(f"- {path}" for path in output["files"])
+    return {
+        "instance_id": "local-worker",
+        "terminal_id": "workspace",
+        "content": "\n".join(lines),
+        "command_id": None,
+        "is_final": True,
+        "exit_code": 0,
+        "source": "local_workspace",
+    }
 
 
 def _failed(request: ToolCallRequest, message: str) -> ToolCallResult:

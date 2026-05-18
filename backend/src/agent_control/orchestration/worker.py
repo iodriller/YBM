@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import Protocol
+import json
+from typing import Any, Protocol
 
 from agent_control.llm import PlannerService
 from agent_control.orchestration.executor import ToolExecutor
+from agent_control.orchestration.fulfillment import fulfillment_gap
 from agent_control.recovery import RetryPolicy
 from agent_control.schemas import (
     ApprovalRequest,
@@ -188,14 +190,15 @@ class TaskWorker:
         if latest is None or latest.status in {TaskStatus.PAUSED, TaskStatus.CANCELLED}:
             return latest or task
 
+        resolved_input = _resolve_step_input(latest, step.tool_input)
         request = ToolCallRequest(
             task_id=task.id,
             tool_name=step.tool_name,
             capability=step.required_capabilities[0],
             risk_level=step.risk_level,
-            scope_target=step.tool_input.get("scope_target"),
-            input=step.tool_input,
-            timeout_seconds=int(step.tool_input.get("timeout_seconds", 60)),
+            scope_target=resolved_input.get("scope_target"),
+            input=resolved_input,
+            timeout_seconds=int(resolved_input.get("timeout_seconds", 60)),
             requires_approval=step.requires_approval,
         )
         step_approved = self._step_is_approved(task.id, step.id)
@@ -322,6 +325,24 @@ class TaskWorker:
             "last_tool_name": tool_name,
             "last_tool_result": _trim_result(result),
         }
+        output_text = _tool_output_text(result)
+        if output_text:
+            metadata["last_tool_output_text"] = output_text if len(output_text) <= 20000 else f"{output_text[:19997]}..."
+        output = result.output if isinstance(result.output, dict) else {}
+        usage = output.get("usage")
+        if isinstance(usage, dict) and usage:
+            metadata["last_tool_usage"] = usage
+            if "copilot" in tool_name:
+                metadata["last_copilot_usage"] = usage
+        for metadata_key, output_key in (
+            ("workspace_dir", "workspace_dir"),
+            ("preview_url", "url"),
+            ("server_pid", "server_pid"),
+            ("adapter_dir", "adapter_dir"),
+            ("adapter_name", "adapter_name"),
+        ):
+            if output.get(output_key):
+                metadata[metadata_key] = output[output_key]
         return self.repositories.tasks.update_metadata(task_id, metadata)
 
     @staticmethod
@@ -335,6 +356,35 @@ class TaskWorker:
         return None
 
     def _transition(self, task: TaskRecord, status: TaskStatus, reason: str) -> TaskRecord:
+        if status == TaskStatus.COMPLETED:
+            latest = self.repositories.tasks.get(task.id) or task
+            gap = fulfillment_gap(latest)
+            if gap:
+                retry_count = int(latest.metadata.get("fulfillment_retry_count", 0))
+                metadata = {
+                    **latest.metadata,
+                    "fulfillment_gap": gap,
+                    "fulfillment_retry_count": retry_count + 1,
+                }
+                if retry_count < 1:
+                    updated = self.repositories.tasks.update_metadata(latest.id, metadata, TaskStatus.RECEIVED)
+                    self.audit.task_state_changed("validator", latest.id, latest.status, updated.status)
+                    self.audit.append(
+                        AuditEventType.TASK_STATE_CHANGED,
+                        actor="validator",
+                        task_id=latest.id,
+                        payload={"reason": "fulfillment_retry", "gap": gap, "status": updated.status.value},
+                    )
+                    return updated
+                updated = self.repositories.tasks.update_metadata(latest.id, metadata, TaskStatus.BLOCKED)
+                self.audit.task_state_changed("validator", latest.id, latest.status, updated.status)
+                self.audit.append(
+                    AuditEventType.TASK_STATE_CHANGED,
+                    actor="validator",
+                    task_id=latest.id,
+                    payload={"reason": "fulfillment_validation_failed", "gap": gap, "status": updated.status.value},
+                )
+                return updated
         updated = self.repositories.tasks.update_status(task.id, status)
         self.audit.task_state_changed("orchestrator", task.id, task.status, updated.status)
         self.audit.append(
@@ -344,6 +394,72 @@ class TaskWorker:
             payload={"reason": reason, "status": status.value},
         )
         return updated
+
+
+def _resolve_step_input(task: TaskRecord, value: Any) -> Any:
+    replacements = {
+        "{{workspace_dir}}": str(task.metadata.get("workspace_dir") or ""),
+        "{{adapter_dir}}": str(task.metadata.get("adapter_dir") or ""),
+        "{{adapter_name}}": str(task.metadata.get("adapter_name") or ""),
+        "{{preview_url}}": str(task.metadata.get("preview_url") or ""),
+        "{{last_output}}": _last_tool_output_text(task),
+    }
+    return _replace_placeholders(value, replacements)
+
+
+def _replace_placeholders(value: Any, replacements: dict[str, str]) -> Any:
+    if isinstance(value, str):
+        rendered = value
+        for placeholder, replacement in replacements.items():
+            rendered = rendered.replace(placeholder, replacement)
+        return rendered
+    if isinstance(value, list):
+        return [_replace_placeholders(item, replacements) for item in value]
+    if isinstance(value, dict):
+        return {key: _replace_placeholders(item, replacements) for key, item in value.items()}
+    return value
+
+
+def _last_tool_output_text(task: TaskRecord) -> str:
+    stored_output = task.metadata.get("last_tool_output_text")
+    if isinstance(stored_output, str):
+        return stored_output
+    payload = task.metadata.get("last_tool_result")
+    if not isinstance(payload, dict):
+        return ""
+    output = payload.get("output")
+    if not isinstance(output, dict):
+        return ""
+    terminal_output = output.get("terminal_output")
+    if isinstance(terminal_output, list):
+        chunks = []
+        for item in terminal_output:
+            if isinstance(item, dict) and item.get("content"):
+                chunks.append(str(item["content"]))
+        if chunks:
+            return "\n\n".join(chunks)
+    for key in ("text", "message", "content"):
+        if output.get(key):
+            return str(output[key])
+    return json.dumps(output, default=str)
+
+
+def _tool_output_text(result: ToolCallResult) -> str:
+    output = result.output
+    if not isinstance(output, dict):
+        return ""
+    terminal_output = output.get("terminal_output")
+    if isinstance(terminal_output, list):
+        chunks = []
+        for item in terminal_output:
+            if isinstance(item, dict) and item.get("content"):
+                chunks.append(str(item["content"]))
+        if chunks:
+            return "\n\n".join(chunks)
+    for key in ("text", "message", "content"):
+        if output.get(key):
+            return str(output[key])
+    return ""
 
 
 def _trim_result(result: ToolCallResult) -> dict:

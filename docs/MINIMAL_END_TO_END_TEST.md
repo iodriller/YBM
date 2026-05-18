@@ -3,7 +3,7 @@
 The smallest useful end-to-end test right now is:
 
 ```text
-Telegram web-app request -> backend polling -> local LLM classification -> persisted task -> worker pickup -> generated workspace -> localhost preview URL -> Telegram result
+Telegram web-app request -> backend polling -> local LLM classification -> conversation memory update -> persisted task -> worker pickup -> Copilot creator step when enabled -> generated workspace -> localhost preview URL -> Telegram result
 ```
 
 This proves Telegram auth, polling, local LLM classification, persistence, audit logging, worker execution, admin monitoring, and visible local output are connected.
@@ -60,7 +60,7 @@ Click `Save`.
 Send this to your bot:
 
 ```text
-create a simple hello world web app and launch it
+create a modern web app about ferrets and launch it
 ```
 
 Then send:
@@ -76,6 +76,7 @@ Expected result:
 - The admin UI Tasks section shows the task activity moving from queued to active or completed.
 - When the worker completes, Telegram receives a localhost URL and workspace path.
 - The generated files are under `.agent_control/workspaces/task_<id>`.
+- If VS Code/Copilot write access is enabled, the plan includes a Copilot creator step before workspace serving.
 - The admin UI Audit section shows raw message, classification, and spawned task events.
 
 ## 6. Check From PowerShell

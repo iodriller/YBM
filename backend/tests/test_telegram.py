@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from agent_control.channels.telegram import TelegramAdapter, TelegramIntakeService, TelegramPollingRunner
+from agent_control.channels.memory import ConversationMemoryService
 from agent_control.channels.responder import StaticTelegramResponder
 from agent_control.config import AppSettings, CapabilityPolicy, DesktopAdapterConfig, StorageConfig, TelegramConfig
 from agent_control.llm import LLMMessageClassifier, StaticMessageClassifier
@@ -18,6 +19,7 @@ def _service(
     settings: AppSettings | None = None,
     screenshot_service: ScreenshotService | None = None,
     classifier=None,
+    memory_service: ConversationMemoryService | None = None,
 ) -> tuple[TelegramIntakeService, Repositories]:
     database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
     database.initialize()
@@ -31,6 +33,7 @@ def _service(
         settings=settings,
         screenshot_service=screenshot_service,
         classifier=classifier,
+        memory_service=memory_service,
     ), repos
 
 
@@ -193,8 +196,46 @@ def test_telegram_updates_conversation_memory(tmp_path) -> None:
     memory = repos.conversation_memory.get("conv_telegram_100")
 
     assert memory is not None
-    assert memory["facts"]["user_name"] == "Oney"
-    assert "user name: Oney" in memory["summary"]
+    assert "Oney" in memory["summary"]
+    assert memory["facts"]["strategy"] == "rolling_summary_with_recent_turns"
+    assert memory["facts"]["recent_turns"][-1]["text"] == "My name is Oney."
+
+
+class StaticMemoryProvider:
+    async def generate_text(self, system_prompt, user_prompt):
+        return "User is Oney. They want concise Telegram gateway memory and local workspace automation."
+
+    async def generate_structured(self, system_prompt, user_prompt, output_model):
+        raise NotImplementedError
+
+
+def test_telegram_memory_can_use_llm_summary(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
+    database.initialize()
+    repos = Repositories.for_database(database)
+    audit = AuditLogger(repos.audit)
+    service = TelegramIntakeService(
+        TelegramAdapter(TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]), audit),
+        repos,
+        audit,
+        memory_service=ConversationMemoryService(repos, provider=StaticMemoryProvider()),
+    )
+
+    service.handle_update(
+        {
+            "message": {
+                "message_id": 16,
+                "from": {"id": 42},
+                "chat": {"id": 100},
+                "text": "Remember that I prefer concise updates and local workspaces.",
+            }
+        }
+    )
+
+    memory = repos.conversation_memory.get("conv_telegram_100")
+
+    assert memory is not None
+    assert "local workspace automation" in memory["summary"]
 
 
 class FailingClassifierProvider:
@@ -371,7 +412,8 @@ def test_telegram_logs_command_returns_recent_events(tmp_path) -> None:
     assert "task_created" in (result.outbound_message.text or "")
 
 
-def test_telegram_screenshot_command_reports_disabled(tmp_path) -> None:
+def test_telegram_screenshot_command_reports_disabled(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
     service, _ = _service(
         tmp_path,
         TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),

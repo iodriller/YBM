@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+import signal
+import subprocess
+
 import pytest
 
-from agent_control.config import AppSettings, CapabilityPolicy
+from agent_control.config import AppSettings, CapabilityPolicy, WorkspaceAdapterConfig
 from agent_control.llm import PlannerService, StaticPlanProvider
 from agent_control.orchestration import StaticToolAdapter, TaskWorker, ToolExecutor
 from agent_control.orchestration.default_plans import build_default_vscode_development_plan
@@ -22,6 +27,7 @@ from agent_control.schemas import (
     ToolResultStatus,
 )
 from agent_control.storage import AuditLogger, Database, Repositories
+from agent_control.tools.local_workspace import LocalWorkspaceAdapter
 
 
 def _repos(tmp_path) -> tuple[Repositories, AuditLogger]:
@@ -169,6 +175,16 @@ class RecordingNotifier:
         self.tasks.append(task)
 
 
+class RecordingAdapter:
+    def __init__(self, inner) -> None:
+        self.inner = inner
+        self.requests: list[ToolCallRequest] = []
+
+    async def execute(self, request: ToolCallRequest) -> ToolCallResult:
+        self.requests.append(request)
+        return await self.inner.execute(request)
+
+
 @pytest.mark.asyncio
 async def test_worker_marks_retrying_for_transient_failure(tmp_path) -> None:
     repos, audit = _repos(tmp_path)
@@ -216,7 +232,54 @@ async def test_worker_marks_retrying_for_transient_failure(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_worker_default_vscode_development_plan_runs_when_enabled(tmp_path) -> None:
+async def test_worker_requeues_when_launch_request_lacks_preview_url(tmp_path) -> None:
+    repos, audit = _repos(tmp_path)
+    task = repos.tasks.create("Create a modern app and launch it")
+    plan = repos.plans.create(
+        task.id,
+        PlanModel(
+            objective=task.objective,
+            steps=[
+                PlanStep(
+                    title="Answer only",
+                    description="Returns text but no preview.",
+                    required_capabilities=[Capability.LLM_GENERATE],
+                    tool_name="llm",
+                )
+            ],
+            success_criteria=["A preview exists."],
+        ),
+    )
+    repos.tasks.attach_plan(task.id, plan.id)
+    settings = AppSettings(
+        _env_file=None,
+        capabilities={
+            Capability.LLM_GENERATE: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.LOW,
+            )
+        },
+    )
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"llm": StaticToolAdapter({"text": "code only"})},
+    )
+    worker = TaskWorker(repos, audit, executor=executor)
+
+    await worker.process_task(task.id)
+    requeued = await worker.process_task(task.id)
+
+    assert requeued.status == TaskStatus.RECEIVED
+    assert requeued.metadata["fulfillment_gap"] == "expected_preview_url_missing"
+    assert requeued.metadata["fulfillment_retry_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_worker_default_vscode_development_plan_runs_when_enabled(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
     repos, audit = _repos(tmp_path)
     task = repos.tasks.create("Ask Copilot to inspect the failing test", metadata={"task_type": TaskType.DEVELOPMENT.value})
     settings = AppSettings(
@@ -254,6 +317,53 @@ async def test_worker_default_vscode_development_plan_runs_when_enabled(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_worker_default_vscode_plan_prepares_workspace_when_enabled(tmp_path) -> None:
+    repos, audit = _repos(tmp_path)
+    task = repos.tasks.create("Write a small Python script", metadata={"task_type": TaskType.DEVELOPMENT.value})
+    settings = AppSettings(
+        _env_file=None,
+        adapters={
+            "workspace": {"enabled": True, "root_dir": str(tmp_path / "workspaces"), "open_browser": False},
+            "vscode": {"enabled": True},
+        },
+        capabilities={
+            Capability.FILESYSTEM_WRITE: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.HIGH,
+            ),
+            Capability.VSCODE_WRITE_FILES: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.HIGH,
+            ),
+        },
+    )
+    workspace_adapter = StaticToolAdapter({"workspace_dir": str(tmp_path / "workspaces" / task.id)})
+    vscode_adapter = StaticToolAdapter({"text": "done"})
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"workspace.manage": workspace_adapter, "vscode.copilot_terminal": vscode_adapter},
+    )
+    worker = TaskWorker(
+        repos,
+        audit,
+        executor=executor,
+        default_plan_factory=lambda item: build_default_vscode_development_plan(settings, item),
+    )
+
+    await worker.process_task(task.id)
+    await worker.process_task(task.id)
+    completed = await worker.process_task(task.id)
+
+    assert completed.status == TaskStatus.COMPLETED
+    assert workspace_adapter.requests[0].input["operation"] == "prepare"
+    assert vscode_adapter.requests[0].input["cwd"].endswith(task.id)
+
+
+@pytest.mark.asyncio
 async def test_worker_default_web_app_plan_uses_workspace_adapter(tmp_path) -> None:
     repos, audit = _repos(tmp_path)
     task = repos.tasks.create(
@@ -262,13 +372,21 @@ async def test_worker_default_web_app_plan_uses_workspace_adapter(tmp_path) -> N
     )
     settings = AppSettings(
         _env_file=None,
-        adapters={"workspace": {"enabled": True, "root_dir": str(tmp_path / "workspaces"), "open_browser": False}},
+        adapters={
+            "workspace": {"enabled": True, "root_dir": str(tmp_path / "workspaces"), "open_browser": False},
+            "vscode": {"enabled": False},
+        },
         capabilities={
             Capability.FILESYSTEM_WRITE: CapabilityPolicy(
                 enabled=True,
                 requires_approval=False,
                 max_risk_level=RiskLevel.HIGH,
-            )
+            ),
+            Capability.VSCODE_WRITE_FILES: CapabilityPolicy(
+                enabled=False,
+                requires_approval=False,
+                max_risk_level=RiskLevel.HIGH,
+            ),
         },
     )
     adapter = StaticToolAdapter({"url": "http://127.0.0.1:8890/", "workspace_dir": str(tmp_path / "workspaces")})
@@ -276,7 +394,7 @@ async def test_worker_default_web_app_plan_uses_workspace_adapter(tmp_path) -> N
         PolicyEngine(settings, audit),
         repos,
         audit,
-        adapters={"workspace.web_app": adapter},
+        adapters={"workspace.manage": adapter},
     )
     worker = TaskWorker(
         repos,
@@ -290,8 +408,129 @@ async def test_worker_default_web_app_plan_uses_workspace_adapter(tmp_path) -> N
 
     assert running.status == TaskStatus.RUNNING
     assert completed.status == TaskStatus.COMPLETED
-    assert adapter.requests[0].tool_name == "workspace.web_app"
+    assert adapter.requests[0].tool_name == "workspace.manage"
+    assert adapter.requests[0].input["operation"] == "web_app_preview"
     assert adapter.requests[0].capability == Capability.FILESYSTEM_WRITE
+
+
+@pytest.mark.asyncio
+async def test_worker_launchable_app_request_uses_preview_even_without_web_keyword(tmp_path) -> None:
+    repos, audit = _repos(tmp_path)
+    task = repos.tasks.create(
+        "Create a modern app about ferrets and launch it",
+        metadata={"task_type": TaskType.DEVELOPMENT.value},
+    )
+    settings = AppSettings(
+        _env_file=None,
+        adapters={
+            "workspace": {"enabled": True, "root_dir": str(tmp_path / "workspaces"), "open_browser": False},
+            "vscode": {"enabled": False},
+        },
+        capabilities={
+            Capability.FILESYSTEM_WRITE: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.HIGH,
+            ),
+            Capability.VSCODE_WRITE_FILES: CapabilityPolicy(
+                enabled=False,
+                requires_approval=False,
+                max_risk_level=RiskLevel.HIGH,
+            ),
+        },
+    )
+    adapter = StaticToolAdapter({"url": "http://127.0.0.1:8890/", "workspace_dir": str(tmp_path / "workspaces")})
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"workspace.manage": adapter},
+    )
+    worker = TaskWorker(
+        repos,
+        audit,
+        executor=executor,
+        default_plan_factory=lambda item: build_default_vscode_development_plan(settings, item),
+    )
+
+    running = await worker.process_task(task.id)
+    completed = await worker.process_task(task.id)
+
+    assert running.status == TaskStatus.RUNNING
+    assert completed.status == TaskStatus.COMPLETED
+    assert adapter.requests[0].input["operation"] == "web_app_preview"
+
+
+@pytest.mark.asyncio
+async def test_worker_launchable_app_request_uses_copilot_then_workspace_preview(tmp_path) -> None:
+    repos, audit = _repos(tmp_path)
+    task = repos.tasks.create(
+        "Create a modern app about ferrets and launch it",
+        metadata={"task_type": TaskType.DEVELOPMENT.value},
+    )
+    settings = AppSettings(
+        _env_file=None,
+        adapters={
+            "workspace": {"enabled": True, "root_dir": str(tmp_path / "workspaces"), "open_browser": False},
+            "vscode": {"enabled": True},
+        },
+        capabilities={
+            Capability.FILESYSTEM_WRITE: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.HIGH,
+            ),
+            Capability.VSCODE_WRITE_FILES: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.HIGH,
+            ),
+        },
+    )
+    workspace_adapter = RecordingAdapter(
+        LocalWorkspaceAdapter(
+            WorkspaceAdapterConfig(root_dir=str(tmp_path / "workspaces"), web_port_start=8890, open_browser=False)
+        )
+    )
+    vscode_adapter = StaticToolAdapter(
+        {
+            "usage": {"requests": "Requests  1 Premium", "tokens": "Tokens    10"},
+            "text": """```html filename=index.html
+<!doctype html><html><body><h1>Modern Ferrets</h1></body></html>
+```"""
+        }
+    )
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"workspace.manage": workspace_adapter, "vscode.copilot_terminal": vscode_adapter},
+    )
+    worker = TaskWorker(
+        repos,
+        audit,
+        executor=executor,
+        default_plan_factory=lambda item: build_default_vscode_development_plan(settings, item),
+    )
+
+    latest = task
+    for _ in range(6):
+        latest = await worker.process_task(task.id)
+        if latest.status == TaskStatus.COMPLETED:
+            break
+
+    workspace = Path(tmp_path / "workspaces" / task.id)
+    operations = [request.input["operation"] for request in workspace_adapter.requests]
+    assert latest.status == TaskStatus.COMPLETED
+    assert operations == ["prepare", "materialize_static_app", "launch_static"]
+    assert vscode_adapter.requests[0].tool_name == "vscode.copilot_terminal"
+    assert vscode_adapter.requests[0].input["cwd"].endswith(task.id)
+    assert "Modern Ferrets" in workspace_adapter.requests[1].input["source_text"]
+    assert "Modern Ferrets" in (workspace / "index.html").read_text(encoding="utf-8")
+    assert latest.metadata["preview_url"].startswith("http://127.0.0.1:")
+    assert latest.metadata["last_copilot_usage"]["requests"] == "Requests  1 Premium"
+
+    _stop_process(int(latest.metadata["server_pid"]))
 
 
 @pytest.mark.asyncio
@@ -340,3 +579,10 @@ async def test_worker_notifies_once_on_completion(tmp_path) -> None:
     assert len(notifier.tasks) == 1
     assert notifier.tasks[0].status == TaskStatus.COMPLETED
     assert repos.tasks.get(task.id).metadata["notified_statuses"] == [TaskStatus.COMPLETED.value]
+
+
+def _stop_process(pid: int) -> None:
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False, capture_output=True)
+    else:
+        os.kill(pid, signal.SIGTERM)

@@ -95,12 +95,13 @@ def _last_output(task: TaskRecord) -> str | None:
 
 def _last_usage(task: TaskRecord) -> str | None:
     result = task.metadata.get("last_tool_result")
-    if not isinstance(result, dict):
-        return None
-    output = result.get("output")
-    if not isinstance(output, dict):
-        return None
-    usage = output.get("usage")
+    usage = None
+    if isinstance(result, dict):
+        output = result.get("output")
+        if isinstance(output, dict):
+            usage = output.get("usage")
+    if not usage:
+        usage = task.metadata.get("last_copilot_usage") or task.metadata.get("last_tool_usage")
     if not isinstance(usage, dict) or not usage:
         return None
     return " | ".join(str(value) for _, value in sorted(usage.items()))
