@@ -229,3 +229,43 @@ async def test_executor_normalizes_registered_tool_defaults(tmp_path) -> None:
 
     assert result.status == ToolResultStatus.SUCCEEDED
     assert adapter.requests[0].input["operation"] == "prepare"
+
+
+@pytest.mark.asyncio
+async def test_executor_rejects_invalid_registered_tool_output(tmp_path) -> None:
+    repos, audit = _repos(tmp_path)
+    task = repos.tasks.create("Launch app")
+    settings = AppSettings(
+        _env_file=None,
+        adapters={"workspace": {"enabled": True, "root_dir": str(tmp_path / "workspaces")}},
+        capabilities={
+            Capability.FILESYSTEM_WRITE: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.HIGH,
+            )
+        },
+    )
+    registry = build_tool_registry(settings, "http://127.0.0.1:8765")
+    adapter = StaticToolAdapter({"workspace_dir": str(tmp_path / "workspaces" / task.id)})
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"workspace.manage": adapter},
+        tool_definitions=registry.definitions,
+    )
+
+    result = await executor.execute(
+        ToolCallRequest(
+            task_id=task.id,
+            tool_name="workspace.manage",
+            capability=Capability.FILESYSTEM_WRITE,
+            risk_level=RiskLevel.HIGH,
+            input={"operation": "launch_static"},
+        )
+    )
+
+    assert result.status == ToolResultStatus.FAILED
+    assert result.error_class.value == "validation_failed"
+    assert "invalid output for workspace.manage" in (result.error_message or "")

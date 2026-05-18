@@ -25,19 +25,22 @@ def _task_chat_id(task: TaskRecord) -> str | None:
 
 
 def _task_message(task: TaskRecord) -> str:
-    header = {
-        TaskStatus.COMPLETED: "Task completed",
-        TaskStatus.FAILED: "Task failed",
-        TaskStatus.BLOCKED: "Task blocked",
-        TaskStatus.CANCELLED: "Task cancelled",
-        TaskStatus.AWAITING_APPROVAL: "Task awaiting approval",
-    }.get(task.status, f"Task {task.status.value}")
+    if task.status == TaskStatus.COMPLETED:
+        lines = [f"Done: {_trim(task.objective, 220)}"]
+    elif task.status == TaskStatus.AWAITING_APPROVAL:
+        lines = [f"Approval needed: {_trim(task.objective, 220)}"]
+    elif task.status == TaskStatus.BLOCKED:
+        lines = [f"Blocked: {_trim(task.objective, 220)}"]
+    elif task.status == TaskStatus.FAILED:
+        lines = [f"Could not finish: {_trim(task.objective, 220)}"]
+    elif task.status == TaskStatus.CANCELLED:
+        lines = [f"Cancelled: {_trim(task.objective, 220)}"]
+    else:
+        lines = [f"Task {task.status.value}: {_trim(task.objective, 220)}"]
 
-    lines = [
-        f"{header}: {task.id}",
-        f"Status: {task.status.value}",
-        f"Objective: {_trim(task.objective, 240)}",
-    ]
+    lines.extend(_result_lines(task))
+    if task.status in {TaskStatus.BLOCKED, TaskStatus.FAILED, TaskStatus.AWAITING_APPROVAL}:
+        lines.extend(_failure_lines(task))
 
     tool_name = task.metadata.get("last_tool_name")
     if tool_name:
@@ -51,17 +54,64 @@ def _task_message(task: TaskRecord) -> str:
     if usage:
         lines.append(f"Usage: {usage}")
 
+    lines.append(f"Task: {task.id}")
+    if task.status != TaskStatus.COMPLETED:
+        lines.append(f"Status: {task.status.value}")
+
     output = _last_output(task)
     if output:
         lines.append("")
-        lines.append(_trim(output, 3200))
+        lines.append(f"Summary: {_trim(output, 2200)}")
 
     error = _last_error(task)
-    if error:
+    if error and task.status not in {TaskStatus.BLOCKED, TaskStatus.FAILED}:
         lines.append("")
         lines.append(f"Error: {_trim(error, 1200)}")
 
     return _trim("\n".join(lines), 3900)
+
+
+def _result_lines(task: TaskRecord) -> list[str]:
+    lines = []
+    pull_request = (
+        task.metadata.get("pull_request_url")
+        or task.metadata.get("pr_url")
+        or _output_value(task, "pull_request_url")
+        or _output_value(task, "html_url")
+    )
+    screenshot = (
+        task.metadata.get("screenshot_uri")
+        or task.metadata.get("screenshot_path")
+        or _output_value(task, "screenshot_uri")
+        or _output_value(task, "screenshot_path")
+    )
+    for label, value in (
+        ("Result", task.metadata.get("preview_url") or _output_value(task, "url")),
+        ("Workspace", task.metadata.get("workspace_dir") or _output_value(task, "workspace_dir")),
+        ("Adapter", task.metadata.get("adapter_dir") or _output_value(task, "adapter_dir")),
+        ("Pull request", pull_request),
+        ("Screenshot", screenshot),
+    ):
+        if value:
+            lines.append(f"{label}: {value}")
+    return lines
+
+
+def _failure_lines(task: TaskRecord) -> list[str]:
+    lines = []
+    gap = task.metadata.get("fulfillment_gap")
+    if gap:
+        lines.append(f"Gap: {gap}")
+    retry_count = task.metadata.get("retry_count") or task.metadata.get("fulfillment_retry_count")
+    if retry_count:
+        lines.append(f"Retries: {retry_count}")
+    intervention = task.metadata.get("intervention_summary")
+    if intervention:
+        lines.append(f"Next step: {_trim(str(intervention), 300)}")
+    error = _last_error(task)
+    if error:
+        lines.append(f"Error: {_trim(error, 900)}")
+    return lines
 
 
 def _last_command_id(task: TaskRecord) -> str | None:
@@ -73,6 +123,16 @@ def _last_command_id(task: TaskRecord) -> str | None:
         command_id = output.get("command_id")
         if command_id:
             return str(command_id)
+    return None
+
+
+def _output_value(task: TaskRecord, key: str) -> str | None:
+    result = task.metadata.get("last_tool_result")
+    if not isinstance(result, dict):
+        return None
+    output = result.get("output")
+    if isinstance(output, dict) and output.get(key):
+        return str(output[key])
     return None
 
 

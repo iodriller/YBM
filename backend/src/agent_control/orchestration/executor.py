@@ -113,7 +113,20 @@ class ToolExecutor:
             )
 
         try:
-            return self._complete(request, await adapter.execute(request))
+            result = await adapter.execute(request)
+            result, output_validation_error = self._validated_result(request, result)
+            if output_validation_error:
+                return self._complete(
+                    request,
+                    ToolCallResult(
+                        request_id=request.id,
+                        status=ToolResultStatus.FAILED,
+                        output={"invalid_output": result.output},
+                        error_class=ErrorClass.VALIDATION_FAILED,
+                        error_message=output_validation_error,
+                    ),
+                )
+            return self._complete(request, result)
         except Exception as exc:
             return self._complete(
                 request,
@@ -143,6 +156,25 @@ class ToolExecutor:
             ),
             None,
         )
+
+    def _validated_result(
+        self,
+        request: ToolCallRequest,
+        result: ToolCallResult,
+    ) -> tuple[ToolCallResult, str | None]:
+        if result.status != ToolResultStatus.SUCCEEDED:
+            return result, None
+        definition = self.tool_definitions.get(request.tool_name)
+        if definition is None:
+            return result, None
+        output = dict(result.output or {})
+        if "operation" not in output and request.input.get("operation"):
+            output["operation"] = request.input["operation"]
+        try:
+            validated_output = definition.validate_output(output)
+        except ValueError as exc:
+            return result, str(exc)
+        return result.model_copy(update={"output": validated_output}), None
 
     def _complete(self, request: ToolCallRequest, result: ToolCallResult) -> ToolCallResult:
         self.repositories.tool_invocations.complete(result)

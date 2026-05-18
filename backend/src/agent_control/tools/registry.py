@@ -5,19 +5,28 @@ from dataclasses import dataclass
 from pydantic import BaseModel, ValidationError
 
 from agent_control.config import AppSettings
-from agent_control.schemas import Capability
+from agent_control.schemas import Capability, PlanModel
 from agent_control.tools.adapter_factory import AdapterFactoryAdapter
 from agent_control.tools.coding_assistant import GenericTerminalAgentAdapter
 from agent_control.tools.contracts import (
     AdapterFactoryAssessInput,
+    AdapterFactoryAssessOutput,
     AdapterFactoryScaffoldInput,
+    AdapterFactoryScaffoldOutput,
     CodingAssistantInput,
+    CodingAssistantOutput,
     VSCodeCopilotTerminalInput,
     VSCodeTerminalCommandInput,
+    VSCodeTerminalToolOutput,
     WorkspaceLaunchStaticInput,
+    WorkspaceLaunchStaticOutput,
     WorkspaceMaterializeStaticAppInput,
+    WorkspaceMaterializeStaticAppOutput,
     WorkspacePrepareInput,
+    WorkspacePrepareOutput,
     WorkspaceWebAppPreviewInput,
+    WorkspaceWebAppPreviewOutput,
+    WorkspaceWriteFilesOutput,
     WorkspaceWriteFilesInput,
 )
 from agent_control.tools.local_workspace import LocalWorkspaceAdapter
@@ -34,24 +43,41 @@ class ToolDefinition:
     lifecycle: str = "runtime"
     input_schema: type[BaseModel] | None = None
     operation_schemas: dict[str, type[BaseModel]] | None = None
+    output_schema: type[BaseModel] | None = None
+    operation_output_schemas: dict[str, type[BaseModel]] | None = None
     default_operation: str | None = None
 
     def validate_input(self, value: dict) -> dict:
-        schema = self.input_schema
+        return self._validate_schema(value, self.input_schema, self.operation_schemas, "input")
+
+    def validate_output(self, value: dict) -> dict:
+        return self._validate_schema(value, self.output_schema, self.operation_output_schemas, "output")
+
+    def _validate_schema(
+        self,
+        value: dict,
+        base_schema: type[BaseModel] | None,
+        operation_schemas: dict[str, type[BaseModel]] | None,
+        kind: str,
+    ) -> dict:
+        schema = base_schema
         payload = dict(value or {})
-        if self.operation_schemas:
+        if operation_schemas:
             operation = str(payload.get("operation") or self.default_operation or "")
-            schema = self.operation_schemas.get(operation)
+            schema = operation_schemas.get(operation)
             if schema is None:
-                expected = ", ".join(sorted(self.operation_schemas))
-                raise ValueError(f"unsupported operation for {self.name}: {operation or '<missing>'}; expected one of: {expected}")
+                expected = ", ".join(sorted(operation_schemas))
+                raise ValueError(
+                    f"unsupported operation for {self.name}: {operation or '<missing>'}; "
+                    f"expected one of: {expected}"
+                )
             payload["operation"] = operation
         if schema is None:
             return payload
         try:
             return schema.model_validate(payload).model_dump(mode="json", exclude_none=True)
         except ValidationError as exc:
-            raise ValueError(f"invalid input for {self.name}: {exc}") from exc
+            raise ValueError(f"invalid {kind} for {self.name}: {exc}") from exc
 
 
 @dataclass(frozen=True)
@@ -77,6 +103,45 @@ class ToolRegistry:
             lines.append(f"- {definition.name}: {state}; {definition.description}")
         return "\n".join(lines)
 
+    def validate_plan(self, plan: PlanModel) -> PlanModel:
+        definitions = {definition.name: definition for definition in self.definitions}
+        errors: list[str] = []
+        steps = []
+        required_capabilities = list(plan.required_capabilities)
+        for index, step in enumerate(plan.steps, start=1):
+            if not step.tool_name:
+                steps.append(step)
+                continue
+            definition = definitions.get(step.tool_name)
+            if definition is None:
+                errors.append(f"step {index} uses unregistered tool {step.tool_name!r}")
+                steps.append(step)
+                continue
+            if not definition.enabled:
+                errors.append(f"step {index} uses disabled tool {step.tool_name!r}")
+            try:
+                validated_input = definition.validate_input(step.tool_input)
+            except ValueError as exc:
+                errors.append(f"step {index} {exc}")
+                validated_input = step.tool_input
+            step_capabilities = list(step.required_capabilities)
+            if definition.capability not in step_capabilities:
+                step_capabilities.insert(0, definition.capability)
+            if definition.capability not in required_capabilities:
+                required_capabilities.append(definition.capability)
+            steps.append(
+                step.model_copy(
+                    update={
+                        "tool_input": validated_input,
+                        "required_capabilities": step_capabilities,
+                    }
+                )
+            )
+
+        if errors:
+            raise ValueError("plan failed registry validation:\n" + "\n".join(f"- {error}" for error in errors))
+        return plan.model_copy(update={"steps": steps, "required_capabilities": required_capabilities})
+
 
 def build_tool_registry(settings: AppSettings, backend_base_url: str) -> ToolRegistry:
     adapters: dict[str, object] = {}
@@ -96,6 +161,13 @@ def build_tool_registry(settings: AppSettings, backend_base_url: str) -> ToolReg
                 "materialize_static_app": WorkspaceMaterializeStaticAppInput,
                 "launch_static": WorkspaceLaunchStaticInput,
                 "web_app_preview": WorkspaceWebAppPreviewInput,
+            },
+            operation_output_schemas={
+                "prepare": WorkspacePrepareOutput,
+                "write_files": WorkspaceWriteFilesOutput,
+                "materialize_static_app": WorkspaceMaterializeStaticAppOutput,
+                "launch_static": WorkspaceLaunchStaticOutput,
+                "web_app_preview": WorkspaceWebAppPreviewOutput,
             },
             default_operation="prepare",
         )
@@ -118,6 +190,10 @@ def build_tool_registry(settings: AppSettings, backend_base_url: str) -> ToolReg
                 "assess": AdapterFactoryAssessInput,
                 "scaffold": AdapterFactoryScaffoldInput,
             },
+            operation_output_schemas={
+                "assess": AdapterFactoryAssessOutput,
+                "scaffold": AdapterFactoryScaffoldOutput,
+            },
             default_operation="scaffold",
         )
     )
@@ -132,6 +208,7 @@ def build_tool_registry(settings: AppSettings, backend_base_url: str) -> ToolReg
             enabled=vscode_enabled,
             description="send a prompt to VS Code/Copilot terminal or local Copilot CLI fallback",
             input_schema=VSCodeCopilotTerminalInput,
+            output_schema=VSCodeTerminalToolOutput,
         )
     )
     definitions.append(
@@ -141,6 +218,7 @@ def build_tool_registry(settings: AppSettings, backend_base_url: str) -> ToolReg
             enabled=vscode_enabled,
             description="queue an explicit terminal command through the VS Code bridge",
             input_schema=VSCodeTerminalCommandInput,
+            output_schema=VSCodeTerminalToolOutput,
         )
     )
     if settings.adapters.vscode.enabled:
@@ -156,6 +234,7 @@ def build_tool_registry(settings: AppSettings, backend_base_url: str) -> ToolReg
             enabled=coding_enabled,
             description="run the configured local coding assistant command template",
             input_schema=CodingAssistantInput,
+            output_schema=CodingAssistantOutput,
         )
     )
     if settings.adapters.coding_assistant.enabled:

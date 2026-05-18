@@ -94,11 +94,20 @@ Implemented now:
 - The fulfillment validator checks explicit plan postconditions first and falls back to task/plan inference.
 - Admin traces surface plan postconditions in the timeline details.
 
+Implemented hardening:
+
+- Tool definitions now carry output schemas per operation as well as input schemas.
+- The executor validates successful registered tool outputs before recording them as successful results.
+- Postconditions now cover browser state, desktop observation, file organization, GitHub PRs, and external command completion in addition to workspace, preview URL, and adapter proposal outcomes.
+- LLM-generated plans are validated against the registry before persistence. Invalid tool names, disabled tools, and malformed tool input trigger one LLM repair attempt before the plan enters the worker loop.
+- Telegram task notifications now prioritize the human outcome: result URL, workspace path, adapter path, gap/retry information, usage details, and a concise summary.
+
 Recommended next hardening:
 
-- Add output schemas per tool operation, not just input schemas.
-- Add more postcondition types for browser state, desktop observation, file organization, GitHub PRs, and external command completion.
-- Validate LLM-generated plan steps against the registry before persisting the plan, so invalid plans are repaired before they enter the worker loop.
+- Promote more future adapters into the registry with typed contracts instead of letting the planner invent tool names.
+- Add typed postconditions with richer validators for browser DOM observations, screenshot artifact metadata, file move manifests, and GitHub PR review state as those adapters are implemented.
+- Add typed plan postconditions to every deterministic plan so objective inference remains a fallback, not the main validator signal.
+- Include a validator-generated repair hint in the follow-up worker pass when a closure postcondition fails, so the second attempt can target the missing URL, screenshot, PR, or command result directly.
 
 ## Diagram
 
@@ -237,16 +246,15 @@ Implemented streams:
 
 The registry exposes a capability-vault summary to the planner, and the Telegram responder includes the same key capability signals in its concise runtime context. Missing tools should be handled by routing to `adapter.factory` for a scaffolded proposal, not by inventing unregistered runtime tool names. Generated adapters are cache artifacts only; they are not imported or executed until reviewed, tested, and registered.
 
-Registered tools also expose typed input contracts. The worker validates those contracts before policy and adapter execution. This gives failures like `validation_failed` for malformed tool input instead of letting a tool no-op or interpret a bad payload loosely.
+Registered tools also expose typed input and output contracts. The worker validates input before policy and adapter execution, then validates successful outputs before recording the tool result as succeeded. This gives failures like `validation_failed` for malformed tool input or incomplete adapter output instead of letting a tool no-op or interpret a bad payload loosely.
 
 Known gaps to address next:
 
 - Browser open/control has capabilities but no registered adapter yet.
 - General file organization outside task workspaces needs a scoped filesystem adapter with allowlisted roots.
 - Desktop control exists as a capability but has no registered adapter.
-- Tool output is not yet validated against typed output schemas.
-- More action types need explicit postconditions beyond workspace, preview URL, and adapter proposal.
-- LLM-generated plans are validated when their tools execute; they are not yet repaired at plan persistence time using registry schemas.
+- GitHub PR creation/review has postcondition support but no registered GitHub adapter in this codebase.
+- Current closure validation is mostly key-based. Future adapters should return richer typed artifacts so validators can prove browser state, screenshot state, PR state, and file organization more precisely.
 
 ## Config And Env Strategy
 

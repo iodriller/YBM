@@ -74,9 +74,9 @@ async def run_worker() -> None:
     settings = load_settings()
     repositories, audit = build_repositories()
     provider = build_default_llm_provider(settings)
-    planner = PlannerService(provider, repositories, audit) if provider else None
     policy = PolicyEngine(settings, audit)
     registry = build_tool_registry(settings, _backend_base_url(settings))
+    planner = PlannerService(provider, repositories, audit, plan_validator=registry.validate_plan) if provider else None
     executor = ToolExecutor(
         policy,
         repositories,

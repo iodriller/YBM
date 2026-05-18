@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from pydantic import ValidationError
 
 from agent_control.llm.providers import LLMProvider
@@ -15,10 +17,17 @@ Do not assume access to terminal, files, VS Code, desktop, browser, or GitHub un
 
 
 class PlannerService:
-    def __init__(self, provider: LLMProvider, repositories: Repositories, audit: AuditLogger) -> None:
+    def __init__(
+        self,
+        provider: LLMProvider,
+        repositories: Repositories,
+        audit: AuditLogger,
+        plan_validator: Callable[[PlanModel], PlanModel] | None = None,
+    ) -> None:
         self.provider = provider
         self.repositories = repositories
         self.audit = audit
+        self.plan_validator = plan_validator
 
     async def plan_task(self, task_id: str, config_context: str = "No extra capability context provided.") -> PlanModel:
         task = self.repositories.tasks.get(task_id)
@@ -31,9 +40,11 @@ class PlannerService:
         user_prompt = self._prompt(task.objective, config_context)
         try:
             plan = await self.provider.generate_structured(PLANNER_SYSTEM_PROMPT, user_prompt, PlanModel)
+            plan = self._validate_plan(plan)
         except (ValueError, ValidationError) as exc:
             retry_prompt = f"{user_prompt}\n\nPrevious structured output error:\n{exc}\nReturn corrected JSON only."
             plan = await self.provider.generate_structured(PLANNER_SYSTEM_PROMPT, retry_prompt, PlanModel)
+            plan = self._validate_plan(plan)
 
         self.repositories.plans.create(task_id, plan)
         updated = self.repositories.tasks.attach_plan(task_id, plan.id, TaskStatus.PLANNED)
@@ -55,6 +66,11 @@ class PlannerService:
         )
         self.audit.task_state_changed("planner", task_id, TaskStatus.INTERPRETING, updated.status)
         return plan
+
+    def _validate_plan(self, plan: PlanModel) -> PlanModel:
+        if self.plan_validator is None:
+            return plan
+        return self.plan_validator(plan)
 
     @staticmethod
     def _prompt(objective: str, config_context: str) -> str:

@@ -29,6 +29,11 @@ def expected_fulfillment(objective: str) -> dict[str, bool]:
         "workspace_dir": any(item.type == PostconditionType.WORKSPACE_DIR for item in expected),
         "preview_url": any(item.type == PostconditionType.PREVIEW_URL for item in expected),
         "adapter_proposal": any(item.type == PostconditionType.ADAPTER_PROPOSAL for item in expected),
+        "browser_state": any(item.type == PostconditionType.BROWSER_STATE for item in expected),
+        "desktop_observation": any(item.type == PostconditionType.DESKTOP_OBSERVATION for item in expected),
+        "file_organization": any(item.type == PostconditionType.FILE_ORGANIZATION for item in expected),
+        "github_pr": any(item.type == PostconditionType.GITHUB_PR for item in expected),
+        "external_command": any(item.type == PostconditionType.EXTERNAL_COMMAND for item in expected),
     }
 
 
@@ -76,6 +81,13 @@ def _postconditions_from_plan(plan: PlanModel) -> list[PlanPostcondition]:
                         description="A task workspace directory is reported.",
                     )
                 )
+            if operation == "write_files":
+                expected.append(
+                    PlanPostcondition(
+                        type=PostconditionType.FILE_ORGANIZATION,
+                        description="Generated or changed files are reported.",
+                    )
+                )
             if operation in {"web_app_preview", "launch_static"}:
                 expected.append(
                     PlanPostcondition(
@@ -83,6 +95,37 @@ def _postconditions_from_plan(plan: PlanModel) -> list[PlanPostcondition]:
                         description="A local preview URL is reported.",
                     )
                 )
+        command_step = step.tool_name in {"vscode.terminal_command", "coding_assistant"} or (
+            step.tool_name == "vscode.copilot_terminal" and step.tool_input.get("command")
+        )
+        if command_step:
+            expected.append(
+                PlanPostcondition(
+                    type=PostconditionType.EXTERNAL_COMMAND,
+                    description="The external command reports successful completion.",
+                )
+            )
+        if step.tool_name in {"browser.open", "browser.control"}:
+            expected.append(
+                PlanPostcondition(
+                    type=PostconditionType.BROWSER_STATE,
+                    description="Browser state or an opened page URL is reported.",
+                )
+            )
+        if step.tool_name == "desktop.screenshot":
+            expected.append(
+                PlanPostcondition(
+                    type=PostconditionType.DESKTOP_OBSERVATION,
+                    description="A desktop observation or screenshot is reported.",
+                )
+            )
+        if step.tool_name and step.tool_name.startswith("github.") and operation in {"create_pr", "open_pr", "pull_request"}:
+            expected.append(
+                PlanPostcondition(
+                    type=PostconditionType.GITHUB_PR,
+                    description="A GitHub pull request URL or number is reported.",
+                )
+            )
     return _dedupe(expected)
 
 
@@ -123,6 +166,47 @@ def _postconditions_from_objective(objective: str) -> list[PlanPostcondition]:
                 description="A generated adapter proposal directory is reported.",
             )
         )
+    if bool(words & {"browser", "browse", "search", "website", "page"}) and bool(
+        words & {"open", "search", "visit", "look", "find"}
+    ):
+        expected.append(
+            PlanPostcondition(
+                type=PostconditionType.BROWSER_STATE,
+                description="Browser state or page observation is reported.",
+            )
+        )
+    if bool(words & {"screenshot", "screen", "desktop"}) or "what do you see" in lowered:
+        expected.append(
+            PlanPostcondition(
+                type=PostconditionType.DESKTOP_OBSERVATION,
+                description="A desktop observation or screenshot is reported.",
+            )
+        )
+    if bool(words & {"organize", "move", "rename", "sort"}) and bool(
+        words & {"file", "files", "folder", "folders", "directory", "directories"}
+    ):
+        expected.append(
+            PlanPostcondition(
+                type=PostconditionType.FILE_ORGANIZATION,
+                description="Changed, moved, or organized file paths are reported.",
+            )
+        )
+    if ("pull request" in lowered or " pr " in f" {lowered} " or "github" in words) and bool(
+        words & {"create", "open", "make", "submit"}
+    ):
+        expected.append(
+            PlanPostcondition(
+                type=PostconditionType.GITHUB_PR,
+                description="A GitHub pull request URL or number is reported.",
+            )
+        )
+    if bool(words & {"run", "execute", "launch"}) and bool(words & {"command", "terminal", "script"}):
+        expected.append(
+            PlanPostcondition(
+                type=PostconditionType.EXTERNAL_COMMAND,
+                description="External command completion is reported.",
+            )
+        )
     return _dedupe(expected)
 
 
@@ -134,6 +218,40 @@ def _postcondition_satisfied(task: TaskRecord, expected: PostconditionType) -> b
         return isinstance(value, str) and value.startswith(("http://", "https://"))
     if expected == PostconditionType.ADAPTER_PROPOSAL:
         return bool(_value(task, "adapter_dir", "adapter_dir"))
+    if expected == PostconditionType.BROWSER_STATE:
+        return bool(
+            _any_value(
+                task,
+                metadata_keys=("browser_state", "browser_url", "page_title", "screenshot_uri"),
+                output_keys=("browser_state", "browser_url", "url", "page_title", "screenshot_uri"),
+            )
+        )
+    if expected == PostconditionType.DESKTOP_OBSERVATION:
+        return bool(
+            _any_value(
+                task,
+                metadata_keys=("desktop_observation", "screenshot_uri", "screenshot_path"),
+                output_keys=("desktop_observation", "screenshot_uri", "screenshot_path", "artifact_uri"),
+            )
+        )
+    if expected == PostconditionType.FILE_ORGANIZATION:
+        return bool(
+            _any_value(
+                task,
+                metadata_keys=("organized_paths", "moved_files", "changed_files", "files"),
+                output_keys=("organized_paths", "moved_files", "changed_files", "files"),
+            )
+        )
+    if expected == PostconditionType.GITHUB_PR:
+        return bool(
+            _any_value(
+                task,
+                metadata_keys=("pull_request_url", "pr_url", "pr_number"),
+                output_keys=("pull_request_url", "pr_url", "html_url", "url", "pr_number", "number"),
+            )
+        )
+    if expected == PostconditionType.EXTERNAL_COMMAND:
+        return _external_command_succeeded(task)
     return False
 
 
@@ -147,6 +265,38 @@ def _value(task: TaskRecord, metadata_key: str, output_key: str) -> Any:
     if not isinstance(output, dict):
         return None
     return output.get(output_key)
+
+
+def _any_value(task: TaskRecord, metadata_keys: tuple[str, ...], output_keys: tuple[str, ...]) -> Any:
+    for key in metadata_keys:
+        if task.metadata.get(key):
+            return task.metadata[key]
+    output = _last_output_dict(task)
+    for key in output_keys:
+        if output.get(key):
+            return output[key]
+    return None
+
+
+def _external_command_succeeded(task: TaskRecord) -> bool:
+    output = _last_output_dict(task)
+    for key in ("returncode", "exit_code"):
+        if output.get(key) == 0:
+            return True
+    terminal_output = output.get("terminal_output")
+    if isinstance(terminal_output, list):
+        for item in terminal_output:
+            if isinstance(item, dict) and item.get("is_final") and item.get("exit_code") == 0:
+                return True
+    return False
+
+
+def _last_output_dict(task: TaskRecord) -> dict[str, Any]:
+    result = task.metadata.get("last_tool_result")
+    if not isinstance(result, dict):
+        return {}
+    output = result.get("output")
+    return output if isinstance(output, dict) else {}
 
 
 def _dedupe(values: list[PlanPostcondition]) -> tuple[PlanPostcondition, ...]:

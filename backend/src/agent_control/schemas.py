@@ -142,6 +142,11 @@ class PostconditionType(StrEnum):
     WORKSPACE_DIR = "workspace_dir"
     PREVIEW_URL = "preview_url"
     ADAPTER_PROPOSAL = "adapter_proposal"
+    BROWSER_STATE = "browser_state"
+    DESKTOP_OBSERVATION = "desktop_observation"
+    FILE_ORGANIZATION = "file_organization"
+    GITHUB_PR = "github_pr"
+    EXTERNAL_COMMAND = "external_command"
 
 
 class AuditEventType(StrEnum):

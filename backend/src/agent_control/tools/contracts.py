@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -14,6 +14,17 @@ class ToolInputModel(BaseModel):
 
     scope_target: str | None = None
     timeout_seconds: int | None = Field(default=None, ge=1)
+
+
+class ToolOutputModel(BaseModel):
+    model_config = ConfigDict(
+        extra="allow",
+        str_strip_whitespace=True,
+        validate_assignment=True,
+    )
+
+    operation: str | None = None
+    terminal_output: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class WorkspaceFileInput(BaseModel):
@@ -106,3 +117,53 @@ class VSCodeTerminalCommandInput(ToolInputModel):
 class CodingAssistantInput(ToolInputModel):
     prompt: str = Field(min_length=1)
 
+
+class WorkspacePrepareOutput(ToolOutputModel):
+    workspace_dir: str = Field(min_length=1)
+    files: list[str] = Field(default_factory=list)
+
+
+class WorkspaceWriteFilesOutput(WorkspacePrepareOutput):
+    files: list[str] = Field(min_length=1)
+
+
+class WorkspaceMaterializeStaticAppOutput(WorkspacePrepareOutput):
+    materialized_from: Literal["assistant_output", "fallback_template", "existing_files"]
+
+
+class WorkspaceLaunchStaticOutput(WorkspacePrepareOutput):
+    url: str = Field(pattern=r"^https?://")
+    server_pid: int = Field(ge=1)
+
+
+class WorkspaceWebAppPreviewOutput(WorkspaceLaunchStaticOutput):
+    pass
+
+
+class AdapterFactoryAssessOutput(ToolOutputModel):
+    adapter_name: str = Field(min_length=1)
+    assessment: str = Field(min_length=1)
+    cacheable: bool = True
+    execution_policy: str = Field(min_length=1)
+
+
+class AdapterFactoryScaffoldOutput(ToolOutputModel):
+    adapter_dir: str = Field(min_length=1)
+    adapter_name: str = Field(min_length=1)
+    files: list[str] = Field(min_length=1)
+    cacheable: bool = True
+    execution_policy: str = Field(min_length=1)
+
+
+class VSCodeTerminalToolOutput(ToolOutputModel):
+    command_id: str | None = None
+    queued: dict[str, Any] | None = None
+    usage: dict[str, str] = Field(default_factory=dict)
+    retried: bool | None = None
+    terminal_output: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class CodingAssistantOutput(ToolOutputModel):
+    stdout: str = ""
+    stderr: str = ""
+    returncode: int
