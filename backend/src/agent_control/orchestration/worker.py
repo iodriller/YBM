@@ -8,7 +8,7 @@ from typing import Any, Protocol
 
 from agent_control.llm import PlannerService
 from agent_control.orchestration.executor import ToolExecutor
-from agent_control.orchestration.fulfillment import fulfillment_gap
+from agent_control.orchestration.fulfillment import validate_fulfillment
 from agent_control.recovery import RetryPolicy
 from agent_control.schemas import (
     ApprovalRequest,
@@ -360,12 +360,16 @@ class TaskWorker:
     def _transition(self, task: TaskRecord, status: TaskStatus, reason: str) -> TaskRecord:
         if status == TaskStatus.COMPLETED:
             latest = self.repositories.tasks.get(task.id) or task
-            gap = fulfillment_gap(latest)
+            plan = self.repositories.plans.get(latest.plan_id) if latest.plan_id else None
+            validation = validate_fulfillment(latest, plan)
+            gap = validation.first_gap
             if gap:
                 retry_count = int(latest.metadata.get("fulfillment_retry_count", 0))
                 metadata = {
                     **latest.metadata,
                     "fulfillment_gap": gap,
+                    "fulfillment_expected": [item.model_dump(mode="json") for item in validation.expected],
+                    "fulfillment_missing": [item.value for item in validation.missing],
                     "fulfillment_retry_count": retry_count + 1,
                 }
                 if retry_count < 1:

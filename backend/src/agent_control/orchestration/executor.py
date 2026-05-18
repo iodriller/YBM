@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Protocol
+from collections.abc import Iterable
+from typing import Any, Protocol
 
 from agent_control.policy import PolicyEngine
 from agent_control.schemas import (
@@ -40,13 +41,16 @@ class ToolExecutor:
         repositories: Repositories,
         audit: AuditLogger,
         adapters: dict[str, ToolAdapter] | None = None,
+        tool_definitions: Iterable[Any] | None = None,
     ) -> None:
         self.policy = policy
         self.repositories = repositories
         self.audit = audit
         self.adapters = adapters or {}
+        self.tool_definitions = {definition.name: definition for definition in (tool_definitions or [])}
 
     async def execute(self, request: ToolCallRequest, approved: bool = False) -> ToolCallResult:
+        request, validation_error = self._validated_request(request)
         self.repositories.tool_invocations.create(request)
         self.audit.append(
             AuditEventType.TOOL_REQUESTED,
@@ -54,6 +58,17 @@ class ToolExecutor:
             task_id=request.task_id,
             payload=request.model_dump(mode="json"),
         )
+
+        if validation_error:
+            return self._complete(
+                request,
+                ToolCallResult(
+                    request_id=request.id,
+                    status=ToolResultStatus.FAILED,
+                    error_class=ErrorClass.VALIDATION_FAILED,
+                    error_message=validation_error,
+                ),
+            )
 
         decision = self.policy.evaluate(request, approved=approved)
         if decision.needs_approval:
@@ -109,6 +124,25 @@ class ToolExecutor:
                     error_message=str(exc),
                 )
             )
+
+    def _validated_request(self, request: ToolCallRequest) -> tuple[ToolCallRequest, str | None]:
+        definition = self.tool_definitions.get(request.tool_name)
+        if definition is None:
+            return request, None
+        try:
+            validated_input = definition.validate_input(request.input)
+        except ValueError as exc:
+            return request, str(exc)
+        return (
+            request.model_copy(
+                update={
+                    "input": validated_input,
+                    "scope_target": request.scope_target or validated_input.get("scope_target"),
+                    "timeout_seconds": int(validated_input.get("timeout_seconds") or request.timeout_seconds),
+                }
+            ),
+            None,
+        )
 
     def _complete(self, request: ToolCallRequest, result: ToolCallResult) -> ToolCallResult:
         self.repositories.tool_invocations.complete(result)

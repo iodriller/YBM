@@ -67,14 +67,38 @@ What happened:
 
 ## Recommendation
 
-The steps above are all useful, but they should be grouped mentally into four phases:
+The steps above are all useful, but the implementation should stay organized into four phases:
 
 - Intake: access, storage, memory, classification.
 - Planning: registry/vault context, deterministic or LLM plan, adapter proposal when missing.
 - Execution: policy, tool run, audit, artifacts.
 - Closure: validation, retry/repair, notification.
 
-Do not add a separate vault lookup before every subtask unless a plan is stale or a tool fails as unavailable. The better next improvement is typed tool schemas and typed postconditions per task type, so the validator can reliably say whether the requested action was actually carried out.
+Do not add a separate vault lookup before every subtask unless a plan is stale or a tool fails as unavailable. The registry/vault context should be captured once during planning, then execution should trust the plan and fail clearly if a tool disappears or a schema no longer matches.
+
+The concrete implementation strategy is:
+
+1. Keep the registry as the source of truth for executable tools, known gaps, supported operations, and typed input contracts.
+2. Validate tool input before policy evaluation and before adapter execution, so a malformed plan fails as `validation_failed` instead of silently doing the wrong thing.
+3. Put typed postconditions on plans for action requests. Examples: `preview_url`, `workspace_dir`, and `adapter_proposal`.
+4. Let deterministic plans declare postconditions directly. Let LLM plans declare them too, but keep objective/plan-step inference as a fallback for older plans.
+5. Validate postconditions only at closure, after the final step, so the worker does not waste time checking the vault before every subtask.
+6. If a required postcondition is missing, requeue once with the explicit gap in metadata. If the same gap remains, block the task with a useful reason.
+
+Implemented now:
+
+- `ToolDefinition` carries operation/input schemas for registered tools.
+- `ToolExecutor` validates registered tool input before policy and adapter calls.
+- `PlanModel` supports typed `postconditions`.
+- Default web-app and adapter-factory plans declare their expected postconditions.
+- The fulfillment validator checks explicit plan postconditions first and falls back to task/plan inference.
+- Admin traces surface plan postconditions in the timeline details.
+
+Recommended next hardening:
+
+- Add output schemas per tool operation, not just input schemas.
+- Add more postcondition types for browser state, desktop observation, file organization, GitHub PRs, and external command completion.
+- Validate LLM-generated plan steps against the registry before persisting the plan, so invalid plans are repaired before they enter the worker loop.
 
 ## Diagram
 
@@ -213,13 +237,16 @@ Implemented streams:
 
 The registry exposes a capability-vault summary to the planner, and the Telegram responder includes the same key capability signals in its concise runtime context. Missing tools should be handled by routing to `adapter.factory` for a scaffolded proposal, not by inventing unregistered runtime tool names. Generated adapters are cache artifacts only; they are not imported or executed until reviewed, tested, and registered.
 
+Registered tools also expose typed input contracts. The worker validates those contracts before policy and adapter execution. This gives failures like `validation_failed` for malformed tool input instead of letting a tool no-op or interpret a bad payload loosely.
+
 Known gaps to address next:
 
 - Browser open/control has capabilities but no registered adapter yet.
 - General file organization outside task workspaces needs a scoped filesystem adapter with allowlisted roots.
 - Desktop control exists as a capability but has no registered adapter.
-- Planner output is still free-form `PlanStep` JSON; tool inputs are not yet validated per tool operation schema.
-- Fulfillment validation currently covers visible app preview URLs. More action types need explicit postconditions.
+- Tool output is not yet validated against typed output schemas.
+- More action types need explicit postconditions beyond workspace, preview URL, and adapter proposal.
+- LLM-generated plans are validated when their tools execute; they are not yet repaired at plan persistence time using registry schemas.
 
 ## Config And Env Strategy
 

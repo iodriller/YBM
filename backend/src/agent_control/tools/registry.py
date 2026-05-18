@@ -2,10 +2,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from pydantic import BaseModel, ValidationError
+
 from agent_control.config import AppSettings
 from agent_control.schemas import Capability
 from agent_control.tools.adapter_factory import AdapterFactoryAdapter
 from agent_control.tools.coding_assistant import GenericTerminalAgentAdapter
+from agent_control.tools.contracts import (
+    AdapterFactoryAssessInput,
+    AdapterFactoryScaffoldInput,
+    CodingAssistantInput,
+    VSCodeCopilotTerminalInput,
+    VSCodeTerminalCommandInput,
+    WorkspaceLaunchStaticInput,
+    WorkspaceMaterializeStaticAppInput,
+    WorkspacePrepareInput,
+    WorkspaceWebAppPreviewInput,
+    WorkspaceWriteFilesInput,
+)
 from agent_control.tools.local_workspace import LocalWorkspaceAdapter
 from agent_control.tools.vscode_bridge import VSCodeBridgeTerminalAdapter
 
@@ -18,6 +32,26 @@ class ToolDefinition:
     description: str
     operations: tuple[str, ...] = ()
     lifecycle: str = "runtime"
+    input_schema: type[BaseModel] | None = None
+    operation_schemas: dict[str, type[BaseModel]] | None = None
+    default_operation: str | None = None
+
+    def validate_input(self, value: dict) -> dict:
+        schema = self.input_schema
+        payload = dict(value or {})
+        if self.operation_schemas:
+            operation = str(payload.get("operation") or self.default_operation or "")
+            schema = self.operation_schemas.get(operation)
+            if schema is None:
+                expected = ", ".join(sorted(self.operation_schemas))
+                raise ValueError(f"unsupported operation for {self.name}: {operation or '<missing>'}; expected one of: {expected}")
+            payload["operation"] = operation
+        if schema is None:
+            return payload
+        try:
+            return schema.model_validate(payload).model_dump(mode="json", exclude_none=True)
+        except ValidationError as exc:
+            raise ValueError(f"invalid input for {self.name}: {exc}") from exc
 
 
 @dataclass(frozen=True)
@@ -56,6 +90,14 @@ def build_tool_registry(settings: AppSettings, backend_base_url: str) -> ToolReg
             enabled=workspace_enabled,
             description=f"manage task workspaces under {settings.adapters.workspace.root_dir}",
             operations=("prepare", "write_files", "materialize_static_app", "launch_static", "web_app_preview"),
+            operation_schemas={
+                "prepare": WorkspacePrepareInput,
+                "write_files": WorkspaceWriteFilesInput,
+                "materialize_static_app": WorkspaceMaterializeStaticAppInput,
+                "launch_static": WorkspaceLaunchStaticInput,
+                "web_app_preview": WorkspaceWebAppPreviewInput,
+            },
+            default_operation="prepare",
         )
     )
     if settings.adapters.workspace.enabled:
@@ -72,6 +114,11 @@ def build_tool_registry(settings: AppSettings, backend_base_url: str) -> ToolReg
             description=f"scaffold generated adapter proposals under {settings.adapters.adapter_factory.root_dir}",
             operations=("assess", "scaffold"),
             lifecycle="scaffold",
+            operation_schemas={
+                "assess": AdapterFactoryAssessInput,
+                "scaffold": AdapterFactoryScaffoldInput,
+            },
+            default_operation="scaffold",
         )
     )
     if settings.adapters.adapter_factory.enabled:
@@ -84,6 +131,7 @@ def build_tool_registry(settings: AppSettings, backend_base_url: str) -> ToolReg
             capability=Capability.VSCODE_WRITE_FILES,
             enabled=vscode_enabled,
             description="send a prompt to VS Code/Copilot terminal or local Copilot CLI fallback",
+            input_schema=VSCodeCopilotTerminalInput,
         )
     )
     definitions.append(
@@ -92,6 +140,7 @@ def build_tool_registry(settings: AppSettings, backend_base_url: str) -> ToolReg
             capability=Capability.VSCODE_WRITE_FILES,
             enabled=vscode_enabled,
             description="queue an explicit terminal command through the VS Code bridge",
+            input_schema=VSCodeTerminalCommandInput,
         )
     )
     if settings.adapters.vscode.enabled:
@@ -106,6 +155,7 @@ def build_tool_registry(settings: AppSettings, backend_base_url: str) -> ToolReg
             capability=Capability.TERMINAL_RUN,
             enabled=coding_enabled,
             description="run the configured local coding assistant command template",
+            input_schema=CodingAssistantInput,
         )
     )
     if settings.adapters.coding_assistant.enabled:

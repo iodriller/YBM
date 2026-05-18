@@ -14,7 +14,9 @@ from agent_control.schemas import (
     InboundMessage,
     MessageKind,
     PlanModel,
+    PlanPostcondition,
     PlanStep,
+    PostconditionType,
     RiskLevel,
     ToolCallRequest,
     utc_now,
@@ -41,6 +43,21 @@ def test_structured_plan_validates() -> None:
     )
 
     assert plan.steps[0].required_capabilities == [Capability.VSCODE_READ_STATE]
+
+
+def test_structured_plan_accepts_typed_postconditions() -> None:
+    plan = PlanModel(
+        objective="Launch app",
+        steps=[PlanStep(title="Launch", description="Launch app.")],
+        postconditions=[
+            PlanPostcondition(
+                type=PostconditionType.PREVIEW_URL,
+                description="A local preview URL is reported.",
+            )
+        ],
+    )
+
+    assert plan.postconditions[0].type == PostconditionType.PREVIEW_URL
 
 
 def test_inbound_message_forbids_unknown_fields() -> None:
@@ -81,4 +98,3 @@ def test_pending_approval_decision_is_invalid() -> None:
             status=ApprovalStatus.PENDING,
             actor="user",
         )
-

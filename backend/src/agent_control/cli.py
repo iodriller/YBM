@@ -82,6 +82,7 @@ async def run_worker() -> None:
         repositories,
         audit,
         adapters=registry.adapters,
+        tool_definitions=registry.definitions,
     )
     worker = TaskWorker(
         repositories,

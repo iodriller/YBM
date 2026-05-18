@@ -3,7 +3,16 @@ from __future__ import annotations
 from agent_control.config import AppSettings
 from agent_control.orchestration.fulfillment import expected_fulfillment
 from agent_control.tools.local_workspace import workspace_dir_for_task
-from agent_control.schemas import Capability, PlanModel, PlanStep, RiskLevel, TaskRecord, TaskType
+from agent_control.schemas import (
+    Capability,
+    PlanModel,
+    PlanPostcondition,
+    PlanStep,
+    PostconditionType,
+    RiskLevel,
+    TaskRecord,
+    TaskType,
+)
 
 
 def build_default_vscode_development_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | None:
@@ -87,6 +96,7 @@ def build_default_vscode_development_plan(settings: AppSettings, task: TaskRecor
         required_capabilities=required_capabilities,
         steps=steps,
         success_criteria=["The VS Code bridge accepted the command and reported a final terminal output record."],
+        postconditions=_workspace_postconditions() if workspace_enabled else [],
     )
 
 
@@ -131,6 +141,7 @@ def _build_workspace_web_app_plan(settings: AppSettings, task: TaskRecord) -> Pl
                 )
             ],
             success_criteria=["The generated web app is available at a localhost URL and the workspace path is reported."],
+            postconditions=_preview_postconditions(),
         )
 
     workspace_dir = str(workspace_dir_for_task(settings.adapters.workspace.root_dir, task.id))
@@ -217,6 +228,7 @@ def _build_workspace_web_app_plan(settings: AppSettings, task: TaskRecord) -> Pl
             "Copilot has been used as the creator for the requested app.",
             "The generated web app is available at a localhost URL and the workspace path is reported.",
         ],
+        postconditions=_preview_postconditions(),
     )
 
 
@@ -255,6 +267,7 @@ def _build_adapter_factory_plan(settings: AppSettings, task: TaskRecord) -> Plan
         "Generated adapter work is cached as a proposal and is not auto-imported or executed.",
     ]
     success_criteria = ["A reviewable adapter proposal exists in the generated adapter cache."]
+    postconditions = _adapter_postconditions()
     if vscode_enabled:
         required_capabilities.append(Capability.VSCODE_WRITE_FILES)
         assumptions.append("Copilot may refine the generated proposal inside the adapter cache.")
@@ -284,11 +297,40 @@ def _build_adapter_factory_plan(settings: AppSettings, task: TaskRecord) -> Plan
         required_capabilities=required_capabilities,
         steps=steps,
         success_criteria=success_criteria,
+        postconditions=postconditions,
     )
 
 
 def _looks_like_launchable_web_app(objective: str) -> bool:
     return bool(expected_fulfillment(objective).get("preview_url"))
+
+
+def _workspace_postconditions() -> list[PlanPostcondition]:
+    return [
+        PlanPostcondition(
+            type=PostconditionType.WORKSPACE_DIR,
+            description="A task workspace directory is reported.",
+        )
+    ]
+
+
+def _preview_postconditions() -> list[PlanPostcondition]:
+    return [
+        PlanPostcondition(
+            type=PostconditionType.PREVIEW_URL,
+            description="A local preview URL is reported.",
+        ),
+        *_workspace_postconditions(),
+    ]
+
+
+def _adapter_postconditions() -> list[PlanPostcondition]:
+    return [
+        PlanPostcondition(
+            type=PostconditionType.ADAPTER_PROPOSAL,
+            description="A generated adapter proposal directory is reported.",
+        )
+    ]
 
 
 def _looks_like_adapter_request(objective: str) -> bool:

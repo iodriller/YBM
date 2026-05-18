@@ -56,6 +56,10 @@ def test_streamlit_admin_timeline_details_are_human_readable() -> None:
                         {"title": "Prepare workspace", "tool_name": "workspace.manage"},
                         {"title": "Ask Copilot", "tool_name": "vscode.copilot_terminal"},
                     ],
+                    "postconditions": [
+                        {"type": "preview_url", "description": "A local preview URL is reported."},
+                        {"type": "workspace_dir", "description": "A task workspace directory is reported."},
+                    ],
                 },
             },
         },
@@ -81,6 +85,7 @@ def test_streamlit_admin_timeline_details_are_human_readable() -> None:
     frame = admin_streamlit._timeline_frame(timeline)
 
     assert "steps: 1. Prepare workspace -> workspace.manage; 2. Ask Copilot -> vscode.copilot_terminal" in frame.iloc[0]["Details"]
+    assert "postconditions: preview_url, workspace_dir" in frame.iloc[0]["Details"]
     assert "very long hidden planner context" not in frame.iloc[0]["Details"]
     assert frame.iloc[0]["Source"] == "default_vscode_development_plan"
     assert frame.iloc[0]["Next"] == "tool executor"

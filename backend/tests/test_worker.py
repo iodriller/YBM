@@ -18,7 +18,9 @@ from agent_control.schemas import (
     Capability,
     ErrorClass,
     PlanModel,
+    PlanPostcondition,
     PlanStep,
+    PostconditionType,
     RiskLevel,
     TaskStatus,
     TaskType,
@@ -274,7 +276,59 @@ async def test_worker_requeues_when_launch_request_lacks_preview_url(tmp_path) -
 
     assert requeued.status == TaskStatus.RECEIVED
     assert requeued.metadata["fulfillment_gap"] == "expected_preview_url_missing"
+    assert requeued.metadata["fulfillment_missing"][0] == "preview_url"
     assert requeued.metadata["fulfillment_retry_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_worker_uses_explicit_plan_postconditions(tmp_path) -> None:
+    repos, audit = _repos(tmp_path)
+    task = repos.tasks.create("Run a tool and prove it produced a preview")
+    plan = repos.plans.create(
+        task.id,
+        PlanModel(
+            objective=task.objective,
+            steps=[
+                PlanStep(
+                    title="Answer only",
+                    description="Returns text but no preview.",
+                    required_capabilities=[Capability.LLM_GENERATE],
+                    tool_name="llm",
+                )
+            ],
+            postconditions=[
+                PlanPostcondition(
+                    type=PostconditionType.PREVIEW_URL,
+                    description="A local preview URL is reported.",
+                )
+            ],
+        ),
+    )
+    repos.tasks.attach_plan(task.id, plan.id)
+    settings = AppSettings(
+        _env_file=None,
+        capabilities={
+            Capability.LLM_GENERATE: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.LOW,
+            )
+        },
+    )
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"llm": StaticToolAdapter({"text": "done"})},
+    )
+    worker = TaskWorker(repos, audit, executor=executor)
+
+    await worker.process_task(task.id)
+    requeued = await worker.process_task(task.id)
+
+    assert requeued.status == TaskStatus.RECEIVED
+    assert requeued.metadata["fulfillment_gap"] == "expected_preview_url_missing"
+    assert requeued.metadata["fulfillment_expected"][0]["type"] == "preview_url"
 
 
 @pytest.mark.asyncio

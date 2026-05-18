@@ -65,4 +65,4 @@ class PlannerService:
 Configuration/capability context:
 {config_context}
 
-The plan must include assumptions, required_capabilities, approval_gates when needed, ordered steps, and success_criteria."""
+The plan must include assumptions, required_capabilities, approval_gates when needed, ordered steps, success_criteria, and typed postconditions when the task requires a visible artifact, workspace, URL, or generated adapter proposal."""

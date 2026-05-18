@@ -885,6 +885,15 @@ def _plan_summary_lines(plan: dict[str, Any]) -> list[str]:
     steps = plan.get("steps") or []
     if isinstance(steps, list):
         lines.extend(_step_summary_lines(steps))
+    postconditions = plan.get("postconditions") or []
+    if isinstance(postconditions, list) and postconditions:
+        labels = [
+            str(item.get("type") or item.get("description") or "postcondition")
+            for item in postconditions
+            if isinstance(item, dict)
+        ]
+        if labels:
+            _add_line(lines, "postconditions", ", ".join(labels[:6]))
     return lines
 
 

@@ -138,6 +138,12 @@ class ArtifactType(StrEnum):
     EXTERNAL_LINK = "external_link"
 
 
+class PostconditionType(StrEnum):
+    WORKSPACE_DIR = "workspace_dir"
+    PREVIEW_URL = "preview_url"
+    ADAPTER_PROPOSAL = "adapter_proposal"
+
+
 class AuditEventType(StrEnum):
     MESSAGE_RECEIVED = "message_received"
     CONFIG_UPDATED = "config_updated"
@@ -255,6 +261,12 @@ class ApprovalGate(StrictBaseModel):
     required_before_step: str | None = None
 
 
+class PlanPostcondition(StrictBaseModel):
+    type: PostconditionType
+    description: str
+    required: bool = True
+
+
 class PlanStep(StrictBaseModel):
     id: str = Field(default_factory=lambda: new_id("step"))
     title: str
@@ -275,6 +287,7 @@ class PlanModel(StrictBaseModel):
     approval_gates: list[ApprovalGate] = Field(default_factory=list)
     steps: list[PlanStep] = Field(default_factory=list)
     success_criteria: list[str] = Field(default_factory=list)
+    postconditions: list[PlanPostcondition] = Field(default_factory=list)
 
     @field_validator("steps")
     @classmethod
