@@ -7,7 +7,18 @@ import yaml
 from agent_control.admin import create_admin_router
 from agent_control.config import AppSettings, default_capability_policies
 from agent_control.main import app, vscode_store
-from agent_control.schemas import AuditEventType, Capability, CapabilityAccessMode, TaskStatus
+from agent_control.schemas import (
+    AuditEventType,
+    Capability,
+    CapabilityAccessMode,
+    PlanModel,
+    PlanStep,
+    RiskLevel,
+    TaskStatus,
+    ToolCallRequest,
+    ToolCallResult,
+    ToolResultStatus,
+)
 from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.tools.vscode_bridge import VSCodeBridgeStore
 
@@ -74,6 +85,123 @@ def test_admin_task_signal_updates_task(tmp_path) -> None:
     assert response.status_code == 200
     assert updated is not None
     assert updated.status == TaskStatus.PAUSED
+
+
+def test_admin_task_trace_includes_plan_tool_calls_and_audit(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    audit = AuditLogger(repositories.audit)
+    task = repositories.tasks.create("create a test app")
+    plan = repositories.plans.create(
+        task.id,
+        PlanModel(
+            objective=task.objective,
+            steps=[
+                PlanStep(
+                    title="Ask Copilot",
+                    description="Send prompt.",
+                    required_capabilities=[Capability.VSCODE_WRITE_FILES],
+                    risk_level=RiskLevel.HIGH,
+                    tool_name="vscode.copilot_terminal",
+                    tool_input={"prompt": "build the app", "cwd": "workspace"},
+                )
+            ],
+            success_criteria=["done"],
+        ),
+    )
+    repositories.tasks.attach_plan(task.id, plan.id)
+    request = ToolCallRequest(
+        task_id=task.id,
+        tool_name="vscode.copilot_terminal",
+        capability=Capability.VSCODE_WRITE_FILES,
+        input={"prompt": "build the app", "cwd": "workspace"},
+    )
+    repositories.tool_invocations.create(request)
+    repositories.tool_invocations.complete(
+        ToolCallResult(
+            request_id=request.id,
+            status=ToolResultStatus.SUCCEEDED,
+            output={"terminal_output": [{"content": "created files"}]},
+        )
+    )
+    audit.append(
+        AuditEventType.PLAN_CREATED,
+        actor="planner",
+        task_id=task.id,
+        payload={"llm": {"system_prompt": "system", "user_prompt": "user"}, "plan_id": plan.id},
+    )
+    local_app = FastAPI()
+    local_app.include_router(
+        create_admin_router(
+            lambda: AppSettings(_env_file=None),
+            lambda: repositories,
+            VSCodeBridgeStore(),
+        )
+    )
+    client = TestClient(local_app)
+
+    response = client.get(f"/admin/api/tasks/{task.id}/trace")
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["task"]["id"] == task.id
+    assert body["plan"]["steps"][0]["tool_input"]["prompt"] == "build the app"
+    assert body["tool_invocations"][0]["request"]["input"]["prompt"] == "build the app"
+    assert body["tool_invocations"][0]["result"]["output"]["terminal_output"][0]["content"] == "created files"
+    assert body["audit"][0]["details"]["llm"]["user_prompt"] == "user"
+
+
+def test_admin_clears_task_history_and_audit(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    completed = repositories.tasks.create("old task")
+    repositories.tasks.update_status(completed.id, TaskStatus.COMPLETED)
+    active = repositories.tasks.create("active task")
+    AuditLogger(repositories.audit).append(AuditEventType.TASK_CREATED, actor="test", task_id=completed.id)
+    AuditLogger(repositories.audit).append(AuditEventType.TASK_CREATED, actor="test", task_id=active.id)
+    local_app = FastAPI()
+    local_app.include_router(
+        create_admin_router(
+            lambda: AppSettings(_env_file=None),
+            lambda: repositories,
+            VSCodeBridgeStore(),
+        )
+    )
+    client = TestClient(local_app)
+
+    clear_completed = client.delete("/admin/api/tasks?include_active=false")
+    remaining_tasks = client.get("/admin/api/tasks?limit=10").json()["tasks"]
+    clear_audit = client.delete("/admin/api/audit")
+
+    assert clear_completed.status_code == 200
+    assert clear_completed.json()["deleted_tasks"] == 1
+    assert [task["id"] for task in remaining_tasks] == [active.id]
+    assert clear_audit.status_code == 200
+    assert repositories.audit.list_recent(10) == []
+
+
+def test_admin_tasks_are_paginated(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    for index in range(7):
+        repositories.tasks.create(f"task {index}")
+    local_app = FastAPI()
+    local_app.include_router(
+        create_admin_router(
+            lambda: AppSettings(_env_file=None),
+            lambda: repositories,
+            VSCodeBridgeStore(),
+        )
+    )
+    client = TestClient(local_app)
+
+    first_page = client.get("/admin/api/tasks?limit=5").json()
+    summary = client.get("/admin/api/summary?task_limit=5").json()
+
+    assert len(first_page["tasks"]) == 5
+    assert first_page["pagination"]["total"] == 7
+    assert first_page["pagination"]["has_more"] is True
+    assert summary["task_pagination"]["has_more"] is True
 
 
 def test_admin_task_resume_restores_paused_status(tmp_path) -> None:

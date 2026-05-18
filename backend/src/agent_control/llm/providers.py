@@ -65,6 +65,8 @@ class OpenAICompatibleProvider:
             "temperature": self.profile.temperature,
             "max_tokens": self.profile.max_tokens,
         }
+        if self.profile.context_limit is not None:
+            payload["context_limit"] = self.profile.context_limit
         if response_format:
             payload["response_format"] = response_format
 

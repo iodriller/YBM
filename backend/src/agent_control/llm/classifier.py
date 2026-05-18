@@ -78,6 +78,13 @@ Return:
 - reason explaining the decision."""
 
 
+def classification_trace(message: InboundMessage) -> dict[str, str]:
+    return {
+        "system_prompt": CLASSIFIER_SYSTEM_PROMPT,
+        "user_prompt": _classification_prompt(message),
+    }
+
+
 def heuristic_classification(message: InboundMessage) -> MessageClassification:
     text = (message.text or "").strip()
     lowered = text.lower()

@@ -10,7 +10,7 @@ from agent_control.config import AppSettings, TelegramConfig
 from agent_control.config_sync import read_env_value
 from agent_control.channels.responder import TelegramResponder
 from agent_control.channels.memory import ConversationMemoryService
-from agent_control.llm.classifier import MessageClassifier
+from agent_control.llm.classifier import MessageClassifier, classification_trace
 from agent_control.orchestration.signals import apply_task_signal
 from agent_control.schemas import (
     ApprovalStatus,
@@ -400,6 +400,7 @@ class TelegramIntakeService:
                 "normalized_objective": classification.normalized_objective,
                 "confidence": classification.confidence,
                 "reason": classification.reason,
+                "llm": classification_trace(inbound),
             },
         )
 

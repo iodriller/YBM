@@ -178,13 +178,49 @@ class TaskRepository:
             return None
         return self._row_to_task(row)
 
-    def list_recent(self, limit: int = 20) -> list[TaskRecord]:
+    def list_recent(self, limit: int = 20, offset: int = 0) -> list[TaskRecord]:
         with self.database.connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?",
-                (limit,),
+                "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (limit, offset),
             ).fetchall()
         return [self._row_to_task(row) for row in rows]
+
+    def count(self) -> int:
+        with self.database.connect() as connection:
+            row = connection.execute("SELECT COUNT(*) FROM tasks").fetchone()
+        return int(row[0] if row else 0)
+
+    def clear_history(self, include_active: bool = False) -> int:
+        where_clause = ""
+        args: list[str] = []
+        if not include_active:
+            terminal_statuses = [
+                TaskStatus.BLOCKED.value,
+                TaskStatus.CANCELLED.value,
+                TaskStatus.COMPLETED.value,
+                TaskStatus.FAILED.value,
+            ]
+            where_clause = f"WHERE status IN ({','.join('?' for _ in terminal_statuses)})"
+            args = terminal_statuses
+
+        with self.database.connect() as connection:
+            rows = connection.execute(f"SELECT id FROM tasks {where_clause}", args).fetchall()
+            task_ids = [str(row["id"]) for row in rows]
+            if not task_ids:
+                return 0
+            placeholders = ",".join("?" for _ in task_ids)
+            for table in (
+                "task_signals",
+                "approvals",
+                "tool_invocations",
+                "artifacts",
+                "plans",
+                "audit_events",
+            ):
+                connection.execute(f"DELETE FROM {table} WHERE task_id IN ({placeholders})", task_ids)
+            connection.execute(f"DELETE FROM tasks WHERE id IN ({placeholders})", task_ids)
+        return len(task_ids)
 
     def list_by_statuses(self, statuses: list[TaskStatus], limit: int = 20) -> list[TaskRecord]:
         if not statuses:
@@ -292,6 +328,24 @@ class TaskSignalRepository:
                 ),
             )
         return signal
+
+    def list_for_task(self, task_id: str) -> list[TaskSignal]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM task_signals WHERE task_id = ? ORDER BY created_at ASC",
+                (task_id,),
+            ).fetchall()
+        return [
+            TaskSignal(
+                id=row["id"],
+                task_id=row["task_id"],
+                signal=row["signal"],
+                actor=row["actor"],
+                payload=_load(row["payload_json"], {}),
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
 
 
 class PlanRepository:
@@ -424,6 +478,32 @@ class ToolInvocationRepository:
                 ),
             )
 
+    def list_for_task(self, task_id: str) -> list[dict[str, Any]]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM tool_invocations
+                WHERE task_id = ?
+                ORDER BY created_at ASC
+                """,
+                (task_id,),
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "task_id": row["task_id"],
+                "tool_name": row["tool_name"],
+                "capability": row["capability"],
+                "request": _load(row["request_json"], {}),
+                "result": _load(row["result_json"], None),
+                "status": row["status"],
+                "created_at": row["created_at"],
+                "completed_at": row["completed_at"],
+            }
+            for row in rows
+        ]
+
 
 class ArtifactRepository:
     def __init__(self, database: Database) -> None:
@@ -525,6 +605,13 @@ class AuditRepository:
                 (limit,),
             ).fetchall()
         return [self._row_to_event(row) for row in rows]
+
+    def clear_all(self) -> int:
+        with self.database.connect() as connection:
+            row = connection.execute("SELECT COUNT(*) FROM audit_events").fetchone()
+            count = int(row[0] if row else 0)
+            connection.execute("DELETE FROM audit_events")
+        return count
 
     def list_by_type(self, event_type: AuditEventType) -> list[AuditEvent]:
         with self.database.connect() as connection:

@@ -123,6 +123,8 @@ class TaskWorker:
                             capability.value for capability in default_plan.required_capabilities
                         ],
                         "source": "default_vscode_development_plan",
+                        "config_context": self.config_context,
+                        "plan": default_plan.model_dump(mode="json"),
                     },
                 )
                 self.audit.task_state_changed("worker", task_id, task.status, updated.status)

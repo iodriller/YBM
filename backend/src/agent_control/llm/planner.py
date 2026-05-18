@@ -45,6 +45,12 @@ class PlannerService:
                 "plan_id": plan.id,
                 "step_count": len(plan.steps),
                 "required_capabilities": [capability.value for capability in plan.required_capabilities],
+                "llm": {
+                    "system_prompt": PLANNER_SYSTEM_PROMPT,
+                    "user_prompt": user_prompt,
+                    "config_context": config_context,
+                },
+                "plan": plan.model_dump(mode="json"),
             },
         )
         self.audit.task_state_changed("planner", task_id, TaskStatus.INTERPRETING, updated.status)

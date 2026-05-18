@@ -136,15 +136,21 @@ def create_admin_router(
         return HTMLResponse(_ADMIN_HTML)
 
     @router.get("/api/summary")
-    def admin_summary(request: Request) -> dict[str, Any]:
+    def admin_summary(request: Request, task_limit: int = Query(default=5, ge=1, le=100)) -> dict[str, Any]:
         loaded = require_admin(request)
         repositories = repositories_loader()
-        tasks = repositories.tasks.list_recent(10)
+        tasks = repositories.tasks.list_recent(task_limit)
         audit_events = repositories.audit.list_recent(20)
         return {
             "status": "ok",
             "config": loaded.safe_summary(),
             "tasks": [task.model_dump(mode="json") for task in tasks],
+            "task_pagination": {
+                "limit": task_limit,
+                "offset": 0,
+                "total": repositories.tasks.count(),
+                "has_more": repositories.tasks.count() > task_limit,
+            },
             "audit": [format_audit_event(event).model_dump(mode="json") for event in audit_events],
             "vscode": _vscode_summary(vscode_store),
             "access_modes": {
@@ -181,11 +187,63 @@ def create_admin_router(
         }
 
     @router.get("/api/tasks")
-    def admin_tasks(request: Request, limit: int = Query(default=25, ge=1, le=100)) -> dict[str, Any]:
+    def admin_tasks(
+        request: Request,
+        limit: int = Query(default=25, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
+    ) -> dict[str, Any]:
         require_admin(request)
         repositories = repositories_loader()
-        tasks = repositories.tasks.list_recent(limit)
-        return {"tasks": [task.model_dump(mode="json") for task in tasks]}
+        total = repositories.tasks.count()
+        tasks = repositories.tasks.list_recent(limit, offset=offset)
+        return {
+            "tasks": [task.model_dump(mode="json") for task in tasks],
+            "pagination": {
+                "limit": limit,
+                "offset": offset,
+                "total": total,
+                "has_more": offset + len(tasks) < total,
+            },
+        }
+
+    @router.get("/api/tasks/{task_id}/trace")
+    def admin_task_trace(request: Request, task_id: str) -> dict[str, Any]:
+        require_admin(request)
+        repositories = repositories_loader()
+        task = repositories.tasks.get(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="task not found")
+        plan = repositories.plans.get(task.plan_id) if task.plan_id else None
+        raw_audit_events = repositories.audit.list_for_task(task_id)
+        return {
+            "task": task.model_dump(mode="json"),
+            "plan": plan.model_dump(mode="json") if plan else None,
+            "tool_invocations": repositories.tool_invocations.list_for_task(task_id),
+            "approvals": [approval.model_dump(mode="json") for approval in repositories.approvals.list_for_task(task_id)],
+            "artifacts": [artifact.model_dump(mode="json") for artifact in repositories.artifacts.list_for_task(task_id)],
+            "signals": [signal.model_dump(mode="json") for signal in repositories.task_signals.list_for_task(task_id)],
+            "audit": [format_audit_event(event).model_dump(mode="json") for event in raw_audit_events],
+            "raw_audit": [event.model_dump(mode="json") for event in raw_audit_events],
+        }
+
+    @router.delete("/api/tasks")
+    def admin_clear_tasks(
+        request: Request,
+        include_active: bool = Query(default=False),
+    ) -> dict[str, Any]:
+        loaded = require_admin(request)
+        repositories = repositories_loader()
+        deleted = repositories.tasks.clear_history(include_active=include_active)
+        AuditLogger(repositories.audit, loaded.logging.redact_patterns).append(
+            AuditEventType.CONFIG_UPDATED,
+            actor="admin",
+            payload={
+                "section": "task_history",
+                "deleted_tasks": deleted,
+                "include_active": include_active,
+            },
+        )
+        return {"deleted_tasks": deleted, "include_active": include_active}
 
     @router.get("/api/audit")
     def admin_audit(
@@ -217,6 +275,13 @@ def create_admin_router(
                 or needle in str(event.details).lower()
             ]
         return {"events": [event.model_dump(mode="json") for event in formatted[:limit]]}
+
+    @router.delete("/api/audit")
+    def admin_clear_audit(request: Request) -> dict[str, Any]:
+        require_admin(request)
+        repositories = repositories_loader()
+        deleted = repositories.audit.clear_all()
+        return {"deleted_audit_events": deleted}
 
     @router.get("/api/config/effective")
     def admin_effective_config(request: Request) -> dict[str, Any]:
@@ -689,6 +754,15 @@ _ADMIN_HTML = """
     .activity.done .activity-dot { background: var(--success); }
     .activity.bad .activity-dot { background: var(--danger); }
     .task-meta { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    .task-toolbar { margin-bottom: 12px; }
+    .task-details-row td { background: color-mix(in srgb, var(--chip) 55%, transparent); }
+    .trace-panel { display: grid; gap: 12px; padding: 8px 0; }
+    .trace-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }
+    .trace-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--panel); min-width: 0; }
+    .trace-card h3 { margin: 0 0 8px; font-size: 13px; }
+    .trace-card pre { max-height: 280px; margin: 0; }
+    .trace-step { border-left: 3px solid var(--accent); padding-left: 8px; margin: 8px 0; }
+    details.trace-details > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
     @keyframes pulse {
       0%, 100% { opacity: 0.45; }
       50% { opacity: 1; }
@@ -802,6 +876,12 @@ _ADMIN_HTML = """
     </section>
     <section class="panel wide">
       <h2>Tasks</h2>
+      <div class="task-toolbar row">
+        <span id="task-count" class="muted"></span>
+        <button id="task-more" onclick="viewMoreTasks()">View more tasks</button>
+        <button onclick="clearCompletedTasks()">Clear completed tasks</button>
+        <button onclick="clearAllTasks()">Clear all tasks</button>
+      </div>
       <div id="tasks"></div>
     </section>
     <section class="panel wide">
@@ -821,6 +901,7 @@ _ADMIN_HTML = """
         <input id="audit-query" placeholder="search audit">
         <button onclick="loadAudit(true)">Filter</button>
         <button onclick="clearAuditFilters()">Clear</button>
+        <button onclick="clearAuditHistory()">Clear audit history</button>
       </div>
       <div id="audit-count" class="muted"></div>
       <div id="audit" class="audit-list"></div>
@@ -835,6 +916,10 @@ _ADMIN_HTML = """
     const headers = token ? {"X-Agent-Control-Admin-Token": token} : {};
     let auditLimit = 20;
     let auditCustomView = false;
+    let taskLimit = 5;
+    const expandedTaskIds = new Set();
+    const expandedAuditIds = new Set();
+    const taskTraces = new Map();
 
     function jsonBlock(value) {
       return JSON.stringify(value, null, 2);
@@ -974,7 +1059,11 @@ _ADMIN_HTML = """
       return links.length ? `<div class="link-list">${links.join("")}</div>` : "";
     }
 
-    function renderTasks(tasks) {
+    function renderTasks(tasks, pagination = {}) {
+      const total = Number(pagination.total ?? tasks.length);
+      document.getElementById("task-count").textContent = `Showing ${tasks.length} of ${total} task${total === 1 ? "" : "s"}`;
+      const more = document.getElementById("task-more");
+      if (more) more.style.display = pagination.has_more ? "inline-flex" : "none";
       if (!tasks.length) {
         document.getElementById("tasks").innerHTML = "<div class='muted'>No tasks found.</div>";
         return;
@@ -985,6 +1074,7 @@ _ADMIN_HTML = """
           <tbody>${tasks.map(task => {
             const activity = activityForStatus(task.status);
             const type = (task.metadata || {}).task_type;
+            const expanded = expandedTaskIds.has(task.id);
             return `
               <tr>
               <td>
@@ -1007,11 +1097,116 @@ _ADMIN_HTML = """
                 <button ${taskActionDisabled(task, "pause") ? "disabled" : ""} onclick="taskSignal(${JSON.stringify(task.id)}, 'pause')">Pause</button>
                 <button ${taskActionDisabled(task, "resume") ? "disabled" : ""} onclick="taskSignal(${JSON.stringify(task.id)}, 'resume')">Resume</button>
                 <button ${taskActionDisabled(task, "cancel") ? "disabled" : ""} onclick="taskSignal(${JSON.stringify(task.id)}, 'cancel')">Cancel</button>
+                <button onclick="toggleTaskDetails(${JSON.stringify(task.id)})">${expanded ? "Hide details" : "Details"}</button>
               </td>
             </tr>
+            ${expanded ? `
+              <tr class="task-details-row">
+                <td colspan="4">${renderTaskTrace(task.id)}</td>
+              </tr>
+            ` : ""}
           `}).join("")}</tbody>
         </table>
       `;
+    }
+
+    function renderTaskTrace(taskId) {
+      const trace = taskTraces.get(taskId);
+      if (!trace) return `<div class="trace-panel muted">Loading full task trace...</div>`;
+      if (trace.error) return `<div class="trace-panel danger">${escapeHtml(trace.error)}</div>`;
+      const plan = trace.plan || {};
+      const steps = plan.steps || [];
+      const tools = trace.tool_invocations || [];
+      const audit = trace.audit || [];
+      return `
+        <div class="trace-panel">
+          <div class="row">
+            <button onclick="reloadTaskTrace(${JSON.stringify(taskId)})">Reload trace</button>
+            <span class="muted">Shows task metadata, plan prompts, tool request payloads, results, approvals, artifacts, signals, and audit events.</span>
+          </div>
+          <div class="trace-grid">
+            <div class="trace-card">
+              <h3>Task Context</h3>
+              <pre>${escapeHtml(jsonBlock(trace.task || {}))}</pre>
+            </div>
+            <div class="trace-card">
+              <h3>Plan</h3>
+              ${steps.length ? steps.map((step, index) => `
+                <div class="trace-step">
+                  <strong>${index + 1}. ${escapeHtml(step.title || "Step")}</strong>
+                  <div class="task-meta">tool=${escapeHtml(step.tool_name || "none")} capability=${escapeHtml((step.required_capabilities || []).join(", ") || "none")}</div>
+                  ${step.tool_input ? `<details class="trace-details"><summary>Step input / prompt</summary><pre>${escapeHtml(jsonBlock(step.tool_input))}</pre></details>` : ""}
+                </div>
+              `).join("") : `<div class="muted">No plan persisted yet.</div>`}
+              <details class="trace-details"><summary>Raw plan JSON</summary><pre>${escapeHtml(jsonBlock(plan || null))}</pre></details>
+            </div>
+          </div>
+          <div class="trace-card">
+            <h3>Tool Calls</h3>
+            ${tools.length ? tools.map((tool, index) => `
+              <details class="trace-details" open>
+                <summary>${index + 1}. ${escapeHtml(tool.tool_name)} | ${escapeHtml(tool.status)} | ${escapeHtml(tool.capability)}</summary>
+                <pre>${escapeHtml(jsonBlock({request: tool.request, result: tool.result}))}</pre>
+              </details>
+            `).join("") : `<div class="muted">No tool calls recorded yet.</div>`}
+          </div>
+          <div class="trace-grid">
+            <div class="trace-card">
+              <h3>Approvals, Signals, Artifacts</h3>
+              <pre>${escapeHtml(jsonBlock({
+                approvals: trace.approvals || [],
+                signals: trace.signals || [],
+                artifacts: trace.artifacts || []
+              }))}</pre>
+            </div>
+            <div class="trace-card">
+              <h3>Audit Timeline</h3>
+              ${audit.length ? audit.map(event => `
+                <details class="trace-details">
+                  <summary>${escapeHtml(event.formatted_time || event.created_at || "")} | ${escapeHtml(event.actor || "")} | ${escapeHtml(event.title || event.type)}</summary>
+                  <pre>${escapeHtml(jsonBlock(event.details || event))}</pre>
+                </details>
+              `).join("") : `<div class="muted">No audit events for this task.</div>`}
+            </div>
+          </div>
+          <div class="trace-card">
+            <h3>Full Raw Trace</h3>
+            <details class="trace-details">
+              <summary>Everything returned by the trace API</summary>
+              <pre>${escapeHtml(jsonBlock(trace))}</pre>
+            </details>
+          </div>
+        </div>
+      `;
+    }
+
+    async function toggleTaskDetails(taskId) {
+      if (expandedTaskIds.has(taskId)) {
+        expandedTaskIds.delete(taskId);
+        await refresh();
+        return;
+      }
+      expandedTaskIds.add(taskId);
+      await refresh();
+      if (!taskTraces.has(taskId)) {
+        try {
+          taskTraces.set(taskId, await api(`/admin/api/tasks/${encodeURIComponent(taskId)}/trace`));
+        } catch (error) {
+          taskTraces.set(taskId, {error: error.message});
+        }
+        await refresh();
+      }
+    }
+
+    async function reloadTaskTrace(taskId) {
+      taskTraces.delete(taskId);
+      await refresh();
+      try {
+        taskTraces.set(taskId, await api(`/admin/api/tasks/${encodeURIComponent(taskId)}/trace`));
+      } catch (error) {
+        taskTraces.set(taskId, {error: error.message});
+      }
+      await refresh();
     }
 
     function renderAudit(events) {
@@ -1047,7 +1242,7 @@ _ADMIN_HTML = """
                 ${event.reason ? `<span>${escapeHtml(event.reason)}</span>` : ""}
               </div>
             ` : ""}
-            <details class="audit-details">
+            <details class="audit-details" data-audit-id="${escapeHtml(event.id)}" ${expandedAuditIds.has(event.id) ? "open" : ""}>
               <summary>Details</summary>
               <pre>${escapeHtml(jsonBlock(event.details || {}))}</pre>
             </details>
@@ -1074,11 +1269,41 @@ _ADMIN_HTML = """
       await loadAudit(false);
     }
 
+    async function viewMoreTasks() {
+      taskLimit += 5;
+      await refresh();
+    }
+
     async function clearAuditFilters() {
       document.getElementById("audit-category").value = "";
       document.getElementById("audit-query").value = "";
       auditLimit = 20;
       auditCustomView = false;
+      await refresh();
+    }
+
+    async function clearCompletedTasks() {
+      if (!confirm("Clear completed, failed, blocked, and cancelled tasks plus their task-scoped audit/tool history?")) return;
+      await api("/admin/api/tasks?include_active=false", {method: "DELETE"});
+      taskLimit = 5;
+      expandedTaskIds.clear();
+      taskTraces.clear();
+      await refresh();
+    }
+
+    async function clearAllTasks() {
+      if (!confirm("Clear ALL tasks, including active tasks, plus their task-scoped audit/tool history?")) return;
+      await api("/admin/api/tasks?include_active=true", {method: "DELETE"});
+      taskLimit = 5;
+      expandedTaskIds.clear();
+      taskTraces.clear();
+      await refresh();
+    }
+
+    async function clearAuditHistory() {
+      if (!confirm("Clear all audit events? Tasks and tool records will remain.")) return;
+      await api("/admin/api/audit", {method: "DELETE"});
+      expandedAuditIds.clear();
       await refresh();
     }
 
@@ -1132,7 +1357,7 @@ _ADMIN_HTML = """
     async function refresh() {
       const status = document.getElementById("status");
       try {
-        const data = await api("/admin/api/summary");
+        const data = await api(`/admin/api/summary?task_limit=${taskLimit}`);
         status.textContent = `OK | ${data.config.identity.instance_name}`;
         renderOverview(data);
         document.getElementById("warnings").innerHTML = (data.warnings || []).map(escapeHtml).join("<br>");
@@ -1150,7 +1375,7 @@ _ADMIN_HTML = """
         document.getElementById("database").textContent = jsonBlock(data.database || {});
         populateConfigForms(data.config);
         renderAccessModes(data.access_modes || {});
-        renderTasks(data.tasks || []);
+        renderTasks(data.tasks || [], data.task_pagination || {});
         if (!auditCustomView) {
           auditLimit = 20;
           renderAudit(data.audit || []);
@@ -1321,6 +1546,15 @@ _ADMIN_HTML = """
       event.preventDefault();
       setAccessMode(button.getAttribute("data-access-mode-group"), button.getAttribute("data-mode"));
     });
+
+    document.addEventListener("toggle", event => {
+      const details = event.target;
+      if (!(details instanceof HTMLDetailsElement)) return;
+      const auditId = details.getAttribute("data-audit-id");
+      if (!auditId) return;
+      if (details.open) expandedAuditIds.add(auditId);
+      else expandedAuditIds.delete(auditId);
+    }, true);
 
     refresh();
     setInterval(refresh, 10000);
