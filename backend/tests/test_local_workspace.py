@@ -94,6 +94,58 @@ body { font-family: sans-serif; }
 
 
 @pytest.mark.asyncio
+async def test_local_workspace_strict_materialize_rejects_missing_app_files(tmp_path) -> None:
+    adapter = LocalWorkspaceAdapter(
+        WorkspaceAdapterConfig(root_dir=str(tmp_path / "workspaces"), web_port_start=8890, open_browser=False)
+    )
+    request = ToolCallRequest(
+        task_id="task_strict_materialize",
+        tool_name="workspace.manage",
+        capability=Capability.FILESYSTEM_WRITE,
+        input={
+            "operation": "materialize_static_app",
+            "objective": "Create a modern duck app",
+            "source_text": "I could not create files.",
+            "allow_fallback_template": False,
+            "require_index": True,
+        },
+        timeout_seconds=30,
+    )
+
+    result = await adapter.execute(request)
+
+    assert result.status == ToolResultStatus.FAILED
+    assert "materializable static app files" in (result.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_local_workspace_strict_materialize_requires_index(tmp_path) -> None:
+    adapter = LocalWorkspaceAdapter(
+        WorkspaceAdapterConfig(root_dir=str(tmp_path / "workspaces"), web_port_start=8890, open_browser=False)
+    )
+    request = ToolCallRequest(
+        task_id="task_missing_index",
+        tool_name="workspace.manage",
+        capability=Capability.FILESYSTEM_WRITE,
+        input={
+            "operation": "materialize_static_app",
+            "objective": "Create a modern duck app",
+            "source_text": """```css filename=styles.css
+body { color: teal; }
+```""",
+            "allow_fallback_template": False,
+            "require_index": True,
+        },
+        timeout_seconds=30,
+    )
+
+    result = await adapter.execute(request)
+
+    assert result.status == ToolResultStatus.FAILED
+    assert "index.html" in (result.error_message or "")
+
+
+@pytest.mark.asyncio
 async def test_adapter_factory_scaffolds_cached_adapter(tmp_path) -> None:
     adapter = AdapterFactoryAdapter(AdapterFactoryConfig(root_dir=str(tmp_path / "adapters")))
     request = ToolCallRequest(

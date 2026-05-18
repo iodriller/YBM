@@ -11,6 +11,7 @@ That command:
 - starts `C:\for fun\LocalDeploy\api_server.py` if the local LLM API is not already listening on `127.0.0.1:8000`
 - initializes `agent_control.db`
 - starts the FastAPI backend on `127.0.0.1:8765`
+- starts the Streamlit admin UI on `127.0.0.1:8501`
 - starts Telegram polling
 - starts the task worker
 - uses `.agent_control/workspaces` as the default generated-file workspace
@@ -18,8 +19,10 @@ That command:
 Open the admin UI:
 
 ```text
-http://127.0.0.1:8765/admin
+http://127.0.0.1:8501
 ```
+
+The legacy FastAPI admin page is still available at `http://127.0.0.1:8765/admin`.
 
 Stop the YBM processes started by the stack script:
 
@@ -53,6 +56,8 @@ Configuration rule:
 - Put normal runtime settings in `config/config.yaml`.
 - Put only secrets in `.env`.
 - The admin UI follows that rule: non-secret settings are saved to YAML, and token/key fields are saved to `.env` only when you provide a replacement secret.
+
+The Streamlit UI uses the same `/admin/api/*` backend endpoints as the legacy page. It improves the operator experience with tabs for operations, tasks, configuration, audit, and diagnostics; task trace expanders; structured tables; and safer form submissions while keeping the backend behavior unchanged.
 
 The admin LLM panel has two presets:
 
@@ -172,6 +177,7 @@ The worker now validates obvious action postconditions. For app requests that as
 .\scripts\run_tests.ps1
 Invoke-RestMethod http://127.0.0.1:8765/health
 Invoke-RestMethod http://127.0.0.1:8000/health
+.\scripts\run_admin_ui.ps1
 ```
 
 Logs from the one-command stack are written under:
@@ -186,6 +192,8 @@ Logs from the one-command stack are written under:
 - Direct Telegram LLM answers: `backend/src/agent_control/channels/responder.py`
 - Conversation memory: `backend/src/agent_control/channels/memory.py`
 - Telegram task completion messages: `backend/src/agent_control/channels/telegram_notifications.py`
+- Streamlit admin UI: `backend/src/agent_control/admin_streamlit.py`
+- FastAPI admin API and legacy page: `backend/src/agent_control/admin.py`
 - Worker pickup loop: `backend/src/agent_control/orchestration/worker.py`
 - Default VS Code development plan: `backend/src/agent_control/orchestration/default_plans.py`
 - Tool registry: `backend/src/agent_control/tools/registry.py`

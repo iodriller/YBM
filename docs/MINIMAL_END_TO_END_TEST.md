@@ -32,8 +32,10 @@ TELEGRAM_BOT_TOKEN=your_bot_token_here
 Open:
 
 ```text
-http://127.0.0.1:8765/admin
+http://127.0.0.1:8501
 ```
+
+The legacy FastAPI admin page remains available at `http://127.0.0.1:8765/admin`.
 
 ## 3. Confirm The Local Orchestrator LLM
 

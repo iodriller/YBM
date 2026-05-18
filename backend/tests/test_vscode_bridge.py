@@ -7,7 +7,7 @@ from agent_control.tools.vscode_bridge import _extract_copilot_usage
 
 
 def test_vscode_bridge_updates_and_reads_state(monkeypatch) -> None:
-    monkeypatch.delenv("VSCODE_BRIDGE_TOKEN", raising=False)
+    monkeypatch.setenv("AGENT_ADAPTERS__VSCODE__AUTH_TOKEN_ENV", "__TEST_NO_VSCODE_TOKEN__")
     vscode_store.state = None
     client = TestClient(app)
 
@@ -38,7 +38,7 @@ def test_vscode_bridge_rejects_missing_token(monkeypatch) -> None:
 
 
 def test_vscode_terminal_command_queue(monkeypatch) -> None:
-    monkeypatch.delenv("VSCODE_BRIDGE_TOKEN", raising=False)
+    monkeypatch.setenv("AGENT_ADAPTERS__VSCODE__AUTH_TOKEN_ENV", "__TEST_NO_VSCODE_TOKEN__")
     vscode_store.terminal_commands = []
     client = TestClient(app)
 
@@ -57,7 +57,7 @@ def test_vscode_terminal_command_queue(monkeypatch) -> None:
 
 
 def test_vscode_terminal_output_can_be_filtered_by_command(monkeypatch) -> None:
-    monkeypatch.delenv("VSCODE_BRIDGE_TOKEN", raising=False)
+    monkeypatch.setenv("AGENT_ADAPTERS__VSCODE__AUTH_TOKEN_ENV", "__TEST_NO_VSCODE_TOKEN__")
     vscode_store.terminal_outputs = []
     client = TestClient(app)
 

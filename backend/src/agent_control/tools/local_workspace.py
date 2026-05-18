@@ -103,6 +103,8 @@ class LocalWorkspaceAdapter:
         prepared = self._prepare(request)
         workspace_dir = Path(prepared["workspace_dir"])
         overwrite = bool(request.input.get("overwrite", False))
+        allow_fallback_template = bool(request.input.get("allow_fallback_template", True))
+        require_index = bool(request.input.get("require_index", False))
         source_text = str(request.input.get("source_text") or request.input.get("assistant_output") or "").strip()
         objective = str(request.input.get("objective") or request.input.get("prompt") or "").strip()
 
@@ -117,6 +119,8 @@ class LocalWorkspaceAdapter:
 
         files = []
         if parsed_files:
+            if require_index and not _has_index_html(parsed_files):
+                raise ValueError("assistant output did not include an index.html file")
             for relative_path, content in parsed_files.items():
                 target = _safe_child_path(workspace_dir, relative_path)
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -127,6 +131,8 @@ class LocalWorkspaceAdapter:
                 files.append(str(target))
             materialized_from = "assistant_output"
         else:
+            if not allow_fallback_template:
+                raise ValueError("assistant output did not include materializable static app files")
             title = _title_from_objective(objective)
             target = workspace_dir / "index.html"
             target.write_text(_web_app_html(request.task_id, title, objective), encoding="utf-8")
@@ -254,6 +260,10 @@ def _safe_relative_file(value: str) -> str | None:
     if not normalized or ".." in Path(normalized).parts:
         return None
     return normalized
+
+
+def _has_index_html(files: dict[str, str]) -> bool:
+    return any(path.replace("\\", "/").lower().endswith("index.html") for path in files)
 
 
 def _title_from_objective(objective: str) -> str:

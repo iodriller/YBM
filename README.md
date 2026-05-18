@@ -25,7 +25,8 @@ Implemented:
 - Retry policy with durable retry metadata
 - Windows setup scripts and local setup documentation
 - Basic FastAPI health endpoint
-- Built-in FastAPI admin UI for safe config summary, task monitoring, audit logs, VS Code bridge state, and gated task controls
+- Streamlit admin UI backed by FastAPI admin APIs for task monitoring, traces, config, audit, VS Code bridge state, and gated controls
+- Legacy FastAPI admin page retained as a fallback
 - Admin configuration writes for Telegram and the default OpenAI-compatible orchestrator LLM profile
 - LLM-based Telegram task classification with readable audit events
 - Admin audit filters, capability access modes, and database summary
@@ -48,11 +49,13 @@ Start the whole local stack:
 .\scripts\start_stack.ps1
 ```
 
-This initializes SQLite, starts LocalDeploy if needed, starts the backend, starts Telegram polling, and starts the worker. Open:
+This initializes SQLite, starts LocalDeploy if needed, starts the backend, starts Telegram polling, starts the worker, and launches the Streamlit admin UI. Open:
 
 ```text
-http://127.0.0.1:8765/admin
+http://127.0.0.1:8501
 ```
+
+The legacy FastAPI admin page remains available at `http://127.0.0.1:8765/admin`.
 
 Stop the YBM background processes started by the stack script:
 
@@ -88,8 +91,10 @@ pytest backend/tests
 If `AGENT_ADMIN_TOKEN` is set, open:
 
 ```text
-http://127.0.0.1:8765/admin?token=<token>
+http://127.0.0.1:8501
 ```
+
+The Streamlit UI reads `AGENT_ADMIN_TOKEN` from `.env` and also has a sidebar token field.
 
 Getting started docs:
 
@@ -97,7 +102,7 @@ Getting started docs:
 - [Minimal end-to-end test](docs/MINIMAL_END_TO_END_TEST.md)
 - [Database inspection](docs/DATABASE_INSPECTION.md)
 
-Lower-level scripts still exist for debugging: `init_db.ps1`, `run_backend.ps1`, `run_telegram_polling.ps1`, and `run_worker.ps1`.
+Lower-level scripts still exist for debugging: `init_db.ps1`, `run_backend.ps1`, `run_admin_ui.ps1`, `run_telegram_polling.ps1`, and `run_worker.ps1`.
 
 Flow docs:
 

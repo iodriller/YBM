@@ -28,7 +28,15 @@ Safe defaults keep terminal execution, filesystem access, VS Code access, deskto
 .\scripts\start_stack.ps1
 ```
 
-This initializes the database and starts LocalDeploy, backend, Telegram polling, and worker. Generated task workspaces default to `.agent_control/workspaces/task_<id>`.
+This initializes the database and starts LocalDeploy, backend, Streamlit admin UI, Telegram polling, and worker. Generated task workspaces default to `.agent_control/workspaces/task_<id>`.
+
+Open the admin UI:
+
+```text
+http://127.0.0.1:8501
+```
+
+The legacy FastAPI admin page remains available at `http://127.0.0.1:8765/admin`.
 
 Launchable app requests use Copilot first when VS Code write access is enabled, then the workspace adapter serves the result locally. Generated adapter proposals, when requested, are cached under `.agent_control/adapters` and are not loaded into runtime automatically.
 
@@ -60,6 +68,12 @@ Backend health check:
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8765/health
+```
+
+Run Streamlit admin UI:
+
+```powershell
+.\scripts\run_admin_ui.ps1
 ```
 
 Run Telegram polling:

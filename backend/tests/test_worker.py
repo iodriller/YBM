@@ -525,6 +525,9 @@ async def test_worker_launchable_app_request_uses_copilot_then_workspace_preview
     assert operations == ["prepare", "materialize_static_app", "launch_static"]
     assert vscode_adapter.requests[0].tool_name == "vscode.copilot_terminal"
     assert vscode_adapter.requests[0].input["cwd"].endswith(task.id)
+    assert workspace_adapter.requests[1].input["allow_fallback_template"] is False
+    assert workspace_adapter.requests[1].input["require_index"] is True
+    assert workspace_adapter.requests[2].input["ensure_index"] is False
     assert "Modern Ferrets" in workspace_adapter.requests[1].input["source_text"]
     assert "Modern Ferrets" in (workspace / "index.html").read_text(encoding="utf-8")
     assert latest.metadata["preview_url"].startswith("http://127.0.0.1:")

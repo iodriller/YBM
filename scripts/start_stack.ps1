@@ -1,6 +1,7 @@
 param(
   [switch]$NoTelegram,
-  [switch]$NoWorker
+  [switch]$NoWorker,
+  [switch]$NoAdminUi
 )
 
 $ErrorActionPreference = "Stop"
@@ -82,6 +83,11 @@ if (-not $NoWorker) {
   Start-StackScript -Name "worker" -ScriptPath "$Root\scripts\run_worker.ps1"
 }
 
+if (-not $NoAdminUi) {
+  Start-StackScript -Name "admin_ui" -ScriptPath "$Root\scripts\run_admin_ui.ps1"
+}
+
 Write-Host ""
-Write-Host "Admin UI: http://127.0.0.1:8765/admin"
+Write-Host "Admin UI: http://127.0.0.1:8501"
+Write-Host "Legacy FastAPI admin: http://127.0.0.1:8765/admin"
 Write-Host "Logs: $LogDir"
