@@ -262,29 +262,55 @@ def _build_browser_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | 
 
     if _looks_like_browser_control_request(objective) and control_enabled and control_policy is not None:
         operation, tool_input = _browser_control_input(objective)
+        tool_input = {"operation": operation, **tool_input}
+        url = _first_url_from_text(objective)
+        steps: list[PlanStep] = []
+        required_capabilities = [Capability.BROWSER_CONTROL]
+        if url and open_enabled and open_policy is not None:
+            required_capabilities.insert(0, Capability.BROWSER_OPEN)
+            steps.append(
+                PlanStep(
+                    title="Open requested page in Chrome",
+                    description="Open the requested URL before applying the browser control action.",
+                    required_capabilities=[Capability.BROWSER_OPEN],
+                    risk_level=RiskLevel.LOW,
+                    requires_approval=open_policy.requires_approval,
+                    tool_name="browser.open",
+                    tool_input={
+                        "operation": "open",
+                        "url": url,
+                        "new_tab": True,
+                        "timeout_seconds": 60,
+                    },
+                    expected_output="Requested page is open in a DevTools-controlled Chrome tab.",
+                )
+            )
+            if "tab_id" not in tool_input and "url_contains" not in tool_input and "title_contains" not in tool_input:
+                tool_input["url_contains"] = url
+        steps.append(
+            PlanStep(
+                title="Control Chrome through browser adapter",
+                description="Use the Chrome DevTools browser adapter for the requested browser control action.",
+                required_capabilities=[Capability.BROWSER_CONTROL],
+                risk_level=RiskLevel.CRITICAL,
+                requires_approval=control_policy.requires_approval,
+                tool_name="browser.control",
+                tool_input={
+                    **tool_input,
+                    "objective": objective,
+                    "timeout_seconds": 60,
+                },
+                expected_output="Updated browser state and a concise result summary.",
+            )
+        )
         return PlanModel(
             objective=task.objective,
             assumptions=[
                 "The request asks for an explicit browser control action.",
                 "Only Chrome tabs exposed through the configured DevTools remote debugging port can be controlled.",
             ],
-            required_capabilities=[Capability.BROWSER_CONTROL],
-            steps=[
-                PlanStep(
-                    title="Control Chrome through browser adapter",
-                    description="Use the Chrome DevTools browser adapter for the requested browser control action.",
-                    required_capabilities=[Capability.BROWSER_CONTROL],
-                    risk_level=RiskLevel.CRITICAL,
-                    requires_approval=control_policy.requires_approval,
-                    tool_name="browser.control",
-                    tool_input={
-                        **tool_input,
-                        "objective": objective,
-                        "timeout_seconds": 60,
-                    },
-                    expected_output="Updated browser state and a concise result summary.",
-                )
-            ],
+            required_capabilities=required_capabilities,
+            steps=steps,
             success_criteria=["The requested Chrome control action is performed or a clear adapter error is reported."],
             postconditions=_browser_postconditions(),
         )
@@ -333,6 +359,9 @@ def _build_computer_use_plan(settings: AppSettings, task: TaskRecord) -> PlanMod
 
     objective = task.objective.strip()
     operation = "observe" if _looks_like_observation_only(objective) else "run_goal"
+    action = _deterministic_computer_action(objective)
+    if action is not None:
+        operation = "act"
     tool_input = (
         {
             "operation": "observe",
@@ -343,6 +372,13 @@ def _build_computer_use_plan(settings: AppSettings, task: TaskRecord) -> PlanMod
             "timeout_seconds": 60,
         }
         if operation == "observe"
+        else {
+            "operation": "act",
+            "objective": objective,
+            "action": action,
+            "timeout_seconds": 60,
+        }
+        if operation == "act"
         else {
             "operation": "run_goal",
             "objective": objective,
@@ -624,6 +660,18 @@ def _looks_like_computer_use_request(objective: str) -> bool:
 def _looks_like_observation_only(objective: str) -> bool:
     lowered = objective.lower()
     return any(marker in lowered for marker in ("what do you see", "take a screenshot", "screenshot", "observe", "look at my screen"))
+
+
+def _deterministic_computer_action(objective: str) -> dict[str, object] | None:
+    lowered = objective.lower()
+    path = _path_from_objective(objective)
+    if path and any(marker in lowered for marker in ("open this folder", "open folder", "open path", "open file")):
+        return {"type": "open_path", "path": path}
+    if "wait" in lowered:
+        seconds_match = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:second|seconds|sec|secs)\b", lowered)
+        seconds = float(seconds_match.group(1)) if seconds_match else 1.0
+        return {"type": "wait", "seconds": min(max(seconds, 0.0), 30.0)}
+    return None
 
 
 def _looks_like_filesystem_manage_request(objective: str) -> bool:

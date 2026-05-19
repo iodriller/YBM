@@ -4,6 +4,7 @@ import json
 import base64
 import mimetypes
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Protocol, TypeVar
 
 import httpx
@@ -80,16 +81,18 @@ class OpenAICompatibleProvider:
         }
         if self.profile.context_limit is not None:
             payload["context_limit"] = self.profile.context_limit
+        if _looks_like_localdeploy(self.profile):
+            payload["allow_clamp"] = True
         if response_format:
             payload["response_format"] = response_format
 
         async with httpx.AsyncClient(timeout=self.profile.timeout_seconds) as client:
-            response = await client.post(
-                f"{self.profile.base_url.rstrip('/')}/chat/completions",
-                headers=headers,
-                json=payload,
-            )
-            response.raise_for_status()
+            url = f"{self.profile.base_url.rstrip('/')}/chat/completions"
+            response = await client.post(url, headers=headers, json=payload)
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise ValueError(_http_error_detail(exc.response)) from exc
             return dict(response.json())
 
     def _api_key(self) -> str | None:
@@ -132,3 +135,32 @@ def _data_url(path: str) -> str:
     mime_type = mimetypes.guess_type(file_path.name)[0] or "image/png"
     encoded = base64.b64encode(file_path.read_bytes()).decode("ascii")
     return f"data:{mime_type};base64,{encoded}"
+
+
+def _looks_like_localdeploy(profile: LLMProfileConfig) -> bool:
+    base_url = profile.base_url or ""
+    model = profile.model.lower()
+    try:
+        parsed = urlparse(base_url)
+    except Exception:
+        return False
+    hostname = (parsed.hostname or "").lower()
+    return (
+        hostname in {"127.0.0.1", "localhost", "::1"}
+        and parsed.port == 8000
+        and (model.startswith("gemma3_") or "localdeploy" in model or "ollama_safe" in model)
+    )
+
+
+def _http_error_detail(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        text = response.text.strip()
+    else:
+        error = payload.get("error") if isinstance(payload, dict) else None
+        if isinstance(error, dict):
+            text = str(error.get("message") or payload)
+        else:
+            text = str(payload)
+    return f"LLM request failed with HTTP {response.status_code} at {response.url}: {text}"

@@ -33,6 +33,60 @@ function Test-Pid {
   return $null -ne (Get-Process -Id ([int]$processId) -ErrorAction SilentlyContinue)
 }
 
+function Stop-ProcessTree {
+  param([int]$ProcessId)
+  $children = Get-CimInstance Win32_Process -Filter "ParentProcessId = $ProcessId" -ErrorAction SilentlyContinue
+  foreach ($child in $children) {
+    Stop-ProcessTree -ProcessId ([int]$child.ProcessId)
+  }
+  $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+  if ($process) {
+    Stop-Process -Id $ProcessId -Force
+  }
+}
+
+function Stop-OrphanProcessesForName {
+  param([string]$Name)
+  $pidFile = Join-Path $RunDir "$Name.pid"
+  if (Test-Pid $pidFile) {
+    return
+  }
+
+  $patterns = switch ($Name) {
+    "backend" { @("run_backend.ps1", "uvicorn agent_control.main:app") }
+    "worker" { @("run_worker.ps1", "agent_control.cli run-worker") }
+    "telegram_polling" { @("run_telegram_polling.ps1", "agent_control.cli poll-telegram") }
+    "admin_ui" { @("run_admin_ui.ps1", "admin_streamlit.py") }
+    default { @() }
+  }
+  if (-not $patterns) {
+    return
+  }
+
+  $rootPath = $Root.Path
+  $candidates = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+    $commandLine = $_.CommandLine
+    if (-not $commandLine) {
+      return $false
+    }
+    foreach ($pattern in $patterns) {
+      $matchesPattern = $commandLine -like "*$pattern*"
+      $isCliWorker = $pattern -like "agent_control.cli*"
+      if ($matchesPattern -and ($isCliWorker -or $commandLine -like "*$rootPath*")) {
+        return $true
+      }
+    }
+    return $false
+  }
+  foreach ($candidate in $candidates) {
+    $process = Get-Process -Id ([int]$candidate.ProcessId) -ErrorAction SilentlyContinue
+    if ($process) {
+      Stop-ProcessTree -ProcessId $process.Id
+      Write-Host "Stopped orphan $Name process (pid $($process.Id))"
+    }
+  }
+}
+
 function Start-StackScript {
   param(
     [string]$Name,
@@ -69,6 +123,7 @@ function Start-StackScript {
 & "$Root\scripts\start_localdeploy.ps1"
 & "$Root\scripts\init_db.ps1"
 
+Stop-OrphanProcessesForName -Name "backend"
 if (Test-HttpOk "http://127.0.0.1:8765/health") {
   Write-Host "backend already running at http://127.0.0.1:8765"
 } else {
@@ -83,14 +138,17 @@ if (Test-HttpOk "http://127.0.0.1:8765/health") {
 }
 
 if (-not $NoTelegram) {
+  Stop-OrphanProcessesForName -Name "telegram_polling"
   Start-StackScript -Name "telegram_polling" -ScriptPath "$Root\scripts\run_telegram_polling.ps1" -Supervise
 }
 
 if (-not $NoWorker) {
+  Stop-OrphanProcessesForName -Name "worker"
   Start-StackScript -Name "worker" -ScriptPath "$Root\scripts\run_worker.ps1" -Supervise
 }
 
 if (-not $NoAdminUi) {
+  Stop-OrphanProcessesForName -Name "admin_ui"
   if (Test-HttpOk "http://127.0.0.1:8501") {
     Write-Host "admin_ui already running at http://127.0.0.1:8501"
   } else {

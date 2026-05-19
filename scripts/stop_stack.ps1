@@ -15,24 +15,36 @@ function Stop-ProcessTree {
   }
 }
 
-function Stop-AdminUiOrphans {
+function Stop-StackOrphans {
   $rootPath = (Resolve-Path "$PSScriptRoot\..").Path
   $candidates = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-    $_.CommandLine -and
-    $_.CommandLine -like "*admin_streamlit.py*" -and
-    $_.CommandLine -like "*$rootPath*"
+    $commandLine = $_.CommandLine
+    if (-not $commandLine) {
+      return $false
+    }
+    if ($commandLine -like "*agent_control.cli poll-telegram*" -or $commandLine -like "*agent_control.cli run-worker*") {
+      return $true
+    }
+    $commandLine -like "*$rootPath*" -and (
+      $commandLine -like "*admin_streamlit.py*" -or
+      $commandLine -like "*run_admin_ui.ps1*" -or
+      $commandLine -like "*run_backend.ps1*" -or
+      $commandLine -like "*run_telegram_polling.ps1*" -or
+      $commandLine -like "*run_worker.ps1*" -or
+      $commandLine -like "*uvicorn agent_control.main:app*"
+    )
   }
   foreach ($candidate in $candidates) {
     $process = Get-Process -Id ([int]$candidate.ProcessId) -ErrorAction SilentlyContinue
     if ($process) {
       Stop-ProcessTree -ProcessId $process.Id
-      Write-Host "Stopped admin_ui streamlit process (pid $($process.Id))"
+      Write-Host "Stopped orphan stack process (pid $($process.Id))"
     }
   }
 }
 
 if (-not (Test-Path -LiteralPath $RunDir)) {
-  Stop-AdminUiOrphans
+  Stop-StackOrphans
   Write-Host "No stack pid directory found."
   return
 }
@@ -50,4 +62,4 @@ foreach ($pidFile in Get-ChildItem -LiteralPath $RunDir -Filter "*.pid") {
   Remove-Item -LiteralPath $pidFile.FullName -Force
 }
 
-Stop-AdminUiOrphans
+Stop-StackOrphans

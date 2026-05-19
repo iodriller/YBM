@@ -338,7 +338,6 @@ class TaskWorker:
                 metadata["last_copilot_usage"] = usage
         for metadata_key, output_key in (
             ("workspace_dir", "workspace_dir"),
-            ("preview_url", "url"),
             ("server_pid", "server_pid"),
             ("adapter_dir", "adapter_dir"),
             ("adapter_name", "adapter_name"),
@@ -354,6 +353,10 @@ class TaskWorker:
         ):
             if output.get(output_key):
                 metadata[metadata_key] = output[output_key]
+        if output.get("preview_url"):
+            metadata["preview_url"] = output["preview_url"]
+        elif tool_name == "workspace.manage" and output.get("url"):
+            metadata["preview_url"] = output["url"]
         return self.repositories.tasks.update_metadata(task_id, metadata)
 
     @staticmethod

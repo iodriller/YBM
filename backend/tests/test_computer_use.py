@@ -12,6 +12,7 @@ from agent_control.policy import PolicyEngine
 from agent_control.schemas import Capability, RiskLevel, TaskRecord, ToolCallRequest
 from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.tools.computer_use import ComputerUseAdapter
+from agent_control.tools.computer_use import _clean_summary_text
 from agent_control.tools.registry import build_tool_registry
 
 
@@ -238,12 +239,24 @@ def test_default_plans_route_desktop_and_folder_requests(tmp_path) -> None:
     )
 
     screenshot_plan = build_default_task_plan(settings, TaskRecord(objective="Take a screenshot and tell me what you see"))
+    wait_plan = build_default_task_plan(settings, TaskRecord(objective="Use computer to wait 1 second"))
     organize_plan = build_default_task_plan(settings, TaskRecord(objective=f'Organize folder "{tmp_path}" by type'))
 
     assert screenshot_plan is not None
     assert screenshot_plan.steps[0].tool_name == "computer.use"
     assert screenshot_plan.steps[0].tool_input["operation"] == "observe"
+    assert wait_plan is not None
+    assert wait_plan.steps[0].tool_name == "computer.use"
+    assert wait_plan.steps[0].tool_input["operation"] == "act"
+    assert wait_plan.steps[0].tool_input["action"] == {"type": "wait", "seconds": 1.0}
     assert organize_plan is not None
     assert [step.tool_name for step in organize_plan.steps] == ["filesystem.manage", "filesystem.manage"]
     assert organize_plan.steps[0].tool_input["operation"] == "organize_plan"
     assert organize_plan.steps[1].tool_input["manifest"] == "{{last_manifest}}"
+
+
+def test_computer_use_summary_cleanup_handles_fenced_json() -> None:
+    assert (
+        _clean_summary_text('```json\n{"status":"complete","description":"Desktop is visible."}\n```')
+        == "Desktop is visible."
+    )

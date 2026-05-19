@@ -153,7 +153,7 @@ class ComputerUseAdapter:
         if not _has_multimodal_provider(self.provider) or not observation.get("screenshot_path"):
             return fallback
         try:
-            return await self.provider.generate_multimodal_text(
+            text = await self.provider.generate_multimodal_text(
                 prompt_text("base/computer_use_system.md"),
                 render_prompt(
                     "tasks/computer_use_observe.md",
@@ -162,6 +162,7 @@ class ComputerUseAdapter:
                 ),
                 [str(observation["screenshot_path"])],
             )
+            return _clean_summary_text(text)
         except Exception as exc:
             return f"{fallback}\nVision summary unavailable: {exc}"
 
@@ -449,6 +450,23 @@ def _parse_json_object(text: str) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ValueError("computer-use decision JSON must be an object")
     return parsed
+
+
+def _clean_summary_text(text: str) -> str:
+    stripped = text.strip()
+    fenced = re.fullmatch(r"```(?:json|text)?\s*(.*?)\s*```", stripped, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        stripped = fenced.group(1).strip()
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        return stripped
+    if isinstance(payload, dict):
+        for key in ("summary", "description", "text", "message"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return stripped
 
 
 def _json_compact(value: Any) -> str:

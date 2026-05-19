@@ -60,6 +60,35 @@ def test_default_browser_plan_uses_browser_registry_tool() -> None:
     assert plan.steps[0].tool_input["open_first_result"] is True
 
 
+def test_default_browser_control_plan_opens_url_before_clicking() -> None:
+    settings = AppSettings(
+        _env_file=None,
+        adapters={"browser": {"enabled": True}},
+        capabilities={
+            Capability.BROWSER_OPEN: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.LOW,
+            ),
+            Capability.BROWSER_CONTROL: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.CRITICAL,
+            ),
+        },
+    )
+    task = TaskRecord(objective='Open https://example.com and click "Learn more"')
+
+    plan = build_default_task_plan(settings, task)
+
+    assert plan is not None
+    assert [step.tool_name for step in plan.steps] == ["browser.open", "browser.control"]
+    assert plan.steps[0].tool_input["url"] == "https://example.com"
+    assert plan.steps[1].tool_input["operation"] == "click"
+    assert plan.steps[1].tool_input["text"] == "Learn more"
+    assert plan.steps[1].tool_input["url_contains"] == "https://example.com"
+
+
 @pytest.mark.asyncio
 async def test_browser_adapter_research_uses_chrome_client(monkeypatch) -> None:
     class FakeClient:

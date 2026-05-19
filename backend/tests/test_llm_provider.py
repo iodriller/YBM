@@ -56,3 +56,43 @@ async def test_openai_compatible_provider_sends_multimodal_image_payload(monkeyp
     assert user_content[0] == {"type": "text", "text": "describe"}
     assert user_content[1]["type"] == "image_url"
     assert user_content[1]["image_url"]["url"] == "data:image/png;base64," + base64.b64encode(b"fake-image").decode("ascii")
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_provider_allows_localdeploy_clamping(monkeypatch) -> None:
+    profile = LLMProfileConfig(
+        model="gemma3_4b_ollama_safe",
+        base_url="http://127.0.0.1:8000/v1",
+        max_tokens=4096,
+    )
+    provider = OpenAICompatibleProvider(profile)
+    captured: dict = {}
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+    class FakeAsyncClient:
+        def __init__(self, timeout: int) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def post(self, url: str, *, headers: dict, json: dict):
+            captured["payload"] = json
+            return FakeResponse()
+
+    monkeypatch.setattr("agent_control.llm.providers.httpx.AsyncClient", FakeAsyncClient)
+
+    result = await provider.generate_text("system", "user")
+
+    assert result == "ok"
+    assert captured["payload"]["max_tokens"] == 4096
+    assert captured["payload"]["allow_clamp"] is True

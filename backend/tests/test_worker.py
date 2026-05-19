@@ -188,6 +188,61 @@ class RecordingAdapter:
 
 
 @pytest.mark.asyncio
+async def test_worker_does_not_treat_browser_url_as_preview_url(tmp_path) -> None:
+    repos, audit = _repos(tmp_path)
+    task = repos.tasks.create("Open a page")
+    plan = repos.plans.create(
+        task.id,
+        PlanModel(
+            objective=task.objective,
+            steps=[
+                PlanStep(
+                    title="Open browser",
+                    description="Open a browser page.",
+                    required_capabilities=[Capability.BROWSER_OPEN],
+                    risk_level=RiskLevel.LOW,
+                    tool_name="browser.open",
+                )
+            ],
+            postconditions=[
+                PlanPostcondition(
+                    type=PostconditionType.BROWSER_STATE,
+                    description="Browser state is reported.",
+                )
+            ],
+        ),
+    )
+    repos.tasks.attach_plan(task.id, plan.id)
+    settings = AppSettings(
+        _env_file=None,
+        capabilities={
+            Capability.BROWSER_OPEN: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.LOW,
+            )
+        },
+    )
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"browser.open": StaticToolAdapter({"url": "https://example.com", "browser_url": "https://example.com"})},
+    )
+    worker = TaskWorker(repos, audit, executor=executor)
+
+    latest = task
+    for _ in range(3):
+        latest = await worker.process_task(task.id)
+        if latest.status == TaskStatus.COMPLETED:
+            break
+
+    assert latest.status == TaskStatus.COMPLETED
+    assert latest.metadata["browser_url"] == "https://example.com"
+    assert "preview_url" not in latest.metadata
+
+
+@pytest.mark.asyncio
 async def test_worker_marks_retrying_for_transient_failure(tmp_path) -> None:
     repos, audit = _repos(tmp_path)
     task = repos.tasks.create("Run retry step")
