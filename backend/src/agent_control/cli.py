@@ -19,9 +19,10 @@ from agent_control.llm import LLMMessageClassifier, build_default_llm_provider
 from agent_control.llm.planner import PlannerService
 from agent_control.observation import ArtifactService, ScreenshotService
 from agent_control.orchestration import TaskWorker, ToolExecutor
-from agent_control.orchestration.default_plans import build_default_vscode_development_plan
+from agent_control.orchestration.default_plans import build_default_task_plan
 from agent_control.policy import PolicyEngine
 from agent_control.recovery import RetryPolicy
+from agent_control.schemas import TaskStatus
 from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.tools.registry import build_tool_registry
 
@@ -75,7 +76,12 @@ async def run_worker() -> None:
     repositories, audit = build_repositories()
     provider = build_default_llm_provider(settings)
     policy = PolicyEngine(settings, audit)
-    registry = build_tool_registry(settings, _backend_base_url(settings))
+    registry = build_tool_registry(
+        settings,
+        _backend_base_url(settings),
+        provider=provider,
+        should_continue=lambda task_id: _task_allows_tool_continue(repositories, task_id),
+    )
     planner = PlannerService(provider, repositories, audit, plan_validator=registry.validate_plan) if provider else None
     executor = ToolExecutor(
         policy,
@@ -91,7 +97,7 @@ async def run_worker() -> None:
         executor=executor,
         retry_policy=RetryPolicy(settings.limits),
         config_context=_worker_config_context(registry),
-        default_plan_factory=lambda task: build_default_vscode_development_plan(settings, task),
+        default_plan_factory=lambda task: build_default_task_plan(settings, task),
         notification_sink=_telegram_notifier(settings),
     )
     await worker.run_forever()
@@ -104,6 +110,13 @@ def _telegram_notifier(settings) -> TelegramTaskNotifier | None:
         return TelegramTaskNotifier(TelegramBotApi(load_telegram_token(settings.channels.telegram)))
     except RuntimeError:
         return None
+
+
+def _task_allows_tool_continue(repositories: Repositories, task_id: str) -> bool:
+    task = repositories.tasks.get(task_id)
+    if task is None:
+        return False
+    return task.status not in {TaskStatus.PAUSED, TaskStatus.CANCELLED}
 
 
 def _screenshot_service(settings, repositories: Repositories) -> ScreenshotService | None:

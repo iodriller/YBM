@@ -112,6 +112,32 @@ def heuristic_classification(message: InboundMessage) -> MessageClassification:
             reason="capability or help question",
         )
 
+    browser_markers = (
+        "open browser",
+        "open chrome",
+        "search ",
+        "google ",
+        "bing ",
+        "go to ",
+        "open http",
+        "open www.",
+        "take a screenshot",
+        "screen shot",
+        "what tabs",
+        "current tabs",
+        "close tab",
+        "fill the form",
+        "click ",
+    )
+    if any(marker in lowered for marker in browser_markers):
+        return MessageClassification(
+            is_task=True,
+            task_type=TaskType.OTHER,
+            normalized_objective=text,
+            confidence=0.7,
+            reason="heuristic browser action request",
+        )
+
     task_markers = (
         "build",
         "create",

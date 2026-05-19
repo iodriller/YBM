@@ -142,6 +142,18 @@ adapters:
     web_host: "127.0.0.1"
     web_port_start: 8890
     open_browser: true
+  browser:
+    enabled: true
+    host: "127.0.0.1"
+    remote_debugging_port: 9222
+    chrome_path: null
+    user_data_dir: ".agent_control/browser/chrome-profile"
+    screenshot_dir: ".agent_control/browser/screenshots"
+    launch_if_missing: true
+    startup_timeout_seconds: 10
+    default_wait_seconds: 1.5
+    max_summary_chars: 6000
+    search_url_template: "https://www.bing.com/search?q={query}"
   adapter_factory:
     enabled: true
     root_dir: ".agent_control/adapters"
@@ -169,6 +181,16 @@ adapters:
     control_enabled: false
     screenshot_interval_seconds: 10
     screenshot_format: "png"
+  computer_use:
+    enabled: false
+    max_steps: 8
+    step_delay_seconds: 0.4
+    screenshot_dir: ".agent_control/computer_use/screenshots"
+    allowed_apps: []
+    allowed_roots:
+      - ".agent_control/workspaces"
+    require_session_approval: true
+    max_ui_elements: 80
   stt:
     enabled: false
     provider: "local_whisper"

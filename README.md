@@ -1,6 +1,6 @@
 # Configurable Agentic Control System
 
-Local-first control plane for sending Telegram text or voice commands to an agentic orchestration layer that can safely coordinate VS Code, coding assistants, terminal tools, desktop observations, and future automation adapters.
+Local-first control plane for sending Telegram text or voice commands to an agentic orchestration layer that can safely coordinate VS Code, coding assistants, browser automation, scoped filesystem work, desktop observation/control, and future automation adapters.
 
 ## Current Status
 
@@ -21,6 +21,9 @@ Implemented:
 - Minimal VS Code bridge endpoints, extension state sync, and terminal command queue
 - Generic terminal coding-assistant adapter
 - Local generated-workspace adapter that writes files under `.agent_control/workspaces` and launches localhost web previews
+- Chrome browser adapter for web search, page summaries, tab inspection, screenshots, navigation, tab close, click, and simple form-fill operations through DevTools
+- Windows-first `computer.use` adapter for policy-gated desktop observation and bounded local mouse/keyboard action loops
+- Scoped `filesystem.manage` adapter for folder inspection, file search, organization manifests, and approved move/copy application inside configured roots
 - File-backed artifacts, optional screenshot capture, and Telegram screenshot artifact delivery
 - Retry policy with durable retry metadata
 - Windows setup scripts and local setup documentation
@@ -71,6 +74,9 @@ Default local LLM and gateway behavior:
 - The gateway keeps an LLM-updated per-chat memory summary plus a small recent-turn window, not the full conversation.
 - Plain `status` and `/status` return deterministic task state.
 - Requests like `create a hello world web app and launch it` use Copilot as the creator when VS Code write access is enabled, materialize files under `.agent_control/workspaces/task_<id>`, start a localhost preview, and return the URL.
+- Browser requests like `search the web for Python packaging docs and summarize the first result` use the `browser.open` tool. Chrome is launched with remote debugging when needed, screenshots are saved under `.agent_control/browser/screenshots`, and results are returned to Telegram.
+- Computer-use requests like `take a screenshot and tell me what is open` or `use the computer to open this folder` route to `computer.use` when desktop control is enabled. Screenshots are saved under `.agent_control/computer_use/screenshots`; action loops require the local multimodal LLM and are capped by `adapters.computer_use.max_steps`.
+- Folder organization/search requests use `filesystem.manage` when an explicit path is present. It creates a manifest first, then applies only approved moves/copies inside `adapters.computer_use.allowed_roots`.
 - Development tasks route to the VS Code/GitHub Copilot terminal handoff when VS Code write access is enabled, with a local Copilot CLI fallback when the bridge is not connected.
 - Missing-tool work can be routed to `adapter.factory`, which creates a reviewable cached adapter proposal under `.agent_control/adapters` without loading it into runtime automatically.
 - Worker results are sent back to the source Telegram chat.
@@ -110,4 +116,4 @@ Flow docs:
 
 ## Safety Defaults
 
-The example config disables terminal execution, filesystem access, VS Code access, desktop screenshots, desktop control, browser automation, dependency installation, and Git pushes.
+The example config disables terminal execution, filesystem access, VS Code access, desktop screenshots, desktop control, computer use, browser automation, dependency installation, and Git pushes.

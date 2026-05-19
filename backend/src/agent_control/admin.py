@@ -77,6 +77,17 @@ class AdminWorkspaceConfigRequest(StrictBaseModel):
     open_browser: bool | None = None
 
 
+class AdminComputerUseConfigRequest(StrictBaseModel):
+    enabled: bool | None = None
+    max_steps: int | None = Field(default=None, ge=1, le=50)
+    step_delay_seconds: float | None = Field(default=None, ge=0.0, le=10.0)
+    screenshot_dir: str | None = None
+    allowed_apps: list[str] | None = None
+    allowed_roots: list[str] | None = None
+    require_session_approval: bool | None = None
+    max_ui_elements: int | None = Field(default=None, ge=0, le=500)
+
+
 class AdminAccessModesRequest(StrictBaseModel):
     modes: dict[str, CapabilityAccessMode]
 
@@ -483,6 +494,20 @@ def create_admin_router(
         _audit_config_update(repositories_loader(), loaded, "workspace", patch)
         return {"config_file": str(CONFIG_FILE_PATH), "workspace": workspace}
 
+    @router.post("/api/config/computer-use")
+    def admin_update_computer_use_config(request: Request, payload: AdminComputerUseConfigRequest) -> dict[str, Any]:
+        loaded = require_admin(request)
+        config = _read_config_file(config_manager)
+        computer_use = config.setdefault("adapters", {}).setdefault("computer_use", {})
+        patch = payload.model_dump(exclude_unset=True)
+        for key, value in patch.items():
+            if value is not None:
+                computer_use[key] = value
+        _write_config_file(config_manager, config)
+        config_manager.remove_env_keys(_computer_use_config_env_keys())
+        _audit_config_update(repositories_loader(), loaded, "computer_use", patch)
+        return {"config_file": str(CONFIG_FILE_PATH), "computer_use": computer_use}
+
     @router.post("/api/config/access-modes")
     def admin_update_access_modes(request: Request, payload: AdminAccessModesRequest) -> dict[str, Any]:
         loaded = require_admin(request)
@@ -620,6 +645,19 @@ def _workspace_config_env_keys() -> list[str]:
         "AGENT_ADAPTERS__WORKSPACE__WEB_HOST",
         "AGENT_ADAPTERS__WORKSPACE__WEB_PORT_START",
         "AGENT_ADAPTERS__WORKSPACE__OPEN_BROWSER",
+    ]
+
+
+def _computer_use_config_env_keys() -> list[str]:
+    return [
+        "AGENT_ADAPTERS__COMPUTER_USE__ENABLED",
+        "AGENT_ADAPTERS__COMPUTER_USE__MAX_STEPS",
+        "AGENT_ADAPTERS__COMPUTER_USE__STEP_DELAY_SECONDS",
+        "AGENT_ADAPTERS__COMPUTER_USE__SCREENSHOT_DIR",
+        "AGENT_ADAPTERS__COMPUTER_USE__ALLOWED_APPS",
+        "AGENT_ADAPTERS__COMPUTER_USE__ALLOWED_ROOTS",
+        "AGENT_ADAPTERS__COMPUTER_USE__REQUIRE_SESSION_APPROVAL",
+        "AGENT_ADAPTERS__COMPUTER_USE__MAX_UI_ELEMENTS",
     ]
 
 

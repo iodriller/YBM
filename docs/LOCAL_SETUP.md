@@ -20,7 +20,7 @@ VSCODE_BRIDGE_TOKEN=...
 
 Start from `config/config.example.yaml`.
 
-Safe defaults keep terminal execution, filesystem access, VS Code access, desktop screenshots, browser automation, dependency installation, and Git pushes disabled. The workspace adapter itself is available by default, but it only executes when `filesystem.write` is enabled for task workspaces and generated files.
+Safe defaults keep terminal execution, filesystem access, VS Code access, desktop screenshots, desktop control/computer use, browser automation, dependency installation, and Git pushes disabled. The workspace adapter itself is available by default, but it only executes when `filesystem.write` is enabled for task workspaces and generated files.
 
 ## 3. Start The Stack
 
@@ -29,6 +29,10 @@ Safe defaults keep terminal execution, filesystem access, VS Code access, deskto
 ```
 
 This initializes the database and starts LocalDeploy, backend, Streamlit admin UI, Telegram polling, and worker. Generated task workspaces default to `.agent_control/workspaces/task_<id>`.
+
+Browser tasks use Chrome through the DevTools remote debugging port configured at `adapters.browser.remote_debugging_port` (default `9222`). If Chrome is not already available there, the adapter launches a separate Chrome profile under `.agent_control/browser/chrome-profile`. Screenshots are saved under `.agent_control/browser/screenshots`.
+
+Computer-use tasks use the `computer.use` adapter when desktop control is enabled. Desktop observations save screenshots under `.agent_control/computer_use/screenshots`; bounded action loops use the active local multimodal provider when available, stop at `adapters.computer_use.max_steps`, and check task cancellation before each action. Folder organization/search should use `filesystem.manage` instead of File Explorer automation when an explicit path is provided. Its allowed roots are configured through `adapters.computer_use.allowed_roots`.
 
 Open the admin UI:
 
@@ -104,6 +108,9 @@ The extension sends workspace state to the local backend and polls for queued te
 
 ## 8. Current Limits
 
-- Screenshot capture uses Pillow and is disabled by default.
+- Desktop screenshot/control and computer use are disabled by default and should be enabled per task/access mode from the admin UI.
+- `computer.use run_goal` needs the configured local model endpoint to accept OpenAI-compatible image payloads. If LocalDeploy/Gemma vision is unavailable, observation still returns screenshot/UI metadata but action planning fails clearly.
+- `filesystem.manage` only operates inside configured allowed roots and rejects path escapes.
+- Browser inspection/control can see only Chrome tabs exposed through the configured remote debugging port. Normal Chrome windows launched without remote debugging are not visible to this adapter.
 - VS Code terminal stdout capture depends on VS Code shell integration. Without it, the bridge records dispatch completion only.
 - Direct Copilot Chat panel scraping is not implemented; Copilot routing uses VS Code terminal command dispatch or the local Copilot CLI fallback.

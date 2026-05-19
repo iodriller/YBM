@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from agent_control.config import AppSettings
 from agent_control.orchestration.fulfillment import expected_fulfillment
 from agent_control.prompts import render_prompt
@@ -14,6 +16,19 @@ from agent_control.schemas import (
     TaskRecord,
     TaskType,
 )
+
+
+def build_default_task_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | None:
+    filesystem_plan = _build_filesystem_manage_plan(settings, task)
+    if filesystem_plan is not None:
+        return filesystem_plan
+    computer_plan = _build_computer_use_plan(settings, task)
+    if computer_plan is not None:
+        return computer_plan
+    browser_plan = _build_browser_plan(settings, task)
+    if browser_plan is not None:
+        return browser_plan
+    return build_default_vscode_development_plan(settings, task)
 
 
 def build_default_vscode_development_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | None:
@@ -233,6 +248,221 @@ def _build_workspace_web_app_plan(settings: AppSettings, task: TaskRecord) -> Pl
     )
 
 
+def _build_browser_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | None:
+    if not settings.adapters.browser.enabled:
+        return None
+    if not _looks_like_browser_request(task.objective):
+        return None
+
+    objective = task.objective.strip()
+    open_policy = settings.capabilities.get(Capability.BROWSER_OPEN)
+    control_policy = settings.capabilities.get(Capability.BROWSER_CONTROL)
+    open_enabled = bool(open_policy and open_policy.enabled)
+    control_enabled = bool(control_policy and control_policy.enabled)
+
+    if _looks_like_browser_control_request(objective) and control_enabled and control_policy is not None:
+        operation, tool_input = _browser_control_input(objective)
+        return PlanModel(
+            objective=task.objective,
+            assumptions=[
+                "The request asks for an explicit browser control action.",
+                "Only Chrome tabs exposed through the configured DevTools remote debugging port can be controlled.",
+            ],
+            required_capabilities=[Capability.BROWSER_CONTROL],
+            steps=[
+                PlanStep(
+                    title="Control Chrome through browser adapter",
+                    description="Use the Chrome DevTools browser adapter for the requested browser control action.",
+                    required_capabilities=[Capability.BROWSER_CONTROL],
+                    risk_level=RiskLevel.CRITICAL,
+                    requires_approval=control_policy.requires_approval,
+                    tool_name="browser.control",
+                    tool_input={
+                        **tool_input,
+                        "objective": objective,
+                        "timeout_seconds": 60,
+                    },
+                    expected_output="Updated browser state and a concise result summary.",
+                )
+            ],
+            success_criteria=["The requested Chrome control action is performed or a clear adapter error is reported."],
+            postconditions=_browser_postconditions(),
+        )
+
+    if not open_enabled or open_policy is None:
+        return None
+
+    operation, tool_input = _browser_open_input(objective)
+    return PlanModel(
+        objective=task.objective,
+        assumptions=[
+            "The request asks to use the browser or inspect browser-visible information.",
+            "Chrome will be launched with remote debugging if it is not already available.",
+            "Normal Chrome windows not launched with remote debugging are not visible to this adapter.",
+        ],
+        required_capabilities=[Capability.BROWSER_OPEN],
+        steps=[
+            PlanStep(
+                title="Use Chrome browser adapter",
+                description="Open, search, inspect, or screenshot Chrome through the registered browser adapter.",
+                required_capabilities=[Capability.BROWSER_OPEN],
+                risk_level=RiskLevel.LOW,
+                requires_approval=open_policy.requires_approval,
+                tool_name="browser.open",
+                tool_input={
+                    "operation": operation,
+                    **tool_input,
+                    "timeout_seconds": 90,
+                },
+                expected_output="Browser URL, page title, visible-page summary, tab state, or screenshot path.",
+            )
+        ],
+        success_criteria=["The browser adapter reports the requested browser state or page summary."],
+        postconditions=_browser_postconditions(),
+    )
+
+
+def _build_computer_use_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | None:
+    if not settings.adapters.computer_use.enabled or not settings.adapters.desktop.control_enabled:
+        return None
+    if not _looks_like_computer_use_request(task.objective):
+        return None
+    policy = settings.capabilities.get(Capability.DESKTOP_CONTROL)
+    if policy is None or not policy.enabled:
+        return None
+
+    objective = task.objective.strip()
+    operation = "observe" if _looks_like_observation_only(objective) else "run_goal"
+    tool_input = (
+        {
+            "operation": "observe",
+            "objective": objective,
+            "include_screenshot": True,
+            "include_ui_tree": True,
+            "summarize": True,
+            "timeout_seconds": 60,
+        }
+        if operation == "observe"
+        else {
+            "operation": "run_goal",
+            "objective": objective,
+            "max_steps": settings.adapters.computer_use.max_steps,
+            "include_ui_tree": True,
+            "require_vision": True,
+            "timeout_seconds": 240,
+        }
+    )
+    return PlanModel(
+        objective=task.objective,
+        assumptions=[
+            "The task needs local desktop observation or UI control.",
+            "Computer use is bounded by the configured max step count.",
+            "Approval is required for the task session unless desktop control is explicitly full access.",
+        ],
+        required_capabilities=[Capability.DESKTOP_CONTROL],
+        steps=[
+            PlanStep(
+                title="Run bounded computer-use session",
+                description="Observe the Windows desktop and, when needed, perform bounded local mouse/keyboard actions.",
+                required_capabilities=[Capability.DESKTOP_CONTROL],
+                risk_level=RiskLevel.CRITICAL,
+                requires_approval=settings.adapters.computer_use.require_session_approval or policy.requires_approval,
+                tool_name="computer.use",
+                tool_input=tool_input,
+                expected_output="Desktop observation, screenshot path, actions taken, and final summary.",
+            )
+        ],
+        success_criteria=["The desktop state was observed or the requested bounded UI action was completed."],
+        postconditions=_desktop_postconditions(),
+    )
+
+
+def _build_filesystem_manage_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | None:
+    if not settings.adapters.computer_use.enabled:
+        return None
+    if not _looks_like_filesystem_manage_request(task.objective):
+        return None
+    root = _path_from_objective(task.objective)
+    if root is None:
+        return None
+    write_policy = settings.capabilities.get(Capability.FILESYSTEM_WRITE)
+    if write_policy is None or not write_policy.enabled:
+        return None
+
+    if _looks_like_file_search(task.objective):
+        query = _search_query_from_objective(task.objective)
+        return PlanModel(
+            objective=task.objective,
+            assumptions=["The request is safer through scoped filesystem APIs than desktop UI control."],
+            required_capabilities=[Capability.FILESYSTEM_WRITE],
+            steps=[
+                PlanStep(
+                    title="Search scoped folder",
+                    description="Search file names and optional text content inside the requested allowed folder.",
+                    required_capabilities=[Capability.FILESYSTEM_WRITE],
+                    risk_level=RiskLevel.HIGH,
+                    requires_approval=write_policy.requires_approval,
+                    tool_name="filesystem.manage",
+                    tool_input={
+                        "operation": "search",
+                        "root": root,
+                        "query": query,
+                        "include_content": False,
+                        "timeout_seconds": 60,
+                    },
+                    expected_output="Matching file paths under the configured allowed root.",
+                )
+            ],
+            success_criteria=["Search results are reported."],
+            postconditions=_file_organization_postconditions(required=False),
+        )
+
+    return PlanModel(
+        objective=task.objective,
+        assumptions=[
+            "The request asks to organize files in a folder.",
+            "The adapter will first create a manifest, then apply exactly that manifest.",
+        ],
+        required_capabilities=[Capability.FILESYSTEM_WRITE],
+        steps=[
+            PlanStep(
+                title="Plan folder organization",
+                description="Create a deterministic move manifest without changing files.",
+                required_capabilities=[Capability.FILESYSTEM_WRITE],
+                risk_level=RiskLevel.HIGH,
+                requires_approval=write_policy.requires_approval,
+                tool_name="filesystem.manage",
+                tool_input={
+                    "operation": "organize_plan",
+                    "root": root,
+                    "strategy": "by_type",
+                    "recursive": False,
+                    "timeout_seconds": 60,
+                },
+                expected_output="A proposed file move manifest.",
+            ),
+            PlanStep(
+                title="Apply folder organization manifest",
+                description="Apply the previously generated manifest inside the same allowed folder.",
+                required_capabilities=[Capability.FILESYSTEM_WRITE],
+                risk_level=RiskLevel.HIGH,
+                requires_approval=write_policy.requires_approval,
+                tool_name="filesystem.manage",
+                tool_input={
+                    "operation": "apply_manifest",
+                    "root": root,
+                    "manifest": "{{last_manifest}}",
+                    "dry_run": False,
+                    "timeout_seconds": 120,
+                },
+                expected_output="Moved or copied file paths.",
+            ),
+        ],
+        success_criteria=["The folder organization manifest was applied and changed paths were reported."],
+        postconditions=_file_organization_postconditions(),
+    )
+
+
 def _build_adapter_factory_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | None:
     if not settings.adapters.adapter_factory.enabled:
         return None
@@ -334,11 +564,197 @@ def _adapter_postconditions() -> list[PlanPostcondition]:
     ]
 
 
+def _browser_postconditions() -> list[PlanPostcondition]:
+    return [
+        PlanPostcondition(
+            type=PostconditionType.BROWSER_STATE,
+            description="A browser URL, tab state, page title, or screenshot path is reported.",
+        )
+    ]
+
+
+def _desktop_postconditions() -> list[PlanPostcondition]:
+    return [
+        PlanPostcondition(
+            type=PostconditionType.DESKTOP_OBSERVATION,
+            description="A desktop observation, screenshot, or computer-use summary is reported.",
+        )
+    ]
+
+
+def _file_organization_postconditions(required: bool = True) -> list[PlanPostcondition]:
+    return [
+        PlanPostcondition(
+            type=PostconditionType.FILE_ORGANIZATION,
+            description="A file organization manifest, changed paths, or search results are reported.",
+            required=required,
+        )
+    ]
+
+
 def _looks_like_adapter_request(objective: str) -> bool:
     lowered = objective.lower()
     has_adapter_word = any(word in lowered for word in ("adapter", "tool", "capability", "connector"))
     has_create_word = any(word in lowered for word in ("create", "build", "write", "make", "add", "implement"))
     return has_adapter_word and has_create_word
+
+
+def _looks_like_computer_use_request(objective: str) -> bool:
+    lowered = objective.lower()
+    if _first_url_from_text(objective):
+        return False
+    markers = (
+        "use computer",
+        "computer use",
+        "control my computer",
+        "desktop",
+        "screen",
+        "what do you see",
+        "take a screenshot",
+        "open this folder",
+        "open folder",
+        "click",
+        "type ",
+        "launch app",
+        "open app",
+    )
+    return any(marker in lowered for marker in markers)
+
+
+def _looks_like_observation_only(objective: str) -> bool:
+    lowered = objective.lower()
+    return any(marker in lowered for marker in ("what do you see", "take a screenshot", "screenshot", "observe", "look at my screen"))
+
+
+def _looks_like_filesystem_manage_request(objective: str) -> bool:
+    lowered = objective.lower()
+    return any(marker in lowered for marker in ("organize", "sort files", "clean folder", "search folder", "find file", "search files"))
+
+
+def _looks_like_file_search(objective: str) -> bool:
+    lowered = objective.lower()
+    return any(marker in lowered for marker in ("search folder", "find file", "search files", "find files"))
+
+
+def _path_from_objective(objective: str) -> str | None:
+    quoted = _quoted_text(objective)
+    if quoted and _looks_like_path(quoted):
+        return quoted
+    match = re.search(r"[A-Za-z]:\\[^\n\r\"']+", objective)
+    if match:
+        return match.group(0).strip().rstrip(".,")
+    return None
+
+
+def _looks_like_path(value: str) -> bool:
+    return bool(re.match(r"^[A-Za-z]:\\", value) or value.startswith((".", "~", "/")))
+
+
+def _search_query_from_objective(objective: str) -> str:
+    cleaned = re.sub(r"[A-Za-z]:\\[^\n\r\"']+", " ", objective)
+    cleaned = re.sub(r"\b(search|folder|find|file|files|under|in|for)\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    return cleaned or "*"
+
+
+def _looks_like_browser_request(objective: str) -> bool:
+    if expected_fulfillment(objective).get("preview_url"):
+        return False
+    lowered = objective.lower()
+    markers = (
+        "browser",
+        "chrome",
+        "tab",
+        "website",
+        "web page",
+        "webpage",
+        "url",
+        "http://",
+        "https://",
+        "www.",
+        "search",
+        "google",
+        "bing",
+        "open this page",
+        "go to",
+        "screenshot",
+        "screen shot",
+        "fill the form",
+        "click",
+    )
+    return any(marker in lowered for marker in markers)
+
+
+def _looks_like_browser_control_request(objective: str) -> bool:
+    lowered = objective.lower()
+    return any(marker in lowered for marker in ("close tab", "close the tab", "click", "fill the form", "submit the form"))
+
+
+def _browser_open_input(objective: str) -> tuple[str, dict[str, object]]:
+    lowered = objective.lower()
+    if any(phrase in lowered for phrase in ("open tabs", "current tabs", "what tabs", "what websites")):
+        return "inspect_tabs", {"include_text": "summary" in lowered or "about" in lowered}
+    if "screenshot" in lowered or "screen shot" in lowered:
+        url = _first_url_from_text(objective)
+        if url:
+            return "screenshot", {"url": url, "full_page": True}
+        return "screenshot", {"full_page": True}
+    if "search" in lowered or "google" in lowered or "bing" in lowered:
+        return "research", {
+            "objective": objective,
+            "query": _query_for_browser(objective),
+            "open_first_result": _objective_wants_first_result(objective),
+        }
+    url = _first_url_from_text(objective)
+    if url:
+        return "research", {"objective": objective, "url": url}
+    return "research", {"objective": objective}
+
+
+def _browser_control_input(objective: str) -> tuple[str, dict[str, object]]:
+    lowered = objective.lower()
+    if "close" in lowered:
+        quoted = _quoted_text(objective)
+        return "close_tab", {"title_contains": quoted} if quoted else {}
+    if "click" in lowered:
+        quoted = _quoted_text(objective)
+        return "click", {"text": quoted or _text_after_word(objective, "click")}
+    return "fill_form", {"fields": {}}
+
+
+def _first_url_from_text(value: str) -> str | None:
+    import re
+
+    match = re.search(r"https?://[^\s<>()]+|www\.[^\s<>()]+", value)
+    return match.group(0).rstrip(".,") if match else None
+
+
+def _quoted_text(value: str) -> str | None:
+    import re
+
+    match = re.search(r"['\"]([^'\"]+)['\"]", value)
+    return match.group(1).strip() if match else None
+
+
+def _text_after_word(value: str, word: str) -> str:
+    lowered = value.lower()
+    index = lowered.find(word)
+    if index < 0:
+        return value.strip()
+    return value[index + len(word) :].strip(" .:")
+
+
+def _query_for_browser(objective: str) -> str:
+    import re
+
+    cleaned = re.sub(r"\b(search|google|bing|look up|find|open|browser|chrome|summarize|summary)\b", " ", objective, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    return cleaned or objective
+
+
+def _objective_wants_first_result(objective: str) -> bool:
+    lowered = objective.lower()
+    return any(phrase in lowered for phrase in ("first result", "first website", "first site", "go to the first", "open the first"))
 
 
 def _adapter_copilot_prompt(objective: str) -> str:

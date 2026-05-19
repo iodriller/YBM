@@ -439,6 +439,42 @@ def test_admin_writes_workspace_runtime_config(monkeypatch, tmp_path) -> None:
     assert not (tmp_path / ".env").exists()
 
 
+def test_admin_writes_computer_use_runtime_config(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
+    local_app = FastAPI()
+    local_app.include_router(
+        create_admin_router(
+            lambda: AppSettings(_env_file=None),
+            lambda: repositories,
+            VSCodeBridgeStore(),
+        )
+    )
+    client = TestClient(local_app)
+
+    response = client.post(
+        "/admin/api/config/computer-use",
+        json={
+            "enabled": True,
+            "max_steps": 12,
+            "step_delay_seconds": 0.2,
+            "screenshot_dir": ".agent_control/computer_use/screenshots",
+            "allowed_roots": [str(tmp_path)],
+            "allowed_apps": ["notepad.exe"],
+            "require_session_approval": True,
+            "max_ui_elements": 120,
+        },
+    )
+    saved = yaml.safe_load((tmp_path / "config" / "config.yaml").read_text(encoding="utf-8"))
+
+    assert response.status_code == 200
+    assert saved["adapters"]["computer_use"]["enabled"] is True
+    assert saved["adapters"]["computer_use"]["allowed_roots"] == [str(tmp_path)]
+    assert saved["adapters"]["computer_use"]["allowed_apps"] == ["notepad.exe"]
+    assert saved["adapters"]["computer_use"]["max_steps"] == 12
+    assert not (tmp_path / ".env").exists()
+
+
 def test_admin_writes_access_modes(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
@@ -485,6 +521,58 @@ def test_admin_access_modes_sync_desktop_screenshot_adapter(monkeypatch, tmp_pat
     assert response.status_code == 200
     assert saved["capabilities"][Capability.DESKTOP_SCREENSHOT.value]["enabled"] is True
     assert saved["adapters"]["desktop"]["screenshot_enabled"] is True
+
+
+def test_admin_access_modes_sync_computer_use_adapter(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
+    local_app = FastAPI()
+    local_app.include_router(
+        create_admin_router(
+            lambda: AppSettings(_env_file=None),
+            lambda: repositories,
+            VSCodeBridgeStore(),
+        )
+    )
+    client = TestClient(local_app)
+
+    response = client.post(
+        "/admin/api/config/access-modes",
+        json={"modes": {"desktop_control": CapabilityAccessMode.WRITE_ACCESS.value}},
+    )
+    saved = yaml.safe_load((tmp_path / "config" / "config.yaml").read_text(encoding="utf-8"))
+
+    assert response.status_code == 200
+    assert saved["capabilities"][Capability.DESKTOP_CONTROL.value]["enabled"] is True
+    assert saved["capabilities"][Capability.DESKTOP_CONTROL.value]["requires_approval"] is True
+    assert saved["adapters"]["desktop"]["control_enabled"] is True
+    assert saved["adapters"]["computer_use"]["enabled"] is True
+
+
+def test_admin_access_modes_sync_browser_adapter(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
+    local_app = FastAPI()
+    local_app.include_router(
+        create_admin_router(
+            lambda: AppSettings(_env_file=None),
+            lambda: repositories,
+            VSCodeBridgeStore(),
+        )
+    )
+    client = TestClient(local_app)
+
+    response = client.post(
+        "/admin/api/config/access-modes",
+        json={"modes": {"browser": CapabilityAccessMode.WRITE_ACCESS.value}},
+    )
+    saved = yaml.safe_load((tmp_path / "config" / "config.yaml").read_text(encoding="utf-8"))
+
+    assert response.status_code == 200
+    assert saved["capabilities"][Capability.BROWSER_OPEN.value]["enabled"] is True
+    assert saved["capabilities"][Capability.BROWSER_CONTROL.value]["enabled"] is True
+    assert saved["capabilities"][Capability.BROWSER_CONTROL.value]["requires_approval"] is True
+    assert saved["adapters"]["browser"]["enabled"] is True
 
 
 def test_admin_database_summary(tmp_path) -> None:

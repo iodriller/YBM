@@ -222,24 +222,27 @@ def _postcondition_satisfied(task: TaskRecord, expected: PostconditionType) -> b
         return bool(
             _any_value(
                 task,
-                metadata_keys=("browser_state", "browser_url", "page_title", "screenshot_uri"),
-                output_keys=("browser_state", "browser_url", "url", "page_title", "screenshot_uri"),
+                metadata_keys=("browser_state", "browser_url", "page_title", "screenshot_uri", "screenshot_path"),
+                output_keys=("browser_state", "browser_url", "url", "page_title", "screenshot_uri", "screenshot_path"),
             )
         )
     if expected == PostconditionType.DESKTOP_OBSERVATION:
+        output = _last_output_dict(task)
+        if output.get("operation") == "run_goal" and output.get("completed") is False:
+            return False
         return bool(
             _any_value(
                 task,
-                metadata_keys=("desktop_observation", "screenshot_uri", "screenshot_path"),
-                output_keys=("desktop_observation", "screenshot_uri", "screenshot_path", "artifact_uri"),
+                metadata_keys=("desktop_observation", "screenshot_uri", "screenshot_path", "computer_use_actions"),
+                output_keys=("desktop_observation", "observation", "screenshot_uri", "screenshot_path", "artifact_uri", "final_summary"),
             )
         )
     if expected == PostconditionType.FILE_ORGANIZATION:
         return bool(
             _any_value(
                 task,
-                metadata_keys=("organized_paths", "moved_files", "changed_files", "files"),
-                output_keys=("organized_paths", "moved_files", "changed_files", "files"),
+                metadata_keys=("organized_paths", "moved_files", "changed_files", "files", "file_manifest"),
+                output_keys=("organized_paths", "changed_paths", "moved_files", "changed_files", "files", "manifest", "entries"),
             )
         )
     if expected == PostconditionType.GITHUB_PR:

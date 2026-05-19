@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import base64
+import mimetypes
+from pathlib import Path
 from typing import Protocol, TypeVar
 
 import httpx
@@ -17,6 +20,9 @@ class LLMProvider(Protocol):
     async def generate_text(self, system_prompt: str, user_prompt: str) -> str:
         ...
 
+    async def generate_multimodal_text(self, system_prompt: str, user_prompt: str, image_paths: list[str]) -> str:
+        ...
+
     async def generate_structured(self, system_prompt: str, user_prompt: str, output_model: type[T]) -> T:
         ...
 
@@ -29,6 +35,13 @@ class OpenAICompatibleProvider:
 
     async def generate_text(self, system_prompt: str, user_prompt: str) -> str:
         data = await self._chat(system_prompt, user_prompt, response_format=None)
+        return str(data["choices"][0]["message"]["content"])
+
+    async def generate_multimodal_text(self, system_prompt: str, user_prompt: str, image_paths: list[str]) -> str:
+        content: list[dict] = [{"type": "text", "text": user_prompt}]
+        for image_path in image_paths:
+            content.append({"type": "image_url", "image_url": {"url": _data_url(image_path)}})
+        data = await self._chat(system_prompt, content, response_format=None)
         return str(data["choices"][0]["message"]["content"])
 
     async def generate_structured(self, system_prompt: str, user_prompt: str, output_model: type[T]) -> T:
@@ -51,7 +64,7 @@ class OpenAICompatibleProvider:
     async def _chat(
         self,
         system_prompt: str,
-        user_prompt: str,
+        user_prompt: str | list[dict],
         response_format: dict | None,
     ) -> dict:
         api_key = self._api_key()
@@ -105,6 +118,17 @@ class StaticPlanProvider:
         self.prompts.append((system_prompt, user_prompt))
         return self.plan.model_dump_json()
 
+    async def generate_multimodal_text(self, system_prompt: str, user_prompt: str, image_paths: list[str]) -> str:
+        self.prompts.append((system_prompt, user_prompt))
+        return self.plan.model_dump_json()
+
     async def generate_structured(self, system_prompt: str, user_prompt: str, output_model: type[T]) -> T:
         self.prompts.append((system_prompt, user_prompt))
         return output_model.model_validate(self.plan.model_dump(mode="json"))
+
+
+def _data_url(path: str) -> str:
+    file_path = Path(path)
+    mime_type = mimetypes.guess_type(file_path.name)[0] or "image/png"
+    encoded = base64.b64encode(file_path.read_bytes()).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"

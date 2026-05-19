@@ -101,6 +101,9 @@ Implemented hardening:
 - Postconditions now cover browser state, desktop observation, file organization, GitHub PRs, and external command completion in addition to workspace, preview URL, and adapter proposal outcomes.
 - LLM-generated plans are validated against the registry before persistence. Invalid tool names, disabled tools, and malformed tool input trigger one LLM repair attempt before the plan enters the worker loop.
 - Telegram task notifications now prioritize the human outcome: result URL, workspace path, adapter path, gap/retry information, usage details, and a concise summary.
+- `computer.use` is registered for Windows desktop observation and bounded control sessions. It records screenshot paths, active-window/UI metadata, actions taken, and a concise final summary.
+- `filesystem.manage` is registered for safer folder work. It inspects/searches folders, creates a non-mutating organization manifest, then applies only approved moves/copies inside configured roots.
+- The fulfillment validator treats incomplete `computer.use run_goal` output as a gap, so a stopped action loop is not silently marked fulfilled.
 
 Recommended next hardening:
 
@@ -243,18 +246,32 @@ Implemented streams:
 - `vscode.terminal_command`: explicit VS Code terminal command dispatch.
 - `coding_assistant`: configured terminal assistant command.
 - `desktop.screenshot`: Telegram screenshot command path.
+- `computer.use`: Windows desktop observe/act/run_goal with screenshots, UI Automation metadata, and local multimodal action decisions when available.
+- `filesystem.manage`: scoped folder inspect/search/organize_plan/apply_manifest operations inside configured allowed roots.
+- `browser.open`: Chrome open/search/research/tab inspection/screenshot through DevTools.
+- `browser.control`: Chrome navigation, tab close, click, and simple form-fill through DevTools.
 
 The registry exposes a capability-vault summary to the planner, and the Telegram responder includes the same key capability signals in its concise runtime context. Missing tools should be handled by routing to `adapter.factory` for a scaffolded proposal, not by inventing unregistered runtime tool names. Generated adapters are cache artifacts only; they are not imported or executed until reviewed, tested, and registered.
 
 Registered tools also expose typed input and output contracts. The worker validates input before policy and adapter execution, then validates successful outputs before recording the tool result as succeeded. This gives failures like `validation_failed` for malformed tool input or incomplete adapter output instead of letting a tool no-op or interpret a bad payload loosely.
 
+Browser adapter note:
+
+`browser.open` and `browser.control` operate only on Chrome tabs exposed through the configured DevTools remote debugging port. If Chrome is not available there and `adapters.browser.launch_if_missing` is true, the adapter starts a separate Chrome profile under `.agent_control/browser/chrome-profile`. This is intentional: arbitrary already-open Chrome windows cannot be inspected unless they were launched with remote debugging enabled.
+
+Computer-use note:
+
+`computer.use observe` can return a screenshot and UI metadata without taking control actions. `computer.use run_goal` is for bounded desktop-control sessions and should remain session-approved unless you explicitly set desktop control to full access. It uses the active local OpenAI-compatible multimodal provider for observe-act decisions; if the provider cannot accept image payloads, the tool fails clearly instead of guessing. The worker passes a cancellation check into the adapter, so pause/cancel from the UI or API stops the loop before the next mouse/keyboard action.
+
+Filesystem management note:
+
+Use `filesystem.manage` for explicit folder tasks such as `organize C:\...\Downloads by type` or `search this folder for resume`. It is safer and more auditable than driving File Explorer because it returns a manifest and changed paths. Allowed roots live in `adapters.computer_use.allowed_roots`.
+
 Known gaps to address next:
 
-- Browser open/control has capabilities but no registered adapter yet.
-- General file organization outside task workspaces needs a scoped filesystem adapter with allowlisted roots.
-- Desktop control exists as a capability but has no registered adapter.
 - GitHub PR creation/review has postcondition support but no registered GitHub adapter in this codebase.
-- Current closure validation is mostly key-based. Future adapters should return richer typed artifacts so validators can prove browser state, screenshot state, PR state, and file organization more precisely.
+- Full desktop automation still depends on local Windows libraries (`mss`, `pyautogui`, `pywinauto`) and a vision-capable LocalDeploy profile.
+- Current closure validation is still mostly key-based. Future adapters should return richer typed artifacts so validators can prove browser state, screenshot state, PR state, and file organization more precisely.
 
 ## Config And Env Strategy
 

@@ -70,3 +70,35 @@ def test_external_command_postcondition_requires_successful_exit() -> None:
 
     assert not validation.ok
     assert validation.first_gap == "expected_external_command_missing"
+
+
+def test_desktop_run_goal_postcondition_requires_completed_output() -> None:
+    task = TaskRecord(
+        objective="Use computer to open a folder",
+        metadata={
+            "last_tool_result": {
+                "output": {
+                    "operation": "run_goal",
+                    "observation": {"active_window": {"title": "Desktop"}},
+                    "screenshot_path": "C:/tmp/screen.png",
+                    "completed": False,
+                    "final_summary": "Stopped after max steps.",
+                }
+            }
+        },
+    )
+    plan = PlanModel(
+        objective=task.objective,
+        steps=[PlanStep(title="Use computer", description="Run computer-use.", tool_name="computer.use")],
+        postconditions=[
+            PlanPostcondition(
+                type=PostconditionType.DESKTOP_OBSERVATION,
+                description="Desktop request is completed.",
+            )
+        ],
+    )
+
+    validation = validate_fulfillment(task, plan)
+
+    assert not validation.ok
+    assert validation.first_gap == "expected_desktop_observation_missing"

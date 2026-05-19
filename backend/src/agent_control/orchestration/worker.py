@@ -342,6 +342,15 @@ class TaskWorker:
             ("server_pid", "server_pid"),
             ("adapter_dir", "adapter_dir"),
             ("adapter_name", "adapter_name"),
+            ("browser_state", "browser_state"),
+            ("browser_url", "browser_url"),
+            ("page_title", "page_title"),
+            ("screenshot_path", "screenshot_path"),
+            ("screenshot_uri", "screenshot_uri"),
+            ("desktop_observation", "observation"),
+            ("computer_use_actions", "actions_taken"),
+            ("organized_paths", "changed_paths"),
+            ("file_manifest", "manifest"),
         ):
             if output.get(output_key):
                 metadata[metadata_key] = output[output_key]
@@ -409,21 +418,36 @@ def _resolve_step_input(task: TaskRecord, value: Any) -> Any:
         "{{adapter_name}}": str(task.metadata.get("adapter_name") or ""),
         "{{preview_url}}": str(task.metadata.get("preview_url") or ""),
         "{{last_output}}": _last_tool_output_text(task),
+        "{{last_manifest}}": _last_manifest(task),
     }
     return _replace_placeholders(value, replacements)
 
 
-def _replace_placeholders(value: Any, replacements: dict[str, str]) -> Any:
+def _replace_placeholders(value: Any, replacements: dict[str, Any]) -> Any:
     if isinstance(value, str):
+        if value in replacements:
+            return replacements[value]
         rendered = value
         for placeholder, replacement in replacements.items():
-            rendered = rendered.replace(placeholder, replacement)
+            if isinstance(replacement, str):
+                rendered = rendered.replace(placeholder, replacement)
         return rendered
     if isinstance(value, list):
         return [_replace_placeholders(item, replacements) for item in value]
     if isinstance(value, dict):
         return {key: _replace_placeholders(item, replacements) for key, item in value.items()}
     return value
+
+
+def _last_manifest(task: TaskRecord) -> list[dict]:
+    payload = task.metadata.get("last_tool_result")
+    if not isinstance(payload, dict):
+        return []
+    output = payload.get("output")
+    if not isinstance(output, dict):
+        return []
+    manifest = output.get("manifest")
+    return manifest if isinstance(manifest, list) else []
 
 
 def _last_tool_output_text(task: TaskRecord) -> str:
@@ -444,7 +468,7 @@ def _last_tool_output_text(task: TaskRecord) -> str:
                 chunks.append(str(item["content"]))
         if chunks:
             return "\n\n".join(chunks)
-    for key in ("text", "message", "content"):
+    for key in ("final_summary", "summary", "text", "message", "content"):
         if output.get(key):
             return str(output[key])
     return json.dumps(output, default=str)
@@ -462,7 +486,7 @@ def _tool_output_text(result: ToolCallResult) -> str:
                 chunks.append(str(item["content"]))
         if chunks:
             return "\n\n".join(chunks)
-    for key in ("text", "message", "content"):
+    for key in ("final_summary", "summary", "text", "message", "content"):
         if output.get(key):
             return str(output[key])
     return ""

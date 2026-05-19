@@ -346,6 +346,9 @@ def _render_configuration(summary: dict[str, Any], state: dict[str, str]) -> Non
     st.divider()
     st.markdown("#### Workspace")
     _render_workspace_config(config, state)
+    st.divider()
+    st.markdown("#### Computer Use")
+    _render_computer_use_config(summary, state)
     with st.expander("Effective Config", expanded=False):
         try:
             effective = _api_json(state["backend_url"], "/admin/api/config/effective", state["token"])
@@ -365,24 +368,42 @@ def _render_access_config(summary: dict[str, Any], state: dict[str, str]) -> Non
             {"value": "full_access", "label": "Full access"},
         ]
         current = str(item.get("mode") or "off")
-        st.markdown(f"**{item.get('label') or name}**")
-        st.caption(", ".join(item.get("capabilities") or []))
-        mode_columns = st.columns(len(options))
-        for option_index, option in enumerate(options):
-            value = str(option["value"])
-            label = str(option.get("label") or value)
-            is_current = value == current
-            if mode_columns[option_index].button(
-                label,
-                key=f"access-{name}-{value}",
-                type="primary" if is_current else "secondary",
-                disabled=is_current,
-                use_container_width=True,
-            ):
+        values = [str(option["value"]) for option in options]
+        labels = {str(option["value"]): str(option.get("label") or option["value"]) for option in options}
+        if current not in values:
+            current = values[0]
+        current_label = labels.get(current, current)
+        capabilities = ", ".join(item.get("capabilities") or [])
+
+        with st.container(border=True):
+            st.markdown(
+                (
+                    '<div class="access-card-head">'
+                    f'<div><strong>{html_escape(str(item.get("label") or name))}</strong>'
+                    f'<span class="capability-list">{html_escape(capabilities)}</span></div>'
+                    f'<span class="mode-pill {_access_mode_class(current)}">{html_escape(current_label)}</span>'
+                    "</div>"
+                ),
+                unsafe_allow_html=True,
+            )
+            selected = st.radio(
+                f"{item.get('label') or name} access mode",
+                values,
+                index=values.index(current),
+                format_func=lambda value, labels=labels: labels.get(str(value), str(value)),
+                horizontal=True,
+                label_visibility="collapsed",
+                key=f"access-mode-{name}-{current}",
+            )
+            if str(selected) != current:
                 modes = {group_name: str(group.get("mode") or "off") for group_name, group in access_modes.items()}
-                modes[name] = value
-                _post_feedback(state, "/admin/api/config/access-modes", {"modes": modes}, f"{item.get('label') or name} set to {label}.")
-        st.divider()
+                modes[name] = str(selected)
+                _post_feedback(
+                    state,
+                    "/admin/api/config/access-modes",
+                    {"modes": modes},
+                    f"{item.get('label') or name} set to {labels.get(str(selected), str(selected))}.",
+                )
 
 
 def _render_llm_config(summary: dict[str, Any], state: dict[str, str]) -> None:
@@ -531,6 +552,88 @@ def _render_workspace_config(config: dict[str, Any], state: dict[str, str]) -> N
                 "open_browser": open_browser,
             },
             "Workspace config saved. Restart worker to reload config.",
+        )
+
+
+def _render_computer_use_config(summary: dict[str, Any], state: dict[str, str]) -> None:
+    config = summary.get("config") or {}
+    computer_use = ((config.get("adapters") or {}).get("computer_use") or {})
+    tasks = summary.get("tasks") or []
+    recent = next(
+        (
+            task
+            for task in tasks
+            if ((task.get("metadata") or {}).get("last_tool_name") == "computer.use")
+            or (task.get("metadata") or {}).get("desktop_observation")
+        ),
+        None,
+    )
+    if recent:
+        metadata = recent.get("metadata") or {}
+        st.caption(f"Last computer-use task: {recent.get('status')} | {recent.get('objective')}")
+        if metadata.get("screenshot_path"):
+            _wrapped_text(metadata["screenshot_path"])
+        if metadata.get("computer_use_actions"):
+            st.caption(f"Actions recorded: {len(metadata.get('computer_use_actions') or [])}")
+        if recent.get("status") in {"received", "planned", "awaiting_approval", "running", "retrying"}:
+            if st.button("Stop active computer-use task", key="stop-computer-use-task"):
+                _post_feedback(
+                    state,
+                    f"/admin/api/tasks/{recent.get('id')}/signals",
+                    {"signal": "cancel"},
+                    "Computer-use stop signal sent.",
+                )
+
+    with st.form("computer-use-config"):
+        enabled = st.checkbox("Enabled", value=bool(computer_use.get("enabled")))
+        require_session_approval = st.checkbox(
+            "Require session approval",
+            value=computer_use.get("require_session_approval") is not False,
+        )
+        max_steps = st.number_input("Max steps", min_value=1, max_value=50, value=int(computer_use.get("max_steps") or 8))
+        step_delay_seconds = st.number_input(
+            "Step delay seconds",
+            min_value=0.0,
+            max_value=10.0,
+            value=float(computer_use.get("step_delay_seconds") if computer_use.get("step_delay_seconds") is not None else 0.4),
+            step=0.1,
+        )
+        max_ui_elements = st.number_input(
+            "Max UI elements",
+            min_value=0,
+            max_value=500,
+            value=int(computer_use.get("max_ui_elements") or 80),
+        )
+        screenshot_dir = st.text_input(
+            "Screenshot directory",
+            computer_use.get("screenshot_dir") or ".agent_control/computer_use/screenshots",
+        )
+        allowed_roots = st.text_area(
+            "Allowed roots",
+            "\n".join(str(item) for item in computer_use.get("allowed_roots") or []),
+            height=90,
+        )
+        allowed_apps = st.text_area(
+            "Allowed apps",
+            "\n".join(str(item) for item in computer_use.get("allowed_apps") or []),
+            height=70,
+        )
+        submitted = st.form_submit_button("Save computer use config")
+    if submitted:
+        _post_feedback(
+            state,
+            "/admin/api/config/computer-use",
+            {
+                "enabled": enabled,
+                "max_steps": int(max_steps),
+                "step_delay_seconds": float(step_delay_seconds),
+                "screenshot_dir": screenshot_dir,
+                "allowed_apps": _parse_lines(allowed_apps),
+                "allowed_roots": _parse_lines(allowed_roots),
+                "require_session_approval": require_session_approval,
+                "max_ui_elements": int(max_ui_elements),
+            },
+            "Computer use config saved. Restart worker to reload config.",
         )
 
 
@@ -1053,10 +1156,16 @@ def _task_links(task: dict[str, Any]) -> list[tuple[str, str]]:
     output = ((metadata.get("last_tool_result") or {}).get("output") or {})
     links = []
     preview = output.get("url") or metadata.get("preview_url")
+    browser_url = output.get("browser_url") or metadata.get("browser_url")
     workspace = output.get("workspace_dir") or metadata.get("workspace_dir")
     adapter_dir = output.get("adapter_dir") or metadata.get("adapter_dir")
+    screenshot = output.get("screenshot_uri") or output.get("screenshot_path") or metadata.get("screenshot_uri") or metadata.get("screenshot_path")
     if preview:
         links.append(("Open preview", str(preview)))
+    if browser_url and browser_url != preview:
+        links.append(("Browser page", str(browser_url)))
+    if screenshot:
+        links.append(("Screenshot", str(screenshot)))
     if workspace:
         links.append(("Workspace", str(workspace)))
     if adapter_dir:
@@ -1193,6 +1302,16 @@ def _api_error_detail(raw: str) -> str:
     return raw
 
 
+def _access_mode_class(value: str) -> str:
+    if value == "full_access":
+        return "mode-full"
+    if value == "write_access":
+        return "mode-write"
+    if value == "read_only":
+        return "mode-read"
+    return "mode-off"
+
+
 def _json_text(value: Any) -> str:
     return json.dumps(value, indent=2, ensure_ascii=False, default=str)
 
@@ -1224,6 +1343,10 @@ def _parse_csv_ints(value: str) -> list[int]:
         except ValueError:
             continue
     return parsed
+
+
+def _parse_lines(value: str) -> list[str]:
+    return [line.strip() for line in value.splitlines() if line.strip()]
 
 
 def _tool_prompt(tool: dict[str, Any]) -> str:
@@ -1274,6 +1397,42 @@ def _inject_css() -> None:
         [data-testid="stMetricLabel"] { font-size: 0.78rem; }
         [data-testid="stDataFrame"] { border-radius: 8px; overflow: hidden; }
         div[data-testid="stExpander"] { border-radius: 8px; }
+        div[data-testid="stRadio"] [role="radiogroup"] {
+          display: flex;
+          flex-direction: row;
+          flex-wrap: wrap;
+          gap: 4px 14px;
+        }
+        div[data-testid="stRadio"] label {
+          margin-bottom: 0.1rem;
+        }
+        .access-card-head {
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-start;
+          gap: 10px;
+          margin-bottom: 0.35rem;
+        }
+        .capability-list {
+          display: block;
+          color: #6b7280;
+          font-size: 0.76rem;
+          line-height: 1.25;
+          overflow-wrap: anywhere;
+          margin-top: 1px;
+        }
+        .mode-pill {
+          border-radius: 999px;
+          padding: 3px 9px;
+          border: 1px solid rgba(49, 51, 63, 0.18);
+          font-size: 0.74rem;
+          font-weight: 700;
+          white-space: nowrap;
+        }
+        .mode-off { color: #4b5563; background: #f3f4f6; border-color: #d1d5db; }
+        .mode-read { color: #075985; background: #e0f2fe; border-color: #7dd3fc; }
+        .mode-write { color: #92400e; background: #fef3c7; border-color: #fbbf24; }
+        .mode-full { color: #166534; background: #dcfce7; border-color: #86efac; }
         .status-strip {
           display: flex;
           flex-wrap: wrap;

@@ -1,0 +1,755 @@
+from __future__ import annotations
+
+import asyncio
+import base64
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import time
+from typing import Any
+from urllib import error, parse, request as urlrequest
+
+try:
+    import websocket
+except ImportError:  # pragma: no cover - exercised only when optional dependency is missing.
+    websocket = None
+
+from agent_control.config import BrowserAdapterConfig
+from agent_control.schemas import ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+
+
+class BrowserAdapter:
+    """Chrome DevTools Protocol adapter for local browser open, search, inspect, and control."""
+
+    def __init__(self, config: BrowserAdapterConfig) -> None:
+        self.config = config
+
+    async def execute(self, request: ToolCallRequest) -> ToolCallResult:
+        if not self.config.enabled:
+            return _failed(request, "browser adapter is disabled")
+        if websocket is None:
+            return _failed(request, "browser adapter requires the websocket-client package")
+
+        try:
+            output = await asyncio.to_thread(self._execute_sync, request)
+        except Exception as exc:
+            return _failed(request, f"browser operation failed: {exc}")
+        return ToolCallResult(request_id=request.id, status=ToolResultStatus.SUCCEEDED, output=output)
+
+    def _execute_sync(self, request: ToolCallRequest) -> dict[str, Any]:
+        operation = str(request.input.get("operation") or _default_operation(request.tool_name))
+        client = ChromeDevToolsClient(self.config)
+        client.ensure_available()
+
+        if operation == "open":
+            output = self._open(client, request)
+        elif operation == "search":
+            output = self._search(client, request)
+        elif operation == "research":
+            output = self._research(client, request)
+        elif operation == "inspect_tabs":
+            output = self._inspect_tabs(client, request)
+        elif operation == "screenshot":
+            output = self._screenshot(client, request)
+        elif operation == "navigate":
+            output = self._navigate(client, request)
+        elif operation == "close_tab":
+            output = self._close_tab(client, request)
+        elif operation == "click":
+            output = self._click(client, request)
+        elif operation == "fill_form":
+            output = self._fill_form(client, request)
+        else:
+            raise ValueError(f"unsupported browser operation: {operation}")
+
+        output["operation"] = operation
+        output.setdefault("terminal_output", [_terminal_output(operation, output)])
+        return output
+
+    def _open(self, client: "ChromeDevToolsClient", request: ToolCallRequest) -> dict[str, Any]:
+        input_payload = request.input
+        url = _target_url(
+            input_payload.get("url"),
+            input_payload.get("query"),
+            input_payload.get("objective"),
+            search_template=self.config.search_url_template,
+            force_search=False,
+        )
+        target = client.open_url(url, new_tab=bool(input_payload.get("new_tab", True)))
+        client.wait(float(input_payload.get("wait_seconds") or self.config.default_wait_seconds))
+        return self._summarize_target(client, target)
+
+    def _search(self, client: "ChromeDevToolsClient", request: ToolCallRequest) -> dict[str, Any]:
+        input_payload = request.input
+        query = str(input_payload.get("query") or input_payload.get("objective") or "").strip()
+        if not query:
+            raise ValueError("query or objective is required for browser search")
+        target = client.open_url(_search_url(self.config.search_url_template, query), new_tab=True)
+        client.wait(float(input_payload.get("wait_seconds") or self.config.default_wait_seconds))
+        output = self._summarize_target(client, target)
+        if bool(input_payload.get("open_first_result", False)):
+            output = self._open_first_result(client, target, output)
+        return output
+
+    def _research(self, client: "ChromeDevToolsClient", request: ToolCallRequest) -> dict[str, Any]:
+        input_payload = request.input
+        objective = str(input_payload.get("objective") or "").strip()
+        url = str(input_payload.get("url") or _first_url(objective) or "").strip()
+        query = str(input_payload.get("query") or "").strip()
+        if url:
+            target = client.open_url(_normalize_url(url), new_tab=True)
+        else:
+            query = query or _query_from_objective(objective)
+            if not query:
+                raise ValueError("objective, url, or query is required for browser research")
+            target = client.open_url(_search_url(self.config.search_url_template, query), new_tab=True)
+        client.wait(float(input_payload.get("wait_seconds") or self.config.default_wait_seconds))
+        output = self._summarize_target(client, target)
+
+        open_first = input_payload.get("open_first_result")
+        if open_first is None:
+            open_first = _objective_wants_first_result(objective)
+        if open_first and not url:
+            output = self._open_first_result(client, target, output)
+
+        if bool(input_payload.get("screenshot", False)) or _objective_wants_screenshot(objective):
+            screenshot = client.screenshot(target, self._screenshot_path(request.task_id, None), full_page=True)
+            output["screenshot_path"] = screenshot
+            output["screenshot_uri"] = Path(screenshot).resolve().as_uri()
+        return output
+
+    def _inspect_tabs(self, client: "ChromeDevToolsClient", request: ToolCallRequest) -> dict[str, Any]:
+        include_text = bool(request.input.get("include_text", False))
+        max_tabs = int(request.input.get("max_tabs") or 8)
+        tabs = []
+        for target in client.page_targets()[:max_tabs]:
+            tab = _tab_summary(target)
+            if include_text and target.web_socket_debugger_url:
+                tab["page"] = client.page_summary(target, max_chars=min(self.config.max_summary_chars, 2500))
+            tabs.append(tab)
+        return {
+            "browser_state": {"tab_count": len(tabs), "remote_debugging": client.base_url},
+            "tabs": tabs,
+            "summary": _tabs_summary(tabs),
+        }
+
+    def _screenshot(self, client: "ChromeDevToolsClient", request: ToolCallRequest) -> dict[str, Any]:
+        input_payload = request.input
+        target = self._target_from_input(client, input_payload)
+        if input_payload.get("url"):
+            target = client.open_url(_normalize_url(str(input_payload["url"])), new_tab=True)
+        client.wait(float(input_payload.get("wait_seconds") or self.config.default_wait_seconds))
+        summary = self._summarize_target(client, target)
+        screenshot = client.screenshot(
+            target,
+            self._screenshot_path(request.task_id, input_payload.get("filename")),
+            full_page=bool(input_payload.get("full_page", True)),
+        )
+        return {
+            **summary,
+            "screenshot_path": screenshot,
+            "screenshot_uri": Path(screenshot).resolve().as_uri(),
+        }
+
+    def _navigate(self, client: "ChromeDevToolsClient", request: ToolCallRequest) -> dict[str, Any]:
+        input_payload = request.input
+        target = self._target_from_input(client, input_payload)
+        client.navigate(target, _normalize_url(str(input_payload["url"])))
+        client.wait(float(input_payload.get("wait_seconds") or self.config.default_wait_seconds))
+        return self._summarize_target(client, target)
+
+    def _close_tab(self, client: "ChromeDevToolsClient", request: ToolCallRequest) -> dict[str, Any]:
+        target = self._target_from_input(client, request.input, required=False)
+        if target is None:
+            return {
+                "browser_state": {"closed": False, "reason": "no matching tab"},
+                "summary": "No matching Chrome tab was found to close.",
+            }
+        client.close_tab(target)
+        remaining = [_tab_summary(item) for item in client.page_targets()]
+        return {
+            "browser_state": {"closed": True, "closed_tab": _tab_summary(target), "tab_count": len(remaining)},
+            "tabs": remaining,
+            "summary": f"Closed tab: {target.title or target.url or target.id}",
+        }
+
+    def _click(self, client: "ChromeDevToolsClient", request: ToolCallRequest) -> dict[str, Any]:
+        input_payload = request.input
+        target = self._target_from_input(client, input_payload)
+        selector = str(input_payload.get("selector") or "").strip()
+        text = str(input_payload.get("text") or "").strip()
+        if not selector and not text:
+            raise ValueError("selector or text is required for browser click")
+        clicked = client.click(target, selector=selector or None, text=text or None)
+        client.wait(float(input_payload.get("wait_seconds") or self.config.default_wait_seconds))
+        output = self._summarize_target(client, target)
+        output["browser_state"] = {**(output.get("browser_state") or {}), "clicked": clicked}
+        return output
+
+    def _fill_form(self, client: "ChromeDevToolsClient", request: ToolCallRequest) -> dict[str, Any]:
+        input_payload = request.input
+        target = self._target_from_input(client, input_payload)
+        fields = input_payload.get("fields") if isinstance(input_payload.get("fields"), dict) else {}
+        if not fields:
+            raise ValueError("fields are required for browser fill_form")
+        filled = client.fill_form(
+            target,
+            {str(key): str(value) for key, value in fields.items()},
+            submit=bool(input_payload.get("submit", False)),
+            submit_selector=input_payload.get("submit_selector"),
+        )
+        client.wait(float(input_payload.get("wait_seconds") or self.config.default_wait_seconds))
+        output = self._summarize_target(client, target)
+        output["browser_state"] = {**(output.get("browser_state") or {}), "filled_fields": filled}
+        return output
+
+    def _summarize_target(self, client: "ChromeDevToolsClient", target: "BrowserTarget") -> dict[str, Any]:
+        page = client.page_summary(target, max_chars=self.config.max_summary_chars)
+        summary = _page_summary_text(page)
+        return {
+            "browser_state": {
+                "tab_id": target.id,
+                "remote_debugging": client.base_url,
+                "note": _remote_debugging_note(),
+            },
+            "browser_url": page.get("url") or target.url,
+            "url": page.get("url") or target.url,
+            "page_title": page.get("title") or target.title,
+            "summary": summary,
+            "links": page.get("links") or [],
+        }
+
+    def _open_first_result(
+        self,
+        client: "ChromeDevToolsClient",
+        target: "BrowserTarget",
+        output: dict[str, Any],
+    ) -> dict[str, Any]:
+        first = _first_external_link(output.get("links") or [], output.get("url") or "")
+        if not first:
+            output["summary"] = f"{output.get('summary') or ''}\n\nNo external search result link was found."
+            return output
+        client.navigate(target, first["href"])
+        client.wait(self.config.default_wait_seconds)
+        opened = self._summarize_target(client, target)
+        opened["browser_state"] = {
+            **(opened.get("browser_state") or {}),
+            "opened_first_result": first,
+        }
+        return opened
+
+    def _target_from_input(
+        self,
+        client: "ChromeDevToolsClient",
+        input_payload: dict[str, Any],
+        *,
+        required: bool = True,
+    ) -> "BrowserTarget | None":
+        tab_id = str(input_payload.get("tab_id") or "").strip()
+        url_contains = str(input_payload.get("url_contains") or "").strip().lower()
+        title_contains = str(input_payload.get("title_contains") or "").strip().lower()
+        targets = client.page_targets()
+        for target in targets:
+            if tab_id and target.id == tab_id:
+                return target
+            if url_contains and url_contains in target.url.lower():
+                return target
+            if title_contains and title_contains in target.title.lower():
+                return target
+        if not tab_id and not url_contains and not title_contains and targets:
+            return targets[0]
+        if required:
+            raise ValueError("no matching browser tab found")
+        return None
+
+    def _screenshot_path(self, task_id: str, filename: Any) -> Path:
+        root = Path(self.config.screenshot_dir).expanduser().resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        if filename:
+            safe = _safe_png_filename(str(filename))
+        else:
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            safe = f"{_safe_stem(task_id)}_{stamp}.png"
+        path = (root / safe).resolve()
+        if root != path and root not in path.parents:
+            raise ValueError("screenshot path escaped configured directory")
+        return path
+
+
+@dataclass(frozen=True)
+class BrowserTarget:
+    id: str
+    type: str
+    title: str
+    url: str
+    web_socket_debugger_url: str | None = None
+
+
+class ChromeDevToolsClient:
+    def __init__(self, config: BrowserAdapterConfig) -> None:
+        self.config = config
+        self.base_url = f"http://{config.host}:{config.remote_debugging_port}"
+        self._message_id = 0
+
+    def ensure_available(self) -> None:
+        if self._version() is not None:
+            return
+        if not self.config.launch_if_missing:
+            raise RuntimeError(f"Chrome DevTools is not available at {self.base_url}")
+        chrome_path = _chrome_path(self.config.chrome_path)
+        user_data_dir = Path(self.config.user_data_dir).expanduser().resolve()
+        user_data_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.Popen(
+            [
+                chrome_path,
+                f"--remote-debugging-port={self.config.remote_debugging_port}",
+                "--remote-allow-origins=*",
+                f"--user-data-dir={user_data_dir}",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "about:blank",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        deadline = time.time() + self.config.startup_timeout_seconds
+        while time.time() < deadline:
+            if self._version() is not None:
+                return
+            time.sleep(0.25)
+        raise RuntimeError(f"Chrome launched but DevTools did not become ready at {self.base_url}")
+
+    def page_targets(self) -> list[BrowserTarget]:
+        payload = self._json("/json/list")
+        targets = []
+        for item in payload if isinstance(payload, list) else []:
+            if item.get("type") != "page":
+                continue
+            targets.append(
+                BrowserTarget(
+                    id=str(item.get("id") or ""),
+                    type=str(item.get("type") or ""),
+                    title=str(item.get("title") or ""),
+                    url=str(item.get("url") or ""),
+                    web_socket_debugger_url=item.get("webSocketDebuggerUrl"),
+                )
+            )
+        return targets
+
+    def open_url(self, url: str, *, new_tab: bool = True) -> BrowserTarget:
+        normalized = _normalize_url(url)
+        if not new_tab:
+            targets = self.page_targets()
+            if targets:
+                self.navigate(targets[0], normalized)
+                return targets[0]
+        encoded = parse.quote(normalized, safe="")
+        payload = self._json(f"/json/new?{encoded}", method="PUT")
+        return BrowserTarget(
+            id=str(payload.get("id") or ""),
+            type=str(payload.get("type") or "page"),
+            title=str(payload.get("title") or ""),
+            url=str(payload.get("url") or normalized),
+            web_socket_debugger_url=payload.get("webSocketDebuggerUrl"),
+        )
+
+    def navigate(self, target: BrowserTarget, url: str) -> None:
+        ws = self._socket(target)
+        try:
+            self._call(ws, "Page.enable")
+            self._call(ws, "Page.navigate", {"url": _normalize_url(url)})
+        finally:
+            ws.close()
+
+    def close_tab(self, target: BrowserTarget) -> None:
+        self._json(f"/json/close/{parse.quote(target.id, safe='')}")
+
+    def page_summary(self, target: BrowserTarget, *, max_chars: int) -> dict[str, Any]:
+        script = _summary_script(max_chars)
+        ws = self._socket(target)
+        try:
+            self._call(ws, "Runtime.enable")
+            response = self._call(
+                ws,
+                "Runtime.evaluate",
+                {"expression": script, "returnByValue": True, "awaitPromise": True},
+            )
+        finally:
+            ws.close()
+        result = response.get("result") if isinstance(response, dict) else {}
+        inner = result.get("result") if isinstance(result, dict) else {}
+        value = inner.get("value") if isinstance(inner, dict) else None
+        if isinstance(value, dict):
+            return value
+        return {"url": target.url, "title": target.title, "text": ""}
+
+    def screenshot(self, target: BrowserTarget, path: Path, *, full_page: bool) -> str:
+        ws = self._socket(target)
+        try:
+            self._call(ws, "Page.enable")
+            params: dict[str, Any] = {"format": "png", "captureBeyondViewport": bool(full_page)}
+            response = self._call(ws, "Page.captureScreenshot", params)
+        finally:
+            ws.close()
+        result = response.get("result") if isinstance(response, dict) else {}
+        data = result.get("data") if isinstance(result, dict) else None
+        if not data:
+            raise RuntimeError("Chrome did not return screenshot data")
+        path.write_bytes(base64.b64decode(data))
+        return str(path)
+
+    def click(self, target: BrowserTarget, *, selector: str | None, text: str | None) -> dict[str, Any]:
+        script = _click_script(selector, text)
+        value = self._evaluate_value(target, script)
+        return value if isinstance(value, dict) else {"clicked": False}
+
+    def fill_form(
+        self,
+        target: BrowserTarget,
+        fields: dict[str, str],
+        *,
+        submit: bool,
+        submit_selector: str | None,
+    ) -> dict[str, Any]:
+        script = _fill_form_script(fields, submit=submit, submit_selector=submit_selector)
+        value = self._evaluate_value(target, script)
+        return value if isinstance(value, dict) else {"filled": []}
+
+    def wait(self, seconds: float) -> None:
+        if seconds > 0:
+            time.sleep(seconds)
+
+    def _evaluate_value(self, target: BrowserTarget, script: str) -> Any:
+        ws = self._socket(target)
+        try:
+            self._call(ws, "Runtime.enable")
+            response = self._call(
+                ws,
+                "Runtime.evaluate",
+                {"expression": script, "returnByValue": True, "awaitPromise": True},
+            )
+        finally:
+            ws.close()
+        result = response.get("result") if isinstance(response, dict) else {}
+        inner = result.get("result") if isinstance(result, dict) else {}
+        return inner.get("value") if isinstance(inner, dict) else None
+
+    def _version(self) -> dict[str, Any] | None:
+        try:
+            payload = self._json("/json/version", timeout=1.0)
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _json(self, path: str, *, method: str = "GET", timeout: float | None = None) -> Any:
+        req = urlrequest.Request(f"{self.base_url}{path}", method=method)
+        try:
+            with urlrequest.urlopen(req, timeout=timeout or 5.0) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except error.HTTPError as exc:
+            if method == "PUT":
+                req = urlrequest.Request(f"{self.base_url}{path}", method="GET")
+                with urlrequest.urlopen(req, timeout=timeout or 5.0) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            raise exc
+
+    def _socket(self, target: BrowserTarget):
+        if not target.web_socket_debugger_url:
+            refreshed = next((item for item in self.page_targets() if item.id == target.id), None)
+            if refreshed is not None:
+                target = refreshed
+        if not target.web_socket_debugger_url:
+            raise RuntimeError(f"tab has no debugger websocket: {target.id}")
+        return websocket.create_connection(target.web_socket_debugger_url, timeout=10)
+
+    def _call(self, ws, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        self._message_id += 1
+        message_id = self._message_id
+        ws.send(json.dumps({"id": message_id, "method": method, "params": params or {}}))
+        while True:
+            payload = json.loads(ws.recv())
+            if payload.get("id") != message_id:
+                continue
+            if payload.get("error"):
+                raise RuntimeError(f"CDP {method} failed: {payload['error']}")
+            return payload
+
+
+def _default_operation(tool_name: str) -> str:
+    return "navigate" if tool_name == "browser.control" else "open"
+
+
+def _target_url(url: Any, query: Any, objective: Any, *, search_template: str, force_search: bool) -> str:
+    explicit_url = str(url or "").strip()
+    if explicit_url:
+        return _normalize_url(explicit_url)
+    objective_text = str(objective or "").strip()
+    found_url = _first_url(objective_text)
+    if found_url and not force_search:
+        return _normalize_url(found_url)
+    query_text = str(query or "").strip() or _query_from_objective(objective_text)
+    if query_text:
+        return _search_url(search_template, query_text)
+    return "about:blank"
+
+
+def _first_url(value: str) -> str | None:
+    match = re.search(r"https?://[^\s<>()]+|www\.[^\s<>()]+", value)
+    return match.group(0).rstrip(".,") if match else None
+
+
+def _query_from_objective(value: str) -> str:
+    cleaned = value.strip()
+    cleaned = re.sub(r"\b(open|launch|go to|browse|search|look up|find|summarize|summary|tell me about)\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    return cleaned
+
+
+def _search_url(template: str, query: str) -> str:
+    return template.format(query=parse.quote_plus(query))
+
+
+def _normalize_url(url: str) -> str:
+    stripped = url.strip()
+    if stripped.startswith(("about:", "http://", "https://", "chrome://", "edge://")):
+        return stripped
+    if stripped.startswith("www."):
+        return f"https://{stripped}"
+    return f"https://{stripped}"
+
+
+def _objective_wants_first_result(objective: str) -> bool:
+    lowered = objective.lower()
+    return any(phrase in lowered for phrase in ("first result", "first website", "first site", "go to the first", "open the first"))
+
+
+def _objective_wants_screenshot(objective: str) -> bool:
+    lowered = objective.lower()
+    return "screenshot" in lowered or "screen shot" in lowered
+
+
+def _first_external_link(links: list[dict[str, Any]], current_url: str) -> dict[str, str] | None:
+    current_host = parse.urlparse(current_url).netloc.lower()
+    for item in links:
+        href = str(item.get("href") or "").strip()
+        text = str(item.get("text") or "").strip()
+        if not href.startswith(("http://", "https://")):
+            continue
+        host = parse.urlparse(href).netloc.lower()
+        if not host or host == current_host:
+            continue
+        if any(blocked in host for blocked in ("bing.com", "google.com", "microsoft.com")) and "search" in href:
+            continue
+        return {"href": href, "text": text}
+    return None
+
+
+def _tab_summary(target: BrowserTarget) -> dict[str, str]:
+    return {"id": target.id, "title": target.title, "url": target.url}
+
+
+def _tabs_summary(tabs: list[dict[str, Any]]) -> str:
+    if not tabs:
+        return "No Chrome tabs are exposed through the configured remote debugging session."
+    lines = [f"{len(tabs)} Chrome tab(s) exposed through remote debugging:"]
+    for index, tab in enumerate(tabs, 1):
+        title = tab.get("title") or "Untitled"
+        url = tab.get("url") or ""
+        lines.append(f"{index}. {title} - {url}")
+    return "\n".join(lines)
+
+
+def _page_summary_text(page: dict[str, Any]) -> str:
+    lines = [
+        f"Title: {page.get('title') or 'Untitled'}",
+        f"URL: {page.get('url') or ''}",
+    ]
+    if page.get("description"):
+        lines.append(f"Description: {page['description']}")
+    headings = page.get("headings") if isinstance(page.get("headings"), list) else []
+    if headings:
+        lines.append("Headings: " + "; ".join(str(item) for item in headings[:8]))
+    forms = page.get("forms") if isinstance(page.get("forms"), list) else []
+    if forms:
+        lines.append(f"Forms detected: {len(forms)}")
+    text = str(page.get("text") or "").strip()
+    if text:
+        lines.append("")
+        lines.append(_clip(text, 2200))
+    return "\n".join(lines)
+
+
+def _terminal_output(operation: str, output: dict[str, Any]) -> dict[str, Any]:
+    summary = output.get("summary") or ""
+    url = output.get("url") or output.get("browser_url")
+    screenshot = output.get("screenshot_path")
+    parts = [f"Browser operation `{operation}` completed."]
+    if url:
+        parts.append(f"URL: {url}")
+    if screenshot:
+        parts.append(f"Screenshot: {screenshot}")
+    if summary:
+        parts.append("")
+        parts.append(str(summary))
+    return {"content": "\n".join(parts), "is_final": True, "exit_code": 0}
+
+
+def _summary_script(max_chars: int) -> str:
+    return f"""(() => {{
+  const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+  const meta = document.querySelector('meta[name="description"], meta[property="og:description"]');
+  const headings = Array.from(document.querySelectorAll('h1,h2,h3'))
+    .map((node) => normalize(node.innerText || node.textContent))
+    .filter(Boolean)
+    .slice(0, 12);
+  const links = Array.from(document.querySelectorAll('a[href]'))
+    .map((node) => {{
+      try {{
+        return {{ text: normalize(node.innerText || node.textContent).slice(0, 180), href: new URL(node.href, location.href).href }};
+      }} catch (error) {{
+        return null;
+      }}
+    }})
+    .filter(Boolean)
+    .slice(0, 40);
+  const forms = Array.from(document.querySelectorAll('form')).map((form) => {{
+    const inputs = Array.from(form.querySelectorAll('input, textarea, select')).map((node) => {{
+      return {{
+        name: node.getAttribute('name') || '',
+        id: node.id || '',
+        placeholder: node.getAttribute('placeholder') || '',
+        ariaLabel: node.getAttribute('aria-label') || '',
+        type: node.getAttribute('type') || node.tagName.toLowerCase()
+      }};
+    }});
+    return {{ action: form.action || '', method: form.method || '', inputs }};
+  }}).slice(0, 8);
+  return {{
+    url: location.href,
+    title: document.title || '',
+    description: meta ? normalize(meta.getAttribute('content')) : '',
+    headings,
+    links,
+    forms,
+    text: normalize(document.body ? document.body.innerText : '').slice(0, {int(max_chars)})
+  }};
+}})()"""
+
+
+def _click_script(selector: str | None, text: str | None) -> str:
+    selector_json = json.dumps(selector)
+    text_json = json.dumps(text.lower() if text else None)
+    return f"""(() => {{
+  const selector = {selector_json};
+  const wantedText = {text_json};
+  const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+  let node = selector ? document.querySelector(selector) : null;
+  if (!node && wantedText) {{
+    node = Array.from(document.querySelectorAll('button,a,input,[role="button"]'))
+      .find((item) => normalize(item.innerText || item.value || item.getAttribute('aria-label')).includes(wantedText));
+  }}
+  if (!node) return {{ clicked: false, reason: 'element_not_found' }};
+  node.click();
+  return {{ clicked: true, tag: node.tagName, text: (node.innerText || node.value || '').slice(0, 160) }};
+}})()"""
+
+
+def _fill_form_script(fields: dict[str, str], *, submit: bool, submit_selector: str | None) -> str:
+    fields_json = json.dumps(fields)
+    submit_selector_json = json.dumps(submit_selector)
+    return f"""(() => {{
+  const fields = {fields_json};
+  const submit = {json.dumps(submit)};
+  const submitSelector = {submit_selector_json};
+  const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+  const matches = (node, key) => {{
+    const wanted = normalize(key);
+    const label = node.id ? document.querySelector(`label[for="${{CSS.escape(node.id)}}"]`) : null;
+    const candidates = [
+      node.name,
+      node.id,
+      node.placeholder,
+      node.getAttribute('aria-label'),
+      label ? label.innerText : ''
+    ].map(normalize);
+    return candidates.some((value) => value === wanted || value.includes(wanted));
+  }};
+  const filled = [];
+  const nodes = Array.from(document.querySelectorAll('input, textarea, select'));
+  for (const [key, value] of Object.entries(fields)) {{
+    const node = nodes.find((item) => matches(item, key));
+    if (!node) continue;
+    node.focus();
+    node.value = value;
+    node.dispatchEvent(new Event('input', {{ bubbles: true }}));
+    node.dispatchEvent(new Event('change', {{ bubbles: true }}));
+    filled.push(key);
+  }}
+  if (submit) {{
+    const submitNode = submitSelector ? document.querySelector(submitSelector) : document.querySelector('button[type="submit"], input[type="submit"]');
+    if (submitNode) submitNode.click();
+    else if (document.forms[0]) document.forms[0].requestSubmit();
+  }}
+  return {{ filled, submitted: submit }};
+}})()"""
+
+
+def _chrome_path(configured: str | None) -> str:
+    if configured:
+        configured_path = Path(configured).expanduser()
+        if configured_path.exists():
+            return str(configured_path)
+    candidates = [
+        shutil.which("chrome"),
+        shutil.which("chrome.exe"),
+        shutil.which("google-chrome"),
+        shutil.which("chromium"),
+        shutil.which("chromium-browser"),
+    ]
+    for env_name in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"):
+        env_value = os.environ.get(env_name)
+        value = Path(env_value) if env_value else None
+        if value is None and env_name == "LOCALAPPDATA":
+            value = Path.home() / "AppData" / "Local"
+        if value:
+            candidates.append(str(value / "Google" / "Chrome" / "Application" / "chrome.exe"))
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return str(candidate)
+    raise RuntimeError("Chrome executable was not found; set adapters.browser.chrome_path")
+
+
+def _remote_debugging_note() -> str:
+    return (
+        "Only Chrome tabs exposed through the configured remote debugging port can be inspected. "
+        "Normal Chrome windows launched without remote debugging are not visible to this adapter."
+    )
+
+
+def _safe_png_filename(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._")
+    if not cleaned.lower().endswith(".png"):
+        cleaned = f"{cleaned or 'screenshot'}.png"
+    return cleaned
+
+
+def _safe_stem(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._") or "screenshot"
+
+
+def _clip(value: str, limit: int) -> str:
+    return value if len(value) <= limit else f"{value[: limit - 3]}..."
+
+
+def _failed(request: ToolCallRequest, message: str) -> ToolCallResult:
+    return ToolCallResult(
+        request_id=request.id,
+        status=ToolResultStatus.FAILED,
+        error_class=ErrorClass.ADAPTER_FAILED,
+        error_message=message,
+    )

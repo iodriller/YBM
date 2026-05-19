@@ -85,8 +85,11 @@ def _result_lines(task: TaskRecord) -> list[str]:
         or _output_value(task, "screenshot_uri")
         or _output_value(task, "screenshot_path")
     )
+    result_url = task.metadata.get("preview_url") or _output_value(task, "url")
+    browser_url = task.metadata.get("browser_url") or _output_value(task, "browser_url")
     for label, value in (
-        ("Result", task.metadata.get("preview_url") or _output_value(task, "url")),
+        ("Result", result_url),
+        ("Browser", browser_url if browser_url != result_url else None),
         ("Workspace", task.metadata.get("workspace_dir") or _output_value(task, "workspace_dir")),
         ("Adapter", task.metadata.get("adapter_dir") or _output_value(task, "adapter_dir")),
         ("Pull request", pull_request),
@@ -147,7 +150,7 @@ def _last_output(task: TaskRecord) -> str | None:
             last = terminal_output[-1]
             if isinstance(last, dict) and last.get("content"):
                 return str(last["content"]).strip()
-        for key in ("stdout", "response", "text"):
+        for key in ("final_summary", "summary", "stdout", "response", "text"):
             if output.get(key):
                 return str(output[key]).strip()
     return None

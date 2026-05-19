@@ -221,3 +221,8 @@ def _sync_adapter_flag(config: dict[str, Any], group_name: str, mode: Capability
     elif group_name == "desktop_control":
         desktop = config.setdefault("adapters", {}).setdefault("desktop", {})
         desktop["control_enabled"] = mode in {CapabilityAccessMode.WRITE_ACCESS, CapabilityAccessMode.FULL_ACCESS}
+        computer_use = config.setdefault("adapters", {}).setdefault("computer_use", {})
+        computer_use["enabled"] = mode in {CapabilityAccessMode.WRITE_ACCESS, CapabilityAccessMode.FULL_ACCESS}
+    elif group_name == "browser":
+        browser = config.setdefault("adapters", {}).setdefault("browser", {})
+        browser["enabled"] = mode != CapabilityAccessMode.OFF

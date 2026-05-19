@@ -111,6 +111,20 @@ class WorkspaceAdapterConfig(StrictBaseModel):
     open_browser: bool = True
 
 
+class BrowserAdapterConfig(StrictBaseModel):
+    enabled: bool = True
+    host: str = "127.0.0.1"
+    remote_debugging_port: int = Field(default=9222, ge=1, le=65535)
+    chrome_path: str | None = None
+    user_data_dir: str = ".agent_control/browser/chrome-profile"
+    screenshot_dir: str = ".agent_control/browser/screenshots"
+    launch_if_missing: bool = True
+    startup_timeout_seconds: int = Field(default=10, ge=1, le=60)
+    default_wait_seconds: float = Field(default=1.5, ge=0.0, le=30.0)
+    max_summary_chars: int = Field(default=6000, ge=500, le=50000)
+    search_url_template: str = "https://www.bing.com/search?q={query}"
+
+
 class AdapterFactoryConfig(StrictBaseModel):
     enabled: bool = True
     root_dir: str = ".agent_control/adapters"
@@ -139,6 +153,17 @@ class DesktopAdapterConfig(StrictBaseModel):
     screenshot_format: Literal["png"] = "png"
 
 
+class ComputerUseAdapterConfig(StrictBaseModel):
+    enabled: bool = False
+    max_steps: int = Field(default=8, ge=1, le=50)
+    step_delay_seconds: float = Field(default=0.4, ge=0.0, le=10.0)
+    screenshot_dir: str = ".agent_control/computer_use/screenshots"
+    allowed_apps: list[str] = Field(default_factory=list)
+    allowed_roots: list[str] = Field(default_factory=lambda: [".agent_control/workspaces"])
+    require_session_approval: bool = True
+    max_ui_elements: int = Field(default=80, ge=0, le=500)
+
+
 class STTAdapterConfig(StrictBaseModel):
     enabled: bool = False
     provider: str = "local_whisper"
@@ -148,10 +173,12 @@ class STTAdapterConfig(StrictBaseModel):
 class AdaptersConfig(StrictBaseModel):
     vscode: VSCodeAdapterConfig = Field(default_factory=VSCodeAdapterConfig)
     workspace: WorkspaceAdapterConfig = Field(default_factory=WorkspaceAdapterConfig)
+    browser: BrowserAdapterConfig = Field(default_factory=BrowserAdapterConfig)
     adapter_factory: AdapterFactoryConfig = Field(default_factory=AdapterFactoryConfig)
     terminal: TerminalAdapterConfig = Field(default_factory=TerminalAdapterConfig)
     coding_assistant: CodingAssistantAdapterConfig = Field(default_factory=CodingAssistantAdapterConfig)
     desktop: DesktopAdapterConfig = Field(default_factory=DesktopAdapterConfig)
+    computer_use: ComputerUseAdapterConfig = Field(default_factory=ComputerUseAdapterConfig)
     stt: STTAdapterConfig = Field(default_factory=STTAdapterConfig)
 
 

@@ -15,6 +15,11 @@ def test_streamlit_admin_helpers_parse_ids_and_status_labels() -> None:
     assert admin_streamlit._tasks_path(20, 5) == "/admin/api/tasks?limit=20&offset=5"
     assert admin_streamlit._audit_path(25, "tool", "copilot") == "/admin/api/audit?limit=25&category=tool&q=copilot"
     assert admin_streamlit._legacy_admin_url("http://127.0.0.1:8765", "secret token") == "http://127.0.0.1:8765/admin?token=secret+token"
+    assert admin_streamlit._access_mode_class("full_access") == "mode-full"
+    assert admin_streamlit._access_mode_class("write_access") == "mode-write"
+    assert admin_streamlit._access_mode_class("read_only") == "mode-read"
+    assert admin_streamlit._access_mode_class("off") == "mode-off"
+    assert admin_streamlit._parse_lines(" C:/work \n\nC:/tmp ") == ["C:/work", "C:/tmp"]
 
 
 def test_streamlit_admin_extracts_task_links_and_tool_output() -> None:
@@ -174,6 +179,7 @@ def fake_api_json(backend_url, path, token, method="GET", payload=None):
                 "workspace": {"enabled": True, "root_dir": ".agent_control/workspaces", "web_host": "127.0.0.1", "web_port_start": 8890, "open_browser": True},
                 "vscode": {"enabled": True, "bridge_host": "127.0.0.1", "bridge_port": 8766, "auth_token_env": "VSCODE_BRIDGE_TOKEN"},
                 "adapter_factory": {"root_dir": ".agent_control/adapters"},
+                "computer_use": {"enabled": True, "max_steps": 8, "screenshot_dir": ".agent_control/computer_use/screenshots", "allowed_roots": [".agent_control/workspaces"], "allowed_apps": []},
             },
             "server": {},
             "storage": {},

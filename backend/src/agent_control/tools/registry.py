@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from pydantic import BaseModel, ValidationError
@@ -7,14 +8,35 @@ from pydantic import BaseModel, ValidationError
 from agent_control.config import AppSettings
 from agent_control.schemas import Capability, PlanModel
 from agent_control.tools.adapter_factory import AdapterFactoryAdapter
+from agent_control.tools.browser import BrowserAdapter
 from agent_control.tools.coding_assistant import GenericTerminalAgentAdapter
+from agent_control.tools.computer_use import ComputerUseAdapter
 from agent_control.tools.contracts import (
     AdapterFactoryAssessInput,
     AdapterFactoryAssessOutput,
     AdapterFactoryScaffoldInput,
     AdapterFactoryScaffoldOutput,
+    BrowserClickInput,
+    BrowserCloseTabInput,
+    BrowserFillFormInput,
+    BrowserInspectTabsInput,
+    BrowserNavigateInput,
+    BrowserOpenInput,
+    BrowserResearchInput,
+    BrowserScreenshotInput,
+    BrowserSearchInput,
+    BrowserToolOutput,
     CodingAssistantInput,
     CodingAssistantOutput,
+    ComputerActInput,
+    ComputerObserveInput,
+    ComputerRunGoalInput,
+    ComputerUseOutput,
+    FilesystemApplyManifestInput,
+    FilesystemInspectInput,
+    FilesystemManageOutput,
+    FilesystemOrganizePlanInput,
+    FilesystemSearchInput,
     VSCodeCopilotTerminalInput,
     VSCodeTerminalCommandInput,
     VSCodeTerminalToolOutput,
@@ -26,9 +48,10 @@ from agent_control.tools.contracts import (
     WorkspacePrepareOutput,
     WorkspaceWebAppPreviewInput,
     WorkspaceWebAppPreviewOutput,
-    WorkspaceWriteFilesOutput,
     WorkspaceWriteFilesInput,
+    WorkspaceWriteFilesOutput,
 )
+from agent_control.tools.filesystem_manage import FilesystemManageAdapter
 from agent_control.tools.local_workspace import LocalWorkspaceAdapter
 from agent_control.tools.vscode_bridge import VSCodeBridgeTerminalAdapter
 
@@ -143,7 +166,12 @@ class ToolRegistry:
         return plan.model_copy(update={"steps": steps, "required_capabilities": required_capabilities})
 
 
-def build_tool_registry(settings: AppSettings, backend_base_url: str) -> ToolRegistry:
+def build_tool_registry(
+    settings: AppSettings,
+    backend_base_url: str,
+    provider: object | None = None,
+    should_continue: Callable[[str], bool] | None = None,
+) -> ToolRegistry:
     adapters: dict[str, object] = {}
     definitions: list[ToolDefinition] = []
 
@@ -176,6 +204,33 @@ def build_tool_registry(settings: AppSettings, backend_base_url: str) -> ToolReg
         workspace = LocalWorkspaceAdapter(settings.adapters.workspace)
         adapters["workspace.manage"] = workspace
         adapters["workspace.web_app"] = workspace
+
+    filesystem_enabled = (
+        settings.adapters.computer_use.enabled
+        and _capability_enabled(settings, Capability.FILESYSTEM_WRITE)
+    )
+    definitions.append(
+        ToolDefinition(
+            name="filesystem.manage",
+            capability=Capability.FILESYSTEM_WRITE,
+            enabled=filesystem_enabled,
+            description=(
+                "inspect, search, plan organization, and apply move/copy manifests inside configured "
+                f"roots: {', '.join(settings.adapters.computer_use.allowed_roots) or '<none>'}"
+            ),
+            operations=("inspect_folder", "search", "organize_plan", "apply_manifest"),
+            operation_schemas={
+                "inspect_folder": FilesystemInspectInput,
+                "search": FilesystemSearchInput,
+                "organize_plan": FilesystemOrganizePlanInput,
+                "apply_manifest": FilesystemApplyManifestInput,
+            },
+            output_schema=FilesystemManageOutput,
+            default_operation="inspect_folder",
+        )
+    )
+    if settings.adapters.computer_use.enabled:
+        adapters["filesystem.manage"] = FilesystemManageAdapter(settings.adapters.computer_use.allowed_roots)
 
     factory_enabled = _capability_enabled(settings, Capability.FILESYSTEM_WRITE) and settings.adapters.adapter_factory.enabled
     definitions.append(
@@ -240,29 +295,88 @@ def build_tool_registry(settings: AppSettings, backend_base_url: str) -> ToolReg
     if settings.adapters.coding_assistant.enabled:
         adapters["coding_assistant"] = GenericTerminalAgentAdapter(settings.adapters.coding_assistant)
 
-    definitions.extend(
-        [
-            ToolDefinition(
-                name="desktop.screenshot",
-                capability=Capability.DESKTOP_SCREENSHOT,
-                enabled=_capability_enabled(settings, Capability.DESKTOP_SCREENSHOT)
-                and settings.adapters.desktop.screenshot_enabled,
-                description="capture a desktop screenshot through the Telegram command path",
-            ),
-            ToolDefinition(
-                name="browser.open",
-                capability=Capability.BROWSER_OPEN,
-                enabled=False,
-                description="not implemented yet; capability exists but no browser adapter is registered",
-            ),
-            ToolDefinition(
-                name="browser.control",
-                capability=Capability.BROWSER_CONTROL,
-                enabled=False,
-                description="not implemented yet; capability exists but no browser control adapter is registered",
-            ),
-        ]
+    computer_use_enabled = (
+        settings.adapters.computer_use.enabled
+        and settings.adapters.desktop.control_enabled
+        and _capability_enabled(settings, Capability.DESKTOP_CONTROL)
     )
+    definitions.append(
+        ToolDefinition(
+            name="computer.use",
+            capability=Capability.DESKTOP_CONTROL,
+            enabled=computer_use_enabled,
+            description="observe and control the local Windows desktop with bounded screenshot/action loops",
+            operations=("observe", "act", "run_goal"),
+            operation_schemas={
+                "observe": ComputerObserveInput,
+                "act": ComputerActInput,
+                "run_goal": ComputerRunGoalInput,
+            },
+            output_schema=ComputerUseOutput,
+            default_operation="observe",
+        )
+    )
+    if settings.adapters.computer_use.enabled:
+        adapters["computer.use"] = ComputerUseAdapter(
+            settings.adapters.computer_use,
+            provider=provider,
+            should_continue=should_continue,
+        )
+
+    definitions.append(
+        ToolDefinition(
+            name="desktop.screenshot",
+            capability=Capability.DESKTOP_SCREENSHOT,
+            enabled=_capability_enabled(settings, Capability.DESKTOP_SCREENSHOT)
+            and settings.adapters.desktop.screenshot_enabled,
+            description="capture a desktop screenshot through the Telegram command path",
+        )
+    )
+
+    browser_open_enabled = settings.adapters.browser.enabled and _capability_enabled(settings, Capability.BROWSER_OPEN)
+    browser_control_enabled = settings.adapters.browser.enabled and _capability_enabled(settings, Capability.BROWSER_CONTROL)
+    definitions.append(
+        ToolDefinition(
+            name="browser.open",
+            capability=Capability.BROWSER_OPEN,
+            enabled=browser_open_enabled,
+            description=(
+                "open Chrome, search the web, summarize exposed tabs/pages, and capture browser screenshots "
+                f"through DevTools at {settings.adapters.browser.host}:{settings.adapters.browser.remote_debugging_port}"
+            ),
+            operations=("open", "search", "research", "inspect_tabs", "screenshot"),
+            operation_schemas={
+                "open": BrowserOpenInput,
+                "search": BrowserSearchInput,
+                "research": BrowserResearchInput,
+                "inspect_tabs": BrowserInspectTabsInput,
+                "screenshot": BrowserScreenshotInput,
+            },
+            output_schema=BrowserToolOutput,
+            default_operation="open",
+        )
+    )
+    definitions.append(
+        ToolDefinition(
+            name="browser.control",
+            capability=Capability.BROWSER_CONTROL,
+            enabled=browser_control_enabled,
+            description="navigate, close tabs, click elements, and fill simple forms in Chrome through DevTools",
+            operations=("navigate", "close_tab", "click", "fill_form"),
+            operation_schemas={
+                "navigate": BrowserNavigateInput,
+                "close_tab": BrowserCloseTabInput,
+                "click": BrowserClickInput,
+                "fill_form": BrowserFillFormInput,
+            },
+            output_schema=BrowserToolOutput,
+            default_operation="navigate",
+        )
+    )
+    if settings.adapters.browser.enabled:
+        browser = BrowserAdapter(settings.adapters.browser)
+        adapters["browser.open"] = browser
+        adapters["browser.control"] = browser
 
     return ToolRegistry(adapters=adapters, definitions=tuple(definitions))
 
