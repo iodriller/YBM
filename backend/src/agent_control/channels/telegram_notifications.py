@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from agent_control.channels.telegram import TelegramBotApi
 from agent_control.schemas import TaskRecord, TaskStatus
 
@@ -12,7 +14,28 @@ class TelegramTaskNotifier:
         chat_id = _task_chat_id(task)
         if not chat_id:
             return
-        await self.client.send_message(chat_id, _task_message(task))
+        
+        # Check if there's a screenshot to send as image
+        screenshot_path = (
+            task.metadata.get("screenshot_path")
+            or task.metadata.get("screenshot_uri")
+            or _output_value(task, "screenshot_path")
+            or _output_value(task, "screenshot_uri")
+        )
+        
+        message_text = _task_message(task)
+        
+        # Send screenshot as photo if available
+        if screenshot_path and Path(screenshot_path).exists():
+            try:
+                await self.client.send_photo_file(chat_id, screenshot_path, _task_message_caption(task))
+                return
+            except Exception:
+                # Fall back to text message if photo send fails
+                pass
+        
+        # Send as text message
+        await self.client.send_message(chat_id, message_text)
 
 
 def _task_chat_id(task: TaskRecord) -> str | None:
@@ -182,3 +205,26 @@ def _trim(value: str, limit: int) -> str:
     if len(value) <= limit:
         return value
     return f"{value[: limit - 3]}..."
+
+
+def _task_message_caption(task: TaskRecord) -> str | None:
+    """Create a short caption for photo messages (Telegram limit: 1024 chars)."""
+    if task.status == TaskStatus.COMPLETED:
+        line = f"Done: {_trim(task.objective, 100)}"
+    elif task.status == TaskStatus.AWAITING_APPROVAL:
+        line = f"Approval needed: {_trim(task.objective, 100)}"
+    elif task.status == TaskStatus.BLOCKED:
+        line = f"Blocked: {_trim(task.objective, 100)}"
+    elif task.status == TaskStatus.FAILED:
+        line = f"Could not finish: {_trim(task.objective, 100)}"
+    elif task.status == TaskStatus.CANCELLED:
+        line = f"Cancelled: {_trim(task.objective, 100)}"
+    else:
+        line = f"Task {task.status.value}: {_trim(task.objective, 100)}"
+    
+    # Add brief output summary if available
+    output = _last_output(task)
+    if output:
+        line += f"\n{_trim(output, 400)}"
+    
+    return _trim(line, 1024)
