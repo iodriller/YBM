@@ -33,6 +33,7 @@ def expected_fulfillment(objective: str) -> dict[str, bool]:
         "document_summary": any(item.type == PostconditionType.DOCUMENT_SUMMARY for item in expected),
         "presentation_file": any(item.type == PostconditionType.PRESENTATION_FILE for item in expected),
         "coding_agent_step": any(item.type == PostconditionType.CODING_AGENT_STEP for item in expected),
+        "schedule_created": any(item.type == PostconditionType.SCHEDULE_CREATED for item in expected),
         "browser_state": any(item.type == PostconditionType.BROWSER_STATE for item in expected),
         "desktop_observation": any(item.type == PostconditionType.DESKTOP_OBSERVATION for item in expected),
         "file_organization": any(item.type == PostconditionType.FILE_ORGANIZATION for item in expected),
@@ -103,6 +104,13 @@ def _postconditions_from_plan(plan: PlanModel) -> list[PlanPostcondition]:
                 PlanPostcondition(
                     type=PostconditionType.CODING_AGENT_STEP,
                     description="A coding-agent invocation completed or reported a limit.",
+                )
+            )
+        if step.tool_name == "schedule.manage" and operation in {"create", "run_now"}:
+            expected.append(
+                PlanPostcondition(
+                    type=PostconditionType.SCHEDULE_CREATED,
+                    description="A schedule ID or scheduled task ID is reported.",
                 )
             )
         if step.tool_name in {"workspace.manage", "workspace.web_app"}:
@@ -239,6 +247,16 @@ def _postconditions_from_objective(objective: str) -> list[PlanPostcondition]:
                 description="External command completion is reported.",
             )
         )
+    if (
+        bool(words & {"schedule", "scheduled", "recurring", "daily", "weekly"})
+        or bool(re.search(r"\bevery\s+\d+\s+(?:minute|minutes|hour|hours|day|days|week|weeks)\b", lowered))
+    ) and bool(words & {"create", "add", "set", "run", "check", "search"}):
+        expected.append(
+            PlanPostcondition(
+                type=PostconditionType.SCHEDULE_CREATED,
+                description="A schedule ID and next run timestamp are reported.",
+            )
+        )
     return _dedupe(expected)
 
 
@@ -266,6 +284,8 @@ def _postcondition_satisfied(task: TaskRecord, expected: PostconditionType) -> b
         return output.get("provider") in {"codex", "github_copilot"} and (
             output.get("returncode") == 0 or bool((output.get("limit_state") or {}).get("limited"))
         )
+    if expected == PostconditionType.SCHEDULE_CREATED:
+        return bool(_any_value(task, metadata_keys=("schedule_id",), output_keys=("schedule_id", "task_id")))
     if expected == PostconditionType.BROWSER_STATE:
         return bool(
             _any_value(
@@ -368,4 +388,6 @@ def _gap_reason(value: PostconditionType) -> str:
         return "expected_preview_url_missing"
     if value == PostconditionType.ADAPTER_PROPOSAL:
         return "expected_adapter_proposal_missing"
+    if value == PostconditionType.SCHEDULE_CREATED:
+        return "expected_schedule_created_missing"
     return f"expected_{value.value}_missing"

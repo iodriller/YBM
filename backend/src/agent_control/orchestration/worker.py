@@ -356,6 +356,9 @@ class TaskWorker:
             ("coding_agent_workspace", "workspace_dir"),
             ("coding_agent_session_id", "session_id"),
             ("coding_agent_limit_state", "limit_state"),
+            ("schedule_id", "schedule_id"),
+            ("scheduled_task_id", "task_id"),
+            ("schedule_next_run_at", "next_run_at"),
         ):
             if output.get(output_key):
                 metadata[metadata_key] = output[output_key]

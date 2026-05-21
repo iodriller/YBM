@@ -22,7 +22,11 @@ function Stop-StackOrphans {
     if (-not $commandLine) {
       return $false
     }
-    if ($commandLine -like "*agent_control.cli poll-telegram*" -or $commandLine -like "*agent_control.cli run-worker*") {
+    if (
+      $commandLine -like "*agent_control.cli poll-telegram*" -or
+      $commandLine -like "*agent_control.cli run-worker*" -or
+      $commandLine -like "*agent_control.cli run-scheduler*"
+    ) {
       return $true
     }
     $commandLine -like "*$rootPath*" -and (
@@ -31,6 +35,7 @@ function Stop-StackOrphans {
       $commandLine -like "*run_backend.ps1*" -or
       $commandLine -like "*run_telegram_polling.ps1*" -or
       $commandLine -like "*run_worker.ps1*" -or
+      $commandLine -like "*run_scheduler.ps1*" -or
       $commandLine -like "*uvicorn agent_control.main:app*"
     )
   }

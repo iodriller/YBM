@@ -27,6 +27,7 @@ def _expected_services(settings: AppSettings) -> dict[str, bool]:
     return {
         "backend": True,
         "worker": True,
+        "scheduler": bool(settings.scheduler.enabled),
         "telegram_polling": bool(settings.channels.telegram.enabled and settings.channels.telegram.polling),
         "admin_ui": bool(settings.server.admin_enabled),
     }

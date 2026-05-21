@@ -21,6 +21,7 @@ from agent_control.storage.audit import AuditLogger
 from agent_control.storage.audit_view import format_audit_event
 from agent_control.storage.database import Database
 from agent_control.storage.repositories import Repositories
+from agent_control.tools.registry import build_tool_registry
 from agent_control.tools.vscode_bridge import VSCodeBridgeStore, VSCodeTerminalCommand
 
 
@@ -156,6 +157,8 @@ def create_admin_router(
         tasks = repositories.tasks.list_recent(task_limit)
         task_total = repositories.tasks.count()
         audit_events = repositories.audit.list_recent(20)
+        schedules = repositories.schedules.list_recent(10)
+        audit_logger = AuditLogger(repositories.audit, loaded.logging.redact_patterns)
         return {
             "status": "ok",
             "config": loaded.safe_summary(),
@@ -175,6 +178,11 @@ def create_admin_router(
             "warnings": _config_warnings(loaded),
             "database": _database_summary(loaded),
             "services": service_summary(loaded),
+            "schedules": {
+                "total": repositories.schedules.count(),
+                "items": [schedule.model_dump(mode="json") for schedule in schedules],
+            },
+            "tool_registry": _tool_registry_summary(loaded, repositories, audit_logger),
             "integrations": {
                 "telegram": {
                     "enabled": loaded.channels.telegram.enabled,
@@ -298,6 +306,15 @@ def create_admin_router(
                 or needle in str(event.details).lower()
             ]
         return {"events": [event.model_dump(mode="json") for event in formatted[:limit]]}
+
+    @router.get("/api/schedules")
+    def admin_schedules(request: Request, limit: int = Query(default=25, ge=1, le=100)) -> dict[str, Any]:
+        require_admin(request)
+        repositories = repositories_loader()
+        return {
+            "total": repositories.schedules.count(),
+            "schedules": [schedule.model_dump(mode="json") for schedule in repositories.schedules.list_recent(limit)],
+        }
 
     @router.delete("/api/audit")
     def admin_clear_audit(request: Request) -> dict[str, Any]:
@@ -761,6 +778,9 @@ def _config_warnings(settings: AppSettings) -> list[str]:
         warnings.append("Default orchestrator LLM profile is not configured; Telegram task classification will fail.")
     if read_env_value("AGENT_CAPABILITIES"):
         warnings.append("AGENT_CAPABILITIES is set in the environment and may override access-mode changes saved to YAML.")
+    schedule_policy = settings.capabilities.get(Capability.SCHEDULE_MANAGE)
+    if settings.scheduler.enabled and not (schedule_policy and schedule_policy.enabled):
+        warnings.append("Scheduler service is enabled, but schedule.manage capability is off; scheduled jobs cannot be created from tasks.")
     return warnings
 
 
@@ -776,6 +796,7 @@ def _database_summary(settings: AppSettings) -> dict[str, Any]:
         "approvals",
         "tool_invocations",
         "artifacts",
+        "schedules",
         "audit_events",
     ]
     counts: dict[str, int] = {}
@@ -792,6 +813,73 @@ def _database_summary(settings: AppSettings) -> dict[str, Any]:
         "last_audit_at": last_audit[0] if last_audit else None,
         "recommended_vscode_extension": "qwtel.sqlite-viewer",
     }
+
+
+def _tool_registry_summary(settings: AppSettings, repositories: Repositories, audit: AuditLogger) -> dict[str, Any]:
+    registry = build_tool_registry(
+        settings,
+        _backend_base_url(settings),
+        artifact_repository=repositories.artifacts,
+        task_repository=repositories.tasks,
+        repositories=repositories,
+        audit_logger=audit,
+    )
+    tools = []
+    for definition in registry.definitions:
+        operations = list(definition.operations)
+        tools.append(
+            {
+                "name": definition.name,
+                "group": _tool_group(definition.name),
+                "capability": definition.capability.value,
+                "enabled": definition.enabled,
+                "lifecycle": definition.lifecycle,
+                "operations": operations,
+                "default_operation": definition.default_operation,
+                "input_schema": definition.input_schema.__name__ if definition.input_schema else None,
+                "output_schema": definition.output_schema.__name__ if definition.output_schema else None,
+                "operation_schemas": {
+                    operation: schema.__name__
+                    for operation, schema in (definition.operation_schemas or {}).items()
+                },
+                "operation_output_schemas": {
+                    operation: schema.__name__
+                    for operation, schema in (definition.operation_output_schemas or {}).items()
+                },
+            }
+        )
+    return {
+        "total": len(tools),
+        "enabled": len([tool for tool in tools if tool["enabled"]]),
+        "tools": tools,
+    }
+
+
+def _backend_base_url(settings: AppSettings) -> str:
+    if settings.server.public_base_url:
+        return settings.server.public_base_url
+    host = "127.0.0.1" if settings.server.host in {"0.0.0.0", "::"} else settings.server.host
+    return f"http://{host}:{settings.server.port}"
+
+
+def _tool_group(name: str) -> str:
+    if name.startswith("browser."):
+        return "browser"
+    if name.startswith("computer.") or name.startswith("desktop."):
+        return "desktop"
+    if name.startswith("filesystem.") or name.startswith("workspace."):
+        return "filesystem"
+    if name.startswith("document."):
+        return "documents"
+    if name in {"coding.agent", "coding_assistant", "vscode.copilot_terminal", "vscode.terminal_command"}:
+        return "coding_agents"
+    if name.startswith("schedule."):
+        return "schedules"
+    if name.startswith("artifact."):
+        return "artifacts"
+    if name.startswith("adapter."):
+        return "adapter_factory"
+    return "other"
 
 
 _ADMIN_HTML = """

@@ -57,6 +57,12 @@ class TaskStatus(StrEnum):
     FAILED = "failed"
 
 
+class ScheduleStatus(StrEnum):
+    ENABLED = "enabled"
+    PAUSED = "paused"
+    DELETED = "deleted"
+
+
 class SubtaskStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
@@ -88,6 +94,7 @@ class Capability(StrEnum):
     DESKTOP_CONTROL = "desktop.control"
     BROWSER_OPEN = "browser.open"
     BROWSER_CONTROL = "browser.control"
+    SCHEDULE_MANAGE = "schedule.manage"
     GITHUB_READ = "github.read"
     GITHUB_PUSH = "github.push"
     DEPENDENCIES_INSTALL = "dependencies.install"
@@ -147,6 +154,7 @@ class PostconditionType(StrEnum):
     DOCUMENT_SUMMARY = "document_summary"
     PRESENTATION_FILE = "presentation_file"
     CODING_AGENT_STEP = "coding_agent_step"
+    SCHEDULE_CREATED = "schedule_created"
     BROWSER_STATE = "browser_state"
     DESKTOP_OBSERVATION = "desktop_observation"
     FILE_ORGANIZATION = "file_organization"
@@ -317,6 +325,22 @@ class TaskRecord(StrictBaseModel):
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ScheduleRecord(StrictBaseModel):
+    id: str = Field(default_factory=lambda: new_id("schedule"))
+    source_channel: ChannelType = ChannelType.TELEGRAM
+    source_chat_id: str | None = None
+    objective: str
+    cadence: str
+    timezone: str = "America/Chicago"
+    status: ScheduleStatus = ScheduleStatus.ENABLED
+    next_run_at: datetime
+    last_run_at: datetime | None = None
+    last_task_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
 
 
 class SubtaskRecord(StrictBaseModel):

@@ -33,11 +33,13 @@ Implemented:
 - Admin configuration writes for Telegram and the default OpenAI-compatible orchestrator LLM profile
 - LLM-based Telegram task classification with readable audit events
 - Admin audit filters, capability access modes, and database summary
-- One-command local stack launcher for LocalDeploy, backend, Telegram polling, and worker
+- One-command local stack launcher for LocalDeploy, backend, Telegram polling, worker, scheduler, and Streamlit admin UI
 - Worker completion notifications back to Telegram with tool output summaries
 - LLM-backed per-Telegram-chat rolling memory with a concise summary and recent-turn window
-- Copilot-first launchable web-app flow with workspace materialization and localhost preview URLs
+- Launchable web-app flow with workspace materialization and localhost preview URLs; Codex/Copilot are only used when explicitly requested
 - Capability registry/vault plus generated adapter proposal cache under `.agent_control/adapters`
+- Registered `schedule.manage` tool plus supervised scheduler service for recurring tasks
+- Registered document and artifact delivery tools for PDF summaries, PowerPoint artifacts, and Telegram file delivery
 
 Not implemented yet:
 
@@ -52,7 +54,7 @@ Start the whole local stack:
 .\scripts\start_stack.ps1
 ```
 
-This initializes SQLite, starts LocalDeploy if needed, starts the backend, starts Telegram polling, starts the worker, and launches the Streamlit admin UI. Open:
+This initializes SQLite, starts LocalDeploy if needed, starts the backend, starts Telegram polling, starts the worker, starts the scheduler, and launches the Streamlit admin UI. Open:
 
 ```text
 http://127.0.0.1:8501
@@ -73,12 +75,14 @@ Default local LLM and gateway behavior:
 - Non-task Telegram messages get a direct local LLM answer with concise runtime context.
 - The gateway keeps an LLM-updated per-chat memory summary plus a small recent-turn window, not the full conversation.
 - Plain `status` and `/status` return deterministic task state.
-- Requests like `create a hello world web app and launch it` use Copilot as the creator when VS Code write access is enabled, materialize files under `.agent_control/workspaces/task_<id>`, start a localhost preview, and return the URL.
+- Requests like `create a hello world web app and launch it` materialize files under `.agent_control/workspaces/task_<id>`, start a localhost preview, and return the URL. Codex or GitHub Copilot are used only when the message explicitly says to use them.
+- Requests like `use Codex to build the first step of this app` or `use GitHub Copilot for this project` route through `coding.agent`, record workspace/output/limit state, and report failures or usage-limit text when the CLI exposes it.
 - Browser requests like `search the web for Python packaging docs and summarize the first result` use the `browser.open` tool. Chrome is launched with remote debugging when needed, screenshots are saved under `.agent_control/browser/screenshots`, and results are returned to Telegram.
 - Computer-use requests like `take a screenshot and tell me what is open` or `use the computer to open this folder` route to `computer.use` when desktop control is enabled. Screenshots are saved under `.agent_control/computer_use/screenshots`; action loops require the local multimodal LLM and are capped by `adapters.computer_use.max_steps`.
 - Folder organization/search requests use `filesystem.manage` when an explicit path is present. It creates a manifest first, then applies only approved moves/copies inside `adapters.computer_use.allowed_roots`.
 - Development tasks route to the VS Code/GitHub Copilot terminal handoff when VS Code write access is enabled, with a local Copilot CLI fallback when the bridge is not connected.
 - Missing-tool work can be routed to `adapter.factory`, which creates a reviewable cached adapter proposal under `.agent_control/adapters` without loading it into runtime automatically.
+- Scheduled-job requests like `set up a scheduled job every day to check this site` create a `schedule.manage` record. The supervised scheduler creates normal tasks from due schedules.
 - Worker results are sent back to the source Telegram chat.
 
 Compile backend source:

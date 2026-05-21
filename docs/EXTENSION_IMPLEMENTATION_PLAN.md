@@ -48,9 +48,32 @@ The system should let the user describe work naturally, while still routing to s
 7. Dynamic adapter creation is scaffold-first.
    `adapter.factory` can generate reviewed adapter proposals into a cache/workspace. It should not import and run unreviewed code automatically.
 
-## Current Gap Summary
+## Implementation Status
 
-The current repo already has useful foundations:
+Status: complete through the minimal Phase 0-8 implementation.
+
+Implemented:
+
+- Route decisions and fulfillment checks are persisted enough to explain why tools were selected.
+- Artifact delivery is a registered `artifact.deliver` tool for sending files and screenshots to Telegram.
+- Documents use `document.manage` for PDF text/summary flows and minimal PowerPoint create/update artifacts.
+- Desktop, browser, filesystem, document, artifact, coding-agent, schedule, and adapter-factory work all route through the registry.
+- `coding.agent` is the preferred explicit Codex/GitHub Copilot abstraction; Codex and Copilot are not used unless named by the user.
+- `schedule.manage` plus the `run-scheduler` service provide recurring task creation.
+- Tool output schemas are registered for multi-operation tools, and postcondition validation covers previews, workspaces, artifacts, documents, coding agents, browser state, desktop observations, file organization, GitHub PR placeholders, external commands, and schedule creation.
+- Admin diagnostics expose service health, scheduler state, schedule rows, database counts, and a registry/tool summary.
+- Backend dependencies were cleaned: unused `aiogram`, `alembic`, `sqlalchemy`, and `sqlmodel` were removed; `pypdf` was added because `document.manage` imports it for PDF extraction.
+
+Still intentionally constrained:
+
+- `adapter.factory` scaffolds proposals only; it does not runtime-load generated code automatically.
+- `desktop.screenshot`, `vscode.copilot_terminal`, and `coding_assistant` remain compatibility wrappers, but new plans should prefer `computer.use`, `coding.agent`, and typed tools.
+- Live Codex/GitHub Copilot limits depend on what their installed CLIs print. The adapter captures known rate/usage-limit patterns and surfaces them, but cannot invent unavailable quota metadata.
+- Browser automation targets Chrome DevTools first. Full desktop computer use remains the fallback for UI that has no safer API.
+
+## Initial Gap Summary
+
+The repo already had useful foundations:
 
 - Intake, classification, memory, persisted tasks, worker loop, audit log, admin UIs.
 - `computer.use` for observe/act/run_goal.
@@ -60,17 +83,11 @@ The current repo already has useful foundations:
 - VS Code/Copilot bridge and a generic `coding_assistant` adapter.
 - Typed postconditions for some workspace/browser/desktop outcomes.
 
-The important gaps are:
+The important gaps were:
 
-- No generic artifact delivery tool for sending arbitrary files back to Telegram.
-- No document adapter for PDF summarization or PowerPoint create/update flows.
-- Coding agent support is split across VS Code bridge and generic terminal assistant; it needs one explicit `coding.agent` abstraction for Codex and Copilot.
-- The router currently has historical behavior where launchable app requests can use Copilot without the user explicitly naming Copilot. That conflicts with the new requirement.
-- No durable coding-agent session model for step-by-step execution, usage limits, continuation, and recovery.
-- No scheduler service or schedule storage.
-- Browser research is useful but not yet robust for many-page research, episode checks, or multi-step form workflows.
-- Tool output schemas and postconditions need to cover documents, artifacts, schedules, coding-agent status, and browser state.
-- Some dependencies and compatibility adapters appear unused or overlapping and should be removed or deprecated after replacement.
+- Artifact delivery, document management, explicit coding-agent routing, schedule storage/service, broader browser operations, tool output schemas, and postcondition coverage are now implemented in the minimal form.
+- Durable long-running coding-agent sessions are represented by workspace/session metadata and task history, not a separate session table yet. That is enough for the current minimal slice; add a dedicated table only when multi-day coding sessions need richer state transitions.
+- Compatibility adapters remain in place to avoid breaking existing tasks and tests, but new default routing has moved toward typed tools.
 
 ## Implementation Phases
 
@@ -181,8 +198,8 @@ Operations:
 Implementation steps:
 
 1. Add dependencies:
-   - Add `pypdf` explicitly if it is not in the backend dependency file.
-   - Add `python-pptx` for PowerPoint creation/update.
+   - `pypdf` is included for PDF extraction.
+   - PowerPoint creation/update uses a minimal stdlib `.pptx` writer in this implementation, so `python-pptx` is not required yet.
 
 2. Add schemas:
    - `DocumentInspectInput`
@@ -393,6 +410,8 @@ Exit criteria:
 
 Purpose: support recurring tasks.
 
+Implementation status: complete for the minimal local scheduler.
+
 New service:
 
 ```text
@@ -446,9 +465,20 @@ Exit criteria:
 
 - A daily web check can be scheduled, creates due tasks, and sends results to Telegram.
 
+Implemented notes:
+
+- `schedule.manage` is registered under the dedicated `schedule.manage` capability.
+- `run-scheduler` is a supervised service launched by `scripts/start_stack.ps1`.
+- Schedules are stored in SQLite with status, cadence, next run, last run, and last generated task.
+- Due schedules create normal tasks, preserving `source_schedule_id`, `source_chat_id`, and schedule metadata.
+- Default routing supports create/list and pause/resume/delete/run-now when a `schedule_<id>` is named.
+- Admin summary and `/admin/api/schedules` expose current schedules.
+
 ### Phase 7: Registry, Schemas, And Postconditions
 
 Purpose: make the orchestration layer scalable.
+
+Implementation status: complete for the typed minimal registry.
 
 Implementation steps:
 
@@ -493,9 +523,19 @@ Exit criteria:
 - Invalid plans fail before entering the worker loop.
 - Admin trace shows selected tool group, operation, schema result, and postcondition result.
 
+Implemented notes:
+
+- Registry validation checks registered tool names, enabled state, operation/input schemas, and adds required capabilities before execution.
+- Planner retries once with a structured repair prompt when registry validation rejects an LLM plan.
+- Multi-operation tools now expose output schemas per operation, using shared output contracts where the operation family returns the same shape.
+- Fulfillment validation covers schedule creation and the previously added desktop/browser/filesystem/document/artifact/coding outputs.
+- Admin exposes registry groups and schemas through `tool_registry`.
+
 ### Phase 8: Admin UI And Diagnostics
 
 Purpose: make operations debuggable.
+
+Implementation status: complete for the minimal diagnostic surface.
 
 Implementation steps:
 
@@ -541,24 +581,32 @@ Exit criteria:
 
 - A failed task can be diagnosed from one page without checking raw logs first.
 
+Implemented notes:
+
+- Service status now includes the scheduler supervisor.
+- Streamlit diagnostics show schedules and the tool registry summary.
+- FastAPI admin summary includes schedule rows, database schedule counts, and registry metadata.
+- Existing task trace continues to group plan steps, timeline, tool requests/results, artifacts, signals, and raw context.
+
 ## Cleanup And Removal Plan
 
 Cleanup should happen after replacement tests are passing.
 
 ### Remove unused dependencies
 
-Candidate dependencies to remove if a fresh import scan confirms no hidden usage:
+Completed dependency cleanup:
 
-- `aiogram`
-- `alembic`
-- `sqlalchemy`
-- `sqlmodel`
+- Removed `aiogram`.
+- Removed `alembic`.
+- Removed `sqlalchemy`.
+- Removed `sqlmodel`.
+- Added `pypdf`.
 
 Justification:
 
 - The codebase uses custom Telegram handling and direct repository/storage abstractions.
 - Keeping unused dependencies increases installation time and confusion.
-- Remove only after `rg` confirms no source, tests, scripts, or docs still rely on them.
+- `rg` confirmed no source, tests, or scripts rely on the removed packages.
 
 ### Deprecate overlapping adapters
 
@@ -612,6 +660,7 @@ backend/src/agent_control/tools/
   computer_use.py
   document_manage.py
   filesystem_manage.py
+  schedule_manage.py
   local_workspace.py
   adapter_factory.py
 ```
@@ -1289,4 +1338,3 @@ Recommended order:
 10. Cleanup unused dependencies and deprecated wrappers after replacement tests pass.
 
 This order gets quick value first: screenshots/files start returning to Telegram, PDF/PPTX work becomes possible, and routing becomes safer before the larger coding-agent and scheduler work.
-

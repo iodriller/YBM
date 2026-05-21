@@ -14,10 +14,12 @@ from agent_control.schemas import (
     PlanModel,
     PlanStep,
     RiskLevel,
+    ScheduleRecord,
     TaskStatus,
     ToolCallRequest,
     ToolCallResult,
     ToolResultStatus,
+    utc_now,
 )
 from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.tools.vscode_bridge import VSCodeBridgeStore
@@ -42,6 +44,8 @@ def test_admin_page_and_summary(monkeypatch, tmp_path) -> None:
     assert summary.status_code == 200
     assert summary.json()["config"]["identity"]["instance_name"] == "local-agent-control"
     assert "services" in summary.json()
+    assert "schedules" in summary.json()
+    assert "tool_registry" in summary.json()
     assert 'onclick="setAccessMode' not in page.text
     assert 'onclick="taskSignal' not in page.text
     assert 'data-task-action="' in page.text
@@ -610,3 +614,31 @@ def test_admin_database_summary(tmp_path) -> None:
 
     assert response.status_code == 200
     assert response.json()["table_counts"]["tasks"] == 1
+    assert "schedules" in response.json()["table_counts"]
+
+
+def test_admin_lists_schedules(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    repositories.schedules.create(
+        ScheduleRecord(
+            objective="check example.com daily",
+            cadence="daily",
+            next_run_at=utc_now(),
+        )
+    )
+    local_app = FastAPI()
+    local_app.include_router(
+        create_admin_router(
+            lambda: AppSettings(_env_file=None, storage={"database_url": database_url}),
+            lambda: repositories,
+            VSCodeBridgeStore(),
+        )
+    )
+    client = TestClient(local_app)
+
+    response = client.get("/admin/api/schedules")
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert response.json()["schedules"][0]["objective"] == "check example.com daily"

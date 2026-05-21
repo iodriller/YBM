@@ -54,6 +54,8 @@ from agent_control.tools.contracts import (
     FilesystemManageOutput,
     FilesystemOrganizePlanInput,
     FilesystemSearchInput,
+    ScheduleManageInput,
+    ScheduleManageOutput,
     VSCodeCopilotTerminalInput,
     VSCodeTerminalCommandInput,
     VSCodeTerminalToolOutput,
@@ -71,6 +73,7 @@ from agent_control.tools.contracts import (
 from agent_control.tools.document_manage import DocumentManageAdapter
 from agent_control.tools.filesystem_manage import FilesystemManageAdapter
 from agent_control.tools.local_workspace import LocalWorkspaceAdapter
+from agent_control.tools.schedule_manage import ScheduleManageAdapter
 from agent_control.tools.vscode_bridge import VSCodeBridgeTerminalAdapter
 
 
@@ -191,6 +194,8 @@ def build_tool_registry(
     should_continue: Callable[[str], bool] | None = None,
     artifact_repository: object | None = None,
     task_repository: object | None = None,
+    repositories: object | None = None,
+    audit_logger: object | None = None,
     telegram_client: object | None = None,
 ) -> ToolRegistry:
     adapters: dict[str, object] = {}
@@ -260,6 +265,19 @@ def build_tool_registry(
                 "apply_manifest": FilesystemApplyManifestInput,
             },
             output_schema=FilesystemManageOutput,
+            operation_output_schemas=_same_output_schema(
+                (
+                    "inspect_folder",
+                    "search",
+                    "resolve_desktop_item",
+                    "find_by_description",
+                    "open_file",
+                    "collect_folder_snapshot",
+                    "organize_plan",
+                    "apply_manifest",
+                ),
+                FilesystemManageOutput,
+            ),
             default_operation="inspect_folder",
         )
     )
@@ -339,11 +357,39 @@ def build_tool_registry(
             operations=("plan", "run_step", "run_goal", "status", "limits", "resume", "stop"),
             input_schema=CodingAgentInput,
             output_schema=CodingAgentOutput,
+            operation_output_schemas=_same_output_schema(
+                ("plan", "run_step", "run_goal", "status", "limits", "resume", "stop"),
+                CodingAgentOutput,
+            ),
             default_operation="run_goal",
         )
     )
     if settings.adapters.coding_agent.enabled:
         adapters["coding.agent"] = CodingAgentAdapter(settings.adapters.coding_agent)
+
+    schedule_enabled = _capability_enabled(settings, Capability.SCHEDULE_MANAGE) and settings.scheduler.enabled
+    definitions.append(
+        ToolDefinition(
+            name="schedule.manage",
+            capability=Capability.SCHEDULE_MANAGE,
+            enabled=schedule_enabled,
+            description="create, list, pause, resume, delete, or run recurring task schedules",
+            operations=("create", "list", "pause", "resume", "delete", "run_now"),
+            input_schema=ScheduleManageInput,
+            output_schema=ScheduleManageOutput,
+            operation_output_schemas=_same_output_schema(
+                ("create", "list", "pause", "resume", "delete", "run_now"),
+                ScheduleManageOutput,
+            ),
+            default_operation="create",
+        )
+    )
+    if repositories is not None and audit_logger is not None:
+        adapters["schedule.manage"] = ScheduleManageAdapter(
+            repositories,  # type: ignore[arg-type]
+            audit_logger,  # type: ignore[arg-type]
+            default_timezone=settings.scheduler.default_timezone,
+        )
 
     artifact_delivery_enabled = _capability_enabled(settings, Capability.TELEGRAM_SEND)
     definitions.append(
@@ -355,6 +401,10 @@ def build_tool_registry(
             operations=("send_file", "send_latest", "send_screenshot", "list_artifacts"),
             input_schema=ArtifactDeliverInput,
             output_schema=ArtifactDeliveryOutput,
+            operation_output_schemas=_same_output_schema(
+                ("send_file", "send_latest", "send_screenshot", "list_artifacts"),
+                ArtifactDeliveryOutput,
+            ),
             default_operation="send_latest",
         )
     )
@@ -376,6 +426,10 @@ def build_tool_registry(
             operations=("inspect_document", "extract_text", "summarize_pdf", "create_presentation", "update_presentation"),
             input_schema=DocumentManageInput,
             output_schema=DocumentManageOutput,
+            operation_output_schemas=_same_output_schema(
+                ("inspect_document", "extract_text", "summarize_pdf", "create_presentation", "update_presentation"),
+                DocumentManageOutput,
+            ),
             default_operation="inspect_document",
         )
     )
@@ -404,6 +458,7 @@ def build_tool_registry(
                 "run_goal": ComputerRunGoalInput,
             },
             output_schema=ComputerUseOutput,
+            operation_output_schemas=_same_output_schema(("observe", "act", "run_goal"), ComputerUseOutput),
             default_operation="observe",
         )
     )
@@ -446,6 +501,10 @@ def build_tool_registry(
                 "research_pages": BrowserResearchPagesInput,
             },
             output_schema=BrowserToolOutput,
+            operation_output_schemas=_same_output_schema(
+                ("open", "search", "research", "inspect_tabs", "screenshot", "summarize_page", "research_pages"),
+                BrowserToolOutput,
+            ),
             default_operation="open",
         )
     )
@@ -474,6 +533,18 @@ def build_tool_registry(
                 "fill_form_step": BrowserFillFormStepInput,
             },
             output_schema=BrowserToolOutput,
+            operation_output_schemas=_same_output_schema(
+                (
+                    "navigate",
+                    "close_tab",
+                    "click",
+                    "fill_form",
+                    "check_page_update",
+                    "extract_page_state",
+                    "fill_form_step",
+                ),
+                BrowserToolOutput,
+            ),
             default_operation="navigate",
         )
     )
@@ -488,6 +559,10 @@ def build_tool_registry(
 def _capability_enabled(settings: AppSettings, capability: Capability) -> bool:
     policy = settings.capabilities.get(capability)
     return bool(policy and policy.enabled)
+
+
+def _same_output_schema(operations: tuple[str, ...], schema: type[BaseModel]) -> dict[str, type[BaseModel]]:
+    return {operation: schema for operation in operations}
 
 
 def _artifact_delivery_roots(settings: AppSettings) -> list[str]:

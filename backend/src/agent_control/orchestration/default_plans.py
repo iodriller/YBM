@@ -5,6 +5,7 @@ import re
 from agent_control.config import AppSettings
 from agent_control.orchestration.fulfillment import expected_fulfillment
 from agent_control.prompts import render_prompt
+from agent_control.scheduler import cadence_from_text, objective_from_schedule_text
 from agent_control.tools.local_workspace import workspace_dir_for_task
 from agent_control.schemas import (
     Capability,
@@ -28,6 +29,9 @@ def build_default_task_plan(settings: AppSettings, task: TaskRecord) -> PlanMode
     document_plan = _build_document_plan(settings, task)
     if document_plan is not None:
         return document_plan
+    schedule_plan = _build_schedule_plan(settings, task)
+    if schedule_plan is not None:
+        return schedule_plan
     coding_agent_plan = _build_coding_agent_plan(settings, task)
     if coding_agent_plan is not None:
         return coding_agent_plan
@@ -631,6 +635,117 @@ def _build_coding_agent_plan(settings: AppSettings, task: TaskRecord) -> PlanMod
     )
 
 
+def _build_schedule_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | None:
+    if not _looks_like_schedule_request(task.objective):
+        return None
+    policy = settings.capabilities.get(Capability.SCHEDULE_MANAGE)
+    if policy is None or not policy.enabled or not settings.scheduler.enabled:
+        return None
+
+    steps: list[PlanStep] = []
+    required = [Capability.SCHEDULE_MANAGE]
+    operation = _schedule_operation(task.objective)
+    schedule_id = _schedule_id_from_text(task.objective)
+    if operation != "create":
+        if operation != "list" and schedule_id is None:
+            return None
+        steps.append(
+            PlanStep(
+                title=f"{operation.replace('_', ' ').title()} schedule",
+                description="Manage an existing recurring schedule.",
+                required_capabilities=[Capability.SCHEDULE_MANAGE],
+                risk_level=RiskLevel.MEDIUM,
+                requires_approval=policy.requires_approval,
+                tool_name="schedule.manage",
+                tool_input={
+                    "operation": operation,
+                    **({"schedule_id": schedule_id} if schedule_id else {}),
+                    "timeout_seconds": 30,
+                },
+                expected_output="Updated schedule state.",
+            )
+        )
+        return PlanModel(
+            objective=task.objective,
+            assumptions=["The request asks to manage an existing schedule."],
+            required_capabilities=required,
+            steps=steps,
+            success_criteria=["The schedule management operation returns the updated state."],
+            postconditions=[],
+        )
+
+    assumptions = [
+        "The request asks for recurring work.",
+        "The scheduler creates normal tasks from the saved objective when the job is due.",
+    ]
+    provider = _explicit_coding_provider(task.objective)
+    terminal_policy = settings.capabilities.get(Capability.TERMINAL_RUN)
+    if provider and terminal_policy and terminal_policy.enabled and settings.adapters.coding_agent.enabled:
+        required.insert(0, Capability.TERMINAL_RUN)
+        assumptions.append(f"The user explicitly asked {provider} to prepare work for the schedule.")
+        steps.append(
+            PlanStep(
+                title=f"Prepare scheduled-job workspace with {provider}",
+                description="Use the explicitly requested coding agent to prepare any code or notes needed by the scheduled job.",
+                required_capabilities=[Capability.TERMINAL_RUN],
+                risk_level=RiskLevel.HIGH,
+                requires_approval=terminal_policy.requires_approval,
+                tool_name="coding.agent",
+                tool_input={
+                    "operation": "run_step",
+                    "provider": provider,
+                    "objective": task.objective,
+                    "prompt": task.objective,
+                    "workspace_dir": str(workspace_dir_for_task(settings.adapters.workspace.root_dir, task.id)),
+                    "timeout_seconds": settings.adapters.coding_agent.timeout_seconds,
+                },
+                expected_output="Workspace, stdout/stderr, and any usage-limit state from the requested coding provider.",
+            )
+        )
+
+    cadence = cadence_from_text(task.objective)
+    scheduled_objective = objective_from_schedule_text(task.objective)
+    metadata = {
+        "created_from_task_id": task.id,
+        "created_from_objective": task.objective,
+    }
+    if provider:
+        metadata["coding_provider"] = provider
+    steps.append(
+        PlanStep(
+            title="Create recurring schedule",
+            description="Save the recurring objective so the scheduler can create due tasks later.",
+            required_capabilities=[Capability.SCHEDULE_MANAGE],
+            risk_level=RiskLevel.MEDIUM,
+            requires_approval=policy.requires_approval,
+            tool_name="schedule.manage",
+            tool_input={
+                "operation": "create",
+                "objective": scheduled_objective,
+                "cadence": cadence,
+                "timezone": settings.scheduler.default_timezone,
+                "source_chat_id": task.metadata.get("source_chat_id"),
+                "metadata": metadata,
+                "timeout_seconds": 30,
+            },
+            expected_output="A schedule ID and next run timestamp.",
+        )
+    )
+    return PlanModel(
+        objective=task.objective,
+        assumptions=assumptions,
+        required_capabilities=required,
+        steps=steps,
+        success_criteria=["The schedule is saved and reports its next due run."],
+        postconditions=[
+            PlanPostcondition(
+                type=PostconditionType.SCHEDULE_CREATED,
+                description="A schedule ID and next run timestamp are reported.",
+            )
+        ],
+    )
+
+
 def _build_computer_use_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | None:
     if not settings.adapters.computer_use.enabled or not settings.adapters.desktop.control_enabled:
         return None
@@ -1002,6 +1117,34 @@ def _looks_like_adapter_request(objective: str) -> bool:
     has_adapter_word = any(word in lowered for word in ("adapter", "tool", "capability", "connector"))
     has_create_word = any(word in lowered for word in ("create", "build", "write", "make", "add", "implement"))
     return has_adapter_word and has_create_word
+
+
+def _looks_like_schedule_request(objective: str) -> bool:
+    lowered = objective.lower()
+    explicit_schedule = any(marker in lowered for marker in ("schedule", "scheduled job", "recurring", "every day", "daily", "weekly"))
+    has_recurring_phrase = bool(re.search(r"\bevery\s+\d+\s+(?:minute|minutes|hour|hours|day|days|week|weeks)\b", lowered))
+    has_action = any(marker in lowered for marker in ("set up", "create", "add", "run", "check", "search", "do ", "pause", "resume", "delete", "list"))
+    return (explicit_schedule or has_recurring_phrase) and has_action
+
+
+def _schedule_operation(objective: str) -> str:
+    lowered = objective.lower()
+    if "pause" in lowered:
+        return "pause"
+    if "resume" in lowered or "enable" in lowered:
+        return "resume"
+    if "delete" in lowered or "remove" in lowered:
+        return "delete"
+    if "run now" in lowered or "run this schedule" in lowered:
+        return "run_now"
+    if "list" in lowered or "show schedules" in lowered:
+        return "list"
+    return "create"
+
+
+def _schedule_id_from_text(objective: str) -> str | None:
+    match = re.search(r"\bschedule_[a-f0-9]+\b", objective)
+    return match.group(0) if match else None
 
 
 def _explicitly_requests_copilot(objective: str) -> bool:

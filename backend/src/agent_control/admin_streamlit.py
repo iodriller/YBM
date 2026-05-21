@@ -672,6 +672,18 @@ def _render_diagnostics(summary: dict[str, Any], state: dict[str, str]) -> None:
         _json_expander("VS Code Bridge", summary.get("vscode") or {})
     with c2:
         _json_expander("Database", summary.get("database") or {})
+    schedules = summary.get("schedules") or {}
+    if schedules:
+        st.markdown("**Schedules**")
+        schedule_items = schedules.get("items") or []
+        if schedule_items:
+            st.dataframe(_schedule_frame(schedule_items), hide_index=True, use_container_width=True)
+        else:
+            st.caption("No schedules configured.")
+    registry = summary.get("tool_registry") or {}
+    if registry:
+        st.markdown("**Tool Registry**")
+        st.dataframe(_tool_registry_frame(registry.get("tools") or []), hide_index=True, use_container_width=True)
     _json_expander("Service Supervisors", summary.get("services") or {})
     _json_expander("Raw Summary", summary)
 
@@ -687,6 +699,7 @@ def _runtime_rows(summary: dict[str, Any]) -> pd.DataFrame:
         ("LLM profile", llm.get("default_profile")),
         ("Telegram", "enabled" if ((integrations.get("telegram") or {}).get("enabled")) else "disabled"),
         ("Worker service", _service_label(_services_by_name(summary).get("worker"))),
+        ("Scheduler service", _service_label(_services_by_name(summary).get("scheduler"))),
         ("Telegram polling service", _service_label(_services_by_name(summary).get("telegram_polling"))),
         ("VS Code adapter", "enabled" if ((adapters.get("vscode") or {}).get("enabled")) else "disabled"),
         ("Workspace", (adapters.get("workspace") or {}).get("root_dir")),
@@ -803,6 +816,37 @@ def _service_frame(items: list[dict[str, Any]]) -> pd.DataFrame:
                 "Supervisor PID": item.get("supervisor_pid") or "",
                 "Child PID": item.get("child_pid") or "",
                 "Message": item.get("message") or "",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _schedule_frame(items: list[dict[str, Any]]) -> pd.DataFrame:
+    rows = []
+    for item in items:
+        rows.append(
+            {
+                "Status": item.get("status"),
+                "Cadence": item.get("cadence"),
+                "Next Run": item.get("next_run_at"),
+                "Last Run": item.get("last_run_at") or "",
+                "Objective": item.get("objective"),
+                "ID": item.get("id"),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _tool_registry_frame(items: list[dict[str, Any]]) -> pd.DataFrame:
+    rows = []
+    for item in items:
+        rows.append(
+            {
+                "Group": item.get("group"),
+                "Tool": item.get("name"),
+                "Enabled": "yes" if item.get("enabled") else "no",
+                "Capability": item.get("capability"),
+                "Operations": ", ".join(item.get("operations") or []),
             }
         )
     return pd.DataFrame(rows)

@@ -158,8 +158,39 @@ def test_streamlit_admin_health_and_connection_helpers() -> None:
 
     assert items["Backend"]["state"] == "ok"
     assert items["VS Code"]["state"] == "bad"
+    runtime = admin_streamlit._runtime_rows({"config": summary["config"], "integrations": summary["integrations"], "services": {"items": [{"name": "scheduler", "expected": True, "ok": True, "status": "running", "age_seconds": 1}]}})
+    assert "Scheduler service" in set(runtime["Setting"])
     assert admin_streamlit._vscode_status_label({"connected": True}) == "Connected"
     assert admin_streamlit._vscode_status_label({"connected": False, "status": "stale", "last_seen_age_seconds": 120}) == "Stale (120s)"
+
+
+def test_streamlit_admin_schedule_and_registry_frames() -> None:
+    schedules = admin_streamlit._schedule_frame(
+        [
+            {
+                "id": "schedule_1",
+                "status": "enabled",
+                "cadence": "daily",
+                "next_run_at": "2026-05-22T00:00:00+00:00",
+                "objective": "check example.com",
+            }
+        ]
+    )
+    registry = admin_streamlit._tool_registry_frame(
+        [
+            {
+                "group": "schedules",
+                "name": "schedule.manage",
+                "enabled": True,
+                "capability": "schedule.manage",
+                "operations": ["create", "list"],
+            }
+        ]
+    )
+
+    assert schedules.iloc[0]["ID"] == "schedule_1"
+    assert registry.iloc[0]["Tool"] == "schedule.manage"
+    assert registry.iloc[0]["Operations"] == "create, list"
 
 
 def test_streamlit_admin_smoke_renders_without_backend(tmp_path: Path) -> None:

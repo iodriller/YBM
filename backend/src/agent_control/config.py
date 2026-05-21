@@ -82,6 +82,12 @@ class StorageConfig(StrictBaseModel):
     artifact_dir: str = ".agent_control/artifacts"
 
 
+class SchedulerConfig(StrictBaseModel):
+    enabled: bool = True
+    poll_interval_seconds: int = Field(default=30, ge=1, le=3600)
+    default_timezone: str = "America/Chicago"
+
+
 class LoggingConfig(StrictBaseModel):
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     json_logs: bool = True
@@ -232,6 +238,7 @@ class AppSettings(BaseSettings):
     capabilities: dict[Capability, CapabilityPolicy] = Field(default_factory=default_capability_policies)
     approval_policy: ApprovalPolicyConfig = Field(default_factory=ApprovalPolicyConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
+    scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     adapters: AdaptersConfig = Field(default_factory=AdaptersConfig)
@@ -295,6 +302,7 @@ class AppSettings(BaseSettings):
             },
             "approval_policy": self.approval_policy.model_dump(mode="json"),
             "storage": self.storage.model_dump(),
+            "scheduler": self.scheduler.model_dump(),
             "logging": self.logging.model_dump(),
             "limits": self.limits.model_dump(),
             "adapters": self.adapters.model_dump(),

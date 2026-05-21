@@ -15,6 +15,8 @@ from agent_control.schemas import (
     ChannelType,
     InboundMessage,
     PlanModel,
+    ScheduleRecord,
+    ScheduleStatus,
     TaskRecord,
     TaskSignal,
     TaskStatus,
@@ -565,6 +567,117 @@ class ArtifactRepository:
         )
 
 
+class ScheduleRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def create(self, schedule: ScheduleRecord) -> ScheduleRecord:
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO schedules (
+                    id, source_channel, source_chat_id, objective, cadence, timezone, status,
+                    next_run_at, last_run_at, last_task_id, metadata_json, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    schedule.id,
+                    schedule.source_channel.value,
+                    schedule.source_chat_id,
+                    schedule.objective,
+                    schedule.cadence,
+                    schedule.timezone,
+                    schedule.status.value,
+                    _dt(schedule.next_run_at),
+                    _dt(schedule.last_run_at) if schedule.last_run_at else None,
+                    schedule.last_task_id,
+                    _dump(schedule.metadata),
+                    _dt(schedule.created_at),
+                    _dt(schedule.updated_at),
+                ),
+            )
+        return schedule
+
+    def get(self, schedule_id: str) -> ScheduleRecord | None:
+        with self.database.connect() as connection:
+            row = connection.execute("SELECT * FROM schedules WHERE id = ?", (schedule_id,)).fetchone()
+        return self._row_to_schedule(row) if row else None
+
+    def list_recent(self, limit: int = 50) -> list[ScheduleRecord]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM schedules ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [self._row_to_schedule(row) for row in rows]
+
+    def list_due(self, now: datetime, limit: int = 20) -> list[ScheduleRecord]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM schedules
+                WHERE status = ? AND next_run_at <= ?
+                ORDER BY next_run_at ASC
+                LIMIT ?
+                """,
+                (ScheduleStatus.ENABLED.value, _dt(now), limit),
+            ).fetchall()
+        return [self._row_to_schedule(row) for row in rows]
+
+    def update_status(self, schedule_id: str, status: ScheduleStatus) -> ScheduleRecord:
+        now = utc_now()
+        with self.database.connect() as connection:
+            connection.execute(
+                "UPDATE schedules SET status = ?, updated_at = ? WHERE id = ?",
+                (status.value, _dt(now), schedule_id),
+            )
+            row = connection.execute("SELECT * FROM schedules WHERE id = ?", (schedule_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"schedule not found: {schedule_id}")
+        return self._row_to_schedule(row)
+
+    def mark_run(self, schedule_id: str, task_id: str, last_run_at: datetime, next_run_at: datetime) -> ScheduleRecord:
+        now = utc_now()
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                UPDATE schedules
+                SET last_run_at = ?, last_task_id = ?, next_run_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (_dt(last_run_at), task_id, _dt(next_run_at), _dt(now), schedule_id),
+            )
+            row = connection.execute("SELECT * FROM schedules WHERE id = ?", (schedule_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"schedule not found: {schedule_id}")
+        return self._row_to_schedule(row)
+
+    def count(self) -> int:
+        with self.database.connect() as connection:
+            row = connection.execute("SELECT COUNT(*) FROM schedules").fetchone()
+        return int(row[0] if row else 0)
+
+    @staticmethod
+    def _row_to_schedule(row: sqlite3.Row) -> ScheduleRecord:
+        return ScheduleRecord(
+            id=row["id"],
+            source_channel=ChannelType(row["source_channel"]),
+            source_chat_id=row["source_chat_id"],
+            objective=row["objective"],
+            cadence=row["cadence"],
+            timezone=row["timezone"],
+            status=ScheduleStatus(row["status"]),
+            next_run_at=row["next_run_at"],
+            last_run_at=row["last_run_at"],
+            last_task_id=row["last_task_id"],
+            metadata=_load(row["metadata_json"], {}),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+
 class AuditRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
@@ -668,6 +781,7 @@ class Repositories:
     approvals: ApprovalRepository
     tool_invocations: ToolInvocationRepository
     artifacts: ArtifactRepository
+    schedules: ScheduleRepository
     audit: AuditRepository
 
     @classmethod
@@ -682,5 +796,6 @@ class Repositories:
             approvals=ApprovalRepository(database),
             tool_invocations=ToolInvocationRepository(database),
             artifacts=ArtifactRepository(database),
+            schedules=ScheduleRepository(database),
             audit=AuditRepository(database),
         )

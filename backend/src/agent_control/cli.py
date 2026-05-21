@@ -22,6 +22,7 @@ from agent_control.orchestration import TaskWorker, ToolExecutor
 from agent_control.orchestration.default_plans import build_default_task_plan
 from agent_control.policy import PolicyEngine
 from agent_control.recovery import RetryPolicy
+from agent_control.scheduler import run_scheduler_forever
 from agent_control.schemas import TaskStatus
 from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.tools.registry import build_tool_registry
@@ -83,6 +84,8 @@ async def run_worker() -> None:
         should_continue=lambda task_id: _task_allows_tool_continue(repositories, task_id),
         artifact_repository=repositories.artifacts,
         task_repository=repositories.tasks,
+        repositories=repositories,
+        audit_logger=audit,
         telegram_client=_telegram_client(settings),
     )
     planner = PlannerService(provider, repositories, audit, plan_validator=registry.validate_plan) if provider else None
@@ -104,6 +107,16 @@ async def run_worker() -> None:
         notification_sink=_telegram_notifier(settings),
     )
     await worker.run_forever()
+
+
+async def run_scheduler() -> None:
+    settings = load_settings()
+    repositories, audit = build_repositories()
+    await run_scheduler_forever(
+        repositories,
+        audit,
+        poll_interval_seconds=settings.scheduler.poll_interval_seconds,
+    )
 
 
 def _telegram_notifier(settings) -> TelegramTaskNotifier | None:
@@ -158,7 +171,7 @@ Prefer conservative plans. Use registered tool names exactly and include explici
 
 def main() -> None:
     parser = argparse.ArgumentParser("agent-control")
-    parser.add_argument("command", choices=["init-db", "config-summary", "poll-telegram", "run-worker"])
+    parser.add_argument("command", choices=["init-db", "config-summary", "poll-telegram", "run-worker", "run-scheduler"])
     args = parser.parse_args()
 
     if args.command == "init-db":
@@ -169,6 +182,8 @@ def main() -> None:
         asyncio.run(poll_telegram())
     elif args.command == "run-worker":
         asyncio.run(run_worker())
+    elif args.command == "run-scheduler":
+        asyncio.run(run_scheduler())
 
 
 if __name__ == "__main__":

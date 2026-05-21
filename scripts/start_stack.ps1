@@ -1,6 +1,7 @@
 param(
   [switch]$NoTelegram,
   [switch]$NoWorker,
+  [switch]$NoScheduler,
   [switch]$NoAdminUi
 )
 
@@ -55,6 +56,7 @@ function Stop-OrphanProcessesForName {
   $patterns = switch ($Name) {
     "backend" { @("run_backend.ps1", "uvicorn agent_control.main:app") }
     "worker" { @("run_worker.ps1", "agent_control.cli run-worker") }
+    "scheduler" { @("run_scheduler.ps1", "agent_control.cli run-scheduler") }
     "telegram_polling" { @("run_telegram_polling.ps1", "agent_control.cli poll-telegram") }
     "admin_ui" { @("run_admin_ui.ps1", "admin_streamlit.py") }
     default { @() }
@@ -145,6 +147,11 @@ if (-not $NoTelegram) {
 if (-not $NoWorker) {
   Stop-OrphanProcessesForName -Name "worker"
   Start-StackScript -Name "worker" -ScriptPath "$Root\scripts\run_worker.ps1" -Supervise
+}
+
+if (-not $NoScheduler) {
+  Stop-OrphanProcessesForName -Name "scheduler"
+  Start-StackScript -Name "scheduler" -ScriptPath "$Root\scripts\run_scheduler.ps1" -Supervise
 }
 
 if (-not $NoAdminUi) {

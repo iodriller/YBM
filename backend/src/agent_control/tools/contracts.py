@@ -148,6 +148,16 @@ class CodingAgentInput(ToolInputModel):
     step_index: int | None = Field(default=None, ge=0)
 
 
+class ScheduleManageInput(ToolInputModel):
+    operation: Literal["create", "list", "pause", "resume", "delete", "run_now"] = "create"
+    schedule_id: str | None = None
+    objective: str | None = None
+    cadence: str | None = None
+    timezone: str | None = None
+    source_chat_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class BrowserOpenInput(ToolInputModel):
     operation: Literal["open"] = "open"
     url: str | None = None
@@ -438,6 +448,15 @@ class CodingAgentOutput(ToolOutputModel):
     stderr: str = ""
     returncode: int | None = None
     limit_state: dict[str, Any] = Field(default_factory=dict)
+    summary: str | None = None
+
+
+class ScheduleManageOutput(ToolOutputModel):
+    operation: str = Field(min_length=1)
+    schedule_id: str | None = None
+    schedules: list[dict[str, Any]] = Field(default_factory=list)
+    task_id: str | None = None
+    next_run_at: str | None = None
     summary: str | None = None
 
 

@@ -21,6 +21,7 @@ def test_default_invasive_capabilities_are_disabled(monkeypatch, tmp_path) -> No
         Capability.DESKTOP_CONTROL,
         Capability.BROWSER_OPEN,
         Capability.BROWSER_CONTROL,
+        Capability.SCHEDULE_MANAGE,
         Capability.GITHUB_PUSH,
         Capability.DEPENDENCIES_INSTALL,
     ]

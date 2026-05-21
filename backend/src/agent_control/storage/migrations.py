@@ -123,6 +123,23 @@ SCHEMA_STATEMENTS = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS schedules (
+        id TEXT PRIMARY KEY,
+        source_channel TEXT NOT NULL,
+        source_chat_id TEXT,
+        objective TEXT NOT NULL,
+        cadence TEXT NOT NULL,
+        timezone TEXT NOT NULL,
+        status TEXT NOT NULL,
+        next_run_at TEXT NOT NULL,
+        last_run_at TEXT,
+        last_task_id TEXT,
+        metadata_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS audit_events (
         id TEXT PRIMARY KEY,
         event_type TEXT NOT NULL,

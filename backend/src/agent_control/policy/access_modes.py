@@ -111,6 +111,18 @@ ACCESS_GROUPS = {
             CapabilityAccessMode.FULL_ACCESS: "Full run",
         },
     ),
+    "scheduler": AccessGroup(
+        name="scheduler",
+        label="Scheduler",
+        write_capabilities=(Capability.SCHEDULE_MANAGE,),
+        write_risk=RiskLevel.MEDIUM,
+        options=(CapabilityAccessMode.OFF, CapabilityAccessMode.WRITE_ACCESS, CapabilityAccessMode.FULL_ACCESS),
+        option_labels={
+            CapabilityAccessMode.OFF: "Off",
+            CapabilityAccessMode.WRITE_ACCESS: "Schedule with approval",
+            CapabilityAccessMode.FULL_ACCESS: "Full schedule",
+        },
+    ),
     "dependencies": AccessGroup(
         name="dependencies",
         label="Dependency installs",
@@ -227,3 +239,6 @@ def _sync_adapter_flag(config: dict[str, Any], group_name: str, mode: Capability
     elif group_name == "browser":
         browser = config.setdefault("adapters", {}).setdefault("browser", {})
         browser["enabled"] = mode != CapabilityAccessMode.OFF
+    elif group_name == "scheduler":
+        scheduler = config.setdefault("scheduler", {})
+        scheduler["enabled"] = mode != CapabilityAccessMode.OFF
