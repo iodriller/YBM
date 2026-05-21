@@ -713,12 +713,28 @@ Testing has three layers:
 
 1. Unit tests with fake adapters and no external processes.
 2. Worker integration tests using local repositories and fake Telegram notifications.
-3. Manual smoke tests against this Windows machine, Chrome, LocalDeploy, Codex, and Copilot.
+3. Live Telegram E2E tests against this Windows machine, Chrome, LocalDeploy, Codex, and Copilot.
 
-Every smoke test should write a run log under:
+The live E2E harness is now under:
 
 ```text
-.agent_control/smoke_runs/<timestamp>/<test_name>.json
+e2e/
+  cases.json
+  live_telegram_e2e.py
+  README.md
+scripts/run_live_e2e.ps1
+```
+
+These tests use Telethon because the Telegram Bot API cannot create an inbound user message to a bot. The harness sends the same kind of message the user sends from Telegram, waits for `Task spawned: task_<id>`, polls the admin trace until the task reaches a terminal status, collects Telegram replies/media, then validates evidence.
+
+Every live E2E run writes logs under:
+
+```text
+.agent_control/live_e2e_runs/<timestamp>/
+  preflight.json
+  <case_id>.json
+  summary.json
+  summary.md
 ```
 
 Each log should include:
@@ -736,6 +752,8 @@ Each log should include:
 - `failure_reason`
 - `local_paths`
 - `urls`
+
+The live case log also includes full admin trace payloads, Telegram replies/media flags, service preflight state, schedule state, local fixture paths, and assertion failures.
 
 ## Requirement Test Matrix
 

@@ -571,6 +571,7 @@ def _artifact_delivery_roots(settings: AppSettings) -> list[str]:
         settings.adapters.workspace.root_dir,
         settings.adapters.browser.screenshot_dir,
         settings.adapters.computer_use.screenshot_dir,
+        *settings.adapters.computer_use.allowed_roots,
     ]
 
 

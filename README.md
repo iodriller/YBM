@@ -98,6 +98,15 @@ $env:PYTHONPATH='backend/src'
 pytest backend/tests
 ```
 
+Run live Telegram E2E checks:
+
+```powershell
+python e2e/live_telegram_e2e.py --list-cases
+.\scripts\run_live_e2e.ps1 -Case desktop_observation
+```
+
+See [e2e/README.md](e2e/README.md) for the required Telethon user-session setup and log format. Live results are written under `.agent_control/live_e2e_runs/<timestamp>/`.
+
 If `AGENT_ADMIN_TOKEN` is set, open:
 
 ```text

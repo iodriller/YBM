@@ -83,6 +83,57 @@ def test_default_artifact_delivery_plan_sends_latest_document() -> None:
     assert plan.steps[0].tool_input["artifact_type"] == "document"
 
 
+def test_default_artifact_delivery_plan_sends_explicit_file_path(tmp_path) -> None:
+    document_dir = tmp_path / "docs folder"
+    document_dir.mkdir()
+    document = document_dir / "report.pdf"
+    document.write_bytes(b"%PDF-1.4")
+    settings = AppSettings(
+        _env_file=None,
+        capabilities={
+            Capability.TELEGRAM_SEND: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.LOW,
+            )
+        },
+    )
+
+    plan = build_default_task_plan(settings, TaskRecord(objective=f"Send me the PDF file at {document}."))
+
+    assert plan is not None
+    assert plan.steps[0].tool_name == "artifact.deliver"
+    assert plan.steps[0].tool_input["operation"] == "send_file"
+    assert plan.steps[0].tool_input["path"] == str(document)
+
+
+def test_default_artifact_delivery_plan_handles_latest_output_request() -> None:
+    settings = AppSettings(
+        _env_file=None,
+        capabilities={
+            Capability.TELEGRAM_SEND: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.LOW,
+            ),
+            Capability.FILESYSTEM_WRITE: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.HIGH,
+            ),
+        },
+    )
+
+    plan = build_default_task_plan(
+        settings,
+        TaskRecord(objective="Send me the latest output from the current task, including any screenshot or PowerPoint artifact you have."),
+    )
+
+    assert plan is not None
+    assert plan.steps[0].tool_name == "artifact.deliver"
+    assert plan.steps[0].tool_input["operation"] == "send_latest"
+
+
 @pytest.mark.asyncio
 async def test_artifact_delivery_sends_screenshot_from_task_metadata(tmp_path) -> None:
     repos, audit = _repos(tmp_path)
@@ -117,6 +168,70 @@ async def test_artifact_delivery_sends_screenshot_from_task_metadata(tmp_path) -
     assert client.photos == [("100", str(screenshot.resolve()), "desktop")]
     assert artifacts[0].type == ArtifactType.SCREENSHOT
     assert artifacts[0].uri == str(screenshot.resolve())
+
+
+@pytest.mark.asyncio
+async def test_artifact_delivery_sends_recent_artifact_when_current_task_has_none(tmp_path) -> None:
+    repos, _audit = _repos(tmp_path)
+    document = tmp_path / "report.txt"
+    document.write_text("latest output", encoding="utf-8")
+    previous = repos.tasks.create("previous", metadata={"source_chat_id": "100"})
+    task = repos.tasks.create("send latest output", metadata={"source_chat_id": "100"})
+    repos.artifacts.create(Artifact(task_id=previous.id, type=ArtifactType.DOCUMENT, uri=str(document), content_preview="report"))
+    client = FakeTelegramClient()
+    adapter = ArtifactDeliveryAdapter(
+        repos.artifacts,
+        repos.tasks,
+        telegram_client=client,
+        allowed_roots=[str(tmp_path)],
+    )
+
+    result = await adapter.execute(
+        ToolCallRequest(
+            task_id=task.id,
+            tool_name="artifact.deliver",
+            capability=Capability.TELEGRAM_SEND,
+            risk_level=RiskLevel.LOW,
+            input={"operation": "send_latest", "caption": "latest"},
+        )
+    )
+
+    assert result.status == ToolResultStatus.SUCCEEDED
+    assert result.output["delivered"] is True
+    assert client.documents == [("100", str(document.resolve()), "latest")]
+
+
+@pytest.mark.asyncio
+async def test_artifact_delivery_materializes_latest_tool_text_when_no_file_exists(tmp_path) -> None:
+    repos, _audit = _repos(tmp_path)
+    task = repos.tasks.create(
+        "send latest output",
+        metadata={
+            "source_chat_id": "100",
+            "last_tool_result": {"output": {"summary": "Browser page summary"}},
+        },
+    )
+    client = FakeTelegramClient()
+    adapter = ArtifactDeliveryAdapter(
+        repos.artifacts,
+        repos.tasks,
+        telegram_client=client,
+        allowed_roots=[str(tmp_path)],
+    )
+
+    result = await adapter.execute(
+        ToolCallRequest(
+            task_id=task.id,
+            tool_name="artifact.deliver",
+            capability=Capability.TELEGRAM_SEND,
+            risk_level=RiskLevel.LOW,
+            input={"operation": "send_latest", "caption": "latest"},
+        )
+    )
+
+    assert result.status == ToolResultStatus.SUCCEEDED
+    assert Path(result.output["path"]).read_text(encoding="utf-8") == "Browser page summary"
+    assert client.documents == [("100", result.output["path"], "latest")]
 
 
 @pytest.mark.asyncio

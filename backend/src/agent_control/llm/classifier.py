@@ -150,6 +150,15 @@ def heuristic_classification(message: InboundMessage) -> MessageClassification:
             reason="heuristic browser action request",
         )
 
+    if any(marker in lowered for marker in ("scheduled job", "schedule ", "set up a scheduled", "every day", "every week", "every hour", "every minute")):
+        return MessageClassification(
+            is_task=True,
+            task_type=TaskType.OTHER,
+            normalized_objective=text,
+            confidence=0.75,
+            reason="heuristic scheduled task request",
+        )
+
     task_markers = (
         "build",
         "create",
@@ -162,6 +171,7 @@ def heuristic_classification(message: InboundMessage) -> MessageClassification:
         "run",
         "generate",
         "make",
+        "set up",
     )
     if any(marker in lowered for marker in task_markers):
         task_type = TaskType.CONFIGURATION if "config" in lowered or "setting" in lowered else TaskType.DEVELOPMENT

@@ -18,3 +18,18 @@ def test_heuristic_classifier_routes_desktop_screenshot_to_desktop_observation()
     assert classification.is_task is True
     assert classification.task_type == TaskType.DESKTOP_OBSERVATION
     assert classification.normalized_objective == "Take a screenshot of my desktop and send it to me now"
+
+
+def test_heuristic_classifier_routes_scheduled_job_as_task() -> None:
+    classification = heuristic_classification(
+        InboundMessage(
+            channel=ChannelType.TELEGRAM,
+            kind=MessageKind.TEXT,
+            sender_id="42",
+            chat_id="100",
+            text="Set up a scheduled job every day to check a website.",
+        )
+    )
+
+    assert classification.is_task is True
+    assert classification.task_type == TaskType.OTHER

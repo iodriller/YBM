@@ -6,8 +6,9 @@ import subprocess
 
 import pytest
 
-from agent_control.config import AdapterFactoryConfig, WorkspaceAdapterConfig
-from agent_control.schemas import Capability, ToolCallRequest, ToolResultStatus
+from agent_control.config import AdapterFactoryConfig, AppSettings, CapabilityPolicy, WorkspaceAdapterConfig
+from agent_control.orchestration.default_plans import build_default_task_plan
+from agent_control.schemas import Capability, RiskLevel, TaskRecord, ToolCallRequest, ToolResultStatus
 from agent_control.tools.adapter_factory import AdapterFactoryAdapter
 from agent_control.tools.local_workspace import LocalWorkspaceAdapter, LocalWorkspaceWebAppAdapter
 
@@ -224,6 +225,29 @@ async def test_adapter_factory_scaffolds_cached_adapter(tmp_path) -> None:
     assert result.output["execution_policy"] == "scaffold_only"
     assert (adapter_dir / "manifest.json").exists()
     assert (adapter_dir / "adapter.py").exists()
+
+
+def test_default_plan_routes_adapter_request_without_development_classification(tmp_path) -> None:
+    settings = AppSettings(
+        _env_file=None,
+        adapters={"adapter_factory": {"enabled": True, "root_dir": str(tmp_path / "adapters")}},
+        capabilities={
+            Capability.FILESYSTEM_WRITE: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.HIGH,
+            )
+        },
+    )
+
+    plan = build_default_task_plan(
+        settings,
+        TaskRecord(objective="Create an adapter to access a fake calendar service API.", metadata={"task_type": "other"}),
+    )
+
+    assert plan is not None
+    assert plan.steps[0].tool_name == "adapter.factory"
+    assert plan.steps[0].tool_input["operation"] == "scaffold"
 
 
 def _stop_process(pid: int) -> None:

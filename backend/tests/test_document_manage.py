@@ -70,6 +70,42 @@ def test_default_document_plan_routes_pdf_summary(tmp_path) -> None:
     assert plan.steps[0].tool_input["operation"] == "summarize_pdf"
 
 
+def test_default_document_plan_prefers_file_api_for_desktop_pdf_request(tmp_path) -> None:
+    desktop = tmp_path / "Desktop Folder"
+    desktop.mkdir()
+    pdf = desktop / "agent-control-sample.pdf"
+    pdf.write_text("hello", encoding="utf-8")
+    settings = AppSettings(
+        _env_file=None,
+        adapters={
+            "computer_use": {"enabled": True, "allowed_roots": [str(tmp_path)]},
+            "desktop": {"control_enabled": True},
+        },
+        capabilities={
+            Capability.FILESYSTEM_WRITE: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.HIGH,
+            ),
+            Capability.DESKTOP_CONTROL: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.CRITICAL,
+            ),
+        },
+    )
+
+    plan = build_default_task_plan(
+        settings,
+        TaskRecord(objective=f"Open the desktop folder {desktop} and open the PDF file inside it, then tell me what the PDF is about."),
+    )
+
+    assert plan is not None
+    assert plan.steps[0].tool_name == "document.manage"
+    assert plan.steps[0].tool_input["operation"] == "summarize_pdf"
+    assert plan.steps[0].tool_input["path"] == str(pdf)
+
+
 def test_default_document_plan_routes_powerpoint_create_and_delivery(tmp_path) -> None:
     settings = AppSettings(
         _env_file=None,

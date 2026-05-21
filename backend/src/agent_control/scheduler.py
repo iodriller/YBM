@@ -39,6 +39,7 @@ def objective_from_schedule_text(text: str) -> str:
     cleaned = re.sub(r"\b(set up|create|add|schedule|scheduled job|job|that runs|every day|daily|weekly)\b", " ", text, flags=re.IGNORECASE)
     cleaned = re.sub(r"every\s+\d+\s+(?:minute|minutes|hour|hours|day|days|week|weeks)", " ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .,:")
+    cleaned = re.sub(r"^(?:a\s+)?to\s+", "", cleaned, flags=re.IGNORECASE)
     return cleaned or text
 
 

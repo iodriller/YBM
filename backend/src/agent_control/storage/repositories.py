@@ -551,6 +551,29 @@ class ArtifactRepository:
             for row in rows
         ]
 
+    def list_recent(self, limit: int = 20, artifact_type: str | None = None) -> list[Artifact]:
+        query = "SELECT * FROM artifacts"
+        params: list[object] = []
+        if artifact_type:
+            query += " WHERE artifact_type = ?"
+            params.append(artifact_type)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        with self.database.connect() as connection:
+            rows = connection.execute(query, tuple(params)).fetchall()
+        return [
+            Artifact(
+                id=row["id"],
+                task_id=row["task_id"],
+                type=row["artifact_type"],
+                uri=row["uri"],
+                content_preview=row["content_preview"],
+                metadata=_load(row["metadata_json"], {}),
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
     def get(self, artifact_id: str) -> Artifact | None:
         with self.database.connect() as connection:
             row = connection.execute("SELECT * FROM artifacts WHERE id = ?", (artifact_id,)).fetchone()

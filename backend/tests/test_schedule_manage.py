@@ -7,7 +7,7 @@ import pytest
 from agent_control.config import AppSettings, CapabilityPolicy
 from agent_control.orchestration.default_plans import build_default_task_plan
 from agent_control.orchestration.fulfillment import validate_fulfillment
-from agent_control.scheduler import run_scheduler_once
+from agent_control.scheduler import objective_from_schedule_text, run_scheduler_once
 from agent_control.schemas import Capability, PlanModel, PlanStep, RiskLevel, ScheduleRecord, ToolCallRequest, ToolResultStatus, utc_now
 from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.tools.registry import build_tool_registry
@@ -41,6 +41,14 @@ def _settings(tmp_path, *, terminal: bool = False) -> AppSettings:
         adapters={"coding_agent": {"enabled": True, "workspace_root": str(tmp_path / "workspaces")}},
         capabilities=capabilities,
     )
+
+
+def test_objective_from_schedule_text_removes_scheduling_wrapper() -> None:
+    objective = objective_from_schedule_text(
+        "Set up a scheduled job every day to check https://example.com and tell me if a new episode came out."
+    )
+
+    assert objective == "check https://example.com and tell me if a new episode came out"
 
 
 @pytest.mark.asyncio

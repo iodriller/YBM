@@ -68,6 +68,10 @@ class ArtifactDeliveryAdapter:
             raise ValueError(f"task not found: {request.task_id}")
 
         artifact, path = self._resolve_artifact_path(request, task, operation)
+        if path is None and operation == "send_latest":
+            artifact, path = self._resolve_recent_artifact_path(request)
+        if path is None and operation == "send_latest":
+            artifact, path = self._materialize_latest_text(request, task)
         if path is None:
             raise ValueError("no deliverable artifact or file path was found")
         if not path.exists() or not path.is_file():
@@ -146,6 +150,41 @@ class ArtifactDeliveryAdapter:
                 return artifact, path
         return None, None
 
+    def _resolve_recent_artifact_path(self, request: ToolCallRequest) -> tuple[Artifact | None, Path | None]:
+        list_recent = getattr(self.artifacts, "list_recent", None)
+        if not callable(list_recent):
+            return None, None
+        artifact_type = str(request.input.get("artifact_type") or "").strip() or None
+        for artifact in list_recent(limit=25, artifact_type=artifact_type):
+            path = _path_from_uri(artifact.uri)
+            if path and path.exists() and path.is_file():
+                return artifact, path
+        if artifact_type:
+            for artifact in list_recent(limit=25):
+                path = _path_from_uri(artifact.uri)
+                if path and path.exists() and path.is_file():
+                    return artifact, path
+        return None, None
+
+    def _materialize_latest_text(self, request: ToolCallRequest, task: TaskRecord) -> tuple[Artifact | None, Path | None]:
+        text = _latest_task_text(task)
+        if not text:
+            return None, None
+        root = self.allowed_roots[0] if self.allowed_roots else Path(".agent_control/artifacts").resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / f"{request.task_id}_latest_output.txt"
+        path.write_text(text, encoding="utf-8")
+        artifact = self.artifacts.create(
+            Artifact(
+                task_id=request.task_id,
+                type=ArtifactType.TEXT_LOG,
+                uri=str(path),
+                content_preview=_trim(text, 500),
+                metadata={"source": "artifact.deliver", "operation": "send_latest", "materialized": True},
+            )
+        )
+        return artifact, path
+
     def _safe_path(self, value: str) -> Path:
         path = _path_from_uri(value)
         if path is None:
@@ -189,6 +228,23 @@ def _path_from_uri(value: object) -> Path | None:
             raw_path = raw_path[1:]
         return Path(raw_path).expanduser().resolve()
     return Path(text).expanduser().resolve()
+
+
+def _latest_task_text(task: TaskRecord) -> str | None:
+    result = task.metadata.get("last_tool_result")
+    output = result.get("output") if isinstance(result, dict) else {}
+    if isinstance(output, dict):
+        terminal_output = output.get("terminal_output")
+        if isinstance(terminal_output, list):
+            for item in reversed(terminal_output):
+                if isinstance(item, dict) and item.get("content"):
+                    return str(item["content"])
+        for key in ("summary", "final_summary", "response", "text", "stdout"):
+            if output.get(key):
+                return str(output[key])
+    if task.metadata.get("last_tool_output_text"):
+        return str(task.metadata["last_tool_output_text"])
+    return None
 
 
 def _artifact_for_path(artifacts: list[Artifact], path: Path) -> Artifact | None:

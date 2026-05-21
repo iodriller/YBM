@@ -1,0 +1,439 @@
+[
+  {
+    "id": "desktop_observation",
+    "requirement": "ask what is on my desktop right now",
+    "message": "What is on my desktop right now? Inspect the desktop and tell me what you see.",
+    "tags": ["desktop", "safe"],
+    "timeout_seconds": 180,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["computer.use:observe"],
+      "metadata_any": ["desktop_observation", "screenshot_path", "screenshot_uri"],
+      "bot_reply_contains_any": ["desktop", "screenshot", "window"]
+    }
+  },
+  {
+    "id": "desktop_folder_pdf_summary",
+    "requirement": "open a desktop folder, open a PDF, and tell me what it is about",
+    "message": "Open the desktop folder {{desktop_folder}} and open the PDF file inside it, then tell me what the PDF is about.",
+    "tags": ["desktop", "documents"],
+    "setup": ["desktop_pdf_fixture"],
+    "timeout_seconds": 240,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["document.manage:summarize_pdf"],
+      "metadata_any": ["document_summary", "document_path"],
+      "artifacts_min": 1,
+      "bot_reply_contains_any": ["PDF", "summary", "about"]
+    }
+  },
+  {
+    "id": "send_found_pdf",
+    "requirement": "send me the PDF file it found or opened",
+    "message": "Send me the PDF file at {{pdf_path}}.",
+    "tags": ["telegram_delivery", "documents"],
+    "setup": ["desktop_pdf_fixture"],
+    "timeout_seconds": 180,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["artifact.deliver:send_file"],
+      "artifacts_min": 1,
+      "telegram_media_min": 1,
+      "bot_reply_contains_any": ["PDF", "sent", "file"]
+    }
+  },
+  {
+    "id": "organize_folder",
+    "requirement": "organize documents in a folder based on criteria and report changes",
+    "message": "Organize my documents in {{documents_folder}} by file type and tell me exactly what changed.",
+    "tags": ["filesystem"],
+    "setup": ["documents_fixture"],
+    "timeout_seconds": 240,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["filesystem.manage:organize_plan", "filesystem.manage:apply_manifest"],
+      "metadata_any": ["organized_paths", "file_manifest"],
+      "changed_paths_min": 1,
+      "bot_reply_contains_any": ["changed", "moved", "organized"]
+    }
+  },
+  {
+    "id": "send_desktop_screenshot",
+    "requirement": "send me a screenshot of the desktop",
+    "message": "Take a screenshot of my desktop and send it to me now.",
+    "tags": ["desktop", "telegram_delivery", "safe"],
+    "timeout_seconds": 180,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["computer.use:observe", "artifact.deliver:send_screenshot"],
+      "metadata_any": ["screenshot_path", "screenshot_uri"],
+      "telegram_media_min": 1
+    }
+  },
+  {
+    "id": "browser_website_screenshot",
+    "requirement": "open browser, go to a website, and send a screenshot",
+    "message": "Open the browser, go to {{fixture_base_url}}/index.html, and send me a screenshot of what it sees.",
+    "tags": ["browser", "telegram_delivery", "safe"],
+    "setup": ["local_web_fixture"],
+    "timeout_seconds": 240,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["browser.open:screenshot", "artifact.deliver:send_screenshot"],
+      "metadata_any": ["browser_url", "screenshot_path", "screenshot_uri"],
+      "telegram_media_min": 1,
+      "urls_min": 1
+    }
+  },
+  {
+    "id": "browser_search_first_summary",
+    "requirement": "search, open the first web page, and summarize it",
+    "message": "Open the browser, search for Python official documentation, go into the first web page, and tell me what that page is about.",
+    "tags": ["browser", "internet"],
+    "timeout_seconds": 300,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_any": ["browser.open:research", "browser.open:research_pages"],
+      "metadata_any": ["browser_url", "page_title", "browser_state"],
+      "urls_min": 1,
+      "bot_reply_contains_any": ["page", "summary", "documentation"]
+    }
+  },
+  {
+    "id": "browser_check_episode_update",
+    "requirement": "go to a web page and check whether a new show or episode came out",
+    "message": "Go to {{episode_url}} and check whether a new episode came out.",
+    "tags": ["browser", "safe"],
+    "setup": ["local_web_fixture"],
+    "timeout_seconds": 240,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["browser.control:check_page_update"],
+      "metadata_any": ["browser_url", "browser_state", "page_title"],
+      "bot_reply_contains_any": ["episode", "new"]
+    }
+  },
+  {
+    "id": "browser_fill_form",
+    "requirement": "go to a web page and start filling out a form",
+    "message": "Go to {{form_url}} and start filling out the form with name=Oney, email=oney@example.com, message=Hello from E2E. Do not submit.",
+    "tags": ["browser", "form"],
+    "setup": ["local_web_fixture"],
+    "timeout_seconds": 240,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["browser.control:extract_page_state", "browser.control:fill_form_step"],
+      "metadata_any": ["browser_state"],
+      "bot_reply_contains_any": ["form", "filled", "field"]
+    }
+  },
+  {
+    "id": "use_codex_explicit",
+    "requirement": "say use Codex and have it use Codex",
+    "message": "Use Codex to write a tiny hello world Python script in the task workspace.",
+    "tags": ["external_agent", "codex"],
+    "timeout_seconds": 600,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["coding.agent:run_goal"],
+      "metadata_any": ["coding_agent_workspace", "coding_agent_session_id"],
+      "provider": "codex"
+    }
+  },
+  {
+    "id": "use_copilot_explicit",
+    "requirement": "say use GitHub Copilot and have it use GitHub Copilot",
+    "message": "Use GitHub Copilot to write a tiny hello world Python script in the task workspace.",
+    "tags": ["external_agent", "copilot"],
+    "timeout_seconds": 600,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_any": ["coding.agent:run_goal", "vscode.copilot_terminal"],
+      "provider_any": ["github_copilot", "copilot"]
+    }
+  },
+  {
+    "id": "no_external_agent_without_name",
+    "requirement": "do not use Codex or GitHub Copilot unless specifically named",
+    "message": "Create a small modern web app about hamsters and mice and launch it.",
+    "tags": ["workspace", "safe"],
+    "timeout_seconds": 300,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_forbidden": ["coding.agent", "vscode.copilot_terminal"],
+      "tools_any": ["workspace.manage:web_app_preview", "workspace.manage:launch_static"],
+      "metadata_any": ["workspace_dir", "preview_url"],
+      "urls_min": 1
+    }
+  },
+  {
+    "id": "large_codex_mobile_llm_app",
+    "requirement": "use Codex to start creating an app for mobile deployment of an LLM",
+    "message": "Use Codex and start creating an app for mobile deployment of an LLM. Create a plan first and begin the first implementation step.",
+    "tags": ["external_agent", "codex", "large_task"],
+    "timeout_seconds": 900,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["coding.agent:plan", "coding.agent:run_step"],
+      "provider": "codex",
+      "metadata_any": ["coding_agent_workspace"]
+    }
+  },
+  {
+    "id": "weird_codex_app",
+    "requirement": "use Codex for a weird app idea like hamsters and mice",
+    "message": "Use Codex to create a weird small app idea about hamsters and mice. Start implementing it in the task workspace.",
+    "tags": ["external_agent", "codex"],
+    "timeout_seconds": 900,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["coding.agent:run_goal"],
+      "provider": "codex",
+      "metadata_any": ["coding_agent_workspace"]
+    }
+  },
+  {
+    "id": "coding_status_screenshot",
+    "requirement": "tell coding process status and give screenshot of VS Code and file directory",
+    "message": "Tell me where the coding process is and send a screenshot of VS Code and the file directory.",
+    "tags": ["desktop", "coding_status", "telegram_delivery"],
+    "timeout_seconds": 240,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_any": ["computer.use:observe", "artifact.deliver:send_screenshot", "coding.agent:status"],
+      "telegram_media_min": 1,
+      "bot_reply_contains_any": ["status", "screenshot", "VS Code"]
+    }
+  },
+  {
+    "id": "codex_powerpoint_create",
+    "requirement": "use Codex and create a PowerPoint presentation and send it",
+    "message": "Use Codex and create me a PowerPoint presentation about local LLM deployment with 3 slides and send it to me.",
+    "tags": ["external_agent", "codex", "documents", "telegram_delivery"],
+    "timeout_seconds": 900,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["coding.agent:run_goal", "document.manage:create_presentation", "artifact.deliver:send_file"],
+      "metadata_any": ["document_path"],
+      "telegram_media_min": 1
+    }
+  },
+  {
+    "id": "powerpoint_update_followup",
+    "requirement": "send a follow-up asking for presentation changes and get revised output",
+    "message": "Update that PowerPoint presentation to make it more visual, add one slide about risks, and send the revised output.",
+    "tags": ["documents", "telegram_delivery", "followup"],
+    "depends_on": ["codex_powerpoint_create"],
+    "timeout_seconds": 420,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["document.manage:update_presentation", "artifact.deliver:send_file"],
+      "metadata_any": ["document_path"],
+      "telegram_media_min": 1
+    }
+  },
+  {
+    "id": "large_task_plan_first",
+    "requirement": "large website or app requirement first prepares a plan",
+    "message": "Use Codex for a large website project: build a dashboard for local LLM deployment with auth, job history, logs, and deployment status. Prepare a plan first before implementation.",
+    "tags": ["external_agent", "codex", "large_task"],
+    "timeout_seconds": 900,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["coding.agent:plan"],
+      "provider": "codex"
+    }
+  },
+  {
+    "id": "explicit_tool_combo",
+    "requirement": "use Codex and search, or use GitHub Copilot and web search",
+    "message": "Use Codex and web search to research local LLM deployment options, then write a short implementation note in the workspace.",
+    "tags": ["external_agent", "codex", "browser", "internet"],
+    "timeout_seconds": 900,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["browser.open:research_pages", "coding.agent:run_step"],
+      "provider": "codex",
+      "urls_min": 1
+    }
+  },
+  {
+    "id": "many_page_search",
+    "requirement": "web search through many pages, even 50 pages",
+    "message": "Do a web search for local LLM deployment on Windows, go through 50 pages if available, and give me the results.",
+    "tags": ["browser", "internet", "long"],
+    "timeout_seconds": 900,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["browser.open:research_pages"],
+      "urls_min": 10,
+      "bot_reply_contains_any": ["results", "pages", "sources"]
+    }
+  },
+  {
+    "id": "create_adapter",
+    "requirement": "ask it to create an adapter to access something",
+    "message": "Create an adapter to access a fake calendar service API. Put the adapter proposal in the adapter cache and do not load it automatically.",
+    "tags": ["adapter_factory", "safe"],
+    "timeout_seconds": 240,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["adapter.factory:scaffold"],
+      "metadata_any": ["adapter_dir", "adapter_name"],
+      "local_paths_min": 1
+    }
+  },
+  {
+    "id": "scheduled_job_create",
+    "requirement": "set up a scheduled job like every day",
+    "message": "Set up a scheduled job every day to check {{episode_url}} and tell me if a new episode came out.",
+    "tags": ["schedule", "browser"],
+    "setup": ["local_web_fixture"],
+    "timeout_seconds": 240,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["schedule.manage:create"],
+      "metadata_any": ["schedule_id", "schedule_next_run_at"],
+      "schedule_created": true
+    }
+  },
+  {
+    "id": "scheduled_job_runs",
+    "requirement": "scheduled job searches internet or checks a website daily",
+    "message": "Set up a scheduled job every 1 minutes to check {{episode_url}} and tell me if a new episode came out.",
+    "tags": ["schedule", "browser", "long"],
+    "setup": ["local_web_fixture"],
+    "timeout_seconds": 240,
+    "post_wait_schedule_seconds": 90,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["schedule.manage:create"],
+      "schedule_created": true,
+      "generated_scheduled_task": true
+    }
+  },
+  {
+    "id": "scheduled_job_with_coding_provider",
+    "requirement": "use Codex or Copilot in workspace to prepare scheduled job code",
+    "message": "Use Codex in the workspace to prepare code for a scheduled job, then schedule it every day to search the web for local LLM news.",
+    "tags": ["external_agent", "codex", "schedule"],
+    "timeout_seconds": 900,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["coding.agent:run_step", "schedule.manage:create"],
+      "provider": "codex",
+      "metadata_any": ["coding_agent_workspace", "schedule_id"]
+    }
+  },
+  {
+    "id": "codex_availability",
+    "requirement": "ask current availability of Codex and whether almost at limit",
+    "message": "Use Codex and tell me the current Codex availability and whether I am almost at the limit.",
+    "tags": ["external_agent", "codex", "limits"],
+    "timeout_seconds": 300,
+    "assertions": {
+      "final_status_in": ["completed", "blocked"],
+      "tools_any": ["coding.agent:limits", "coding.agent:status"],
+      "metadata_any": ["coding_agent_limit_state"]
+    }
+  },
+  {
+    "id": "codex_limit_notify",
+    "requirement": "tell me when Codex reaches a limit while developing",
+    "message": "Use Codex for a development task and tell me clearly if Codex reaches a usage limit while working.",
+    "tags": ["external_agent", "codex", "limits", "fault_injection_needed"],
+    "timeout_seconds": 900,
+    "assertions": {
+      "final_status_in": ["completed", "blocked", "failed"],
+      "tools_all": ["coding.agent:run_goal"],
+      "metadata_any": ["coding_agent_limit_state"],
+      "bot_reply_contains_any": ["limit", "usage", "quota"]
+    }
+  },
+  {
+    "id": "codex_limit_resume",
+    "requirement": "stop on Codex limit, check renewal, continue after it renews",
+    "message": "Use Codex for a task that should pause if a usage limit is reached, remember the plan, and continue after renewal.",
+    "tags": ["external_agent", "codex", "limits", "fault_injection_needed", "long"],
+    "timeout_seconds": 900,
+    "assertions": {
+      "final_status_in": ["completed", "blocked", "retrying"],
+      "metadata_any": ["next_retry_at", "coding_agent_limit_state", "coding_agent_session_id"]
+    }
+  },
+  {
+    "id": "large_codex_stepwise",
+    "requirement": "implement large plan one piece at a time using Codex",
+    "message": "Use Codex to build a large task management web app. Create a plan first, then implement only the first safe step.",
+    "tags": ["external_agent", "codex", "large_task"],
+    "timeout_seconds": 900,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["coding.agent:plan", "coding.agent:run_step"],
+      "provider": "codex"
+    }
+  },
+  {
+    "id": "wait_read_next_step",
+    "requirement": "wait for Codex to finish one step, read result, then send next piece",
+    "message": "Use Codex to do two small implementation steps. Wait for the first result, read it, then send the next step.",
+    "tags": ["external_agent", "codex", "large_task"],
+    "timeout_seconds": 900,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["coding.agent:run_step"],
+      "tool_invocations_min": 2
+    }
+  },
+  {
+    "id": "continuous_until_done_or_limited",
+    "requirement": "continue slowly until complete unless tool limit is reached",
+    "message": "Use Codex to work continuously but slowly on a small app until it is complete unless a tool limit is reached.",
+    "tags": ["external_agent", "codex", "long"],
+    "timeout_seconds": 1200,
+    "assertions": {
+      "final_status_in": ["completed", "blocked"],
+      "tools_all": ["coding.agent:run_goal"],
+      "metadata_any": ["coding_agent_workspace", "coding_agent_limit_state"]
+    }
+  },
+  {
+    "id": "preserve_plan_resume",
+    "requirement": "preserve plan and continue from where it stopped",
+    "message": "Use Codex to resume the previous large plan from where it stopped, not from the beginning.",
+    "tags": ["external_agent", "codex", "followup", "large_task"],
+    "depends_on": ["large_codex_stepwise"],
+    "timeout_seconds": 900,
+    "assertions": {
+      "final_status_in": ["completed", "blocked"],
+      "tools_any": ["coding.agent:resume", "coding.agent:run_step"],
+      "metadata_any": ["coding_agent_session_id", "coding_agent_workspace"]
+    }
+  },
+  {
+    "id": "outputs_along_way",
+    "requirement": "send outputs along the way such as screenshots, files, summaries, code, PowerPoints",
+    "message": "Send me the latest output from the current task, including any screenshot, file, summary, code, or PowerPoint artifact you have.",
+    "tags": ["telegram_delivery", "followup"],
+    "timeout_seconds": 240,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["artifact.deliver:send_latest"],
+      "telegram_media_min": 1
+    }
+  },
+  {
+    "id": "natural_workflow",
+    "requirement": "natural task descriptions across desktop, browser, files, coding, schedules, and delivery",
+    "message": "Open {{episode_url}}, summarize what it says, create a short note in {{documents_folder}}, and send me the result.",
+    "tags": ["browser", "filesystem", "telegram_delivery"],
+    "setup": ["local_web_fixture", "documents_fixture"],
+    "timeout_seconds": 420,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_any": ["browser.open:research", "browser.control:navigate"],
+      "metadata_any": ["browser_url", "document_path", "last_artifact_ids"],
+      "telegram_media_min": 1
+    }
+  }
+]

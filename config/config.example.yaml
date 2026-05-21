@@ -94,6 +94,11 @@ capabilities:
     scopes: []
     requires_approval: true
     max_risk_level: "critical"
+  schedule.manage:
+    enabled: false
+    scopes: []
+    requires_approval: true
+    max_risk_level: "medium"
   github.push:
     enabled: false
     scopes: []

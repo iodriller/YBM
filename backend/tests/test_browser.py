@@ -100,6 +100,89 @@ def test_default_browser_screenshot_plan_delivers_when_user_asks_to_send() -> No
     assert plan.steps[1].tool_input["operation"] == "send_screenshot"
 
 
+def test_default_browser_screenshot_plan_handles_local_html_url() -> None:
+    settings = AppSettings(
+        _env_file=None,
+        adapters={"browser": {"enabled": True}},
+        capabilities={
+            Capability.BROWSER_OPEN: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.LOW,
+            ),
+            Capability.TELEGRAM_SEND: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.LOW,
+            ),
+        },
+    )
+    task = TaskRecord(objective="Open the browser, go to http://127.0.0.1:57246/index.html, and send me a screenshot")
+
+    plan = build_default_task_plan(settings, task)
+
+    assert plan is not None
+    assert [step.tool_name for step in plan.steps] == ["browser.open", "artifact.deliver"]
+    assert plan.steps[0].tool_input["operation"] == "screenshot"
+    assert plan.steps[0].tool_input["url"] == "http://127.0.0.1:57246/index.html"
+
+
+def test_plain_desktop_screenshot_does_not_route_to_browser() -> None:
+    settings = AppSettings(
+        _env_file=None,
+        adapters={"browser": {"enabled": True}, "computer_use": {"enabled": True}, "desktop": {"control_enabled": True}},
+        capabilities={
+            Capability.BROWSER_OPEN: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.LOW,
+            ),
+            Capability.DESKTOP_CONTROL: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.CRITICAL,
+            ),
+        },
+    )
+    task = TaskRecord(objective="Take a screenshot of my desktop")
+
+    plan = build_default_task_plan(settings, task)
+
+    assert plan is not None
+    assert plan.steps[0].tool_name == "computer.use"
+    assert plan.steps[0].tool_input["operation"] == "observe"
+
+
+def test_default_browser_form_fill_plan_uses_control_steps() -> None:
+    settings = AppSettings(
+        _env_file=None,
+        adapters={"browser": {"enabled": True}},
+        capabilities={
+            Capability.BROWSER_OPEN: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.LOW,
+            ),
+            Capability.BROWSER_CONTROL: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.CRITICAL,
+            ),
+        },
+    )
+    task = TaskRecord(
+        objective="Go to http://127.0.0.1:57246/form.html and start filling out the form with name=Oney, email=oney@example.com. Do not submit."
+    )
+
+    plan = build_default_task_plan(settings, task)
+
+    assert plan is not None
+    assert [step.tool_name for step in plan.steps] == ["browser.open", "browser.control", "browser.control"]
+    assert plan.steps[1].tool_input["operation"] == "extract_page_state"
+    assert plan.steps[2].tool_input["operation"] == "fill_form_step"
+    assert plan.steps[2].tool_input["fields"] == {"name": "Oney", "email": "oney@example.com. Do not submit."}
+
+
 def test_default_browser_control_plan_opens_url_before_clicking() -> None:
     settings = AppSettings(
         _env_file=None,

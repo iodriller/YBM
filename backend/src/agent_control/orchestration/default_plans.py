@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from agent_control.config import AppSettings
 from agent_control.orchestration.fulfillment import expected_fulfillment
@@ -23,21 +24,28 @@ def build_default_task_plan(settings: AppSettings, task: TaskRecord) -> PlanMode
     filesystem_plan = _build_filesystem_manage_plan(settings, task)
     if filesystem_plan is not None:
         return filesystem_plan
-    computer_plan = _build_computer_use_plan(settings, task)
-    if computer_plan is not None:
-        return computer_plan
+    if _looks_like_latest_output_delivery_request(task.objective):
+        artifact_plan = _build_artifact_delivery_plan(settings, task)
+        if artifact_plan is not None:
+            return artifact_plan
     document_plan = _build_document_plan(settings, task)
     if document_plan is not None:
         return document_plan
     schedule_plan = _build_schedule_plan(settings, task)
     if schedule_plan is not None:
         return schedule_plan
+    adapter_plan = _build_adapter_factory_plan(settings, task)
+    if adapter_plan is not None:
+        return adapter_plan
     coding_agent_plan = _build_coding_agent_plan(settings, task)
     if coding_agent_plan is not None:
         return coding_agent_plan
     browser_plan = _build_browser_plan(settings, task)
     if browser_plan is not None:
         return browser_plan
+    computer_plan = _build_computer_use_plan(settings, task)
+    if computer_plan is not None:
+        return computer_plan
     artifact_plan = _build_artifact_delivery_plan(settings, task)
     if artifact_plan is not None:
         return artifact_plan
@@ -443,11 +451,13 @@ def _build_browser_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | 
 def _build_document_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | None:
     if not _looks_like_document_request(task.objective):
         return None
+    if _looks_like_latest_output_delivery_request(task.objective):
+        return None
     policy = settings.capabilities.get(Capability.FILESYSTEM_WRITE)
     if policy is None or not policy.enabled:
         return None
     lowered = task.objective.lower()
-    path = _path_from_objective(task.objective)
+    path = _document_path_from_objective(task.objective)
     steps: list[PlanStep] = []
     required = [Capability.FILESYSTEM_WRITE]
     provider = _explicit_coding_provider(task.objective)
@@ -919,12 +929,23 @@ def _build_artifact_delivery_plan(settings: AppSettings, task: TaskRecord) -> Pl
     if policy is None or not policy.enabled:
         return None
     lowered = task.objective.lower()
-    operation = "send_screenshot" if "screenshot" in lowered or "screen shot" in lowered else "send_latest"
+    path = _path_from_objective(task.objective)
+    operation = (
+        "send_file"
+        if path
+        else "send_latest"
+        if _looks_like_latest_output_delivery_request(task.objective)
+        else "send_screenshot"
+        if "screenshot" in lowered or "screen shot" in lowered
+        else "send_latest"
+    )
     tool_input: dict[str, object] = {
         "operation": operation,
         "caption": f"Result for: {task.objective[:180]}",
         "timeout_seconds": 60,
     }
+    if path:
+        tool_input["path"] = path
     if any(marker in lowered for marker in ("pdf", "document", "powerpoint", "presentation", "pptx", "file")):
         tool_input["artifact_type"] = "document"
     return PlanModel(
@@ -1112,6 +1133,13 @@ def _looks_like_delivery_request(objective: str) -> bool:
     return any(phrase in lowered for phrase in ("send it", "send me", "send the", "send a", "send screenshot", "send file"))
 
 
+def _looks_like_latest_output_delivery_request(objective: str) -> bool:
+    lowered = objective.lower()
+    return _looks_like_delivery_request(objective) and any(
+        marker in lowered for marker in ("latest output", "current task", "latest artifact", "any screenshot", "powerpoint artifact")
+    )
+
+
 def _looks_like_adapter_request(objective: str) -> bool:
     lowered = objective.lower()
     has_adapter_word = any(word in lowered for word in ("adapter", "tool", "capability", "connector"))
@@ -1156,6 +1184,12 @@ def _looks_like_computer_use_request(objective: str) -> bool:
     lowered = objective.lower()
     if _first_url_from_text(objective):
         return False
+    if _path_from_objective(objective) and ("pdf" in lowered or _looks_like_delivery_request(objective)):
+        return False
+    if _looks_like_delivery_request(objective) and any(
+        marker in lowered for marker in ("latest output", "current task", "artifact", "powerpoint artifact")
+    ):
+        return False
     markers = (
         "use computer",
         "computer use",
@@ -1176,7 +1210,31 @@ def _looks_like_computer_use_request(objective: str) -> bool:
 
 def _looks_like_observation_only(objective: str) -> bool:
     lowered = objective.lower()
-    return any(marker in lowered for marker in ("what do you see", "take a screenshot", "screenshot", "observe", "look at my screen"))
+    if any(
+        marker in lowered
+        for marker in (
+            "what do you see",
+            "what is on my desktop",
+            "what's on my desktop",
+            "what is on my screen",
+            "what's on my screen",
+            "take a screenshot",
+            "screenshot",
+            "observe",
+            "inspect the desktop",
+            "inspect my desktop",
+            "look at my screen",
+            "tell me what you see",
+            "what windows are open",
+            "what apps are open",
+        )
+    ):
+        return True
+    return bool(
+        re.search(r"\b(?:what|tell me|describe|inspect)\b", lowered)
+        and re.search(r"\b(?:desktop|screen|windows?|open apps?)\b", lowered)
+        and not re.search(r"\b(?:click|type|fill|move|drag|open|launch|close|organize|delete|rename)\b", lowered)
+    )
 
 
 def _deterministic_computer_action(objective: str) -> dict[str, object] | None:
@@ -1207,7 +1265,39 @@ def _path_from_objective(objective: str) -> str | None:
         return quoted
     match = re.search(r"[A-Za-z]:\\[^\n\r\"']+", objective)
     if match:
-        return match.group(0).strip().rstrip(".,")
+        candidate = match.group(0).strip().rstrip(".,")
+        existing = _longest_existing_path_prefix(candidate)
+        return existing or candidate
+    return None
+
+
+def _document_path_from_objective(objective: str) -> str | None:
+    path = _path_from_objective(objective)
+    if not path:
+        return None
+    try:
+        candidate = Path(path).expanduser()
+        if candidate.is_dir() and "pdf" in objective.lower():
+            pdf = next((item for item in sorted(candidate.iterdir()) if item.is_file() and item.suffix.lower() == ".pdf"), None)
+            if pdf is not None:
+                return str(pdf)
+    except OSError:
+        return path
+    return path
+
+
+def _longest_existing_path_prefix(value: str) -> str | None:
+    candidate = value.strip().rstrip(".,")
+    while candidate:
+        try:
+            path = Path(candidate).expanduser()
+            if path.exists():
+                return str(path)
+        except OSError:
+            pass
+        if " " not in candidate:
+            return None
+        candidate = candidate.rsplit(" ", 1)[0].rstrip(".,")
     return None
 
 
@@ -1223,9 +1313,11 @@ def _search_query_from_objective(objective: str) -> str:
 
 
 def _looks_like_browser_request(objective: str) -> bool:
-    if expected_fulfillment(objective).get("preview_url"):
-        return False
     lowered = objective.lower()
+    has_url = bool(_first_url_from_text(objective))
+    explicit_browser = any(marker in lowered for marker in ("browser", "chrome", "tab", "website", "web page", "webpage", "url", "go to", "search", "google", "bing"))
+    if expected_fulfillment(objective).get("preview_url") and not (has_url or explicit_browser):
+        return False
     markers = (
         "browser",
         "chrome",
@@ -1242,12 +1334,10 @@ def _looks_like_browser_request(objective: str) -> bool:
         "bing",
         "open this page",
         "go to",
-        "screenshot",
-        "screen shot",
         "fill the form",
         "click",
     )
-    return any(marker in lowered for marker in markers)
+    return any(marker in lowered for marker in markers) or (has_url and any(marker in lowered for marker in ("screenshot", "screen shot", "summarize", "check", "open")))
 
 
 def _looks_like_browser_control_request(objective: str) -> bool:
