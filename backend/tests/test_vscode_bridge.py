@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from agent_control.main import app, vscode_store
-from agent_control.tools.vscode_bridge import _extract_copilot_usage
+from agent_control.tools.vscode_bridge import _extract_copilot_usage, _has_materializable_file_blocks
 
 
 def test_vscode_bridge_updates_and_reads_state(monkeypatch) -> None:
@@ -112,3 +112,12 @@ def test_copilot_usage_lines_are_extracted() -> None:
 
     assert usage["requests"] == "Requests 1 Premium (14s)"
     assert usage["tokens"].startswith("Tokens")
+
+
+def test_materializable_file_blocks_are_detected() -> None:
+    assert _has_materializable_file_blocks(
+        """```html filename=index.html
+<main>ok</main>
+```"""
+    )
+    assert not _has_materializable_file_blocks("Files created: index.html\nChanges +0 -0")

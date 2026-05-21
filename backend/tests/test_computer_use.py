@@ -255,6 +255,33 @@ def test_default_plans_route_desktop_and_folder_requests(tmp_path) -> None:
     assert organize_plan.steps[1].tool_input["manifest"] == "{{last_manifest}}"
 
 
+def test_default_computer_use_plan_honors_full_access_policy_over_adapter_session_flag(tmp_path) -> None:
+    settings = AppSettings(
+        _env_file=None,
+        adapters={
+            "computer_use": {
+                "enabled": True,
+                "allowed_roots": [str(tmp_path)],
+                "require_session_approval": True,
+            },
+            "desktop": {"control_enabled": True},
+        },
+        capabilities={
+            Capability.DESKTOP_CONTROL: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.CRITICAL,
+            ),
+        },
+    )
+
+    plan = build_default_task_plan(settings, TaskRecord(objective="Take a screenshot of my desktop"))
+
+    assert plan is not None
+    assert plan.steps[0].tool_name == "computer.use"
+    assert plan.steps[0].requires_approval is False
+
+
 def test_computer_use_summary_cleanup_handles_fenced_json() -> None:
     assert (
         _clean_summary_text('```json\n{"status":"complete","description":"Desktop is visible."}\n```')

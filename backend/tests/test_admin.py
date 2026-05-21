@@ -244,14 +244,17 @@ def test_admin_task_resume_restores_paused_status(tmp_path) -> None:
 
 def test_admin_rejects_vscode_terminal_command_by_default(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
-    monkeypatch.setenv("AGENT_STORAGE__DATABASE_URL", f"sqlite:///{tmp_path / 'admin.db'}")
-    vscode_store.terminal_commands = []
-    client = TestClient(app)
+    repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
+    store = VSCodeBridgeStore()
+    settings = AppSettings(_env_file=None, capabilities=default_capability_policies())
+    local_app = FastAPI()
+    local_app.include_router(create_admin_router(lambda: settings, lambda: repositories, store))
+    client = TestClient(local_app)
 
     response = client.post("/admin/api/vscode/terminal-commands", json={"command": "echo blocked"})
 
     assert response.status_code == 403
-    assert vscode_store.terminal_commands == []
+    assert store.terminal_commands == []
 
 
 def test_admin_can_queue_vscode_terminal_command_when_enabled(tmp_path) -> None:
@@ -547,6 +550,20 @@ def test_admin_access_modes_sync_computer_use_adapter(monkeypatch, tmp_path) -> 
     assert saved["capabilities"][Capability.DESKTOP_CONTROL.value]["requires_approval"] is True
     assert saved["adapters"]["desktop"]["control_enabled"] is True
     assert saved["adapters"]["computer_use"]["enabled"] is True
+    assert saved["adapters"]["computer_use"]["require_session_approval"] is True
+
+    response = client.post(
+        "/admin/api/config/access-modes",
+        json={"modes": {"desktop_control": CapabilityAccessMode.FULL_ACCESS.value}},
+    )
+    saved = yaml.safe_load((tmp_path / "config" / "config.yaml").read_text(encoding="utf-8"))
+
+    assert response.status_code == 200
+    assert saved["capabilities"][Capability.DESKTOP_CONTROL.value]["enabled"] is True
+    assert saved["capabilities"][Capability.DESKTOP_CONTROL.value]["requires_approval"] is False
+    assert saved["adapters"]["desktop"]["control_enabled"] is True
+    assert saved["adapters"]["computer_use"]["enabled"] is True
+    assert saved["adapters"]["computer_use"]["require_session_approval"] is False
 
 
 def test_admin_access_modes_sync_browser_adapter(monkeypatch, tmp_path) -> None:

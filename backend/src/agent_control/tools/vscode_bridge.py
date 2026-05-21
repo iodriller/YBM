@@ -195,6 +195,21 @@ class VSCodeBridgeTerminalAdapter:
                 ).strip()
                 returncode = retry_code
                 retried = True
+            elif (
+                prompt
+                and bool(request.input.get("require_file_blocks"))
+                and not request.input.get("command")
+                and not _has_materializable_file_blocks(content)
+            ):
+                retry_prompt = render_prompt("tools/copilot_file_blocks_retry.md", prompt=prompt, output=content)
+                retry_command = self._command_text_for_prompt(retry_prompt)
+                retry_code, retry_content = await _run_powershell(retry_command, request.input.get("cwd"), request.timeout_seconds)
+                content = (
+                    "First attempt did not include materializable file blocks; retried once with a file-block-only prompt.\n\n"
+                    f"First attempt output:\n{content}\n\nRetry output:\n{retry_content}"
+                ).strip()
+                returncode = retry_code
+                retried = True
         except TimeoutError:
             return ToolCallResult(
                 request_id=request.id,
@@ -336,6 +351,21 @@ def _extract_copilot_usage(content: str) -> dict[str, str]:
         elif re.search(r"(usage|quota|rate).{0,30}(limit|exceeded|remaining)", stripped, re.IGNORECASE):
             usage.setdefault("limit", stripped)
     return usage
+
+
+def _has_materializable_file_blocks(content: str) -> bool:
+    fence_pattern = re.compile(
+        r"```(?P<lang>[A-Za-z0-9_+.-]*)[ \t]*(?P<meta>[^\n`]*)\n(?P<code>.*?)```",
+        re.DOTALL,
+    )
+    for match in fence_pattern.finditer(content):
+        metadata = match.group("meta") or ""
+        language = (match.group("lang") or "").strip().lower()
+        if re.search(r"(?:filename|file|path)\s*=\s*['\"]?[^'\"\s`]+\.(?:html|css|js|mjs)", metadata, re.IGNORECASE):
+            return True
+        if language in {"html", "htm"}:
+            return True
+    return False
 
 
 def _failed_status(content: str) -> ToolResultStatus:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 
 from agent_control.channels.telegram import TelegramAdapter, TelegramIntakeService, TelegramPollingRunner
@@ -8,8 +10,9 @@ from agent_control.channels.responder import StaticTelegramResponder
 from agent_control.config import AppSettings, CapabilityPolicy, DesktopAdapterConfig, StorageConfig, TelegramConfig
 from agent_control.llm import LLMMessageClassifier, StaticMessageClassifier
 from agent_control.observation import ArtifactService, ScreenshotService
-from agent_control.schemas import AuditEventType, MessageClassification, TaskStatus, TaskType
+from agent_control.schemas import ApprovalRequest, ApprovalStatus, AuditEventType, ChannelType, MessageClassification, TaskStatus, TaskType
 from agent_control.schemas import Capability, RiskLevel
+from agent_control.schemas import utc_now
 from agent_control.storage import AuditLogger, Database, Repositories
 
 
@@ -174,6 +177,45 @@ def test_telegram_plain_status_does_not_require_slash(tmp_path) -> None:
 
     assert result.outbound_message is not None
     assert task.id in (result.outbound_message.text or "")
+
+
+def test_telegram_plain_approve_approves_latest_pending_task(tmp_path) -> None:
+    service, repos = _service(
+        tmp_path,
+        TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
+    )
+    conversation_id = repos.conversations.get_or_create(ChannelType.TELEGRAM, "100")
+    task = repos.tasks.create(
+        "Run gated task",
+        conversation_id=conversation_id,
+        metadata={"source_chat_id": "100"},
+    )
+    approval = repos.approvals.create(
+        ApprovalRequest(
+            task_id=task.id,
+            capability=Capability.DESKTOP_CONTROL,
+            risk_level=RiskLevel.CRITICAL,
+            summary="Approve desktop control",
+            expires_at=utc_now() + timedelta(minutes=15),
+        )
+    )
+
+    result = service.handle_update(
+        {
+            "message": {
+                "message_id": 14,
+                "from": {"id": 42},
+                "chat": {"id": 100},
+                "text": "approve",
+            }
+        }
+    )
+
+    updated = repos.approvals.list_for_task(task.id)[0]
+    assert updated.id == approval.id
+    assert updated.status == ApprovalStatus.APPROVED
+    assert result.outbound_message is not None
+    assert f"Approved 1 pending approval(s) for {task.id}." == result.outbound_message.text
 
 
 def test_telegram_updates_conversation_memory(tmp_path) -> None:

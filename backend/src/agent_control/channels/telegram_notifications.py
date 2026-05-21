@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from agent_control.channels.telegram import TelegramBotApi
 from agent_control.schemas import TaskRecord, TaskStatus
@@ -14,28 +15,24 @@ class TelegramTaskNotifier:
         chat_id = _task_chat_id(task)
         if not chat_id:
             return
-        
-        # Check if there's a screenshot to send as image
-        screenshot_path = (
-            task.metadata.get("screenshot_path")
-            or task.metadata.get("screenshot_uri")
-            or _output_value(task, "screenshot_path")
-            or _output_value(task, "screenshot_uri")
-        )
-        
-        message_text = _task_message(task)
-        
-        # Send screenshot as photo if available
-        if screenshot_path and Path(screenshot_path).exists():
-            try:
-                await self.client.send_photo_file(chat_id, screenshot_path, _task_message_caption(task))
-                return
-            except Exception:
-                # Fall back to text message if photo send fails
-                pass
-        
-        # Send as text message
+
+        # Send text message without screenshot line
+        message_text = _task_message_without_screenshot(task)
         await self.client.send_message(chat_id, message_text)
+
+        # Send screenshot as separate photo if available
+        screenshot_path = _get_screenshot_path(task)
+        if screenshot_path:
+            try:
+                caption = f"Screenshot - {_trim(task.objective, 80)}"
+                await self.client.send_photo_file(chat_id, screenshot_path, caption)
+            except Exception as exc:
+                await self.client.send_message(
+                    chat_id,
+                    "Screenshot was captured, but Telegram photo delivery failed.\n"
+                    f"Local file: {screenshot_path}\n"
+                    f"Error: {_trim(str(exc), 600)}",
+                )
 
 
 def _task_chat_id(task: TaskRecord) -> str | None:
@@ -62,6 +59,53 @@ def _task_message(task: TaskRecord) -> str:
         lines = [f"Task {task.status.value}: {_trim(task.objective, 220)}"]
 
     lines.extend(_result_lines(task))
+    if task.status in {TaskStatus.BLOCKED, TaskStatus.FAILED, TaskStatus.AWAITING_APPROVAL}:
+        lines.extend(_failure_lines(task))
+
+    tool_name = task.metadata.get("last_tool_name")
+    if tool_name:
+        lines.append(f"Tool: {tool_name}")
+
+    command_id = _last_command_id(task)
+    if command_id:
+        lines.append(f"Command: {command_id}")
+
+    usage = _last_usage(task)
+    if usage:
+        lines.append(f"Usage: {usage}")
+
+    lines.append(f"Task: {task.id}")
+    if task.status != TaskStatus.COMPLETED:
+        lines.append(f"Status: {task.status.value}")
+
+    output = _last_output(task)
+    if output:
+        lines.append("")
+        lines.append(f"Summary: {_trim(output, 2200)}")
+
+    error = _last_error(task)
+    if error and task.status not in {TaskStatus.BLOCKED, TaskStatus.FAILED}:
+        lines.append("")
+        lines.append(f"Error: {_trim(error, 1200)}")
+
+    return _trim("\n".join(lines), 3900)
+
+
+def _task_message_without_screenshot(task: TaskRecord) -> str:
+    if task.status == TaskStatus.COMPLETED:
+        lines = [f"Done: {_trim(task.objective, 220)}"]
+    elif task.status == TaskStatus.AWAITING_APPROVAL:
+        lines = [f"Approval needed: {_trim(task.objective, 220)}"]
+    elif task.status == TaskStatus.BLOCKED:
+        lines = [f"Blocked: {_trim(task.objective, 220)}"]
+    elif task.status == TaskStatus.FAILED:
+        lines = [f"Could not finish: {_trim(task.objective, 220)}"]
+    elif task.status == TaskStatus.CANCELLED:
+        lines = [f"Cancelled: {_trim(task.objective, 220)}"]
+    else:
+        lines = [f"Task {task.status.value}: {_trim(task.objective, 220)}"]
+
+    lines.extend(_result_lines_without_screenshot(task))
     if task.status in {TaskStatus.BLOCKED, TaskStatus.FAILED, TaskStatus.AWAITING_APPROVAL}:
         lines.extend(_failure_lines(task))
 
@@ -121,6 +165,57 @@ def _result_lines(task: TaskRecord) -> list[str]:
         if value:
             lines.append(f"{label}: {value}")
     return lines
+
+
+def _result_lines_without_screenshot(task: TaskRecord) -> list[str]:
+    """Same as _result_lines but excludes screenshot to avoid showing path as link."""
+    lines = []
+    pull_request = (
+        task.metadata.get("pull_request_url")
+        or task.metadata.get("pr_url")
+        or _output_value(task, "pull_request_url")
+        or _output_value(task, "html_url")
+    )
+    result_url = task.metadata.get("preview_url") or _output_value(task, "url")
+    browser_url = task.metadata.get("browser_url") or _output_value(task, "browser_url")
+    for label, value in (
+        ("Result", result_url),
+        ("Browser", browser_url if browser_url != result_url else None),
+        ("Workspace", task.metadata.get("workspace_dir") or _output_value(task, "workspace_dir")),
+        ("Adapter", task.metadata.get("adapter_dir") or _output_value(task, "adapter_dir")),
+        ("Pull request", pull_request),
+    ):
+        if value:
+            lines.append(f"{label}: {value}")
+    return lines
+
+
+def _get_screenshot_path(task: TaskRecord) -> str | None:
+    for value in (
+        task.metadata.get("screenshot_path"),
+        _output_value(task, "screenshot_path"),
+        task.metadata.get("screenshot_uri"),
+        _output_value(task, "screenshot_uri"),
+    ):
+        path = _path_from_screenshot_value(value)
+        if path is not None:
+            return str(path)
+    return None
+
+
+def _path_from_screenshot_value(value: object) -> Path | None:
+    if not value:
+        return None
+    text = str(value)
+    if text.startswith("file:///"):
+        parsed = urlparse(text)
+        raw_path = unquote(parsed.path)
+        if raw_path.startswith("/") and len(raw_path) > 3 and raw_path[2] == ":":
+            raw_path = raw_path[1:]
+        path = Path(raw_path)
+    else:
+        path = Path(text)
+    return path if path.exists() and path.is_file() else None
 
 
 def _failure_lines(task: TaskRecord) -> list[str]:
@@ -205,26 +300,3 @@ def _trim(value: str, limit: int) -> str:
     if len(value) <= limit:
         return value
     return f"{value[: limit - 3]}..."
-
-
-def _task_message_caption(task: TaskRecord) -> str | None:
-    """Create a short caption for photo messages (Telegram limit: 1024 chars)."""
-    if task.status == TaskStatus.COMPLETED:
-        line = f"Done: {_trim(task.objective, 100)}"
-    elif task.status == TaskStatus.AWAITING_APPROVAL:
-        line = f"Approval needed: {_trim(task.objective, 100)}"
-    elif task.status == TaskStatus.BLOCKED:
-        line = f"Blocked: {_trim(task.objective, 100)}"
-    elif task.status == TaskStatus.FAILED:
-        line = f"Could not finish: {_trim(task.objective, 100)}"
-    elif task.status == TaskStatus.CANCELLED:
-        line = f"Cancelled: {_trim(task.objective, 100)}"
-    else:
-        line = f"Task {task.status.value}: {_trim(task.objective, 100)}"
-    
-    # Add brief output summary if available
-    output = _last_output(task)
-    if output:
-        line += f"\n{_trim(output, 400)}"
-    
-    return _trim(line, 1024)

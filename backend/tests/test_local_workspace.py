@@ -94,6 +94,63 @@ body { font-family: sans-serif; }
 
 
 @pytest.mark.asyncio
+async def test_local_workspace_materialize_creates_missing_local_assets(tmp_path) -> None:
+    adapter = LocalWorkspaceAdapter(
+        WorkspaceAdapterConfig(root_dir=str(tmp_path / "workspaces"), web_port_start=8890, open_browser=False)
+    )
+    request = ToolCallRequest(
+        task_id="task_missing_asset",
+        tool_name="workspace.manage",
+        capability=Capability.FILESYSTEM_WRITE,
+        input={
+            "operation": "materialize_static_app",
+            "objective": "Create a modern app about monkeys",
+            "source_text": """```html filename=index.html
+<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body><h1>Monkeys</h1><script src="script.js"></script></body></html>
+```
+```css filename=styles.css
+body { font-family: sans-serif; }
+```""",
+            "allow_fallback_template": False,
+            "require_index": True,
+        },
+        timeout_seconds=30,
+    )
+
+    result = await adapter.execute(request)
+
+    workspace = tmp_path / "workspaces" / "task_missing_asset"
+    assert result.status == ToolResultStatus.SUCCEEDED
+    assert (workspace / "script.js").exists()
+    assert str(workspace / "script.js") in result.output["files"]
+
+
+@pytest.mark.asyncio
+async def test_local_workspace_launch_reports_existing_static_files(tmp_path) -> None:
+    adapter = LocalWorkspaceAdapter(
+        WorkspaceAdapterConfig(root_dir=str(tmp_path / "workspaces"), web_port_start=8890, open_browser=False)
+    )
+    workspace = tmp_path / "workspaces" / "task_launch_files"
+    workspace.mkdir(parents=True)
+    (workspace / "index.html").write_text("<!doctype html><html><body>ok</body></html>", encoding="utf-8")
+    (workspace / "styles.css").write_text("body { color: teal; }", encoding="utf-8")
+    request = ToolCallRequest(
+        task_id="task_launch_files",
+        tool_name="workspace.manage",
+        capability=Capability.FILESYSTEM_WRITE,
+        input={"operation": "launch_static", "objective": "Launch app", "ensure_index": False},
+        timeout_seconds=30,
+    )
+
+    result = await adapter.execute(request)
+
+    assert result.status == ToolResultStatus.SUCCEEDED
+    assert str(workspace / "index.html") in result.output["files"]
+    assert str(workspace / "styles.css") in result.output["files"]
+    _stop_process(int(result.output["server_pid"]))
+
+
+@pytest.mark.asyncio
 async def test_local_workspace_strict_materialize_rejects_missing_app_files(tmp_path) -> None:
     adapter = LocalWorkspaceAdapter(
         WorkspaceAdapterConfig(root_dir=str(tmp_path / "workspaces"), web_port_start=8890, open_browser=False)

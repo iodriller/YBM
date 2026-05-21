@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent_control.config import AppSettings, CapabilityPolicy
+from agent_control.config import AppSettings, CapabilityPolicy, default_capability_policies
 from agent_control.orchestration import StaticToolAdapter, ToolExecutor
 from agent_control.policy import PolicyEngine
 from agent_control.schemas import Capability, RiskLevel, ToolCallRequest, ToolResultStatus
@@ -20,7 +20,7 @@ def _repos(tmp_path) -> tuple[Repositories, AuditLogger]:
 def test_disabled_capability_is_denied(tmp_path) -> None:
     repos, audit = _repos(tmp_path)
     task = repos.tasks.create("Run command")
-    settings = AppSettings(_env_file=None)
+    settings = AppSettings(_env_file=None, capabilities=default_capability_policies())
     policy = PolicyEngine(settings, audit)
 
     decision = policy.evaluate(

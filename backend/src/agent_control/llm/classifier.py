@@ -112,6 +112,17 @@ def heuristic_classification(message: InboundMessage) -> MessageClassification:
             reason="capability or help question",
         )
 
+    desktop_markers = ("my desktop", "desktop", "my screen", "screen shot", "take a screenshot", "screenshot")
+    browser_target_markers = ("browser", "chrome", "website", "web page", "webpage", "http://", "https://", "www.")
+    if any(marker in lowered for marker in desktop_markers) and not any(marker in lowered for marker in browser_target_markers):
+        return MessageClassification(
+            is_task=True,
+            task_type=TaskType.DESKTOP_OBSERVATION,
+            normalized_objective=text,
+            confidence=0.75,
+            reason="heuristic desktop observation request",
+        )
+
     browser_markers = (
         "open browser",
         "open chrome",
@@ -121,8 +132,9 @@ def heuristic_classification(message: InboundMessage) -> MessageClassification:
         "go to ",
         "open http",
         "open www.",
-        "take a screenshot",
-        "screen shot",
+        "website",
+        "web page",
+        "webpage",
         "what tabs",
         "current tabs",
         "close tab",

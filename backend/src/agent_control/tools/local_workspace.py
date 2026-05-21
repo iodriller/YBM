@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 import os
 from pathlib import Path
 import re
@@ -87,6 +88,7 @@ class LocalWorkspaceAdapter:
             title = _title_from_objective(objective)
             index_file.write_text(_web_app_html(request.task_id, title, objective), encoding="utf-8")
             fallback_files.append(str(index_file))
+        fallback_files.extend(_ensure_referenced_local_assets(workspace_dir, objective))
         port = _free_port(self.config.web_host, int(request.input.get("web_port_start") or self.config.web_port_start))
         url = f"http://{self.config.web_host}:{port}/"
         process = _start_static_server(workspace_dir, self.config.web_host, port)
@@ -96,7 +98,7 @@ class LocalWorkspaceAdapter:
             "workspace_dir": str(workspace_dir),
             "url": url,
             "server_pid": process.pid,
-            "files": sorted(set([*prepared.get("files", []), *fallback_files])),
+            "files": sorted(set([*prepared.get("files", []), *_workspace_preview_files(workspace_dir), *fallback_files])),
         }
 
     def _materialize_static_app(self, request: ToolCallRequest) -> dict[str, Any]:
@@ -111,9 +113,10 @@ class LocalWorkspaceAdapter:
         parsed_files = _extract_files_from_text(source_text)
         existing_index = workspace_dir / "index.html"
         if existing_index.exists() and not overwrite:
+            fallback_files = _ensure_referenced_local_assets(workspace_dir, objective)
             return {
                 "workspace_dir": str(workspace_dir),
-                "files": sorted(set([*prepared.get("files", []), str(existing_index)])),
+                "files": sorted(set([*prepared.get("files", []), str(existing_index), *fallback_files])),
                 "materialized_from": "existing_files",
             }
 
@@ -130,6 +133,7 @@ class LocalWorkspaceAdapter:
                 target.write_text(content, encoding="utf-8")
                 files.append(str(target))
             materialized_from = "assistant_output"
+            files.extend(_ensure_referenced_local_assets(workspace_dir, objective))
         else:
             if not allow_fallback_template:
                 raise ValueError("assistant output did not include materializable static app files")
@@ -138,6 +142,7 @@ class LocalWorkspaceAdapter:
             target.write_text(_web_app_html(request.task_id, title, objective), encoding="utf-8")
             files.append(str(target))
             materialized_from = "fallback_template"
+            files.extend(_ensure_referenced_local_assets(workspace_dir, objective))
 
         readme = workspace_dir / "README.md"
         if not readme.exists() or overwrite:
@@ -264,6 +269,130 @@ def _safe_relative_file(value: str) -> str | None:
 
 def _has_index_html(files: dict[str, str]) -> bool:
     return any(path.replace("\\", "/").lower().endswith("index.html") for path in files)
+
+
+def _ensure_referenced_local_assets(workspace_dir: Path, objective: str) -> list[str]:
+    index_file = workspace_dir / "index.html"
+    if not index_file.exists():
+        return []
+    html = index_file.read_text(encoding="utf-8", errors="replace")
+    created: list[str] = []
+    for reference in sorted(_local_asset_references(html)):
+        try:
+            target = _safe_child_path(workspace_dir, reference)
+        except ValueError:
+            continue
+        if target.exists():
+            continue
+        if target.suffix.lower() == ".js":
+            content = _default_script(objective)
+        elif target.suffix.lower() == ".css":
+            content = _default_stylesheet(objective)
+        else:
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        created.append(str(target))
+    return created
+
+
+def _local_asset_references(html: str) -> set[str]:
+    references: set[str] = set()
+    for match in re.finditer(r"""(?:src|href)\s*=\s*["']([^"']+)["']""", html, re.IGNORECASE):
+        raw = match.group(1).strip()
+        if not raw:
+            continue
+        lowered = raw.lower()
+        if lowered.startswith(("http://", "https://", "data:", "mailto:", "javascript:", "#", "/")):
+            continue
+        path = raw.split("#", 1)[0].split("?", 1)[0].strip()
+        if Path(path).suffix.lower() in {".css", ".js"}:
+            safe = _safe_relative_file(path)
+            if safe:
+                references.add(safe)
+    return references
+
+
+def _workspace_preview_files(workspace_dir: Path) -> list[str]:
+    extensions = {".html", ".css", ".js", ".mjs", ".json", ".md", ".txt", ".png", ".jpg", ".jpeg", ".webp", ".svg"}
+    files = []
+    for path in workspace_dir.rglob("*"):
+        if path.is_file() and path.suffix.lower() in extensions:
+            files.append(str(path))
+    return files
+
+
+def _default_script(objective: str) -> str:
+    return f"""document.addEventListener("DOMContentLoaded", () => {{
+  const themeToggle = document.getElementById("themeToggle");
+  if (themeToggle) {{
+    themeToggle.addEventListener("click", () => {{
+      document.documentElement.classList.toggle("light");
+    }});
+  }}
+
+  const factText = document.getElementById("factText");
+  const factButton = document.getElementById("factBtn");
+  const facts = [
+    "Primates use social learning to solve problems and adapt to new environments.",
+    "Many monkey species live in complex groups with distinct calls and roles.",
+    "Conservation work protects habitats that support entire ecosystems."
+  ];
+  if (factText && factButton) {{
+    factButton.addEventListener("click", () => {{
+      factText.textContent = facts[Math.floor(Math.random() * facts.length)];
+    }});
+  }}
+
+  const modal = document.getElementById("modal");
+  const modalImg = document.getElementById("modalImg");
+  const modalClose = document.getElementById("modalClose");
+  document.querySelectorAll("[data-full]").forEach((item) => {{
+    item.addEventListener("click", (event) => {{
+      event.preventDefault();
+      if (!modal || !modalImg) return;
+      modalImg.src = item.getAttribute("data-full") || "";
+      modal.classList.add("open");
+      modal.setAttribute("aria-hidden", "false");
+    }});
+  }});
+  if (modalClose && modal) {{
+    modalClose.addEventListener("click", () => {{
+      modal.classList.remove("open");
+      modal.setAttribute("aria-hidden", "true");
+    }});
+  }}
+
+  console.info("Local preview ready", {{"objective": {_js_string(objective)}}});
+}});
+"""
+
+
+def _default_stylesheet(objective: str) -> str:
+    title = _title_from_objective(objective)
+    return f"""body {{
+  margin: 0;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #f7f8fb;
+  color: #1f2328;
+}}
+main {{
+  width: min(960px, calc(100vw - 32px));
+  margin: 48px auto;
+}}
+h1::after {{
+  content: " - {title}";
+  color: #667085;
+  font-size: 0.45em;
+}}
+a {{
+  color: #0a7f5a;
+}}
+"""
+
+
+def _js_string(value: str) -> str:
+    return json.dumps(value)
 
 
 def _title_from_objective(objective: str) -> str:

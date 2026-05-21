@@ -561,6 +561,8 @@ class TelegramIntakeService:
 
     def _plain_text_command_response(self, inbound: InboundMessage) -> OutboundMessage | None:
         text = (inbound.text or "").strip().lower()
+        if text in {"approve", "approved", "approve it", "yes approve", "yes, approve"}:
+            return self._approve_latest_pending(inbound)
         if text in {"status", "task status", "tasks status", "what is the status"}:
             return self._out(inbound.chat_id, self._status_summary())
         if text in {"tasks", "list tasks", "show tasks"}:
@@ -570,6 +572,30 @@ class TelegramIntakeService:
             lines = [f"{task.id} | {task.status.value} | {task.objective[:80]}" for task in tasks]
             return self._out(inbound.chat_id, "\n".join(lines))
         return None
+
+    def _approve_latest_pending(self, inbound: InboundMessage) -> OutboundMessage:
+        chat_id = str(inbound.chat_id)
+        for task in self.repositories.tasks.list_recent(50):
+            if task.conversation_id != f"conv_telegram_{chat_id}" and str(task.metadata.get("source_chat_id")) != chat_id:
+                continue
+            pending = [
+                approval
+                for approval in self.repositories.approvals.list_for_task(task.id)
+                if approval.status == ApprovalStatus.PENDING
+            ]
+            if not pending:
+                continue
+            for approval in pending:
+                self.repositories.approvals.set_status(approval.id, ApprovalStatus.APPROVED)
+                self.audit.append(
+                    AuditEventType.APPROVAL_DECIDED,
+                    actor=f"telegram:user:{inbound.sender_id}",
+                    task_id=task.id,
+                    correlation_id=inbound.correlation_id,
+                    payload={"approval_id": approval.id, "decision": "approve", "source": "plain_text"},
+                )
+            return self._out(chat_id, f"Approved {len(pending)} pending approval(s) for {task.id}.")
+        return self._out(chat_id, "No pending approval found. Full-access modes run without approval.")
 
     def _status_summary(self) -> str:
         recent = self.repositories.tasks.list_recent(20)
