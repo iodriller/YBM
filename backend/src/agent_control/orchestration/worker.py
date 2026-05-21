@@ -123,6 +123,7 @@ class TaskWorker:
                             capability.value for capability in default_plan.required_capabilities
                         ],
                         "source": "default_vscode_development_plan",
+                        "route_decision": _route_decision(task, default_plan),
                         "config_context": self.config_context,
                         "plan": default_plan.model_dump(mode="json"),
                     },
@@ -350,13 +351,26 @@ class TaskWorker:
             ("computer_use_actions", "actions_taken"),
             ("organized_paths", "changed_paths"),
             ("file_manifest", "manifest"),
+            ("document_path", "path"),
+            ("document_summary", "summary"),
+            ("coding_agent_workspace", "workspace_dir"),
+            ("coding_agent_session_id", "session_id"),
+            ("coding_agent_limit_state", "limit_state"),
         ):
             if output.get(output_key):
                 metadata[metadata_key] = output[output_key]
+        if result.artifact_ids:
+            metadata["last_artifact_ids"] = result.artifact_ids
+        elif output.get("artifact_ids"):
+            metadata["last_artifact_ids"] = output["artifact_ids"]
         if output.get("preview_url"):
             metadata["preview_url"] = output["preview_url"]
         elif tool_name == "workspace.manage" and output.get("url"):
             metadata["preview_url"] = output["url"]
+        if tool_name == "artifact.deliver":
+            metadata["artifact_delivery"] = output
+            if output.get("artifact_id"):
+                metadata["last_delivered_artifact_id"] = output["artifact_id"]
         return self.repositories.tasks.update_metadata(task_id, metadata)
 
     @staticmethod
@@ -508,3 +522,28 @@ def _trim_value(value):
     if isinstance(value, dict):
         return {key: _trim_value(item) for key, item in value.items()}
     return value
+
+
+def _route_decision(task: TaskRecord, plan: PlanModel) -> dict[str, Any]:
+    tool_names = [step.tool_name for step in plan.steps if step.tool_name]
+    lowered = task.objective.lower()
+    explicit_external_agents = []
+    if "codex" in lowered:
+        explicit_external_agents.append("codex")
+    if "copilot" in lowered:
+        explicit_external_agents.append("github_copilot")
+    used_external_agents = []
+    if any(tool and "copilot" in tool for tool in tool_names):
+        used_external_agents.append("github_copilot")
+    if any(tool in {"coding.agent", "coding_assistant"} for tool in tool_names):
+        used_external_agents.append("coding_agent")
+    skipped: list[str] = []
+    if not explicit_external_agents:
+        skipped.append("codex_and_github_copilot_not_used_without_explicit_user_request")
+    return {
+        "objective": task.objective,
+        "selected_tools": tool_names,
+        "explicit_external_agents": explicit_external_agents,
+        "used_external_agents": used_external_agents,
+        "external_agent_skipped": skipped,
+    }

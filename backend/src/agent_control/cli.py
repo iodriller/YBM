@@ -81,6 +81,9 @@ async def run_worker() -> None:
         _backend_base_url(settings),
         provider=provider,
         should_continue=lambda task_id: _task_allows_tool_continue(repositories, task_id),
+        artifact_repository=repositories.artifacts,
+        task_repository=repositories.tasks,
+        telegram_client=_telegram_client(settings),
     )
     planner = PlannerService(provider, repositories, audit, plan_validator=registry.validate_plan) if provider else None
     executor = ToolExecutor(
@@ -107,7 +110,17 @@ def _telegram_notifier(settings) -> TelegramTaskNotifier | None:
     if not settings.channels.telegram.enabled:
         return None
     try:
-        return TelegramTaskNotifier(TelegramBotApi(load_telegram_token(settings.channels.telegram)))
+        client = _telegram_client(settings)
+        return TelegramTaskNotifier(client) if client else None
+    except RuntimeError:
+        return None
+
+
+def _telegram_client(settings) -> TelegramBotApi | None:
+    if not settings.channels.telegram.enabled:
+        return None
+    try:
+        return TelegramBotApi(load_telegram_token(settings.channels.telegram))
     except RuntimeError:
         return None
 

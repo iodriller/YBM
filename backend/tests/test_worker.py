@@ -426,9 +426,9 @@ async def test_worker_default_vscode_development_plan_runs_when_enabled(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_worker_default_vscode_plan_prepares_workspace_when_enabled(tmp_path) -> None:
+async def test_worker_default_vscode_plan_prepares_workspace_when_copilot_is_explicit(tmp_path) -> None:
     repos, audit = _repos(tmp_path)
-    task = repos.tasks.create("Write a small Python script", metadata={"task_type": TaskType.DEVELOPMENT.value})
+    task = repos.tasks.create("Use GitHub Copilot to write a small Python script", metadata={"task_type": TaskType.DEVELOPMENT.value})
     settings = AppSettings(
         _env_file=None,
         adapters={
@@ -571,10 +571,63 @@ async def test_worker_launchable_app_request_uses_preview_even_without_web_keywo
 
 
 @pytest.mark.asyncio
-async def test_worker_launchable_app_request_uses_copilot_then_workspace_preview(tmp_path) -> None:
+async def test_worker_launchable_app_request_does_not_use_copilot_unless_explicit(tmp_path) -> None:
     repos, audit = _repos(tmp_path)
     task = repos.tasks.create(
         "Create a modern app about ferrets and launch it",
+        metadata={"task_type": TaskType.DEVELOPMENT.value},
+    )
+    settings = AppSettings(
+        _env_file=None,
+        adapters={
+            "workspace": {"enabled": True, "root_dir": str(tmp_path / "workspaces"), "open_browser": False},
+            "vscode": {"enabled": True},
+        },
+        capabilities={
+            Capability.FILESYSTEM_WRITE: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.HIGH,
+            ),
+            Capability.VSCODE_WRITE_FILES: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.HIGH,
+            ),
+        },
+    )
+    workspace_adapter = StaticToolAdapter({"url": "http://127.0.0.1:8890/", "workspace_dir": str(tmp_path / "workspaces")})
+    vscode_adapter = StaticToolAdapter({"text": "should not be called"})
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"workspace.manage": workspace_adapter, "vscode.copilot_terminal": vscode_adapter},
+    )
+    worker = TaskWorker(
+        repos,
+        audit,
+        executor=executor,
+        default_plan_factory=lambda item: build_default_vscode_development_plan(settings, item),
+    )
+
+    await worker.process_task(task.id)
+    completed = await worker.process_task(task.id)
+    plan_event = next(event for event in repos.audit.list_for_task(task.id) if event.type.value == "plan_created")
+
+    assert completed.status == TaskStatus.COMPLETED
+    assert workspace_adapter.requests[0].input["operation"] == "web_app_preview"
+    assert vscode_adapter.requests == []
+    assert plan_event.payload["route_decision"]["external_agent_skipped"] == [
+        "codex_and_github_copilot_not_used_without_explicit_user_request"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_worker_launchable_app_request_uses_copilot_then_workspace_preview_when_explicit(tmp_path) -> None:
+    repos, audit = _repos(tmp_path)
+    task = repos.tasks.create(
+        "Use GitHub Copilot to create a modern app about ferrets and launch it",
         metadata={"task_type": TaskType.DEVELOPMENT.value},
     )
     settings = AppSettings(

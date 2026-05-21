@@ -158,6 +158,11 @@ def test_registry_exposes_computer_use_and_filesystem_manage_when_enabled(tmp_pa
             "desktop": {"control_enabled": True},
         },
         capabilities={
+            Capability.TELEGRAM_SEND: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.LOW,
+            ),
             Capability.DESKTOP_CONTROL: CapabilityPolicy(
                 enabled=True,
                 requires_approval=True,
@@ -239,12 +244,16 @@ def test_default_plans_route_desktop_and_folder_requests(tmp_path) -> None:
     )
 
     screenshot_plan = build_default_task_plan(settings, TaskRecord(objective="Take a screenshot and tell me what you see"))
+    send_screenshot_plan = build_default_task_plan(settings, TaskRecord(objective="Take a screenshot of my desktop and send it to me"))
     wait_plan = build_default_task_plan(settings, TaskRecord(objective="Use computer to wait 1 second"))
     organize_plan = build_default_task_plan(settings, TaskRecord(objective=f'Organize folder "{tmp_path}" by type'))
 
     assert screenshot_plan is not None
     assert screenshot_plan.steps[0].tool_name == "computer.use"
     assert screenshot_plan.steps[0].tool_input["operation"] == "observe"
+    assert send_screenshot_plan is not None
+    assert [step.tool_name for step in send_screenshot_plan.steps] == ["computer.use", "artifact.deliver"]
+    assert send_screenshot_plan.steps[1].tool_input["operation"] == "send_screenshot"
     assert wait_plan is not None
     assert wait_plan.steps[0].tool_name == "computer.use"
     assert wait_plan.steps[0].tool_input["operation"] == "act"

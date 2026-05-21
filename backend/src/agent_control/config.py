@@ -146,6 +146,17 @@ class CodingAssistantAdapterConfig(StrictBaseModel):
     usage_limit_patterns: list[str] = Field(default_factory=lambda: ["usage limit", "quota exceeded"])
 
 
+class CodingAgentAdapterConfig(StrictBaseModel):
+    enabled: bool = True
+    workspace_root: str = ".agent_control/workspaces"
+    codex_path: str | None = None
+    copilot_path: str | None = None
+    timeout_seconds: int = Field(default=900, ge=1)
+    output_limit_chars: int = Field(default=20000, ge=100)
+    rate_limit_patterns: list[str] = Field(default_factory=lambda: ["rate limit", "too many requests"])
+    usage_limit_patterns: list[str] = Field(default_factory=lambda: ["usage limit", "quota exceeded", "limit reached"])
+
+
 class DesktopAdapterConfig(StrictBaseModel):
     screenshot_enabled: bool = False
     control_enabled: bool = False
@@ -177,6 +188,7 @@ class AdaptersConfig(StrictBaseModel):
     adapter_factory: AdapterFactoryConfig = Field(default_factory=AdapterFactoryConfig)
     terminal: TerminalAdapterConfig = Field(default_factory=TerminalAdapterConfig)
     coding_assistant: CodingAssistantAdapterConfig = Field(default_factory=CodingAssistantAdapterConfig)
+    coding_agent: CodingAgentAdapterConfig = Field(default_factory=CodingAgentAdapterConfig)
     desktop: DesktopAdapterConfig = Field(default_factory=DesktopAdapterConfig)
     computer_use: ComputerUseAdapterConfig = Field(default_factory=ComputerUseAdapterConfig)
     stt: STTAdapterConfig = Field(default_factory=STTAdapterConfig)

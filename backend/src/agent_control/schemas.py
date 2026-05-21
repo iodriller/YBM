@@ -135,6 +135,7 @@ class ArtifactType(StrEnum):
     VOICE = "voice"
     TRANSCRIPT = "transcript"
     GENERATED_FILE = "generated_file"
+    DOCUMENT = "document"
     EXTERNAL_LINK = "external_link"
 
 
@@ -142,6 +143,10 @@ class PostconditionType(StrEnum):
     WORKSPACE_DIR = "workspace_dir"
     PREVIEW_URL = "preview_url"
     ADAPTER_PROPOSAL = "adapter_proposal"
+    ARTIFACT_DELIVERED = "artifact_delivered"
+    DOCUMENT_SUMMARY = "document_summary"
+    PRESENTATION_FILE = "presentation_file"
+    CODING_AGENT_STEP = "coding_agent_step"
     BROWSER_STATE = "browser_state"
     DESKTOP_OBSERVATION = "desktop_observation"
     FILE_ORGANIZATION = "file_organization"

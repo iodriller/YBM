@@ -29,6 +29,10 @@ def expected_fulfillment(objective: str) -> dict[str, bool]:
         "workspace_dir": any(item.type == PostconditionType.WORKSPACE_DIR for item in expected),
         "preview_url": any(item.type == PostconditionType.PREVIEW_URL for item in expected),
         "adapter_proposal": any(item.type == PostconditionType.ADAPTER_PROPOSAL for item in expected),
+        "artifact_delivered": any(item.type == PostconditionType.ARTIFACT_DELIVERED for item in expected),
+        "document_summary": any(item.type == PostconditionType.DOCUMENT_SUMMARY for item in expected),
+        "presentation_file": any(item.type == PostconditionType.PRESENTATION_FILE for item in expected),
+        "coding_agent_step": any(item.type == PostconditionType.CODING_AGENT_STEP for item in expected),
         "browser_state": any(item.type == PostconditionType.BROWSER_STATE for item in expected),
         "desktop_observation": any(item.type == PostconditionType.DESKTOP_OBSERVATION for item in expected),
         "file_organization": any(item.type == PostconditionType.FILE_ORGANIZATION for item in expected),
@@ -71,6 +75,34 @@ def _postconditions_from_plan(plan: PlanModel) -> list[PlanPostcondition]:
                 PlanPostcondition(
                     type=PostconditionType.ADAPTER_PROPOSAL,
                     description="A generated adapter proposal directory is reported.",
+                )
+            )
+        if step.tool_name == "artifact.deliver" and operation in {"send_file", "send_latest", "send_screenshot"}:
+            expected.append(
+                PlanPostcondition(
+                    type=PostconditionType.ARTIFACT_DELIVERED,
+                    description="The requested artifact is delivered to Telegram.",
+                )
+            )
+        if step.tool_name == "document.manage" and operation in {"summarize_pdf", "extract_text"}:
+            expected.append(
+                PlanPostcondition(
+                    type=PostconditionType.DOCUMENT_SUMMARY,
+                    description="A document text extraction or summary is reported.",
+                )
+            )
+        if step.tool_name == "document.manage" and operation in {"create_presentation", "update_presentation"}:
+            expected.append(
+                PlanPostcondition(
+                    type=PostconditionType.PRESENTATION_FILE,
+                    description="A PowerPoint file artifact is reported.",
+                )
+            )
+        if step.tool_name == "coding.agent":
+            expected.append(
+                PlanPostcondition(
+                    type=PostconditionType.CODING_AGENT_STEP,
+                    description="A coding-agent invocation completed or reported a limit.",
                 )
             )
         if step.tool_name in {"workspace.manage", "workspace.web_app"}:
@@ -218,6 +250,22 @@ def _postcondition_satisfied(task: TaskRecord, expected: PostconditionType) -> b
         return isinstance(value, str) and value.startswith(("http://", "https://"))
     if expected == PostconditionType.ADAPTER_PROPOSAL:
         return bool(_value(task, "adapter_dir", "adapter_dir"))
+    if expected == PostconditionType.ARTIFACT_DELIVERED:
+        delivery = task.metadata.get("artifact_delivery")
+        if isinstance(delivery, dict) and delivery.get("delivered") is True:
+            return True
+        output = _last_output_dict(task)
+        return output.get("delivered") is True
+    if expected == PostconditionType.DOCUMENT_SUMMARY:
+        return bool(_any_value(task, metadata_keys=("document_summary",), output_keys=("summary", "text")))
+    if expected == PostconditionType.PRESENTATION_FILE:
+        value = _any_value(task, metadata_keys=("document_path",), output_keys=("path",))
+        return isinstance(value, str) and value.lower().endswith(".pptx")
+    if expected == PostconditionType.CODING_AGENT_STEP:
+        output = _last_output_dict(task)
+        return output.get("provider") in {"codex", "github_copilot"} and (
+            output.get("returncode") == 0 or bool((output.get("limit_state") or {}).get("limited"))
+        )
     if expected == PostconditionType.BROWSER_STATE:
         return bool(
             _any_value(

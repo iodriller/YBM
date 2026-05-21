@@ -118,6 +118,36 @@ class CodingAssistantInput(ToolInputModel):
     prompt: str = Field(min_length=1)
 
 
+class ArtifactDeliverInput(ToolInputModel):
+    operation: Literal["send_file", "send_latest", "send_screenshot", "list_artifacts"] = "send_latest"
+    artifact_id: str | None = None
+    path: str | None = None
+    artifact_type: str | None = None
+    chat_id: str | None = None
+    caption: str | None = None
+    mime_type: str | None = None
+
+
+class DocumentManageInput(ToolInputModel):
+    operation: Literal["inspect_document", "extract_text", "summarize_pdf", "create_presentation", "update_presentation"] = "inspect_document"
+    path: str | None = None
+    artifact_id: str | None = None
+    title: str | None = None
+    content: str | None = None
+    instructions: str | None = None
+    output_name: str | None = None
+
+
+class CodingAgentInput(ToolInputModel):
+    operation: Literal["plan", "run_step", "run_goal", "status", "limits", "resume", "stop"] = "run_goal"
+    provider: Literal["codex", "github_copilot"]
+    prompt: str | None = None
+    objective: str | None = None
+    workspace_dir: str | None = None
+    session_id: str | None = None
+    step_index: int | None = Field(default=None, ge=0)
+
+
 class BrowserOpenInput(ToolInputModel):
     operation: Literal["open"] = "open"
     url: str | None = None
@@ -191,6 +221,51 @@ class BrowserFillFormInput(ToolInputModel):
     wait_seconds: float | None = Field(default=None, ge=0.0, le=30.0)
 
 
+class BrowserSummarizePageInput(ToolInputModel):
+    operation: Literal["summarize_page"] = "summarize_page"
+    tab_id: str | None = None
+    url: str | None = None
+    url_contains: str | None = None
+    title_contains: str | None = None
+    wait_seconds: float | None = Field(default=None, ge=0.0, le=30.0)
+
+
+class BrowserCheckPageUpdateInput(ToolInputModel):
+    operation: Literal["check_page_update"] = "check_page_update"
+    url: str | None = None
+    objective: str | None = None
+    previous_observation: str | None = None
+    wait_seconds: float | None = Field(default=None, ge=0.0, le=30.0)
+
+
+class BrowserResearchPagesInput(ToolInputModel):
+    operation: Literal["research_pages"] = "research_pages"
+    query: str | None = None
+    objective: str | None = None
+    page_limit: int = Field(default=10, ge=1, le=50)
+    wait_seconds: float | None = Field(default=None, ge=0.0, le=30.0)
+
+
+class BrowserExtractPageStateInput(ToolInputModel):
+    operation: Literal["extract_page_state"] = "extract_page_state"
+    tab_id: str | None = None
+    url: str | None = None
+    url_contains: str | None = None
+    title_contains: str | None = None
+    wait_seconds: float | None = Field(default=None, ge=0.0, le=30.0)
+
+
+class BrowserFillFormStepInput(ToolInputModel):
+    operation: Literal["fill_form_step"] = "fill_form_step"
+    fields: dict[str, str] = Field(default_factory=dict)
+    submit: bool = False
+    submit_selector: str | None = None
+    tab_id: str | None = None
+    url_contains: str | None = None
+    title_contains: str | None = None
+    wait_seconds: float | None = Field(default=None, ge=0.0, le=30.0)
+
+
 class ComputerObserveInput(ToolInputModel):
     operation: Literal["observe"] = "observe"
     objective: str | None = None
@@ -226,6 +301,32 @@ class FilesystemSearchInput(ToolInputModel):
     query: str = Field(min_length=1)
     include_content: bool = False
     max_results: int = Field(default=100, ge=1, le=1000)
+
+
+class FilesystemResolveDesktopItemInput(ToolInputModel):
+    operation: Literal["resolve_desktop_item"] = "resolve_desktop_item"
+    name: str | None = None
+    query: str | None = None
+    item_type: Literal["file", "folder", "any"] = "any"
+
+
+class FilesystemFindByDescriptionInput(ToolInputModel):
+    operation: Literal["find_by_description"] = "find_by_description"
+    root: str | None = None
+    description: str = Field(min_length=1)
+    max_results: int = Field(default=20, ge=1, le=200)
+
+
+class FilesystemOpenFileInput(ToolInputModel):
+    operation: Literal["open_file"] = "open_file"
+    path: str = Field(min_length=1)
+
+
+class FilesystemCollectFolderSnapshotInput(ToolInputModel):
+    operation: Literal["collect_folder_snapshot"] = "collect_folder_snapshot"
+    root: str = Field(min_length=1)
+    max_depth: int = Field(default=2, ge=0, le=10)
+    max_entries: int = Field(default=200, ge=1, le=5000)
 
 
 class FilesystemOrganizePlanInput(ToolInputModel):
@@ -304,6 +405,42 @@ class CodingAssistantOutput(ToolOutputModel):
     returncode: int
 
 
+class ArtifactDeliveryOutput(ToolOutputModel):
+    operation: str = Field(min_length=1)
+    delivered: bool = False
+    delivery_method: str | None = None
+    artifact_id: str | None = None
+    artifact_ids: list[str] = Field(default_factory=list)
+    path: str | None = None
+    chat_id: str | None = None
+    summary: str | None = None
+    telegram_result: dict[str, Any] | None = None
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class DocumentManageOutput(ToolOutputModel):
+    operation: str = Field(min_length=1)
+    path: str | None = None
+    artifact_id: str | None = None
+    artifact_ids: list[str] = Field(default_factory=list)
+    text: str | None = None
+    summary: str | None = None
+    slide_count: int | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CodingAgentOutput(ToolOutputModel):
+    operation: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    workspace_dir: str | None = None
+    session_id: str | None = None
+    stdout: str = ""
+    stderr: str = ""
+    returncode: int | None = None
+    limit_state: dict[str, Any] = Field(default_factory=dict)
+    summary: str | None = None
+
+
 class BrowserToolOutput(ToolOutputModel):
     operation: str = Field(min_length=1)
     browser_state: dict[str, Any] | None = None
@@ -315,6 +452,9 @@ class BrowserToolOutput(ToolOutputModel):
     links: list[dict[str, str]] = Field(default_factory=list)
     screenshot_path: str | None = None
     screenshot_uri: str | None = None
+    visited_urls: list[str] = Field(default_factory=list)
+    page_summaries: list[dict[str, Any]] = Field(default_factory=list)
+    forms: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ComputerUseOutput(ToolOutputModel):

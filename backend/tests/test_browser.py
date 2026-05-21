@@ -14,6 +14,11 @@ def test_registry_exposes_browser_tools_when_enabled() -> None:
         _env_file=None,
         adapters={"browser": {"enabled": True}},
         capabilities={
+            Capability.TELEGRAM_SEND: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.LOW,
+            ),
             Capability.BROWSER_OPEN: CapabilityPolicy(
                 enabled=True,
                 requires_approval=False,
@@ -31,7 +36,15 @@ def test_registry_exposes_browser_tools_when_enabled() -> None:
     definitions = {definition.name: definition for definition in registry.definitions}
 
     assert definitions["browser.open"].enabled is True
-    assert definitions["browser.open"].operations == ("open", "search", "research", "inspect_tabs", "screenshot")
+    assert definitions["browser.open"].operations == (
+        "open",
+        "search",
+        "research",
+        "inspect_tabs",
+        "screenshot",
+        "summarize_page",
+        "research_pages",
+    )
     assert definitions["browser.control"].enabled is True
     assert "browser.open" in registry.adapters
     assert "browser.control" in registry.adapters
@@ -58,6 +71,33 @@ def test_default_browser_plan_uses_browser_registry_tool() -> None:
     assert plan.steps[0].tool_name == "browser.open"
     assert plan.steps[0].tool_input["operation"] == "research"
     assert plan.steps[0].tool_input["open_first_result"] is True
+
+
+def test_default_browser_screenshot_plan_delivers_when_user_asks_to_send() -> None:
+    settings = AppSettings(
+        _env_file=None,
+        adapters={"browser": {"enabled": True}},
+        capabilities={
+            Capability.BROWSER_OPEN: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.LOW,
+            ),
+            Capability.TELEGRAM_SEND: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.LOW,
+            ),
+        },
+    )
+    task = TaskRecord(objective="Open the browser, go to https://example.com, and send me a screenshot")
+
+    plan = build_default_task_plan(settings, task)
+
+    assert plan is not None
+    assert [step.tool_name for step in plan.steps] == ["browser.open", "artifact.deliver"]
+    assert plan.steps[0].tool_input["operation"] == "screenshot"
+    assert plan.steps[1].tool_input["operation"] == "send_screenshot"
 
 
 def test_default_browser_control_plan_opens_url_before_clicking() -> None:

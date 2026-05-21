@@ -25,9 +25,18 @@ def build_default_task_plan(settings: AppSettings, task: TaskRecord) -> PlanMode
     computer_plan = _build_computer_use_plan(settings, task)
     if computer_plan is not None:
         return computer_plan
+    document_plan = _build_document_plan(settings, task)
+    if document_plan is not None:
+        return document_plan
+    coding_agent_plan = _build_coding_agent_plan(settings, task)
+    if coding_agent_plan is not None:
+        return coding_agent_plan
     browser_plan = _build_browser_plan(settings, task)
     if browser_plan is not None:
         return browser_plan
+    artifact_plan = _build_artifact_delivery_plan(settings, task)
+    if artifact_plan is not None:
+        return artifact_plan
     return build_default_vscode_development_plan(settings, task)
 
 
@@ -35,13 +44,17 @@ def build_default_vscode_development_plan(settings: AppSettings, task: TaskRecor
     if task.metadata.get("task_type") != TaskType.DEVELOPMENT.value:
         return None
 
+    explicit_copilot = _explicitly_requests_copilot(task.objective)
     adapter_plan = _build_adapter_factory_plan(settings, task)
     if adapter_plan is not None:
         return adapter_plan
 
-    workspace_plan = _build_workspace_web_app_plan(settings, task)
+    workspace_plan = _build_workspace_web_app_plan(settings, task, allow_copilot=explicit_copilot)
     if workspace_plan is not None:
         return workspace_plan
+
+    if not explicit_copilot:
+        return None
 
     policy = settings.capabilities.get(Capability.VSCODE_WRITE_FILES)
     if not settings.adapters.vscode.enabled or policy is None or not policy.enabled:
@@ -116,7 +129,7 @@ def build_default_vscode_development_plan(settings: AppSettings, task: TaskRecor
     )
 
 
-def _build_workspace_web_app_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | None:
+def _build_workspace_web_app_plan(settings: AppSettings, task: TaskRecord, *, allow_copilot: bool = False) -> PlanModel | None:
     if not settings.adapters.workspace.enabled:
         return None
     if not _looks_like_launchable_web_app(task.objective):
@@ -128,12 +141,16 @@ def _build_workspace_web_app_plan(settings: AppSettings, task: TaskRecord) -> Pl
 
     vscode_policy = settings.capabilities.get(Capability.VSCODE_WRITE_FILES)
     vscode_enabled = bool(settings.adapters.vscode.enabled and vscode_policy and vscode_policy.enabled)
-    if not vscode_enabled:
+    if not vscode_enabled or not allow_copilot:
         return PlanModel(
             objective=task.objective,
             assumptions=[
                 "The task asks for a visible local web-app result.",
-                "VS Code/Copilot is not enabled, so the workspace preview generator will create the app directly.",
+                (
+                    "Copilot was not explicitly requested, so the workspace preview generator will create the app directly."
+                    if vscode_enabled
+                    else "VS Code/Copilot is not enabled, so the workspace preview generator will create the app directly."
+                ),
                 f"Generated files are limited to {settings.adapters.workspace.root_dir}.",
             ],
             required_capabilities=[Capability.FILESYSTEM_WRITE],
@@ -262,6 +279,61 @@ def _build_browser_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | 
     control_enabled = bool(control_policy and control_policy.enabled)
 
     if _looks_like_browser_control_request(objective) and control_enabled and control_policy is not None:
+        if _looks_like_form_fill_request(objective):
+            url = _first_url_from_text(objective)
+            steps: list[PlanStep] = []
+            required_capabilities = [Capability.BROWSER_CONTROL]
+            if url and open_enabled and open_policy is not None:
+                required_capabilities.insert(0, Capability.BROWSER_OPEN)
+                steps.append(
+                    PlanStep(
+                        title="Open form page in Chrome",
+                        description="Open the requested form page before extracting fields.",
+                        required_capabilities=[Capability.BROWSER_OPEN],
+                        risk_level=RiskLevel.LOW,
+                        requires_approval=open_policy.requires_approval,
+                        tool_name="browser.open",
+                        tool_input={"operation": "open", "url": url, "new_tab": True, "timeout_seconds": 60},
+                        expected_output="Requested page is open in Chrome.",
+                    )
+                )
+            steps.extend(
+                [
+                    PlanStep(
+                        title="Extract form fields",
+                        description="Inspect the page form state before filling fields.",
+                        required_capabilities=[Capability.BROWSER_CONTROL],
+                        risk_level=RiskLevel.CRITICAL,
+                        requires_approval=control_policy.requires_approval,
+                        tool_name="browser.control",
+                        tool_input={"operation": "extract_page_state", "timeout_seconds": 60},
+                        expected_output="Detected form fields.",
+                    ),
+                    PlanStep(
+                        title="Fill form fields",
+                        description="Fill detected form fields using provided user information without submitting unless requested.",
+                        required_capabilities=[Capability.BROWSER_CONTROL],
+                        risk_level=RiskLevel.CRITICAL,
+                        requires_approval=control_policy.requires_approval,
+                        tool_name="browser.control",
+                        tool_input={
+                            "operation": "fill_form_step",
+                            "fields": _form_fields_from_objective(objective),
+                            "submit": _objective_wants_submit(objective),
+                            "timeout_seconds": 60,
+                        },
+                        expected_output="Filled form field state.",
+                    ),
+                ]
+            )
+            return PlanModel(
+                objective=task.objective,
+                assumptions=["The request asks to fill a browser form through Chrome DevTools."],
+                required_capabilities=required_capabilities,
+                steps=steps,
+                success_criteria=["The form state is inspected and requested fields are filled."],
+                postconditions=_browser_postconditions(),
+            )
         operation, tool_input = _browser_control_input(objective)
         tool_input = {"operation": operation, **tool_input}
         url = _first_url_from_text(objective)
@@ -320,6 +392,33 @@ def _build_browser_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | 
         return None
 
     operation, tool_input = _browser_open_input(objective)
+    steps = [
+        PlanStep(
+            title="Use Chrome browser adapter",
+            description="Open, search, inspect, or screenshot Chrome through the registered browser adapter.",
+            required_capabilities=[Capability.BROWSER_OPEN],
+            risk_level=RiskLevel.LOW,
+            requires_approval=open_policy.requires_approval,
+            tool_name="browser.open",
+            tool_input={
+                "operation": operation,
+                **tool_input,
+                "timeout_seconds": 90,
+            },
+            expected_output="Browser URL, page title, visible-page summary, tab state, or screenshot path.",
+        )
+    ]
+    delivery_step = _artifact_delivery_step(settings, task.objective, screenshot=operation == "screenshot")
+    if delivery_step is not None:
+        steps.append(delivery_step)
+    postconditions = _browser_postconditions()
+    if delivery_step is not None:
+        postconditions.append(
+            PlanPostcondition(
+                type=PostconditionType.ARTIFACT_DELIVERED,
+                description="A browser screenshot or task artifact is delivered back to Telegram.",
+            )
+        )
     return PlanModel(
         objective=task.objective,
         assumptions=[
@@ -327,25 +426,208 @@ def _build_browser_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | 
             "Chrome will be launched with remote debugging if it is not already available.",
             "Normal Chrome windows not launched with remote debugging are not visible to this adapter.",
         ],
-        required_capabilities=[Capability.BROWSER_OPEN],
-        steps=[
+        required_capabilities=[
+            Capability.BROWSER_OPEN,
+            *([Capability.TELEGRAM_SEND] if delivery_step is not None else []),
+        ],
+        steps=steps,
+        success_criteria=["The browser adapter reports the requested browser state or page summary."],
+        postconditions=postconditions,
+    )
+
+
+def _build_document_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | None:
+    if not _looks_like_document_request(task.objective):
+        return None
+    policy = settings.capabilities.get(Capability.FILESYSTEM_WRITE)
+    if policy is None or not policy.enabled:
+        return None
+    lowered = task.objective.lower()
+    path = _path_from_objective(task.objective)
+    steps: list[PlanStep] = []
+    required = [Capability.FILESYSTEM_WRITE]
+    provider = _explicit_coding_provider(task.objective)
+    terminal_policy = settings.capabilities.get(Capability.TERMINAL_RUN)
+    if provider and terminal_policy and terminal_policy.enabled and settings.adapters.coding_agent.enabled:
+        required.append(Capability.TERMINAL_RUN)
+        steps.append(
             PlanStep(
-                title="Use Chrome browser adapter",
-                description="Open, search, inspect, or screenshot Chrome through the registered browser adapter.",
+                title=f"Ask {provider} for document guidance",
+                description="Use the explicitly requested coding agent for planning/content guidance before creating the document artifact.",
+                required_capabilities=[Capability.TERMINAL_RUN],
+                risk_level=RiskLevel.HIGH,
+                requires_approval=terminal_policy.requires_approval,
+                tool_name="coding.agent",
+                tool_input={
+                    "operation": "run_goal",
+                    "provider": provider,
+                    "objective": task.objective,
+                    "prompt": task.objective,
+                    "workspace_dir": str(workspace_dir_for_task(settings.adapters.workspace.root_dir, task.id)),
+                    "timeout_seconds": settings.adapters.coding_agent.timeout_seconds,
+                },
+                expected_output="Coding-agent guidance for the requested document.",
+            )
+        )
+    if "pdf" in lowered and ("summarize" in lowered or "about" in lowered or "tell me" in lowered):
+        if not path:
+            return None
+        steps.append(
+            PlanStep(
+                title="Summarize PDF",
+                description="Extract text from the requested PDF and return a concise summary.",
+                required_capabilities=[Capability.FILESYSTEM_WRITE],
+                risk_level=RiskLevel.HIGH,
+                requires_approval=policy.requires_approval,
+                tool_name="document.manage",
+                tool_input={"operation": "summarize_pdf", "path": path, "timeout_seconds": 90},
+                expected_output="A PDF summary and summary artifact.",
+            )
+        )
+        postconditions = [
+            PlanPostcondition(
+                type=PostconditionType.DOCUMENT_SUMMARY,
+                description="A PDF summary is reported.",
+            )
+        ]
+    elif "powerpoint" in lowered or "presentation" in lowered or "pptx" in lowered:
+        operation = "update_presentation" if any(word in lowered for word in ("update", "revise", "change", "edit")) and path else "create_presentation"
+        tool_input: dict[str, object] = {
+            "operation": operation,
+            "title": _presentation_title(task.objective),
+            "content": task.objective,
+            "instructions": task.objective,
+            "timeout_seconds": 90,
+        }
+        if path:
+            tool_input["path"] = path
+        steps.append(
+            PlanStep(
+                title="Create presentation artifact" if operation == "create_presentation" else "Create revised presentation artifact",
+                description="Create a PowerPoint file as a task artifact.",
+                required_capabilities=[Capability.FILESYSTEM_WRITE],
+                risk_level=RiskLevel.HIGH,
+                requires_approval=policy.requires_approval,
+                tool_name="document.manage",
+                tool_input=tool_input,
+                expected_output="A PowerPoint file path and artifact ID.",
+            )
+        )
+        postconditions = [
+            PlanPostcondition(
+                type=PostconditionType.PRESENTATION_FILE,
+                description="A PowerPoint file artifact is reported.",
+            )
+        ]
+    else:
+        return None
+
+    delivery_step = _artifact_delivery_step(settings, task.objective, screenshot=False)
+    if delivery_step is not None:
+        steps.append(delivery_step)
+        required.append(Capability.TELEGRAM_SEND)
+        postconditions.append(
+            PlanPostcondition(
+                type=PostconditionType.ARTIFACT_DELIVERED,
+                description="The document artifact is delivered to Telegram.",
+            )
+        )
+    return PlanModel(
+        objective=task.objective,
+        assumptions=["Document work is handled through file APIs before desktop UI automation."],
+        required_capabilities=required,
+        steps=steps,
+        success_criteria=["The requested document output is created or summarized."],
+        postconditions=postconditions,
+    )
+
+
+def _build_coding_agent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | None:
+    provider = _explicit_coding_provider(task.objective)
+    if provider is None:
+        return None
+    policy = settings.capabilities.get(Capability.TERMINAL_RUN)
+    if policy is None or not policy.enabled or not settings.adapters.coding_agent.enabled:
+        return None
+    steps: list[PlanStep] = []
+    required = [Capability.TERMINAL_RUN]
+    browser_policy = settings.capabilities.get(Capability.BROWSER_OPEN)
+    if _looks_like_web_research_request(task.objective) and browser_policy and browser_policy.enabled:
+        required.append(Capability.BROWSER_OPEN)
+        steps.append(
+            PlanStep(
+                title="Collect web research context",
+                description="Use the browser adapter to collect source summaries before handing context to the coding agent.",
                 required_capabilities=[Capability.BROWSER_OPEN],
                 risk_level=RiskLevel.LOW,
-                requires_approval=open_policy.requires_approval,
+                requires_approval=browser_policy.requires_approval,
                 tool_name="browser.open",
                 tool_input={
-                    "operation": operation,
-                    **tool_input,
-                    "timeout_seconds": 90,
+                    "operation": "research_pages",
+                    "query": _query_for_browser(task.objective),
+                    "objective": task.objective,
+                    "page_limit": _page_limit_from_objective(task.objective),
+                    "timeout_seconds": 180,
                 },
-                expected_output="Browser URL, page title, visible-page summary, tab state, or screenshot path.",
+                expected_output="Visited URLs and page summaries for coding-agent context.",
+            )
+        )
+    operation = "plan" if _looks_like_large_coding_request(task.objective) else "run_goal"
+    steps.append(
+        PlanStep(
+            title=f"Run {provider} coding agent",
+            description="Run the explicitly requested coding agent in a task workspace.",
+            required_capabilities=[Capability.TERMINAL_RUN],
+            risk_level=RiskLevel.HIGH,
+            requires_approval=policy.requires_approval,
+            tool_name="coding.agent",
+            tool_input={
+                "operation": operation,
+                "provider": provider,
+                "objective": task.objective,
+                "prompt": task.objective,
+                "workspace_dir": str(workspace_dir_for_task(settings.adapters.workspace.root_dir, task.id)),
+                "timeout_seconds": settings.adapters.coding_agent.timeout_seconds,
+            },
+            expected_output="Coding-agent stdout, stderr, workspace, status, and limit state.",
+        )
+    )
+    if operation == "plan":
+        steps.append(
+            PlanStep(
+                title=f"Run first {provider} implementation step",
+                description="Begin implementation after the planning response is captured.",
+                required_capabilities=[Capability.TERMINAL_RUN],
+                risk_level=RiskLevel.HIGH,
+                requires_approval=policy.requires_approval,
+                tool_name="coding.agent",
+                tool_input={
+                    "operation": "run_step",
+                    "provider": provider,
+                    "objective": task.objective,
+                    "prompt": "Use the previous plan output and implement the first safe step.\n\n{{last_output}}",
+                    "workspace_dir": str(workspace_dir_for_task(settings.adapters.workspace.root_dir, task.id)),
+                    "step_index": 0,
+                    "timeout_seconds": settings.adapters.coding_agent.timeout_seconds,
+                },
+                expected_output="The first implementation step result.",
+            )
+        )
+    return PlanModel(
+        objective=task.objective,
+        assumptions=[
+            f"The user explicitly requested {provider}.",
+            "Coding-agent work is run in a task workspace and captures stdout, stderr, status, and limits.",
+        ],
+        required_capabilities=required,
+        steps=steps,
+        success_criteria=["The explicit coding agent runs or reports availability/limit failure clearly."],
+        postconditions=[
+            PlanPostcondition(
+                type=PostconditionType.CODING_AGENT_STEP,
+                description="The coding agent completed a step or reported a limit state.",
             )
         ],
-        success_criteria=["The browser adapter reports the requested browser state or page summary."],
-        postconditions=_browser_postconditions(),
     )
 
 
@@ -389,6 +671,29 @@ def _build_computer_use_plan(settings: AppSettings, task: TaskRecord) -> PlanMod
             "timeout_seconds": 240,
         }
     )
+    steps = [
+        PlanStep(
+            title="Run bounded computer-use session",
+            description="Observe the Windows desktop and, when needed, perform bounded local mouse/keyboard actions.",
+            required_capabilities=[Capability.DESKTOP_CONTROL],
+            risk_level=RiskLevel.CRITICAL,
+            requires_approval=policy.requires_approval,
+            tool_name="computer.use",
+            tool_input=tool_input,
+            expected_output="Desktop observation, screenshot path, actions taken, and final summary.",
+        )
+    ]
+    delivery_step = _artifact_delivery_step(settings, task.objective, screenshot=True)
+    if delivery_step is not None:
+        steps.append(delivery_step)
+    postconditions = _desktop_postconditions()
+    if delivery_step is not None:
+        postconditions.append(
+            PlanPostcondition(
+                type=PostconditionType.ARTIFACT_DELIVERED,
+                description="A screenshot or task artifact is delivered back to Telegram.",
+            )
+        )
     return PlanModel(
         objective=task.objective,
         assumptions=[
@@ -396,21 +701,13 @@ def _build_computer_use_plan(settings: AppSettings, task: TaskRecord) -> PlanMod
             "Computer use is bounded by the configured max step count.",
             "Desktop-control access mode determines whether approval is required.",
         ],
-        required_capabilities=[Capability.DESKTOP_CONTROL],
-        steps=[
-            PlanStep(
-                title="Run bounded computer-use session",
-                description="Observe the Windows desktop and, when needed, perform bounded local mouse/keyboard actions.",
-                required_capabilities=[Capability.DESKTOP_CONTROL],
-                risk_level=RiskLevel.CRITICAL,
-                requires_approval=policy.requires_approval,
-                tool_name="computer.use",
-                tool_input=tool_input,
-                expected_output="Desktop observation, screenshot path, actions taken, and final summary.",
-            )
+        required_capabilities=[
+            Capability.DESKTOP_CONTROL,
+            *([Capability.TELEGRAM_SEND] if delivery_step is not None else []),
         ],
+        steps=steps,
         success_criteria=["The desktop state was observed or the requested bounded UI action was completed."],
-        postconditions=_desktop_postconditions(),
+        postconditions=postconditions,
     )
 
 
@@ -500,6 +797,50 @@ def _build_filesystem_manage_plan(settings: AppSettings, task: TaskRecord) -> Pl
     )
 
 
+def _build_artifact_delivery_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | None:
+    if not _looks_like_delivery_request(task.objective):
+        return None
+    policy = settings.capabilities.get(Capability.TELEGRAM_SEND)
+    if policy is None or not policy.enabled:
+        return None
+    lowered = task.objective.lower()
+    operation = "send_screenshot" if "screenshot" in lowered or "screen shot" in lowered else "send_latest"
+    tool_input: dict[str, object] = {
+        "operation": operation,
+        "caption": f"Result for: {task.objective[:180]}",
+        "timeout_seconds": 60,
+    }
+    if any(marker in lowered for marker in ("pdf", "document", "powerpoint", "presentation", "pptx", "file")):
+        tool_input["artifact_type"] = "document"
+    return PlanModel(
+        objective=task.objective,
+        assumptions=[
+            "The request asks to send an artifact already associated with this task or conversation.",
+            "Artifact delivery uses the source Telegram chat when chat_id is not explicitly provided.",
+        ],
+        required_capabilities=[Capability.TELEGRAM_SEND],
+        steps=[
+            PlanStep(
+                title="Deliver latest matching task artifact",
+                description="Send the latest matching task artifact or screenshot back to Telegram.",
+                required_capabilities=[Capability.TELEGRAM_SEND],
+                risk_level=RiskLevel.LOW,
+                requires_approval=policy.requires_approval,
+                tool_name="artifact.deliver",
+                tool_input=tool_input,
+                expected_output="Telegram delivery result for the requested artifact.",
+            )
+        ],
+        success_criteria=["The requested artifact is sent to Telegram or a clear delivery error is reported."],
+        postconditions=[
+            PlanPostcondition(
+                type=PostconditionType.ARTIFACT_DELIVERED,
+                description="The requested artifact is delivered to Telegram.",
+            )
+        ],
+    )
+
+
 def _build_adapter_factory_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | None:
     if not settings.adapters.adapter_factory.enabled:
         return None
@@ -536,7 +877,7 @@ def _build_adapter_factory_plan(settings: AppSettings, task: TaskRecord) -> Plan
     ]
     success_criteria = ["A reviewable adapter proposal exists in the generated adapter cache."]
     postconditions = _adapter_postconditions()
-    if vscode_enabled:
+    if vscode_enabled and _explicitly_requests_copilot(task.objective):
         required_capabilities.append(Capability.VSCODE_WRITE_FILES)
         assumptions.append("Copilot may refine the generated proposal inside the adapter cache.")
         success_criteria.append("Copilot has been asked to improve the adapter proposal without registering it automatically.")
@@ -629,11 +970,43 @@ def _file_organization_postconditions(required: bool = True) -> list[PlanPostcon
     ]
 
 
+def _artifact_delivery_step(settings: AppSettings, objective: str, *, screenshot: bool = False) -> PlanStep | None:
+    if not _looks_like_delivery_request(objective):
+        return None
+    policy = settings.capabilities.get(Capability.TELEGRAM_SEND)
+    if policy is None or not policy.enabled:
+        return None
+    return PlanStep(
+        title="Deliver task artifact to Telegram",
+        description="Send the screenshot or latest task artifact back to the source Telegram chat.",
+        required_capabilities=[Capability.TELEGRAM_SEND],
+        risk_level=RiskLevel.LOW,
+        requires_approval=policy.requires_approval,
+        tool_name="artifact.deliver",
+        tool_input={
+            "operation": "send_screenshot" if screenshot or "screenshot" in objective.lower() else "send_latest",
+            "caption": f"Result for: {objective[:180]}",
+            "timeout_seconds": 60,
+        },
+        expected_output="Telegram delivery result for the requested screenshot or file artifact.",
+    )
+
+
+def _looks_like_delivery_request(objective: str) -> bool:
+    lowered = objective.lower()
+    return any(phrase in lowered for phrase in ("send it", "send me", "send the", "send a", "send screenshot", "send file"))
+
+
 def _looks_like_adapter_request(objective: str) -> bool:
     lowered = objective.lower()
     has_adapter_word = any(word in lowered for word in ("adapter", "tool", "capability", "connector"))
     has_create_word = any(word in lowered for word in ("create", "build", "write", "make", "add", "implement"))
     return has_adapter_word and has_create_word
+
+
+def _explicitly_requests_copilot(objective: str) -> bool:
+    lowered = objective.lower()
+    return "copilot" in lowered or "github copilot" in lowered
 
 
 def _looks_like_computer_use_request(objective: str) -> bool:
@@ -736,7 +1109,44 @@ def _looks_like_browser_request(objective: str) -> bool:
 
 def _looks_like_browser_control_request(objective: str) -> bool:
     lowered = objective.lower()
-    return any(marker in lowered for marker in ("close tab", "close the tab", "click", "fill the form", "submit the form"))
+    return any(
+        marker in lowered
+        for marker in (
+            "close tab",
+            "close the tab",
+            "click",
+            "fill the form",
+            "start filling",
+            "submit the form",
+            "new episode",
+            "new show",
+            "came out",
+            "check whether",
+        )
+    )
+
+
+def _looks_like_form_fill_request(objective: str) -> bool:
+    lowered = objective.lower()
+    return "form" in lowered and any(marker in lowered for marker in ("fill", "filling", "start"))
+
+
+def _looks_like_page_update_request(objective: str) -> bool:
+    lowered = objective.lower()
+    return any(marker in lowered for marker in ("new episode", "new show", "came out", "check whether"))
+
+
+def _objective_wants_submit(objective: str) -> bool:
+    lowered = objective.lower()
+    return "submit" in lowered or "send the form" in lowered
+
+
+def _form_fields_from_objective(objective: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for key, value in re.findall(r"\b([A-Za-z][A-Za-z0-9 _-]{1,30})\s*=\s*([^,;\n]+)", objective):
+        normalized_key = key.strip().split()[-1]
+        fields[normalized_key] = value.strip()
+    return fields
 
 
 def _browser_open_input(objective: str) -> tuple[str, dict[str, object]]:
@@ -749,6 +1159,12 @@ def _browser_open_input(objective: str) -> tuple[str, dict[str, object]]:
             return "screenshot", {"url": url, "full_page": True}
         return "screenshot", {"full_page": True}
     if "search" in lowered or "google" in lowered or "bing" in lowered:
+        if "50" in lowered or "many page" in lowered or "many pages" in lowered:
+            return "research_pages", {
+                "objective": objective,
+                "query": _query_for_browser(objective),
+                "page_limit": _page_limit_from_objective(objective),
+            }
         return "research", {
             "objective": objective,
             "query": _query_for_browser(objective),
@@ -762,13 +1178,15 @@ def _browser_open_input(objective: str) -> tuple[str, dict[str, object]]:
 
 def _browser_control_input(objective: str) -> tuple[str, dict[str, object]]:
     lowered = objective.lower()
+    if _looks_like_page_update_request(objective):
+        return "check_page_update", {"url": _first_url_from_text(objective), "objective": objective}
     if "close" in lowered:
         quoted = _quoted_text(objective)
         return "close_tab", {"title_contains": quoted} if quoted else {}
     if "click" in lowered:
         quoted = _quoted_text(objective)
         return "click", {"text": quoted or _text_after_word(objective, "click")}
-    return "fill_form", {"fields": {}}
+    return "fill_form_step", {"fields": _form_fields_from_objective(objective), "submit": _objective_wants_submit(objective)}
 
 
 def _first_url_from_text(value: str) -> str | None:
@@ -804,6 +1222,46 @@ def _query_for_browser(objective: str) -> str:
 def _objective_wants_first_result(objective: str) -> bool:
     lowered = objective.lower()
     return any(phrase in lowered for phrase in ("first result", "first website", "first site", "go to the first", "open the first"))
+
+
+def _page_limit_from_objective(objective: str) -> int:
+    match = re.search(r"\b(\d{1,2})\s+pages?\b", objective.lower())
+    if not match:
+        return 50 if "50" in objective else 10
+    return max(1, min(50, int(match.group(1))))
+
+
+def _looks_like_document_request(objective: str) -> bool:
+    lowered = objective.lower()
+    return any(marker in lowered for marker in ("pdf", "powerpoint", "presentation", "pptx"))
+
+
+def _presentation_title(objective: str) -> str:
+    quoted = _quoted_text(objective)
+    if quoted:
+        return quoted
+    cleaned = re.sub(r"\b(use codex|create|make|build|powerpoint|presentation|pptx|send me|send it)\b", " ", objective, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .,:")
+    return cleaned[:80] or "Presentation"
+
+
+def _explicit_coding_provider(objective: str) -> str | None:
+    lowered = objective.lower()
+    if "codex" in lowered:
+        return "codex"
+    if "github copilot" in lowered or "copilot" in lowered:
+        return "github_copilot"
+    return None
+
+
+def _looks_like_web_research_request(objective: str) -> bool:
+    lowered = objective.lower()
+    return any(marker in lowered for marker in ("web search", "search for", "search this", "search the web", "research"))
+
+
+def _looks_like_large_coding_request(objective: str) -> bool:
+    lowered = objective.lower()
+    return any(marker in lowered for marker in ("large", "step by step", "plan first", "start creating", "mobile deployment"))
 
 
 def _adapter_copilot_prompt(objective: str) -> str:

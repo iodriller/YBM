@@ -92,6 +92,20 @@ class TelegramBotApi:
             raise RuntimeError("Telegram Bot API call failed: sendPhoto")
         return data
 
+    async def send_document_file(self, chat_id: str | int, path: str, caption: str | None = None) -> dict[str, Any]:
+        payload = {"chat_id": str(chat_id)}
+        if caption:
+            payload["caption"] = caption
+        url = f"{self.base_url}/bot{self.token}/sendDocument"
+        with open(path, "rb") as document:
+            async with httpx.AsyncClient(timeout=60) as client:
+                response = await client.post(url, data=payload, files={"document": document})
+                response.raise_for_status()
+                data = response.json()
+        if not data.get("ok"):
+            raise RuntimeError("Telegram Bot API call failed: sendDocument")
+        return data
+
     async def get_file(self, file_id: str) -> dict[str, Any]:
         data = await self._post("getFile", {"file_id": file_id})
         return dict(data.get("result", {}))
@@ -146,6 +160,8 @@ class TelegramPollingRunner:
             artifact = self.intake.repositories.artifacts.get(artifact_id)
             if artifact and artifact.type == ArtifactType.SCREENSHOT and artifact.uri:
                 await self.client.send_photo_file(outbound_message.chat_id, artifact.uri, artifact.content_preview)
+            elif artifact and artifact.uri:
+                await self.client.send_document_file(outbound_message.chat_id, artifact.uri, artifact.content_preview)
 
 
 class TelegramAdapter:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import shutil
+import os
 from typing import Any
 
 from agent_control.schemas import ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
@@ -20,6 +21,14 @@ class FilesystemManageAdapter:
                 output = self._inspect_folder(request)
             elif operation == "search":
                 output = self._search(request)
+            elif operation == "resolve_desktop_item":
+                output = self._resolve_desktop_item(request)
+            elif operation == "find_by_description":
+                output = self._find_by_description(request)
+            elif operation == "open_file":
+                output = self._open_file(request)
+            elif operation == "collect_folder_snapshot":
+                output = self._collect_folder_snapshot(request)
             elif operation == "organize_plan":
                 output = self._organize_plan(request)
             elif operation == "apply_manifest":
@@ -82,6 +91,67 @@ class FilesystemManageAdapter:
             "entries": results,
             "summary": f"Found {len(results)} result(s) for {request.input['query']!r} under {root}.",
         }
+
+    def _resolve_desktop_item(self, request: ToolCallRequest) -> dict[str, Any]:
+        query = str(request.input.get("query") or request.input.get("name") or "").lower().strip()
+        item_type = str(request.input.get("item_type") or "any")
+        roots = [root for root in self._candidate_roots("desktop") if root.exists()]
+        entries: list[dict[str, Any]] = []
+        for root in roots:
+            for path in root.iterdir():
+                if item_type == "file" and not path.is_file():
+                    continue
+                if item_type == "folder" and not path.is_dir():
+                    continue
+                if query and query not in path.name.lower():
+                    continue
+                entries.append(_entry(root, path))
+        return {
+            "root": str(roots[0]) if roots else None,
+            "entries": entries,
+            "summary": f"Resolved {len(entries)} desktop item(s) matching {query or '*'}."
+        }
+
+    def _find_by_description(self, request: ToolCallRequest) -> dict[str, Any]:
+        root_value = request.input.get("root")
+        root = self._safe_path(str(root_value)) if root_value else self._first_existing_root()
+        description = str(request.input["description"]).lower()
+        max_results = int(request.input.get("max_results") or 20)
+        terms = [term for term in description.replace(".", " ").replace("_", " ").split() if len(term) >= 3]
+        entries = []
+        for path in _walk_limited(root, max_depth=20):
+            if path == root:
+                continue
+            name = path.name.lower()
+            score = sum(1 for term in terms if term in name)
+            if score <= 0 and any(term in description for term in (path.suffix.lower().lstrip("."), _type_bucket(path))):
+                score = 1
+            if score > 0:
+                item = _entry(root, path)
+                item["score"] = score
+                entries.append(item)
+        entries.sort(key=lambda item: (-int(item.get("score") or 0), str(item.get("relative_path") or "")))
+        entries = entries[:max_results]
+        return {
+            "root": str(root),
+            "entries": entries,
+            "summary": f"Found {len(entries)} item(s) matching the description under {root}.",
+        }
+
+    def _open_file(self, request: ToolCallRequest) -> dict[str, Any]:
+        path = self._safe_path(str(request.input["path"]))
+        if not path.exists():
+            raise ValueError(f"path does not exist: {path}")
+        os.startfile(str(path))  # type: ignore[attr-defined]
+        return {
+            "root": str(path.parent),
+            "entries": [_entry(path.parent, path)],
+            "changed_paths": [str(path)],
+            "summary": f"Opened {path}.",
+        }
+
+    def _collect_folder_snapshot(self, request: ToolCallRequest) -> dict[str, Any]:
+        return self._inspect_folder(request)
 
     def _organize_plan(self, request: ToolCallRequest) -> dict[str, Any]:
         root = self._safe_path(str(request.input["root"]))
@@ -161,11 +231,33 @@ class FilesystemManageAdapter:
     def _safe_path(self, value: str) -> Path:
         if not self.allowed_roots:
             raise ValueError("no allowed filesystem roots are configured")
-        path = Path(value).expanduser().resolve()
+        path = self._alias_path(value).expanduser().resolve()
         if not any(root == path or root in path.parents for root in self.allowed_roots):
             allowed = ", ".join(str(root) for root in self.allowed_roots)
             raise ValueError(f"path is outside allowed roots: {path}; allowed roots: {allowed}")
         return path
+
+    def _candidate_roots(self, alias: str) -> list[Path]:
+        alias_path = self._alias_path(alias).resolve()
+        return [root for root in [alias_path, *self.allowed_roots] if root == alias_path or alias_path in root.parents or root in alias_path.parents]
+
+    def _first_existing_root(self) -> Path:
+        for root in self.allowed_roots:
+            if root.exists():
+                return root
+        raise ValueError("none of the allowed roots exists")
+
+    @staticmethod
+    def _alias_path(value: str) -> Path:
+        lowered = value.strip().lower()
+        home = Path.home()
+        if lowered in {"desktop", "%desktop%"}:
+            return home / "Desktop"
+        if lowered in {"documents", "my documents", "%documents%"}:
+            return home / "Documents"
+        if lowered in {"downloads", "%downloads%"}:
+            return home / "Downloads"
+        return Path(value)
 
 
 def _resolve_root(value: str) -> Path:

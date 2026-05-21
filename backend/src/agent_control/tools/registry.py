@@ -8,30 +8,47 @@ from pydantic import BaseModel, ValidationError
 from agent_control.config import AppSettings
 from agent_control.schemas import Capability, PlanModel
 from agent_control.tools.adapter_factory import AdapterFactoryAdapter
+from agent_control.tools.artifact_delivery import ArtifactDeliveryAdapter
 from agent_control.tools.browser import BrowserAdapter
 from agent_control.tools.coding_assistant import GenericTerminalAgentAdapter
+from agent_control.tools.coding_agent import CodingAgentAdapter
 from agent_control.tools.computer_use import ComputerUseAdapter
 from agent_control.tools.contracts import (
     AdapterFactoryAssessInput,
     AdapterFactoryAssessOutput,
     AdapterFactoryScaffoldInput,
     AdapterFactoryScaffoldOutput,
+    ArtifactDeliverInput,
+    ArtifactDeliveryOutput,
     BrowserClickInput,
     BrowserCloseTabInput,
+    BrowserCheckPageUpdateInput,
+    BrowserExtractPageStateInput,
     BrowserFillFormInput,
+    BrowserFillFormStepInput,
     BrowserInspectTabsInput,
     BrowserNavigateInput,
     BrowserOpenInput,
     BrowserResearchInput,
+    BrowserResearchPagesInput,
     BrowserScreenshotInput,
     BrowserSearchInput,
+    BrowserSummarizePageInput,
     BrowserToolOutput,
+    CodingAgentInput,
+    CodingAgentOutput,
     CodingAssistantInput,
     CodingAssistantOutput,
     ComputerActInput,
     ComputerObserveInput,
     ComputerRunGoalInput,
     ComputerUseOutput,
+    DocumentManageInput,
+    DocumentManageOutput,
+    FilesystemCollectFolderSnapshotInput,
+    FilesystemFindByDescriptionInput,
+    FilesystemOpenFileInput,
+    FilesystemResolveDesktopItemInput,
     FilesystemApplyManifestInput,
     FilesystemInspectInput,
     FilesystemManageOutput,
@@ -51,6 +68,7 @@ from agent_control.tools.contracts import (
     WorkspaceWriteFilesInput,
     WorkspaceWriteFilesOutput,
 )
+from agent_control.tools.document_manage import DocumentManageAdapter
 from agent_control.tools.filesystem_manage import FilesystemManageAdapter
 from agent_control.tools.local_workspace import LocalWorkspaceAdapter
 from agent_control.tools.vscode_bridge import VSCodeBridgeTerminalAdapter
@@ -171,6 +189,9 @@ def build_tool_registry(
     backend_base_url: str,
     provider: object | None = None,
     should_continue: Callable[[str], bool] | None = None,
+    artifact_repository: object | None = None,
+    task_repository: object | None = None,
+    telegram_client: object | None = None,
 ) -> ToolRegistry:
     adapters: dict[str, object] = {}
     definitions: list[ToolDefinition] = []
@@ -218,10 +239,23 @@ def build_tool_registry(
                 "inspect, search, plan organization, and apply move/copy manifests inside configured "
                 f"roots: {', '.join(settings.adapters.computer_use.allowed_roots) or '<none>'}"
             ),
-            operations=("inspect_folder", "search", "organize_plan", "apply_manifest"),
+            operations=(
+                "inspect_folder",
+                "search",
+                "resolve_desktop_item",
+                "find_by_description",
+                "open_file",
+                "collect_folder_snapshot",
+                "organize_plan",
+                "apply_manifest",
+            ),
             operation_schemas={
                 "inspect_folder": FilesystemInspectInput,
                 "search": FilesystemSearchInput,
+                "resolve_desktop_item": FilesystemResolveDesktopItemInput,
+                "find_by_description": FilesystemFindByDescriptionInput,
+                "open_file": FilesystemOpenFileInput,
+                "collect_folder_snapshot": FilesystemCollectFolderSnapshotInput,
                 "organize_plan": FilesystemOrganizePlanInput,
                 "apply_manifest": FilesystemApplyManifestInput,
             },
@@ -295,6 +329,63 @@ def build_tool_registry(
     if settings.adapters.coding_assistant.enabled:
         adapters["coding_assistant"] = GenericTerminalAgentAdapter(settings.adapters.coding_assistant)
 
+    coding_agent_enabled = _capability_enabled(settings, Capability.TERMINAL_RUN) and settings.adapters.coding_agent.enabled
+    definitions.append(
+        ToolDefinition(
+            name="coding.agent",
+            capability=Capability.TERMINAL_RUN,
+            enabled=coding_agent_enabled,
+            description="run explicitly requested Codex or GitHub Copilot CLI work inside a task workspace",
+            operations=("plan", "run_step", "run_goal", "status", "limits", "resume", "stop"),
+            input_schema=CodingAgentInput,
+            output_schema=CodingAgentOutput,
+            default_operation="run_goal",
+        )
+    )
+    if settings.adapters.coding_agent.enabled:
+        adapters["coding.agent"] = CodingAgentAdapter(settings.adapters.coding_agent)
+
+    artifact_delivery_enabled = _capability_enabled(settings, Capability.TELEGRAM_SEND)
+    definitions.append(
+        ToolDefinition(
+            name="artifact.deliver",
+            capability=Capability.TELEGRAM_SEND,
+            enabled=artifact_delivery_enabled,
+            description="list task artifacts and deliver screenshots or files to the source Telegram chat",
+            operations=("send_file", "send_latest", "send_screenshot", "list_artifacts"),
+            input_schema=ArtifactDeliverInput,
+            output_schema=ArtifactDeliveryOutput,
+            default_operation="send_latest",
+        )
+    )
+    if artifact_repository is not None and task_repository is not None:
+        adapters["artifact.deliver"] = ArtifactDeliveryAdapter(
+            artifact_repository,  # type: ignore[arg-type]
+            task_repository,  # type: ignore[arg-type]
+            telegram_client=telegram_client,  # type: ignore[arg-type]
+            allowed_roots=_artifact_delivery_roots(settings),
+        )
+
+    document_enabled = _capability_enabled(settings, Capability.FILESYSTEM_WRITE)
+    definitions.append(
+        ToolDefinition(
+            name="document.manage",
+            capability=Capability.FILESYSTEM_WRITE,
+            enabled=document_enabled,
+            description="inspect documents, summarize PDFs, and create or revise PowerPoint files as task artifacts",
+            operations=("inspect_document", "extract_text", "summarize_pdf", "create_presentation", "update_presentation"),
+            input_schema=DocumentManageInput,
+            output_schema=DocumentManageOutput,
+            default_operation="inspect_document",
+        )
+    )
+    if artifact_repository is not None:
+        adapters["document.manage"] = DocumentManageAdapter(
+            artifact_repository,  # type: ignore[arg-type]
+            provider=provider,
+            allowed_roots=_document_roots(settings),
+        )
+
     computer_use_enabled = (
         settings.adapters.computer_use.enabled
         and settings.adapters.desktop.control_enabled
@@ -344,13 +435,15 @@ def build_tool_registry(
                 "open Chrome, search the web, summarize exposed tabs/pages, and capture browser screenshots "
                 f"through DevTools at {settings.adapters.browser.host}:{settings.adapters.browser.remote_debugging_port}"
             ),
-            operations=("open", "search", "research", "inspect_tabs", "screenshot"),
+            operations=("open", "search", "research", "inspect_tabs", "screenshot", "summarize_page", "research_pages"),
             operation_schemas={
                 "open": BrowserOpenInput,
                 "search": BrowserSearchInput,
                 "research": BrowserResearchInput,
                 "inspect_tabs": BrowserInspectTabsInput,
                 "screenshot": BrowserScreenshotInput,
+                "summarize_page": BrowserSummarizePageInput,
+                "research_pages": BrowserResearchPagesInput,
             },
             output_schema=BrowserToolOutput,
             default_operation="open",
@@ -362,12 +455,23 @@ def build_tool_registry(
             capability=Capability.BROWSER_CONTROL,
             enabled=browser_control_enabled,
             description="navigate, close tabs, click elements, and fill simple forms in Chrome through DevTools",
-            operations=("navigate", "close_tab", "click", "fill_form"),
+            operations=(
+                "navigate",
+                "close_tab",
+                "click",
+                "fill_form",
+                "check_page_update",
+                "extract_page_state",
+                "fill_form_step",
+            ),
             operation_schemas={
                 "navigate": BrowserNavigateInput,
                 "close_tab": BrowserCloseTabInput,
                 "click": BrowserClickInput,
                 "fill_form": BrowserFillFormInput,
+                "check_page_update": BrowserCheckPageUpdateInput,
+                "extract_page_state": BrowserExtractPageStateInput,
+                "fill_form_step": BrowserFillFormStepInput,
             },
             output_schema=BrowserToolOutput,
             default_operation="navigate",
@@ -384,3 +488,20 @@ def build_tool_registry(
 def _capability_enabled(settings: AppSettings, capability: Capability) -> bool:
     policy = settings.capabilities.get(capability)
     return bool(policy and policy.enabled)
+
+
+def _artifact_delivery_roots(settings: AppSettings) -> list[str]:
+    return [
+        settings.storage.artifact_dir,
+        settings.adapters.workspace.root_dir,
+        settings.adapters.browser.screenshot_dir,
+        settings.adapters.computer_use.screenshot_dir,
+    ]
+
+
+def _document_roots(settings: AppSettings) -> list[str]:
+    return [
+        settings.storage.artifact_dir,
+        settings.adapters.workspace.root_dir,
+        *settings.adapters.computer_use.allowed_roots,
+    ]

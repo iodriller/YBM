@@ -56,6 +56,10 @@ class BrowserAdapter:
             output = self._inspect_tabs(client, request)
         elif operation == "screenshot":
             output = self._screenshot(client, request)
+        elif operation == "summarize_page":
+            output = self._summarize_page(client, request)
+        elif operation == "research_pages":
+            output = self._research_pages(client, request)
         elif operation == "navigate":
             output = self._navigate(client, request)
         elif operation == "close_tab":
@@ -63,6 +67,12 @@ class BrowserAdapter:
         elif operation == "click":
             output = self._click(client, request)
         elif operation == "fill_form":
+            output = self._fill_form(client, request)
+        elif operation == "check_page_update":
+            output = self._check_page_update(client, request)
+        elif operation == "extract_page_state":
+            output = self._extract_page_state(client, request)
+        elif operation == "fill_form_step":
             output = self._fill_form(client, request)
         else:
             raise ValueError(f"unsupported browser operation: {operation}")
@@ -156,6 +166,53 @@ class BrowserAdapter:
             "screenshot_uri": Path(screenshot).resolve().as_uri(),
         }
 
+    def _summarize_page(self, client: "ChromeDevToolsClient", request: ToolCallRequest) -> dict[str, Any]:
+        input_payload = request.input
+        target = self._target_from_input(client, input_payload)
+        if input_payload.get("url"):
+            target = client.open_url(_normalize_url(str(input_payload["url"])), new_tab=True)
+        client.wait(float(input_payload.get("wait_seconds") or self.config.default_wait_seconds))
+        return self._summarize_target(client, target)
+
+    def _research_pages(self, client: "ChromeDevToolsClient", request: ToolCallRequest) -> dict[str, Any]:
+        input_payload = request.input
+        query = str(input_payload.get("query") or input_payload.get("objective") or "").strip()
+        if not query:
+            raise ValueError("query or objective is required for research_pages")
+        page_limit = int(input_payload.get("page_limit") or 10)
+        target = client.open_url(_search_url(self.config.search_url_template, query), new_tab=True)
+        client.wait(float(input_payload.get("wait_seconds") or self.config.default_wait_seconds))
+        search_output = self._summarize_target(client, target)
+        links = search_output.get("links") or []
+        visited_urls: list[str] = []
+        page_summaries: list[dict[str, Any]] = []
+        for link in _external_links(links, search_output.get("url") or "")[:page_limit]:
+            client.navigate(target, link["href"])
+            client.wait(float(input_payload.get("wait_seconds") or self.config.default_wait_seconds))
+            refreshed = next((item for item in client.page_targets() if item.id == target.id), None)
+            if refreshed is not None:
+                target = refreshed
+            page = self._summarize_target(client, target)
+            visited_urls.append(str(page.get("url") or link["href"]))
+            page_summaries.append(
+                {
+                    "url": page.get("url") or link["href"],
+                    "title": page.get("page_title"),
+                    "summary": page.get("summary"),
+                }
+            )
+        summary = f"Visited {len(visited_urls)} page(s) for {query!r}."
+        return {
+            "browser_state": {"remote_debugging": client.base_url, "page_limit": page_limit},
+            "browser_url": visited_urls[-1] if visited_urls else search_output.get("browser_url"),
+            "url": visited_urls[-1] if visited_urls else search_output.get("url"),
+            "page_title": page_summaries[-1].get("title") if page_summaries else search_output.get("page_title"),
+            "summary": summary,
+            "links": links,
+            "visited_urls": visited_urls,
+            "page_summaries": page_summaries,
+        }
+
     def _navigate(self, client: "ChromeDevToolsClient", request: ToolCallRequest) -> dict[str, Any]:
         input_payload = request.input
         target = self._target_from_input(client, input_payload)
@@ -206,6 +263,41 @@ class BrowserAdapter:
         client.wait(float(input_payload.get("wait_seconds") or self.config.default_wait_seconds))
         output = self._summarize_target(client, target)
         output["browser_state"] = {**(output.get("browser_state") or {}), "filled_fields": filled}
+        return output
+
+    def _check_page_update(self, client: "ChromeDevToolsClient", request: ToolCallRequest) -> dict[str, Any]:
+        input_payload = request.input
+        target = self._target_from_input(client, input_payload, required=False)
+        if input_payload.get("url"):
+            target = client.open_url(_normalize_url(str(input_payload["url"])), new_tab=True)
+        if target is None:
+            raise ValueError("url or matching tab is required for check_page_update")
+        client.wait(float(input_payload.get("wait_seconds") or self.config.default_wait_seconds))
+        output = self._summarize_target(client, target)
+        previous = str(input_payload.get("previous_observation") or "").strip()
+        current = str(output.get("summary") or "")
+        markers = _update_markers(current)
+        changed = bool(previous and previous not in current)
+        output["browser_state"] = {
+            **(output.get("browser_state") or {}),
+            "update_check": {"changed_from_previous": changed, "markers": markers},
+        }
+        output["summary"] = (
+            f"Checked page for updates. Markers: {', '.join(markers[:8]) or 'none found'}. "
+            f"Changed from previous observation: {changed}."
+        )
+        return output
+
+    def _extract_page_state(self, client: "ChromeDevToolsClient", request: ToolCallRequest) -> dict[str, Any]:
+        output = self._summarize_page(client, request)
+        page = client.page_summary(
+            self._target_from_input(client, request.input),
+            max_chars=self.config.max_summary_chars,
+        )
+        forms = page.get("forms") if isinstance(page.get("forms"), list) else []
+        output["forms"] = forms
+        output["browser_state"] = {**(output.get("browser_state") or {}), "forms_detected": len(forms)}
+        output["summary"] = f"Detected {len(forms)} form(s) on {output.get('url') or 'the page'}."
         return output
 
     def _summarize_target(self, client: "ChromeDevToolsClient", target: "BrowserTarget") -> dict[str, Any]:
@@ -534,7 +626,13 @@ def _objective_wants_screenshot(objective: str) -> bool:
 
 
 def _first_external_link(links: list[dict[str, Any]], current_url: str) -> dict[str, str] | None:
+    links = _external_links(links, current_url)
+    return links[0] if links else None
+
+
+def _external_links(links: list[dict[str, Any]], current_url: str) -> list[dict[str, str]]:
     current_host = parse.urlparse(current_url).netloc.lower()
+    results = []
     for item in links:
         href = str(item.get("href") or "").strip()
         text = str(item.get("text") or "").strip()
@@ -545,8 +643,21 @@ def _first_external_link(links: list[dict[str, Any]], current_url: str) -> dict[
             continue
         if any(blocked in host for blocked in ("bing.com", "google.com", "microsoft.com")) and "search" in href:
             continue
-        return {"href": href, "text": text}
-    return None
+        results.append({"href": href, "text": text})
+    return results
+
+
+def _update_markers(text: str) -> list[str]:
+    patterns = [
+        r"\b(?:season|episode)\s+\d+\b",
+        r"\b(?:new|latest|released|premiere)\b[^.!?]{0,80}",
+        r"\b\d{4}-\d{2}-\d{2}\b",
+        r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}\b",
+    ]
+    markers = []
+    for pattern in patterns:
+        markers.extend(match.group(0).strip() for match in re.finditer(pattern, text, flags=re.IGNORECASE))
+    return markers[:20]
 
 
 def _tab_summary(target: BrowserTarget) -> dict[str, str]:
