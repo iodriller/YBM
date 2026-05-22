@@ -5,6 +5,7 @@ import asyncio
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+import io
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ import threading
 import time
 from typing import Any
 from urllib import error, parse, request
+
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +41,8 @@ def main() -> None:
         fixtures = prepare_fixtures(start_web_server=False)
         for case in selected:
             print(f"[{case['id']}] {_render_message(case, fixtures)}")
+            for follow_up in case.get("follow_ups") or []:
+                print(f"  -> {_render_text(str(follow_up['message']), fixtures)}")
         return
     _require_live_args(args)
     asyncio.run(run_cases(selected, args))
@@ -96,7 +100,14 @@ async def run_case(case: dict[str, Any], fixtures: "Fixtures", admin: "AdminClie
     started = datetime.now(timezone.utc)
     resolved_message = _render_message(case, fixtures)
     before_summary = admin.summary()
-    sent = await client.send_message(peer, resolved_message)
+    if case.get("input_kind") == "voice":
+        voice_path = Path(case.get("voice_file") or fixtures.values.get("voice_ogg_path") or "")
+        if voice_path.exists():
+            sent = await client.send_file(peer, str(voice_path), voice_note=True)
+        else:
+            sent = await client.send_file(peer, io.BytesIO(_fake_ogg_voice_bytes()), file_name="voice.ogg", voice_note=True)
+    else:
+        sent = await client.send_message(peer, resolved_message)
     telegram_replies: list[dict[str, Any]] = []
     task_id: str | None = None
     failure_reason = None
@@ -120,7 +131,16 @@ async def run_case(case: dict[str, Any], fixtures: "Fixtures", admin: "AdminClie
             trace = await _wait_for_terminal_trace(admin, task_id, timeout_seconds=int(case.get("timeout_seconds", 300)))
         else:
             failure_reason = "No task id was returned by Telegram. The message may have been answered as non-task or intake failed."
-        telegram_replies = await _wait_for_replies(client, peer, sent.id, timeout_seconds=8)
+        assertions = case.get("assertions") or {}
+        telegram_replies = await _wait_for_replies(
+            client,
+            peer,
+            sent.id,
+            timeout_seconds=int(case.get("reply_timeout_seconds") or 45),
+            min_count=len(spawn_replies) + (1 if task_id else 0),
+            require_media=bool(assertions.get("telegram_media_min")),
+            contains_any=assertions.get("bot_reply_contains_any") or [],
+        )
         if task_id and case.get("post_wait_schedule_seconds"):
             schedule_wait_result = await _wait_for_scheduled_task(admin, trace, int(case["post_wait_schedule_seconds"]))
     except Exception as exc:
@@ -128,6 +148,15 @@ async def run_case(case: dict[str, Any], fixtures: "Fixtures", admin: "AdminClie
 
     after_summary = admin.summary()
     validation = _validate_case(case, trace, telegram_replies, before_summary, after_summary, schedule_wait_result)
+    follow_up_results: list[dict[str, Any]] = []
+    for follow_up in case.get("follow_ups") or []:
+        follow_up_result = await run_follow_up(case, follow_up, fixtures, admin, client, peer)
+        follow_up_results.append(follow_up_result)
+        if follow_up_result["status"] != "passed":
+            validation["errors"].extend(f"follow-up {follow_up_result['id']}: {error}" for error in follow_up_result["validation"]["errors"])
+            if follow_up_result.get("failure_reason"):
+                validation["errors"].append(f"follow-up {follow_up_result['id']}: {follow_up_result['failure_reason']}")
+    validation["ok"] = not validation["errors"]
     status = "passed" if validation["ok"] and not failure_reason else "failed"
     if failure_reason:
         validation["errors"].append(failure_reason)
@@ -153,6 +182,7 @@ async def run_case(case: dict[str, Any], fixtures: "Fixtures", admin: "AdminClie
         "signals": (trace or {}).get("signals") or [],
         "timeline": (trace or {}).get("timeline") or [],
         "trace": trace,
+        "follow_up_results": follow_up_results,
         "schedule_wait_result": schedule_wait_result,
         "local_paths": _local_paths(trace),
         "urls": _urls(trace, telegram_replies),
@@ -162,6 +192,119 @@ async def run_case(case: dict[str, Any], fixtures: "Fixtures", admin: "AdminClie
     }
     print(f"[{status.upper()}] {case['id']}: {payload['failure_reason'] or 'ok'}")
     return payload
+
+
+async def run_follow_up(
+    parent_case: dict[str, Any],
+    follow_up: dict[str, Any],
+    fixtures: "Fixtures",
+    admin: "AdminClient",
+    client: Any,
+    peer: Any,
+) -> dict[str, Any]:
+    started = datetime.now(timezone.utc)
+    message = _render_text(str(follow_up["message"]), fixtures)
+    sent = await client.send_message(peer, message)
+    replies: list[dict[str, Any]] = []
+    task_id: str | None = None
+    trace: dict[str, Any] | None = None
+    failure_reason = None
+    try:
+        replies = await _wait_for_replies(
+            client,
+            peer,
+            sent.id,
+            timeout_seconds=int(follow_up.get("reply_timeout_seconds") or parent_case.get("reply_timeout_seconds") or 90),
+            min_count=1,
+            require_media=bool((follow_up.get("assertions") or {}).get("telegram_media_min")),
+            contains_any=(follow_up.get("assertions") or {}).get("bot_reply_contains_any") or [],
+        )
+        task_id = _extract_task_id(replies)
+        if task_id:
+            trace = await _wait_for_terminal_trace(
+                admin,
+                task_id,
+                timeout_seconds=int(follow_up.get("timeout_seconds") or parent_case.get("timeout_seconds", 300)),
+            )
+            replies = await _wait_for_replies(
+                client,
+                peer,
+                sent.id,
+                timeout_seconds=int(follow_up.get("reply_timeout_seconds") or 60),
+                min_count=len(replies) + 1,
+                require_media=bool((follow_up.get("assertions") or {}).get("telegram_media_min")),
+                contains_any=(follow_up.get("assertions") or {}).get("bot_reply_contains_any") or [],
+            )
+    except Exception as exc:
+        failure_reason = str(exc)
+
+    validation = _validate_follow_up(follow_up, trace, replies)
+    if failure_reason:
+        validation["errors"].append(failure_reason)
+        validation["ok"] = False
+    status = "passed" if validation["ok"] else "failed"
+    return {
+        "id": follow_up.get("id") or "follow_up",
+        "status": status,
+        "started_at": started.isoformat(),
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+        "input_message": follow_up["message"],
+        "resolved_message": message,
+        "telegram_sent": _telegram_message(sent),
+        "telegram_replies": replies,
+        "task_id": task_id,
+        "trace": trace,
+        "validation": validation,
+        "failure_reason": "; ".join(validation["errors"]) if validation["errors"] else failure_reason,
+        "route_decision": _route_decision(trace),
+        "plan_steps": _plan_steps(trace),
+        "tool_invocations": (trace or {}).get("tool_invocations") or [],
+        "artifacts": (trace or {}).get("artifacts") or [],
+    }
+
+
+def _validate_follow_up(
+    follow_up: dict[str, Any],
+    trace: dict[str, Any] | None,
+    replies: list[dict[str, Any]],
+) -> dict[str, Any]:
+    assertions = follow_up.get("assertions") or {}
+    errors: list[str] = []
+    outputs = _tool_outputs(trace)
+    metadata = (((trace or {}).get("task") or {}).get("metadata") or {})
+    observed_tools = _observed_tools(trace)
+    if follow_up.get("spawn_expected") is True and trace is None:
+        errors.append("expected a spawned task, but no task id was returned")
+    if follow_up.get("spawn_expected") is False and trace is not None:
+        errors.append(f"expected a direct conversational answer, but spawned task {((trace.get('task') or {}).get('id'))}")
+    final_status_in = assertions.get("final_status_in")
+    if final_status_in and trace is not None:
+        status = ((trace.get("task") or {}).get("status"))
+        if status not in set(final_status_in):
+            errors.append(f"final status {status!r} not in {final_status_in!r}")
+    for expected in assertions.get("tools_all") or []:
+        if not _tool_seen(expected, observed_tools):
+            errors.append(f"expected tool/operation not seen: {expected}; observed={observed_tools}")
+    tools_any = assertions.get("tools_any") or []
+    if tools_any and not any(_tool_seen(expected, observed_tools) for expected in tools_any):
+        errors.append(f"none of expected tools/operations were seen: {tools_any}; observed={observed_tools}")
+    metadata_any = assertions.get("metadata_any") or []
+    if metadata_any and not any(_truthy_nested(metadata, key) or _truthy_in_outputs(outputs, key) for key in metadata_any):
+        errors.append(f"none of metadata/output evidence keys were found: {metadata_any}")
+    reply_text = "\n".join(str(reply.get("text") or "") for reply in replies)
+    contains_any = assertions.get("bot_reply_contains_any") or []
+    if contains_any and not any(value.lower() in reply_text.lower() for value in contains_any):
+        errors.append(f"Telegram replies did not contain any of: {contains_any}")
+    media_count = len([reply for reply in replies if reply.get("has_media")])
+    if media_count < int(assertions.get("telegram_media_min") or 0):
+        errors.append(f"expected at least {assertions['telegram_media_min']} Telegram media replie(s), got {media_count}")
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "observed_tools": observed_tools,
+        "metadata_keys": sorted(metadata.keys()),
+        "telegram_media_count": media_count,
+    }
 
 
 def _validate_case(
@@ -279,16 +422,38 @@ def _validate_case(
     }
 
 
-async def _wait_for_replies(client: Any, peer: Any, min_id: int, *, timeout_seconds: int) -> list[dict[str, Any]]:
+async def _wait_for_replies(
+    client: Any,
+    peer: Any,
+    min_id: int,
+    *,
+    timeout_seconds: int,
+    min_count: int = 1,
+    require_media: bool = False,
+    contains_any: list[str] | None = None,
+) -> list[dict[str, Any]]:
     deadline = time.monotonic() + timeout_seconds
     latest: list[dict[str, Any]] = []
+    needles = [item.lower() for item in contains_any or []]
     while time.monotonic() < deadline:
         messages = await client.get_messages(peer, min_id=min_id, limit=50)
         latest = [_telegram_message(message) for message in sorted(messages, key=lambda item: item.id) if not getattr(message, "out", False)]
-        if latest:
+        if _reply_conditions_met(latest, min_count=min_count, require_media=require_media, needles=needles):
             return latest
         await asyncio.sleep(2)
     return latest
+
+
+def _reply_conditions_met(replies: list[dict[str, Any]], *, min_count: int, require_media: bool, needles: list[str]) -> bool:
+    if len(replies) < min_count:
+        return False
+    if require_media and not any(reply.get("has_media") for reply in replies):
+        return False
+    if needles:
+        text = "\n".join(str(reply.get("text") or "") for reply in replies).lower()
+        if not any(needle in text for needle in needles):
+            return False
+    return True
 
 
 async def _wait_for_task_spawn_replies(client: Any, peer: Any, min_id: int, *, timeout_seconds: int) -> list[dict[str, Any]]:
@@ -401,12 +566,15 @@ def prepare_fixtures(*, start_web_server: bool) -> Fixtures:
     )
     (image_folder / "desktop-screenshot.png").write_bytes(tiny_png)
     (image_folder / "receipt-sample.png").write_bytes(tiny_png)
+    voice_ogg_path = fixture_root / "voice-command.ogg"
+    voice_ogg_path.write_bytes(_fake_ogg_voice_bytes())
 
     values = {
         "desktop_folder": str(desktop_folder),
         "pdf_path": str(pdf_path),
         "documents_folder": str(documents_folder),
         "image_folder": str(image_folder),
+        "voice_ogg_path": str(voice_ogg_path),
     }
     server = None
     if start_web_server:
@@ -482,6 +650,15 @@ def _write_minimal_pdf(path: Path, text: str) -> None:
     path.write_bytes(output)
 
 
+def _fake_ogg_voice_bytes() -> bytes:
+    return (
+        b"OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+        b"\x01\x00\x00\x00\x00\x00\x00\x00\x1e\x01OpusHead\x01\x01"
+        b"\x38\x01\x80\xbb\x00\x00\x00\x00\x00OpusTags\r\x00\x00\x00"
+        b"AgentControl\x00\x00\x00\x00"
+    )
+
+
 def _load_cases(path: Path) -> list[dict[str, Any]]:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -502,7 +679,10 @@ def _select_cases(cases: list[dict[str, Any]], args: argparse.Namespace) -> list
 
 
 def _render_message(case: dict[str, Any], fixtures: Fixtures) -> str:
-    message = str(case["message"])
+    return _render_text(str(case["message"]), fixtures)
+
+
+def _render_text(message: str, fixtures: Fixtures) -> str:
     for key, value in fixtures.values.items():
         message = message.replace(f"{{{{{key}}}}}", value)
     return message

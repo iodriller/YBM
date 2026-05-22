@@ -287,6 +287,35 @@ class OrchestrationIntent(StrictBaseModel):
     open_first_result: bool = False
     needs_plan_first: bool = False
     use_external_agent: bool = False
+    allow_deletion: bool = False
+    allow_overwrite: bool = False
+
+    @field_validator("route", mode="before")
+    @classmethod
+    def route_accepts_aliases(cls, value: Any) -> Any:
+        if isinstance(value, IntentRoute):
+            return value
+        if value is None:
+            return value
+        aliases = {
+            "browser.research": IntentRoute.BROWSER_OPEN,
+            "browser.search": IntentRoute.BROWSER_OPEN,
+            "browser.screenshot": IntentRoute.BROWSER_OPEN,
+            "browser.summarize": IntentRoute.BROWSER_OPEN,
+            "browser.navigate": IntentRoute.BROWSER_CONTROL,
+            "browser.fill_form": IntentRoute.BROWSER_CONTROL,
+            "browser.form": IntentRoute.BROWSER_CONTROL,
+            "filesystem.inspect": IntentRoute.FILESYSTEM_MANAGE,
+            "filesystem.search": IntentRoute.FILESYSTEM_MANAGE,
+            "filesystem.organize": IntentRoute.FILESYSTEM_MANAGE,
+            "filesystem.rename": IntentRoute.FILESYSTEM_MANAGE,
+            "document.pdf": IntentRoute.DOCUMENT_MANAGE,
+            "document.presentation": IntentRoute.DOCUMENT_MANAGE,
+            "desktop.screenshot": IntentRoute.DESKTOP_OBSERVE,
+            "coding.codex": IntentRoute.CODING_AGENT,
+            "coding.copilot": IntentRoute.CODING_AGENT,
+        }
+        return aliases.get(str(value).strip().lower(), value)
 
     @field_validator("operation")
     @classmethod
@@ -323,10 +352,23 @@ class MessageClassification(StrictBaseModel):
             "computer.use": TaskType.OTHER,
             "browser.open": TaskType.OTHER,
             "browser.control": TaskType.OTHER,
+            "browser.research": TaskType.OTHER,
+            "browser.search": TaskType.OTHER,
+            "browser.screenshot": TaskType.OTHER,
+            "browser.navigate": TaskType.OTHER,
+            "browser.fill_form": TaskType.OTHER,
             "filesystem.manage": TaskType.OTHER,
+            "filesystem.inspect": TaskType.OTHER,
+            "filesystem.search": TaskType.OTHER,
+            "filesystem.organize": TaskType.OTHER,
+            "filesystem.rename": TaskType.OTHER,
             "document.manage": TaskType.OTHER,
+            "document.pdf": TaskType.OTHER,
+            "document.presentation": TaskType.OTHER,
             "artifact.deliver": TaskType.OTHER,
             "coding.agent": TaskType.DEVELOPMENT,
+            "coding.codex": TaskType.DEVELOPMENT,
+            "coding.copilot": TaskType.DEVELOPMENT,
             "schedule.manage": TaskType.OTHER,
             "adapter.factory": TaskType.DEVELOPMENT,
             "workspace.manage": TaskType.DEVELOPMENT,

@@ -209,5 +209,24 @@ adapters:
     recent_artifact_fallback_enabled: false
   stt:
     enabled: false
-    provider: "local_whisper"
+    provider: "faster_whisper"
     model: "base"
+    device: "cpu"
+    compute_type: "int8"
+    language: null
+    vad_filter: true
+    beam_size: 5
+    timeout_seconds: 120
+    temp_dir: ".agent_control/stt"
+    command: []
+    static_transcript_env: "AGENT_STT_STATIC_TRANSCRIPT"
+  tts:
+    enabled: false
+    provider: "kokoro_onnx"
+    model_path: null
+    voices_path: null
+    voice: "af_sarah"
+    language: "en-us"
+    speed: 1.0
+    output_dir: ".agent_control/tts"
+    timeout_seconds: 120

@@ -9,7 +9,7 @@ import httpx
 from agent_control.config import AppSettings, TelegramConfig
 from agent_control.config_sync import read_env_value
 from agent_control.channels.responder import TelegramResponder
-from agent_control.channels.memory import ConversationMemoryService
+from agent_control.channels.memory import ConversationMemoryService, memory_context
 from agent_control.llm.classifier import MessageClassifier, classification_trace
 from agent_control.orchestration.signals import apply_task_signal
 from agent_control.schemas import (
@@ -332,6 +332,8 @@ class TelegramIntakeService:
         repositories: Repositories,
         audit: AuditLogger,
         settings: AppSettings | None = None,
+        bot_api: TelegramBotApi | None = None,
+        stt: STTAdapter | None = None,
         screenshot_service: ScreenshotService | None = None,
         classifier: MessageClassifier | None = None,
         responder: TelegramResponder | None = None,
@@ -341,6 +343,8 @@ class TelegramIntakeService:
         self.repositories = repositories
         self.audit = audit
         self.settings = settings
+        self.bot_api = bot_api
+        self.stt = stt
         self.screenshot_service = screenshot_service
         self.classifier = classifier
         self.responder = responder
@@ -363,19 +367,39 @@ class TelegramIntakeService:
                 result.inbound_message.channel,
                 result.inbound_message.chat_id,
             )
-            self.repositories.messages.create(result.inbound_message, conversation_id)
-            if result.inbound_message.text:
-                await self._update_conversation_memory(conversation_id, result.inbound_message.text)
+            inbound = result.inbound_message
+            if inbound.kind == MessageKind.VOICE and not inbound.text:
+                try:
+                    inbound = await self._transcribe_voice(inbound)
+                except Exception as exc:
+                    self.audit.append(
+                        AuditEventType.ERROR,
+                        actor=f"telegram:user:{inbound.sender_id}",
+                        correlation_id=inbound.correlation_id,
+                        payload={
+                            "error": "voice_transcription_failed",
+                            "message_id": inbound.id,
+                            "reason": str(exc),
+                        },
+                    )
+                    return TelegramUpdateResult(
+                        authorized=True,
+                        inbound_message=inbound,
+                        outbound_message=self._out(inbound.chat_id, f"Voice transcription failed: {exc}"),
+                    )
+            self.repositories.messages.create(inbound, conversation_id)
+            if inbound.text:
+                await self._update_conversation_memory(conversation_id, inbound.text)
 
             if result.command is None:
-                plain_response = self._plain_text_command_response(result.inbound_message)
+                plain_response = self._plain_text_command_response(inbound)
                 if plain_response is not None:
                     return TelegramUpdateResult(
                         authorized=True,
-                        inbound_message=result.inbound_message,
+                        inbound_message=inbound,
                         outbound_message=plain_response,
                     )
-                return await self._classify_and_spawn(result.inbound_message, conversation_id)
+                return await self._classify_and_spawn(inbound, conversation_id)
 
         if result.command:
             signal = self._apply_command(result.command)
@@ -398,7 +422,15 @@ class TelegramIntakeService:
             return self._spawn_failed(inbound, "message classifier is not configured", actor)
 
         try:
-            classification = await self.classifier.classify(inbound)
+            classification_context = memory_context(
+                self.repositories.conversation_memory.get(conversation_id),
+                recent_turns=3,
+                max_chars=900,
+            )
+            try:
+                classification = await self.classifier.classify(inbound, context=classification_context)
+            except TypeError:
+                classification = await self.classifier.classify(inbound)
         except Exception as exc:
             return self._spawn_failed(inbound, f"classification failed: {exc}", actor)
 
@@ -417,7 +449,7 @@ class TelegramIntakeService:
                 "confidence": classification.confidence,
                 "reason": classification.reason,
                 "intent": classification.intent.model_dump(mode="json") if classification.intent else None,
-                "llm": classification_trace(inbound),
+                "llm": classification_trace(inbound, context=classification_context),
             },
         )
 
@@ -433,6 +465,15 @@ class TelegramIntakeService:
             return self._spawn_failed(inbound, classification.reason, actor, classification)
 
         objective = (classification.normalized_objective or inbound.text).strip()
+        voice_attachment = next((attachment for attachment in inbound.attachments if isinstance(attachment, VoiceAttachment)), None)
+        voice_metadata = (
+            {
+                "voice_file_id": voice_attachment.file_id,
+                "voice_transcript": voice_attachment.transcript,
+            }
+            if voice_attachment is not None
+            else {}
+        )
         task = self.repositories.tasks.create(
             objective,
             conversation_id=conversation_id,
@@ -446,6 +487,7 @@ class TelegramIntakeService:
                 "classification_reason": classification.reason,
                 "orchestration_intent": classification.intent.model_dump(mode="json") if classification.intent else None,
                 "original_message_text": inbound.text,
+                **voice_metadata,
             },
         )
         self.audit.append(
@@ -489,6 +531,50 @@ class TelegramIntakeService:
 
     async def _update_conversation_memory(self, conversation_id: str, text: str) -> None:
         await self.memory_service.update_from_user_message(conversation_id, text)
+
+    async def _transcribe_voice(self, inbound: InboundMessage) -> InboundMessage:
+        if self.bot_api is None or self.stt is None:
+            raise RuntimeError("voice transcription is not configured")
+        voice = next((attachment for attachment in inbound.attachments if isinstance(attachment, VoiceAttachment)), None)
+        if voice is None or not voice.file_id:
+            raise RuntimeError("voice file id is missing")
+
+        file_info = await self.bot_api.get_file(voice.file_id)
+        file_path = file_info.get("file_path")
+        if not file_path:
+            raise RuntimeError("Telegram did not return a voice file path")
+
+        audio = await self.bot_api.download_file(file_path)
+        transcript = await self.stt.transcribe(
+            audio,
+            file_name=file_path.rsplit("/", 1)[-1],
+            mime_type=voice.mime_type,
+        )
+        text = transcript.text.strip()
+        if not text:
+            raise RuntimeError("voice transcript was empty")
+
+        updated_attachments = [
+            attachment.model_copy(update={"transcript": text}) if isinstance(attachment, VoiceAttachment) else attachment
+            for attachment in inbound.attachments
+        ]
+        self.audit.append(
+            AuditEventType.MESSAGE_RECEIVED,
+            actor=f"telegram:user:{inbound.sender_id}",
+            correlation_id=inbound.correlation_id,
+            payload={
+                "message_id": inbound.id,
+                "kind": MessageKind.VOICE.value,
+                "sender_id": inbound.sender_id,
+                "chat_id": inbound.chat_id,
+                "text": text,
+                "text_preview": _preview(text),
+                "voice_file_id": voice.file_id,
+                "voice_transcribed": True,
+                "transcription": transcript.model_dump(mode="json"),
+            },
+        )
+        return inbound.model_copy(update={"text": text, "attachments": updated_attachments})
 
     def _spawn_failed(
         self,

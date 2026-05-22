@@ -8,7 +8,7 @@ from agent_control.testing.smoke import SMOKE_LOG_KEYS, write_smoke_log
 
 ROOT = Path(__file__).resolve().parents[2]
 CASES_PATH = ROOT / "e2e" / "cases.json"
-EXPECTED_NUMBERS = [1, 2, 3, 4, 5, 6, 7, 8, *range(10, 46)]
+EXPECTED_NUMBERS = [1, 2, 3, 4, 5, 6, 7, 8, *range(10, 47)]
 REQUIRED_FIELDS = {
     "number",
     "id",
@@ -39,7 +39,7 @@ def test_every_user_requirement_has_a_live_e2e_spec() -> None:
     ids = [item["id"] for item in REQUIREMENT_SPECS]
     numbers = [item["number"] for item in REQUIREMENT_SPECS]
 
-    assert len(ids) == 44
+    assert len(ids) == 45
     assert len(ids) == len(set(ids))
     assert numbers == EXPECTED_NUMBERS
 

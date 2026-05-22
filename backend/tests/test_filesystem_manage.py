@@ -39,9 +39,33 @@ async def test_filesystem_manage_inspect_search_plan_and_apply(tmp_path) -> None
     assert search_result.output["entries"][0]["path"] == str(note.resolve())
     assert len(plan_result.output["manifest"]) == 2
     assert apply_result.status.value == "succeeded"
+    assert "Moved 2 file(s)" in apply_result.output["summary"]
+    assert "changed 2 path(s)" in apply_result.output["summary"]
     assert sorted(Path(path).parent.name for path in apply_result.output["changed_paths"]) == ["documents", "images"]
     assert not note.exists()
     assert (root / "documents" / "notes.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_filesystem_manage_rename_plan_and_apply(tmp_path) -> None:
+    root = tmp_path / "docs"
+    root.mkdir()
+    source = root / "untitled.txt"
+    source.write_text("Quarterly invoice notes for Alpha project", encoding="utf-8")
+    adapter = FilesystemManageAdapter([str(tmp_path)])
+
+    plan_result = await adapter.execute(_request(root, "rename_plan"))
+    apply_result = await adapter.execute(
+        _request(root, "apply_manifest", manifest=plan_result.output["manifest"], dry_run=False)
+    )
+
+    assert plan_result.status.value == "succeeded"
+    assert plan_result.output["rename_manifest"][0]["before"] == "untitled.txt"
+    assert plan_result.output["rename_manifest"][0]["after"].endswith(".txt")
+    assert apply_result.status.value == "succeeded"
+    assert "Renamed 1 file(s)" in apply_result.output["summary"]
+    assert apply_result.output["rename_manifest"][0]["before"] == "untitled.txt"
+    assert not source.exists()
 
 
 @pytest.mark.asyncio

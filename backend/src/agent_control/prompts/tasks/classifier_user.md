@@ -4,6 +4,9 @@ Channel: ${channel}
 Kind: ${kind}
 Sender: ${sender_id}
 Chat: ${chat_id}
+Concise conversation/task context:
+${context}
+
 Text:
 ${text}
 

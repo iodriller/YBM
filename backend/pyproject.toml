@@ -28,6 +28,12 @@ test = [
 e2e = [
   "telethon>=1.36",
 ]
+voice = [
+  "faster-whisper>=1.1",
+  "kokoro-onnx>=0.5",
+  "numpy>=2.0.2",
+  "pyarrow>=24",
+]
 
 [build-system]
 requires = ["hatchling"]

@@ -25,7 +25,8 @@ function Stop-StackOrphans {
     if (
       $commandLine -like "*agent_control.cli poll-telegram*" -or
       $commandLine -like "*agent_control.cli run-worker*" -or
-      $commandLine -like "*agent_control.cli run-scheduler*"
+      $commandLine -like "*agent_control.cli run-scheduler*" -or
+      ($commandLine -like "*api_server.py*" -and $commandLine -like "*LocalDeploy*")
     ) {
       return $true
     }
@@ -33,6 +34,7 @@ function Stop-StackOrphans {
       $commandLine -like "*admin_streamlit.py*" -or
       $commandLine -like "*run_admin_ui.ps1*" -or
       $commandLine -like "*run_backend.ps1*" -or
+      $commandLine -like "*run_localdeploy.ps1*" -or
       $commandLine -like "*run_telegram_polling.ps1*" -or
       $commandLine -like "*run_worker.ps1*" -or
       $commandLine -like "*run_scheduler.ps1*" -or

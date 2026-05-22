@@ -11,7 +11,7 @@ CLASSIFIER_SYSTEM_PROMPT = prompt_text("base/classifier_system.md")
 
 
 class MessageClassifier(Protocol):
-    async def classify(self, message: InboundMessage) -> MessageClassification:
+    async def classify(self, message: InboundMessage, context: str | None = None) -> MessageClassification:
         ...
 
 
@@ -19,7 +19,7 @@ class LLMMessageClassifier:
     def __init__(self, provider: LLMProvider) -> None:
         self.provider = provider
 
-    async def classify(self, message: InboundMessage) -> MessageClassification:
+    async def classify(self, message: InboundMessage, context: str | None = None) -> MessageClassification:
         text = (message.text or "").strip()
         if not text:
             return MessageClassification(
@@ -31,7 +31,7 @@ class LLMMessageClassifier:
         try:
             classification = await self.provider.generate_structured(
                 CLASSIFIER_SYSTEM_PROMPT,
-                _classification_prompt(message),
+                _classification_prompt(message, context=context),
                 MessageClassification,
             )
             return _normalized_classification(message, classification)
@@ -39,7 +39,7 @@ class LLMMessageClassifier:
             try:
                 retry_prompt = render_prompt(
                     "tasks/structured_retry.md",
-                    original_prompt=_classification_prompt(message),
+                    original_prompt=_classification_prompt(message, context=context),
                     error=str(exc),
                 )
                 classification = await self.provider.generate_structured(
@@ -60,7 +60,7 @@ class StaticMessageClassifier:
         self.classification = classification
         self.messages: list[InboundMessage] = []
 
-    async def classify(self, message: InboundMessage) -> MessageClassification:
+    async def classify(self, message: InboundMessage, context: str | None = None) -> MessageClassification:
         self.messages.append(message)
         if self.classification:
             return self.classification
@@ -73,7 +73,7 @@ class StaticMessageClassifier:
         )
 
 
-def _classification_prompt(message: InboundMessage) -> str:
+def _classification_prompt(message: InboundMessage, context: str | None = None) -> str:
     return render_prompt(
         "tasks/classifier_user.md",
         channel=message.channel.value,
@@ -81,13 +81,14 @@ def _classification_prompt(message: InboundMessage) -> str:
         sender_id=message.sender_id,
         chat_id=message.chat_id,
         text=message.text or "",
+        context=(context or "No prior conversation/task context."),
     )
 
 
-def classification_trace(message: InboundMessage) -> dict[str, str]:
+def classification_trace(message: InboundMessage, context: str | None = None) -> dict[str, str]:
     return {
         "system_prompt": CLASSIFIER_SYSTEM_PROMPT,
-        "user_prompt": _classification_prompt(message),
+        "user_prompt": _classification_prompt(message, context=context),
     }
 
 

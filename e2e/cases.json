@@ -1983,5 +1983,54 @@
         "next"
       ]
     }
+  },
+  {
+    "number": 46,
+    "id": "voice_message_intake",
+    "requirement": "Transcribe a Telegram voice message and route it like text.",
+    "small_test": "Send a voice message saying: tell me what is on my desktop right now.",
+    "larger_test": "Send a Telegram voice message containing a desktop inspection request; the agent should transcribe it, spawn the same task it would for text, and keep the transcript in the audit trail.",
+    "message": "Tell me what is on my desktop right now.",
+    "setup": [],
+    "tags": [
+      "voice",
+      "stt",
+      "desktop"
+    ],
+    "tools_required": [
+      "telegram voice intake",
+      "stt.transcribe",
+      "computer.use:observe"
+    ],
+    "expected_behavior": "The Telegram intake downloads the voice file, transcribes it, stores transcript evidence, classifies the transcript, and spawns the correct task.",
+    "pass_criteria": "A task is spawned from the transcript, voice metadata is present, and the planned tool matches the transcribed request.",
+    "failure_cases": [
+      "Voice enters classifier with empty text.",
+      "STT failure is hidden.",
+      "Transcript is not logged.",
+      "The voice task is routed differently from the same text request."
+    ],
+    "size": "medium",
+    "timeout_seconds": 420,
+    "assertions": {
+      "final_status_in": [
+        "completed"
+      ],
+      "tools_all": [
+        "computer.use:observe"
+      ],
+      "metadata_any": [
+        "voice_transcript",
+        "voice_file_id",
+        "desktop_observation",
+        "screenshot_path"
+      ],
+      "bot_reply_contains_any": [
+        "task_",
+        "desktop",
+        "screenshot"
+      ]
+    },
+    "input_kind": "voice"
   }
 ]

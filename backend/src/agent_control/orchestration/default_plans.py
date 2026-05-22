@@ -95,7 +95,10 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
                 expected_output="Desktop observation, screenshot path, and summary.",
             )
         ]
-        if intent.delivery == DeliveryKind.SCREENSHOT and policy_send and policy_send.enabled:
+        wants_screenshot_delivery = intent.delivery == DeliveryKind.SCREENSHOT or (
+            intent.operation in {"screenshot", "send_screenshot"} and _looks_like_delivery_request(task.objective)
+        )
+        if wants_screenshot_delivery and policy_send and policy_send.enabled:
             steps.append(_intent_delivery_step(settings, objective, "send_screenshot", screenshot=True))
         return PlanModel(
             objective=objective,
@@ -112,7 +115,7 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
                             description="The requested desktop screenshot is delivered to Telegram.",
                         )
                     ]
-                    if len(steps) > 1
+                    if wants_screenshot_delivery and len(steps) > 1
                     else []
                 ),
             ],
@@ -175,6 +178,11 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
             postconditions=_desktop_postconditions(),
         )
 
+    if intent.operation == "summarize_pdf" and (intent.file_path or intent.path or intent.folder_path):
+        pdf_plan = _build_pdf_summary_intent_plan(settings, task, intent, objective)
+        if pdf_plan is not None:
+            return pdf_plan
+
     if intent.route == IntentRoute.FILESYSTEM_MANAGE:
         if not settings.adapters.computer_use.enabled:
             return None
@@ -184,7 +192,7 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
         root = intent.folder_path or intent.path
         if not root:
             return None
-        operation = intent.operation if intent.operation in {"inspect_folder", "search", "organize_plan", "apply_manifest"} else "organize_plan"
+        operation = _filesystem_intent_operation(intent.operation)
         if operation == "search":
             steps = [
                 PlanStep(
@@ -216,6 +224,41 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
                     tool_input={"operation": "inspect_folder", "root": root, "timeout_seconds": 60},
                     expected_output="Folder entries and summary.",
                 )
+            ]
+        elif operation == "rename_plan":
+            steps = [
+                PlanStep(
+                    title="Plan file renames",
+                    description="Create a before/after rename manifest before changing files.",
+                    required_capabilities=[Capability.FILESYSTEM_WRITE],
+                    risk_level=RiskLevel.HIGH,
+                    requires_approval=write_policy.requires_approval,
+                    tool_name="filesystem.manage",
+                    tool_input={
+                        "operation": "rename_plan",
+                        "root": root,
+                        "strategy": "by_content",
+                        "recursive": False,
+                        "timeout_seconds": 60,
+                    },
+                    expected_output="A proposed before/after rename manifest.",
+                ),
+                PlanStep(
+                    title="Apply file rename manifest",
+                    description="Apply the generated rename manifest inside the same allowed folder.",
+                    required_capabilities=[Capability.FILESYSTEM_WRITE],
+                    risk_level=RiskLevel.HIGH,
+                    requires_approval=write_policy.requires_approval,
+                    tool_name="filesystem.manage",
+                    tool_input={
+                        "operation": "apply_manifest",
+                        "root": root,
+                        "manifest": "{{last_manifest}}",
+                        "dry_run": False,
+                        "timeout_seconds": 120,
+                    },
+                    expected_output="Before/after rename table and changed paths.",
+                ),
             ]
         else:
             steps = [
@@ -265,6 +308,33 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
         open_policy = settings.capabilities.get(Capability.BROWSER_OPEN)
         if not settings.adapters.browser.enabled or open_policy is None or not open_policy.enabled:
             return None
+        if intent.url and _objective_wants_page_update_check(objective):
+            control_policy = settings.capabilities.get(Capability.BROWSER_CONTROL)
+            if control_policy is not None and control_policy.enabled:
+                return PlanModel(
+                    objective=objective,
+                    assumptions=["The LLM router selected browser open, but the objective is a page update/content check."],
+                    required_capabilities=[Capability.BROWSER_CONTROL],
+                    steps=[
+                        PlanStep(
+                            title="Check browser page for updates",
+                            description="Inspect the requested page for new release/episode/content evidence.",
+                            required_capabilities=[Capability.BROWSER_CONTROL],
+                            risk_level=RiskLevel.CRITICAL,
+                            requires_approval=control_policy.requires_approval,
+                            tool_name="browser.control",
+                            tool_input={
+                                "operation": "check_page_update",
+                                "url": intent.url,
+                                "objective": objective,
+                                "timeout_seconds": 90,
+                            },
+                            expected_output="Current page evidence and update markers.",
+                        )
+                    ],
+                    success_criteria=["The requested page is inspected for current content/update evidence."],
+                    postconditions=_browser_postconditions(),
+                )
         operation = intent.operation if intent.operation in {"open", "search", "research", "inspect_tabs", "screenshot", "summarize_page", "research_pages"} else None
         if operation is None:
             operation = "screenshot" if intent.delivery == DeliveryKind.SCREENSHOT else "research_pages" if intent.page_limit else "research"
@@ -319,6 +389,44 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
         if not settings.adapters.browser.enabled or control_policy is None or not control_policy.enabled:
             return None
         open_policy = settings.capabilities.get(Capability.BROWSER_OPEN)
+        if intent.operation in {"search", "research", "research_pages", "summarize_page", "inspect_tabs"}:
+            if open_policy is None or not open_policy.enabled:
+                return None
+            operation = intent.operation
+            if operation == "search" and intent.open_first_result:
+                operation = "research"
+            tool_input: dict[str, object] = {
+                "operation": operation,
+                "objective": objective,
+                "timeout_seconds": 180 if operation == "research_pages" else 90,
+            }
+            if intent.query:
+                tool_input["query"] = intent.query
+            if intent.url:
+                tool_input["url"] = intent.url
+            if intent.page_limit:
+                tool_input["page_limit"] = intent.page_limit
+            if intent.open_first_result:
+                tool_input["open_first_result"] = True
+            return PlanModel(
+                objective=objective,
+                assumptions=["The LLM router selected browser control, but the operation is a browser research/read operation."],
+                required_capabilities=[Capability.BROWSER_OPEN],
+                steps=[
+                    PlanStep(
+                        title="Use browser research adapter",
+                        description="Search/open/read through the browser adapter.",
+                        required_capabilities=[Capability.BROWSER_OPEN],
+                        risk_level=RiskLevel.LOW,
+                        requires_approval=open_policy.requires_approval,
+                        tool_name="browser.open",
+                        tool_input=tool_input,
+                        expected_output="Visited URL, page title, and page summary.",
+                    )
+                ],
+                success_criteria=["The browser adapter reports source/page evidence for the requested research."],
+                postconditions=_browser_postconditions(),
+            )
         steps: list[PlanStep] = []
         required = [Capability.BROWSER_CONTROL]
         if intent.url and open_policy and open_policy.enabled:
@@ -335,7 +443,55 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
                     expected_output="Requested page is open in Chrome.",
                 )
             )
-        operation = intent.operation if intent.operation in {"navigate", "close_tab", "click", "fill_form", "check_page_update", "extract_page_state", "fill_form_step"} else None
+        if intent.operation == "screenshot" or (
+            intent.operation in {None, "navigate"}
+            and intent.delivery == DeliveryKind.SCREENSHOT
+            and _objective_wants_screenshot(objective)
+        ):
+            if open_policy is None or not open_policy.enabled:
+                return None
+            steps.append(
+                PlanStep(
+                    title="Capture browser screenshot",
+                    description="Capture the requested browser page after opening or navigating to it.",
+                    required_capabilities=[Capability.BROWSER_OPEN],
+                    risk_level=RiskLevel.LOW,
+                    requires_approval=open_policy.requires_approval,
+                    tool_name="browser.open",
+                    tool_input={
+                        "operation": "screenshot",
+                        **({"url": intent.url} if intent.url else {}),
+                        "full_page": True,
+                        "timeout_seconds": 60,
+                    },
+                    expected_output="Browser screenshot path and page summary.",
+                )
+            )
+            if policy_send and policy_send.enabled:
+                steps.append(_intent_delivery_step(settings, objective, "send_screenshot", screenshot=True))
+                required.append(Capability.TELEGRAM_SEND)
+            return PlanModel(
+                objective=objective,
+                assumptions=["The LLM router selected browser control, and the requested outcome is a browser screenshot."],
+                required_capabilities=required,
+                steps=steps,
+                success_criteria=["The requested browser page is captured and delivered when requested."],
+                postconditions=[
+                    *_browser_postconditions(),
+                    *(
+                        [
+                            PlanPostcondition(
+                                type=PostconditionType.ARTIFACT_DELIVERED,
+                                description="The requested browser screenshot is delivered to Telegram.",
+                            )
+                        ]
+                        if intent.delivery == DeliveryKind.SCREENSHOT and policy_send and policy_send.enabled
+                        else []
+                    ),
+                ],
+            )
+        control_operation = _browser_control_operation(intent.operation, objective)
+        operation = control_operation if control_operation in {"navigate", "close_tab", "click", "fill_form", "check_page_update", "extract_page_state", "fill_form_step"} else None
         operation = operation or ("check_page_update" if intent.query else "fill_form_step" if intent.form_fields else "navigate")
         if operation in {"fill_form", "fill_form_step"}:
             if not any(step.tool_name == "browser.control" and step.tool_input.get("operation") == "extract_page_state" for step in steps):
@@ -604,6 +760,124 @@ def _task_intent(task: TaskRecord) -> OrchestrationIntent | None:
         return OrchestrationIntent.model_validate(raw)
     except Exception:
         return None
+
+
+def _filesystem_intent_operation(operation: str | None) -> str:
+    normalized = (operation or "").strip().lower().replace("-", "_")
+    aliases = {
+        "inspect": "inspect_folder",
+        "list": "inspect_folder",
+        "ls": "inspect_folder",
+        "read_folder": "inspect_folder",
+        "folder_inspection": "inspect_folder",
+        "find": "search",
+        "lookup": "search",
+        "organize": "organize_plan",
+        "plan_organization": "organize_plan",
+        "rename": "rename_plan",
+        "rename_files": "rename_plan",
+        "file_rename": "rename_plan",
+        "apply": "apply_manifest",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized in {"inspect_folder", "search", "organize_plan", "rename_plan", "apply_manifest"}:
+        return normalized
+    return "organize_plan"
+
+
+def _browser_control_operation(operation: str | None, objective: str) -> str | None:
+    raw = (operation or "").strip().lower()
+    aliases = {
+        "check": "check_page_update",
+        "check_update": "check_page_update",
+        "check_page": "check_page_update",
+        "monitor": "check_page_update",
+        "page_update": "check_page_update",
+        "new_content": "check_page_update",
+        "new_episode": "check_page_update",
+        "form": "fill_form_step",
+        "fill_form": "fill_form_step",
+        "fill": "fill_form_step",
+        "navigate_to": "navigate",
+        "open": "navigate",
+    }
+    if raw in aliases:
+        return aliases[raw]
+    if raw:
+        return raw
+    lowered = objective.lower()
+    if any(marker in lowered for marker in ("new episode", "new content", "new release", "came out", "published")):
+        return "check_page_update"
+    return None
+
+
+def _objective_wants_page_update_check(objective: str) -> bool:
+    lowered = objective.lower()
+    return any(marker in lowered for marker in ("new episode", "new content", "new release", "came out", "published"))
+
+
+def _build_pdf_summary_intent_plan(
+    settings: AppSettings,
+    task: TaskRecord,
+    intent: OrchestrationIntent,
+    objective: str,
+) -> PlanModel | None:
+    policy = settings.capabilities.get(Capability.FILESYSTEM_WRITE)
+    if policy is None or not policy.enabled:
+        return None
+    source = intent.file_path or intent.path
+    steps: list[PlanStep] = []
+    required = [Capability.FILESYSTEM_WRITE]
+    document_path = source
+    if not document_path and intent.folder_path:
+        steps.append(
+            PlanStep(
+                title="Find PDF in folder",
+                description="Locate a PDF under the requested folder before summarizing it.",
+                required_capabilities=[Capability.FILESYSTEM_WRITE],
+                risk_level=RiskLevel.HIGH,
+                requires_approval=policy.requires_approval,
+                tool_name="filesystem.manage",
+                tool_input={
+                    "operation": "search",
+                    "root": intent.folder_path,
+                    "query": ".pdf",
+                    "include_content": False,
+                    "max_results": 5,
+                    "timeout_seconds": 60,
+                },
+                expected_output="Matching PDF paths under the requested folder.",
+            )
+        )
+        document_path = "{{last_entry_path}}"
+    if not document_path:
+        return None
+    steps.append(
+        PlanStep(
+            title="Summarize PDF",
+            description="Extract text from the resolved PDF and summarize the actual document content.",
+            required_capabilities=[Capability.FILESYSTEM_WRITE],
+            risk_level=RiskLevel.HIGH,
+            requires_approval=policy.requires_approval,
+            tool_name="document.manage",
+            tool_input={"operation": "summarize_pdf", "path": document_path, "timeout_seconds": 90},
+            expected_output="PDF content summary and text artifact.",
+        )
+    )
+    return PlanModel(
+        objective=objective,
+        assumptions=["The LLM selected PDF summarization; any folder input is resolved to a PDF before document processing."],
+        required_capabilities=required,
+        steps=steps,
+        success_criteria=["The PDF content is extracted and summarized."],
+        postconditions=[
+            PlanPostcondition(
+                type=PostconditionType.DOCUMENT_SUMMARY,
+                description="The PDF content is summarized from the actual file.",
+                required=True,
+            )
+        ],
+    )
 
 
 def _intent_delivery_step(

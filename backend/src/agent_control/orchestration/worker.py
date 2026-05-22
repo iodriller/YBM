@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import json
 from typing import Any, Protocol
 
+from agent_control.channels.memory import ConversationMemoryService
 from agent_control.llm import PlannerService
 from agent_control.orchestration.executor import ToolExecutor
 from agent_control.orchestration.fulfillment import validate_fulfillment
@@ -304,12 +305,12 @@ class TaskWorker:
         return updated
 
     async def _notify_if_needed(self, task: TaskRecord) -> None:
-        if self.notification_sink is None or task.status not in NOTIFIABLE_STATUSES:
+        if task.status not in NOTIFIABLE_STATUSES:
             return
         notified = set(task.metadata.get("notified_statuses", []))
-        if task.status.value in notified:
-            return
-        await self.notification_sink.notify(task)
+        if self.notification_sink is not None and task.status.value not in notified:
+            await self.notification_sink.notify(task)
+        await self._remember_task_completion(task)
         latest = self.repositories.tasks.get(task.id)
         if latest is None:
             return
@@ -318,6 +319,22 @@ class TaskWorker:
             task.id,
             {**latest.metadata, "notified_statuses": updated_notified},
         )
+
+    async def _remember_task_completion(self, task: TaskRecord) -> None:
+        if not task.conversation_id or task.status not in {TaskStatus.COMPLETED, TaskStatus.BLOCKED, TaskStatus.FAILED}:
+            return
+        summary = _task_memory_summary(task)
+        if not summary:
+            return
+        try:
+            await ConversationMemoryService(self.repositories).update_from_task_summary(task.conversation_id, summary)
+        except Exception as exc:
+            self.audit.append(
+                AuditEventType.ERROR,
+                actor="memory",
+                task_id=task.id,
+                payload={"error": "task_memory_update_failed", "reason": str(exc)},
+            )
 
     def _record_tool_result(self, task_id: str, tool_name: str, result: ToolCallResult) -> TaskRecord:
         latest = self.repositories.tasks.get(task_id)
@@ -349,7 +366,9 @@ class TaskWorker:
             ("screenshot_uri", "screenshot_uri"),
             ("desktop_observation", "observation"),
             ("computer_use_actions", "actions_taken"),
+            ("changed_paths", "changed_paths"),
             ("organized_paths", "changed_paths"),
+            ("rename_manifest", "rename_manifest"),
             ("file_manifest", "manifest"),
             ("document_path", "path"),
             ("document_summary", "summary"),
@@ -439,6 +458,7 @@ def _resolve_step_input(task: TaskRecord, value: Any) -> Any:
         "{{preview_url}}": str(task.metadata.get("preview_url") or ""),
         "{{last_output}}": _last_tool_output_text(task),
         "{{last_manifest}}": _last_manifest(task),
+        "{{last_entry_path}}": _last_entry_path(task),
     }
     return _replace_placeholders(value, replacements)
 
@@ -468,6 +488,23 @@ def _last_manifest(task: TaskRecord) -> list[dict]:
         return []
     manifest = output.get("manifest")
     return manifest if isinstance(manifest, list) else []
+
+
+def _last_entry_path(task: TaskRecord) -> str:
+    payload = task.metadata.get("last_tool_result")
+    if not isinstance(payload, dict):
+        return ""
+    output = payload.get("output")
+    if not isinstance(output, dict):
+        return ""
+    if output.get("path"):
+        return str(output["path"])
+    entries = output.get("entries")
+    if isinstance(entries, list):
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get("path") and not entry.get("is_dir"):
+                return str(entry["path"])
+    return ""
 
 
 def _last_tool_output_text(task: TaskRecord) -> str:
@@ -525,6 +562,57 @@ def _trim_value(value):
     if isinstance(value, dict):
         return {key: _trim_value(item) for key, item in value.items()}
     return value
+
+
+def _task_memory_summary(task: TaskRecord) -> str:
+    metadata = task.metadata
+    parts = [
+        f"Task {task.id} {task.status.value}: {task.objective}",
+    ]
+    for label, key in (
+        ("tool", "last_tool_name"),
+        ("output", "last_tool_output_text"),
+        ("desktop_observation", "desktop_observation"),
+        ("screenshot_path", "screenshot_path"),
+        ("browser_url", "browser_url"),
+        ("page_title", "page_title"),
+        ("document_path", "document_path"),
+        ("document_summary", "document_summary"),
+        ("workspace_dir", "workspace_dir"),
+        ("preview_url", "preview_url"),
+        ("changed_paths", "changed_paths"),
+        ("organized_paths", "organized_paths"),
+        ("file_manifest", "file_manifest"),
+        ("rename_manifest", "rename_manifest"),
+        ("artifact_ids", "last_artifact_ids"),
+    ):
+        value = metadata.get(key)
+        if value:
+            parts.append(f"{label}: {_compact_jsonish(value)}")
+    error = _last_error_from_task(task)
+    if error:
+        parts.append(f"error: {error}")
+    return _trim_value(" | ".join(parts))  # type: ignore[return-value]
+
+
+def _compact_jsonish(value: Any, limit: int = 900) -> str:
+    if isinstance(value, str):
+        text = value
+    else:
+        text = json.dumps(value, ensure_ascii=False, default=str)
+    text = " ".join(text.split())
+    return text if len(text) <= limit else f"{text[: limit - 3]}..."
+
+
+def _last_error_from_task(task: TaskRecord) -> str | None:
+    result = task.metadata.get("last_tool_result")
+    if isinstance(result, dict) and result.get("error_message"):
+        return str(result["error_message"])
+    if task.metadata.get("last_worker_error"):
+        return str(task.metadata["last_worker_error"])
+    if task.metadata.get("fulfillment_gap"):
+        return str(task.metadata["fulfillment_gap"])
+    return None
 
 
 def _route_decision(task: TaskRecord, plan: PlanModel) -> dict[str, Any]:

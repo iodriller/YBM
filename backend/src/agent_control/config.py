@@ -187,8 +187,29 @@ class ArtifactDeliveryAdapterConfig(StrictBaseModel):
 
 class STTAdapterConfig(StrictBaseModel):
     enabled: bool = False
-    provider: str = "local_whisper"
+    provider: str = "faster_whisper"
     model: str = "base"
+    device: str = "cpu"
+    compute_type: str = "int8"
+    language: str | None = None
+    vad_filter: bool = True
+    beam_size: int = Field(default=5, ge=1, le=20)
+    timeout_seconds: int = Field(default=120, ge=1)
+    temp_dir: str = ".agent_control/stt"
+    command: list[str] = Field(default_factory=list)
+    static_transcript_env: str = "AGENT_STT_STATIC_TRANSCRIPT"
+
+
+class TTSAdapterConfig(StrictBaseModel):
+    enabled: bool = False
+    provider: str = "kokoro_onnx"
+    model_path: str | None = None
+    voices_path: str | None = None
+    voice: str = "af_sarah"
+    language: str = "en-us"
+    speed: float = Field(default=1.0, ge=0.25, le=4.0)
+    output_dir: str = ".agent_control/tts"
+    timeout_seconds: int = Field(default=120, ge=1)
 
 
 class AdaptersConfig(StrictBaseModel):
@@ -203,6 +224,7 @@ class AdaptersConfig(StrictBaseModel):
     computer_use: ComputerUseAdapterConfig = Field(default_factory=ComputerUseAdapterConfig)
     artifact_delivery: ArtifactDeliveryAdapterConfig = Field(default_factory=ArtifactDeliveryAdapterConfig)
     stt: STTAdapterConfig = Field(default_factory=STTAdapterConfig)
+    tts: TTSAdapterConfig = Field(default_factory=TTSAdapterConfig)
 
 
 def default_capability_policies() -> dict[Capability, CapabilityPolicy]:

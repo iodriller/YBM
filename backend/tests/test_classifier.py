@@ -106,3 +106,28 @@ def test_message_classification_accepts_route_alias_task_type() -> None:
     assert classification.task_type == TaskType.OTHER
     assert classification.intent is not None
     assert classification.intent.route == IntentRoute.BROWSER_CONTROL
+
+
+def test_message_classification_accepts_file_safety_flags() -> None:
+    classification = MessageClassification.model_validate(
+        {
+            "is_task": True,
+            "task_type": "other",
+            "normalized_objective": "Clean up a folder without deleting or overwriting files.",
+            "confidence": 0.86,
+            "reason": "The user asked for safe folder cleanup.",
+            "intent": {
+                "route": "filesystem.manage",
+                "operation": "organize",
+                "objective": "Organize safe-to-move files only.",
+                "reasoning": "Folder cleanup should use scoped filesystem operations.",
+                "folder_path": "C:/tmp/docs",
+                "allow_deletion": False,
+                "allow_overwrite": False,
+            },
+        }
+    )
+
+    assert classification.intent is not None
+    assert classification.intent.allow_deletion is False
+    assert classification.intent.allow_overwrite is False

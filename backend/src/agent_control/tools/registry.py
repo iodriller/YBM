@@ -53,9 +53,12 @@ from agent_control.tools.contracts import (
     FilesystemInspectInput,
     FilesystemManageOutput,
     FilesystemOrganizePlanInput,
+    FilesystemRenamePlanInput,
     FilesystemSearchInput,
     ScheduleManageInput,
     ScheduleManageOutput,
+    TTSSynthesizeInput,
+    TTSSynthesizeOutput,
     VSCodeCopilotTerminalInput,
     VSCodeTerminalCommandInput,
     VSCodeTerminalToolOutput,
@@ -74,6 +77,7 @@ from agent_control.tools.document_manage import DocumentManageAdapter
 from agent_control.tools.filesystem_manage import FilesystemManageAdapter
 from agent_control.tools.local_workspace import LocalWorkspaceAdapter
 from agent_control.tools.schedule_manage import ScheduleManageAdapter
+from agent_control.tools.tts import build_tts_adapter
 from agent_control.tools.vscode_bridge import VSCodeBridgeTerminalAdapter
 
 
@@ -252,6 +256,7 @@ def build_tool_registry(
                 "open_file",
                 "collect_folder_snapshot",
                 "organize_plan",
+                "rename_plan",
                 "apply_manifest",
             ),
             operation_schemas={
@@ -262,6 +267,7 @@ def build_tool_registry(
                 "open_file": FilesystemOpenFileInput,
                 "collect_folder_snapshot": FilesystemCollectFolderSnapshotInput,
                 "organize_plan": FilesystemOrganizePlanInput,
+                "rename_plan": FilesystemRenamePlanInput,
                 "apply_manifest": FilesystemApplyManifestInput,
             },
             output_schema=FilesystemManageOutput,
@@ -274,6 +280,7 @@ def build_tool_registry(
                     "open_file",
                     "collect_folder_snapshot",
                     "organize_plan",
+                    "rename_plan",
                     "apply_manifest",
                 ),
                 FilesystemManageOutput,
@@ -346,6 +353,22 @@ def build_tool_registry(
     )
     if settings.adapters.coding_assistant.enabled:
         adapters["coding_assistant"] = GenericTerminalAgentAdapter(settings.adapters.coding_assistant)
+
+    tts_enabled = _capability_enabled(settings, Capability.TTS_SYNTHESIZE) and settings.adapters.tts.enabled
+    definitions.append(
+        ToolDefinition(
+            name="tts.synthesize",
+            capability=Capability.TTS_SYNTHESIZE,
+            enabled=tts_enabled,
+            description="synthesize local speech audio with the configured Kokoro ONNX runtime",
+            operations=("synthesize",),
+            input_schema=TTSSynthesizeInput,
+            output_schema=TTSSynthesizeOutput,
+            default_operation="synthesize",
+        )
+    )
+    if settings.adapters.tts.enabled:
+        adapters["tts.synthesize"] = build_tts_adapter(settings.adapters.tts)
 
     coding_agent_enabled = _capability_enabled(settings, Capability.TERMINAL_RUN) and settings.adapters.coding_agent.enabled
     definitions.append(

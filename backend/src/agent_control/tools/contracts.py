@@ -118,6 +118,13 @@ class CodingAssistantInput(ToolInputModel):
     prompt: str = Field(min_length=1)
 
 
+class TTSSynthesizeInput(ToolInputModel):
+    operation: Literal["synthesize"] = "synthesize"
+    text: str = Field(min_length=1)
+    voice: str | None = None
+    output_name: str | None = None
+
+
 class ArtifactDeliverInput(ToolInputModel):
     operation: Literal["send_file", "send_latest", "send_screenshot", "list_artifacts"] = "send_latest"
     artifact_id: str | None = None
@@ -347,13 +354,23 @@ class FilesystemOrganizePlanInput(ToolInputModel):
     max_files: int = Field(default=1000, ge=1, le=10000)
 
 
+class FilesystemRenamePlanInput(ToolInputModel):
+    operation: Literal["rename_plan"] = "rename_plan"
+    root: str = Field(min_length=1)
+    strategy: Literal["by_content", "by_name"] = "by_content"
+    recursive: bool = False
+    max_files: int = Field(default=1000, ge=1, le=10000)
+
+
 class FilesystemManifestItem(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    operation: Literal["move", "copy"] = "move"
+    operation: Literal["move", "copy", "rename"] = "move"
     source: str = Field(min_length=1)
     destination: str = Field(min_length=1)
     reason: str | None = None
+    before_name: str | None = None
+    after_name: str | None = None
 
 
 class FilesystemApplyManifestInput(ToolInputModel):
@@ -413,6 +430,15 @@ class CodingAssistantOutput(ToolOutputModel):
     stdout: str = ""
     stderr: str = ""
     returncode: int
+
+
+class TTSSynthesizeOutput(ToolOutputModel):
+    operation: Literal["synthesize"] = "synthesize"
+    path: str = Field(min_length=1)
+    voice: str | None = None
+    provider: str = Field(min_length=1)
+    sample_rate: int | None = Field(default=None, ge=1)
+    summary: str | None = None
 
 
 class ArtifactDeliveryOutput(ToolOutputModel):

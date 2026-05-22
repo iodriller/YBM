@@ -30,10 +30,19 @@ class ConversationMemoryService:
         self.summarization_timeout_seconds = summarization_timeout_seconds
 
     async def update_from_user_message(self, conversation_id: str, text: str) -> dict[str, Any]:
+        return await self.update_from_turn(conversation_id, "user", text)
+
+    async def update_from_assistant_message(self, conversation_id: str, text: str) -> dict[str, Any]:
+        return await self.update_from_turn(conversation_id, "assistant", text)
+
+    async def update_from_task_summary(self, conversation_id: str, text: str) -> dict[str, Any]:
+        return await self.update_from_turn(conversation_id, "task", text)
+
+    async def update_from_turn(self, conversation_id: str, role: str, text: str) -> dict[str, Any]:
         existing = self.repositories.conversation_memory.get(conversation_id)
         state = dict((existing or {}).get("facts") or {})
         turns = _recent_turns(state)
-        turns.append({"role": "user", "text": _trim_turn(text)})
+        turns.append({"role": _clean_role(role), "text": _trim_turn(text)})
         turns = turns[-self.max_recent_turns :]
         state["recent_turns"] = turns
         state["message_count"] = int(state.get("message_count") or 0) + 1
@@ -60,16 +69,16 @@ class ConversationMemoryService:
         return _clean_summary(output, self.max_summary_chars)
 
 
-def memory_context(memory_record: dict[str, Any] | None, *, recent_turns: int = 4) -> str:
+def memory_context(memory_record: dict[str, Any] | None, *, recent_turns: int = 4, max_chars: int = 1800) -> str:
     if not memory_record:
         return DEFAULT_SUMMARY
     summary = str(memory_record.get("summary") or DEFAULT_SUMMARY)
     state = dict(memory_record.get("facts") or {})
     turns = _recent_turns(state)[-recent_turns:]
     if not turns:
-        return summary
+        return _clean_summary(summary, max_chars)
     recent = "\n".join(f"- {turn['role']}: {turn['text']}" for turn in turns)
-    return f"{summary}\nRecent turns:\n{recent}"
+    return _clean_summary(f"{summary}\nRecent turns:\n{recent}", max_chars)
 
 
 def _summary_system_prompt(max_summary_chars: int) -> str:
@@ -86,15 +95,23 @@ def _summary_user_prompt(existing_summary: str, recent_turns: list[dict[str, str
 
 
 def _fallback_summary(existing_summary: str, recent_turns: list[dict[str, str]], limit: int) -> str:
-    useful_existing = "" if existing_summary == DEFAULT_SUMMARY else existing_summary.strip()
-    latest = "; ".join(turn["text"] for turn in recent_turns[-3:] if turn.get("text"))
+    useful_existing = "" if existing_summary == DEFAULT_SUMMARY else _stable_existing_summary(existing_summary)
+    latest = "; ".join(f"{turn['role']}: {turn['text']}" for turn in recent_turns[-3:] if turn.get("text"))
     if useful_existing and latest:
-        summary = f"{useful_existing}\nRecent user context: {latest}"
+        summary = f"{useful_existing}\nRecent conversation context: {latest}"
     elif latest:
-        summary = f"Recent user context: {latest}"
+        summary = f"Recent conversation context: {latest}"
     else:
         summary = DEFAULT_SUMMARY
     return _clean_summary(summary, limit)
+
+
+def _stable_existing_summary(existing_summary: str) -> str:
+    text = existing_summary.strip()
+    for marker in ("Recent conversation context:", "Recent user context:", "Recent turns:"):
+        if marker in text:
+            text = text.split(marker, 1)[0].strip()
+    return text
 
 
 def _recent_turns(state: dict[str, Any]) -> list[dict[str, str]]:
@@ -103,11 +120,18 @@ def _recent_turns(state: dict[str, Any]) -> list[dict[str, str]]:
     for turn in turns:
         if not isinstance(turn, dict):
             continue
-        role = str(turn.get("role") or "user")[:20]
+        role = _clean_role(str(turn.get("role") or "user"))
         text = str(turn.get("text") or "").strip()
         if text:
             clean.append({"role": role, "text": _trim_turn(text)})
     return clean
+
+
+def _clean_role(value: str) -> str:
+    role = value.strip().lower().replace(" ", "_")
+    if role in {"user", "assistant", "task", "system", "tool"}:
+        return role
+    return "user"
 
 
 def _trim_turn(text: str, limit: int = 600) -> str:

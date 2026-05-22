@@ -243,6 +243,29 @@ def test_telegram_updates_conversation_memory(tmp_path) -> None:
     assert memory["facts"]["recent_turns"][-1]["text"] == "My name is Oney."
 
 
+def test_conversation_memory_context_is_bounded(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
+    database.initialize()
+    repos = Repositories.for_database(database)
+    conversation_id = repos.conversations.get_or_create(ChannelType.TELEGRAM, "100")
+    repos.conversation_memory.upsert(
+        conversation_id,
+        "Stable fact. " * 400,
+        {
+            "recent_turns": [
+                {"role": "user", "text": "A" * 500},
+                {"role": "task", "text": "B" * 500},
+            ]
+        },
+    )
+
+    from agent_control.channels.memory import memory_context
+
+    context = memory_context(repos.conversation_memory.get(conversation_id), recent_turns=2, max_chars=900)
+
+    assert len(context) <= 900
+
+
 class StaticMemoryProvider:
     async def generate_text(self, system_prompt, user_prompt):
         return "User is Oney. They want concise Telegram gateway memory and local workspace automation."

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-import shutil
 import os
+import re
+import shutil
 from typing import Any
 
 from agent_control.schemas import ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
@@ -31,6 +32,8 @@ class FilesystemManageAdapter:
                 output = self._collect_folder_snapshot(request)
             elif operation == "organize_plan":
                 output = self._organize_plan(request)
+            elif operation == "rename_plan":
+                output = self._rename_plan(request)
             elif operation == "apply_manifest":
                 output = self._apply_manifest(request)
             else:
@@ -186,6 +189,50 @@ class FilesystemManageAdapter:
             "summary": f"Prepared {len(manifest)} file organization action(s) for {root}.",
         }
 
+    def _rename_plan(self, request: ToolCallRequest) -> dict[str, Any]:
+        root = self._safe_path(str(request.input["root"]))
+        if not root.exists() or not root.is_dir():
+            raise ValueError(f"folder does not exist: {root}")
+        recursive = bool(request.input.get("recursive", False))
+        max_files = int(request.input.get("max_files") or 1000)
+        manifest = []
+        rename_manifest = []
+        iterator = root.rglob("*") if recursive else root.iterdir()
+        for path in iterator:
+            if len(manifest) >= max_files:
+                break
+            if not path.is_file():
+                continue
+            stem = _rename_stem(path)
+            destination = _dedupe_destination(path.with_name(f"{stem}{path.suffix.lower()}"))
+            if destination.resolve() == path.resolve():
+                continue
+            item = {
+                "operation": "rename",
+                "source": str(path.resolve()),
+                "destination": str(destination.resolve()),
+                "before_name": path.name,
+                "after_name": destination.name,
+                "reason": "Rename based on readable file content and existing filename.",
+            }
+            manifest.append(item)
+            rename_manifest.append(
+                {
+                    "before": path.name,
+                    "after": destination.name,
+                    "source": str(path.resolve()),
+                    "destination": str(destination.resolve()),
+                    "reason": item["reason"],
+                }
+            )
+        return {
+            "root": str(root),
+            "manifest": manifest,
+            "rename_manifest": rename_manifest,
+            "dry_run": True,
+            "summary": f"Prepared {len(rename_manifest)} rename action(s) with before/after names.",
+        }
+
     def _apply_manifest(self, request: ToolCallRequest) -> dict[str, Any]:
         root = self._safe_path(str(request.input["root"]))
         manifest = request.input.get("manifest") or []
@@ -211,20 +258,40 @@ class FilesystemManageAdapter:
                 destination = _dedupe_destination(destination)
             if operation == "copy":
                 shutil.copy2(source, destination)
-            elif operation == "move":
+            elif operation in {"move", "rename"}:
                 shutil.move(str(source), str(destination))
             else:
                 raise ValueError(f"unsupported manifest operation: {operation}")
             changed_paths.append(str(destination))
+        rename_items = [
+            item
+            for item in normalized_manifest
+            if str(item.get("operation") or "") == "rename"
+            or Path(str(item.get("source"))).parent == Path(str(item.get("destination"))).parent
+        ]
         return {
             "root": str(root),
             "manifest": normalized_manifest,
+            "rename_manifest": [
+                {
+                    "before": Path(str(item["source"])).name,
+                    "after": Path(str(item["destination"])).name,
+                    "source": item["source"],
+                    "destination": item["destination"],
+                    "reason": item.get("reason"),
+                }
+                for item in rename_items
+            ],
             "changed_paths": changed_paths,
             "dry_run": dry_run,
             "summary": (
-                f"Validated {len(normalized_manifest)} file organization action(s)."
+                f"Would change {len(normalized_manifest)} file organization action(s)."
                 if dry_run
-                else f"Applied {len(changed_paths)} file organization action(s)."
+                else (
+                    f"Renamed {len(changed_paths)} file(s); before/after table is recorded."
+                    if rename_items
+                    else f"Moved {len(changed_paths)} file(s); changed {len(changed_paths)} path(s)."
+                )
             ),
         }
 
@@ -281,6 +348,43 @@ def _entry(root: Path, path: Path) -> dict[str, Any]:
         "size_bytes": stat.st_size if path.is_file() else None,
         "modified_at": stat.st_mtime,
     }
+
+
+def _rename_stem(path: Path) -> str:
+    text = _content_for_rename(path)
+    tokens = [token.lower() for token in re.findall(r"[A-Za-z0-9]+", text)]
+    stop_words = {
+        "a",
+        "an",
+        "and",
+        "are",
+        "by",
+        "file",
+        "for",
+        "in",
+        "is",
+        "of",
+        "on",
+        "or",
+        "the",
+        "this",
+        "to",
+        "with",
+    }
+    meaningful = [token for token in tokens if len(token) > 2 and token not in stop_words][:5]
+    if not meaningful:
+        meaningful = [token.lower() for token in re.findall(r"[A-Za-z0-9]+", path.stem) if token][:5]
+    stem = "_".join(meaningful)[:80].strip("_")
+    return stem or path.stem
+
+
+def _content_for_rename(path: Path) -> str:
+    if _is_text_file(path):
+        return path.read_text(encoding="utf-8", errors="ignore")[:4000]
+    try:
+        return path.read_bytes()[:4000].decode("utf-8", errors="ignore")
+    except Exception:
+        return path.stem
 
 
 def _type_bucket(path: Path) -> str:

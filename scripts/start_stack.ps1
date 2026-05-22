@@ -13,9 +13,12 @@ $LogDir = Join-Path $Root ".agent_control\logs"
 New-Item -ItemType Directory -Force -Path $RunDir, $LogDir | Out-Null
 
 function Test-HttpOk {
-  param([string]$Url)
+  param(
+    [string]$Url,
+    [int]$TimeoutSec = 5
+  )
   try {
-    Invoke-RestMethod -Uri $Url -Method Get -TimeoutSec 2 | Out-Null
+    Invoke-RestMethod -Uri $Url -Method Get -TimeoutSec $TimeoutSec | Out-Null
     return $true
   } catch {
     return $false
@@ -55,6 +58,7 @@ function Stop-OrphanProcessesForName {
 
   $patterns = switch ($Name) {
     "backend" { @("run_backend.ps1", "uvicorn agent_control.main:app") }
+    "localdeploy" { @("run_localdeploy.ps1", "api_server.py") }
     "worker" { @("run_worker.ps1", "agent_control.cli run-worker") }
     "scheduler" { @("run_scheduler.ps1", "agent_control.cli run-scheduler") }
     "telegram_polling" { @("run_telegram_polling.ps1", "agent_control.cli poll-telegram") }
@@ -74,7 +78,8 @@ function Stop-OrphanProcessesForName {
     foreach ($pattern in $patterns) {
       $matchesPattern = $commandLine -like "*$pattern*"
       $isCliWorker = $pattern -like "agent_control.cli*"
-      if ($matchesPattern -and ($isCliWorker -or $commandLine -like "*$rootPath*")) {
+      $isLocalDeploy = $Name -eq "localdeploy" -and $commandLine -like "*LocalDeploy*"
+      if ($matchesPattern -and ($isCliWorker -or $isLocalDeploy -or $commandLine -like "*$rootPath*")) {
         return $true
       }
     }
@@ -122,7 +127,24 @@ function Start-StackScript {
   Write-Host "Started $Name ($mode pid $($process.Id))"
 }
 
-& "$Root\scripts\start_localdeploy.ps1"
+Stop-OrphanProcessesForName -Name "localdeploy"
+if (Test-HttpOk "http://127.0.0.1:8000/health" -TimeoutSec 10) {
+  Write-Host "localdeploy already running at http://127.0.0.1:8000"
+} else {
+  Start-StackScript -Name "localdeploy" -ScriptPath "$Root\scripts\run_localdeploy.ps1" -Supervise
+  $localDeployReady = $false
+  for ($i = 0; $i -lt 90; $i++) {
+    Start-Sleep -Seconds 1
+    if (Test-HttpOk "http://127.0.0.1:8000/health" -TimeoutSec 10) {
+      Write-Host "localdeploy is ready at http://127.0.0.1:8000"
+      $localDeployReady = $true
+      break
+    }
+  }
+  if (-not $localDeployReady) {
+    throw "localdeploy did not become ready at http://127.0.0.1:8000"
+  }
+}
 & "$Root\scripts\init_db.ps1"
 
 Stop-OrphanProcessesForName -Name "backend"

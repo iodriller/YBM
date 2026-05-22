@@ -26,6 +26,7 @@ from agent_control.scheduler import run_scheduler_forever
 from agent_control.schemas import TaskStatus
 from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.tools.registry import build_tool_registry
+from agent_control.tools.stt import build_stt_adapter
 
 
 def build_repositories() -> tuple[Repositories, AuditLogger]:
@@ -55,17 +56,19 @@ async def poll_telegram() -> None:
     classifier = LLMMessageClassifier(provider) if provider else None
     responder = LLMTelegramResponder(provider, settings, repositories) if provider else None
     memory_service = ConversationMemoryService(repositories, provider=provider)
+    client = TelegramBotApi(load_telegram_token(settings.channels.telegram))
     service = TelegramIntakeService(
         adapter,
         repositories,
         audit,
         settings=settings,
+        bot_api=client,
+        stt=build_stt_adapter(settings.adapters.stt),
         screenshot_service=_screenshot_service(settings, repositories),
         classifier=classifier,
         responder=responder,
         memory_service=memory_service,
     )
-    client = TelegramBotApi(load_telegram_token(settings.channels.telegram))
     runner = TelegramPollingRunner(client, service)
     offset: int | None = None
     while True:

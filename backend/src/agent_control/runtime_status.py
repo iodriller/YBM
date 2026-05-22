@@ -25,12 +25,21 @@ def service_summary(settings: AppSettings) -> dict[str, Any]:
 
 def _expected_services(settings: AppSettings) -> dict[str, bool]:
     return {
+        "localdeploy": _expects_localdeploy(settings),
         "backend": True,
         "worker": True,
         "scheduler": bool(settings.scheduler.enabled),
         "telegram_polling": bool(settings.channels.telegram.enabled and settings.channels.telegram.polling),
         "admin_ui": bool(settings.server.admin_enabled),
     }
+
+
+def _expects_localdeploy(settings: AppSettings) -> bool:
+    profile = settings.llm.profiles.get(settings.llm.default_profile)
+    if profile is None:
+        return False
+    base_url = (profile.base_url or "").lower()
+    return "127.0.0.1:8000" in base_url or "localhost:8000" in base_url or "localdeploy" in settings.llm.default_profile.lower()
 
 
 def _service_record(name: str, expected: bool) -> dict[str, Any]:

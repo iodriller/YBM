@@ -29,6 +29,7 @@ def case(
     depends_on: list[str] | None = None,
     pause_after_seconds: float | None = None,
     post_wait_schedule_seconds: int | None = None,
+    input_kind: str | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "number": number,
@@ -53,6 +54,8 @@ def case(
         payload["pause_after_seconds"] = pause_after_seconds
     if post_wait_schedule_seconds is not None:
         payload["post_wait_schedule_seconds"] = post_wait_schedule_seconds
+    if input_kind is not None:
+        payload["input_kind"] = input_kind
     return payload
 
 
@@ -927,12 +930,33 @@ CASES = [
             "bot_reply_contains_any": ["changed", "folders", "errors", "skipped", "next"],
         },
     ),
+    case(
+        46,
+        "voice_message_intake",
+        "Transcribe a Telegram voice message and route it like text.",
+        "Send a voice message saying: tell me what is on my desktop right now.",
+        "Send a Telegram voice message containing a desktop inspection request; the agent should transcribe it, spawn the same task it would for text, and keep the transcript in the audit trail.",
+        "Tell me what is on my desktop right now.",
+        tools=["telegram voice intake", "stt.transcribe", "computer.use:observe"],
+        expected="The Telegram intake downloads the voice file, transcribes it, stores transcript evidence, classifies the transcript, and spawns the correct task.",
+        pass_criteria="A task is spawned from the transcript, voice metadata is present, and the planned tool matches the transcribed request.",
+        failures=["Voice enters classifier with empty text.", "STT failure is hidden.", "Transcript is not logged.", "The voice task is routed differently from the same text request."],
+        tags=["voice", "stt", "desktop"],
+        size="medium",
+        timeout=420,
+        input_kind="voice",
+        assertions={
+            "tools_all": ["computer.use:observe"],
+            "metadata_any": ["voice_transcript", "voice_file_id", "desktop_observation", "screenshot_path"],
+            "bot_reply_contains_any": ["task_", "desktop", "screenshot"],
+        },
+    ),
 ]
 
 
 def main() -> None:
     numbers = [item["number"] for item in CASES]
-    expected = [1, 2, 3, 4, 5, 6, 7, 8, *range(10, 46)]
+    expected = [1, 2, 3, 4, 5, 6, 7, 8, *range(10, 47)]
     if numbers != expected:
         raise SystemExit(f"case numbers must match {expected}, got {numbers}")
     ids = [item["id"] for item in CASES]
