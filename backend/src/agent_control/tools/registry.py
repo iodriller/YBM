@@ -414,6 +414,7 @@ def build_tool_registry(
             task_repository,  # type: ignore[arg-type]
             telegram_client=telegram_client,  # type: ignore[arg-type]
             allowed_roots=_artifact_delivery_roots(settings),
+            recent_fallback_enabled=settings.adapters.artifact_delivery.recent_artifact_fallback_enabled,
         )
 
     document_enabled = _capability_enabled(settings, Capability.FILESYSTEM_WRITE)

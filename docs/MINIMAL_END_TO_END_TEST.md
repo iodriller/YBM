@@ -39,7 +39,7 @@ The legacy FastAPI admin page remains available at `http://127.0.0.1:8765/admin`
 
 ## 3. Confirm The Local Orchestrator LLM
 
-The default profile is `localdeploy_gemma3_4b`, pointing at `http://127.0.0.1:8000/v1`. In the Orchestrator LLM panel, click `Test`.
+The default profile is `localdeploy_gemma3_12b`, pointing at `http://127.0.0.1:8000/v1`. In the Orchestrator LLM panel, click `Test`.
 
 The test must pass before Telegram text can spawn tasks, because text messages are classified by the local orchestrator LLM.
 

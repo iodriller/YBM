@@ -98,6 +98,18 @@ RepositoriesLoader = Callable[[], Repositories]
 
 
 LLM_PRESETS: dict[str, dict[str, Any]] = {
+    "localdeploy_gemma3_12b": {
+        "label": "LocalDeploy Gemma 3 12B",
+        "profile_name": "localdeploy_gemma3_12b",
+        "provider": "openai_compatible",
+        "model": "gemma3_12b_ollama_safe",
+        "base_url": "http://127.0.0.1:8000/v1",
+        "api_key_env": None,
+        "timeout_seconds": 360,
+        "max_tokens": 9000,
+        "temperature": 0.2,
+        "context_limit": 32768,
+    },
     "localdeploy_gemma3_4b": {
         "label": "LocalDeploy Gemma 3 4B",
         "profile_name": "localdeploy_gemma3_4b",
@@ -108,6 +120,7 @@ LLM_PRESETS: dict[str, dict[str, Any]] = {
         "timeout_seconds": 180,
         "max_tokens": 1024,
         "temperature": 0.2,
+        "context_limit": 32768,
     },
     "openai_gpt41": {
         "label": "OpenAI GPT-4.1",
@@ -452,6 +465,8 @@ def create_admin_router(
             "max_tokens": preset["max_tokens"],
             "temperature": preset["temperature"],
         }
+        if preset.get("context_limit") is not None:
+            profiles[profile_name]["context_limit"] = preset["context_limit"]
         _write_config_file(config_manager, config)
         config_manager.remove_env_keys(["AGENT_LLM__DEFAULT_PROFILE", *_legacy_default_llm_env_keys(), *_llm_profile_env_keys(profile_name)])
         _audit_config_update(repositories_loader(), loaded, "llm_preset", {"preset": payload.preset, "profile": profile_name})
@@ -1174,6 +1189,7 @@ _ADMIN_HTML = """
         <label>Preset</label>
         <div class="row">
           <select id="llm-preset">
+            <option value="localdeploy_gemma3_12b">LocalDeploy Gemma 3 12B</option>
             <option value="localdeploy_gemma3_4b">LocalDeploy Gemma 3 4B</option>
             <option value="openai_gpt41">OpenAI GPT-4.1</option>
           </select>
@@ -1802,7 +1818,11 @@ _ADMIN_HTML = """
       const profile = (llm.profiles || {})[profileName] || {};
       const presetSelect = document.getElementById("llm-preset");
       if (presetSelect) {
-        presetSelect.value = profileName === "openai_saved" ? "openai_gpt41" : "localdeploy_gemma3_4b";
+        presetSelect.value = profileName === "openai_saved"
+          ? "openai_gpt41"
+          : profileName === "localdeploy_gemma3_4b"
+            ? "localdeploy_gemma3_4b"
+            : "localdeploy_gemma3_12b";
       }
       document.getElementById("llm-profile").value = profileName;
       document.getElementById("llm-default-profile").value = profileName;

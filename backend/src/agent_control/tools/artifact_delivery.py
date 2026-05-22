@@ -25,11 +25,13 @@ class ArtifactDeliveryAdapter:
         *,
         telegram_client: TelegramFileClient | None = None,
         allowed_roots: list[str] | None = None,
+        recent_fallback_enabled: bool = False,
     ) -> None:
         self.artifacts = artifacts
         self.tasks = tasks
         self.telegram_client = telegram_client
         self.allowed_roots = [Path(root).expanduser().resolve() for root in (allowed_roots or [])]
+        self.recent_fallback_enabled = recent_fallback_enabled
 
     async def execute(self, request: ToolCallRequest) -> ToolCallResult:
         operation = str(request.input.get("operation") or "send_latest")
@@ -68,7 +70,7 @@ class ArtifactDeliveryAdapter:
             raise ValueError(f"task not found: {request.task_id}")
 
         artifact, path = self._resolve_artifact_path(request, task, operation)
-        if path is None and operation == "send_latest":
+        if path is None and operation == "send_latest" and self.recent_fallback_enabled:
             artifact, path = self._resolve_recent_artifact_path(request)
         if path is None and operation == "send_latest":
             artifact, path = self._materialize_latest_text(request, task)

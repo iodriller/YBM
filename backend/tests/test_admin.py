@@ -328,12 +328,14 @@ def test_admin_selects_llm_preset(monkeypatch, tmp_path) -> None:
     )
     client = TestClient(local_app)
 
-    response = client.post("/admin/api/config/llm/preset", json={"preset": "localdeploy_gemma3_4b"})
+    response = client.post("/admin/api/config/llm/preset", json={"preset": "localdeploy_gemma3_12b"})
     saved = yaml.safe_load((tmp_path / "config" / "config.yaml").read_text(encoding="utf-8"))
 
     assert response.status_code == 200
-    assert saved["llm"]["default_profile"] == "localdeploy_gemma3_4b"
-    assert saved["llm"]["profiles"]["localdeploy_gemma3_4b"]["base_url"] == "http://127.0.0.1:8000/v1"
+    assert saved["llm"]["default_profile"] == "localdeploy_gemma3_12b"
+    assert saved["llm"]["profiles"]["localdeploy_gemma3_12b"]["model"] == "gemma3_12b_ollama_safe"
+    assert saved["llm"]["profiles"]["localdeploy_gemma3_12b"]["base_url"] == "http://127.0.0.1:8000/v1"
+    assert saved["llm"]["profiles"]["localdeploy_gemma3_12b"]["timeout_seconds"] == 360
 
 
 def test_admin_writes_telegram_runtime_config(monkeypatch, tmp_path) -> None:

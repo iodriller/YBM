@@ -43,8 +43,8 @@ Set `allowed_user_ids` and `allowed_chat_ids` in the admin UI or `config/config.
 The default orchestrator profile is local:
 
 ```text
-Profile: localdeploy_gemma3_4b
-Model: gemma3_4b_ollama_safe
+Profile: localdeploy_gemma3_12b
+Model: gemma3_12b_ollama_safe
 Base URL: http://127.0.0.1:8000/v1
 API Key Env: blank
 ```
@@ -61,7 +61,8 @@ The Streamlit UI uses the same `/admin/api/*` backend endpoints as the legacy pa
 
 The admin LLM panel has two presets:
 
-- `LocalDeploy Gemma 3 4B`: the default local profile.
+- `LocalDeploy Gemma 3 12B`: the default local profile.
+- `LocalDeploy Gemma 3 4B`: available as a faster local fallback profile.
 - `OpenAI GPT-4.1`: saved as an optional preset that uses `OPENAI_API_KEY`.
 
 ## Telegram Gateway Behavior

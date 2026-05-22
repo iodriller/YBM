@@ -181,6 +181,10 @@ class ComputerUseAdapterConfig(StrictBaseModel):
     max_ui_elements: int = Field(default=80, ge=0, le=500)
 
 
+class ArtifactDeliveryAdapterConfig(StrictBaseModel):
+    recent_artifact_fallback_enabled: bool = False
+
+
 class STTAdapterConfig(StrictBaseModel):
     enabled: bool = False
     provider: str = "local_whisper"
@@ -197,6 +201,7 @@ class AdaptersConfig(StrictBaseModel):
     coding_agent: CodingAgentAdapterConfig = Field(default_factory=CodingAgentAdapterConfig)
     desktop: DesktopAdapterConfig = Field(default_factory=DesktopAdapterConfig)
     computer_use: ComputerUseAdapterConfig = Field(default_factory=ComputerUseAdapterConfig)
+    artifact_delivery: ArtifactDeliveryAdapterConfig = Field(default_factory=ArtifactDeliveryAdapterConfig)
     stt: STTAdapterConfig = Field(default_factory=STTAdapterConfig)
 
 

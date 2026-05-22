@@ -140,6 +140,8 @@ def test_default_document_plan_honors_explicit_codex_for_powerpoint(tmp_path) ->
     assert [step.tool_name for step in plan.steps] == ["coding.agent", "document.manage", "artifact.deliver"]
     assert plan.steps[0].tool_input["provider"] == "codex"
     assert plan.steps[1].tool_input["operation"] == "create_presentation"
+    assert plan.steps[1].tool_input["content"] == "{{last_output}}"
+    assert plan.steps[1].tool_input["instructions"] == "{{last_output}}"
 
 
 @pytest.mark.asyncio

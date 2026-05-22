@@ -110,6 +110,31 @@ class TaskType(StrEnum):
     OTHER = "other"
 
 
+class IntentRoute(StrEnum):
+    CONVERSATION = "conversation"
+    STATUS = "status"
+    DESKTOP_OBSERVE = "desktop.observe"
+    COMPUTER_USE = "computer.use"
+    BROWSER_OPEN = "browser.open"
+    BROWSER_CONTROL = "browser.control"
+    FILESYSTEM_MANAGE = "filesystem.manage"
+    DOCUMENT_MANAGE = "document.manage"
+    ARTIFACT_DELIVERY = "artifact.deliver"
+    CODING_AGENT = "coding.agent"
+    SCHEDULE_MANAGE = "schedule.manage"
+    ADAPTER_FACTORY = "adapter.factory"
+    WORKSPACE_MANAGE = "workspace.manage"
+    CONFIGURATION = "configuration"
+    UNKNOWN = "unknown"
+
+
+class DeliveryKind(StrEnum):
+    NONE = "none"
+    LATEST = "latest"
+    FILE = "file"
+    SCREENSHOT = "screenshot"
+
+
 class CapabilityAccessMode(StrEnum):
     OFF = "off"
     READ_ONLY = "read_only"
@@ -239,12 +264,76 @@ class CommandEnvelope(StrictBaseModel):
     correlation_id: str = Field(default_factory=lambda: new_id("corr"))
 
 
+class OrchestrationIntent(StrictBaseModel):
+    route: IntentRoute
+    operation: str | None = None
+    objective: str | None = None
+    reasoning: str
+    tool_name: str | None = None
+    url: str | None = None
+    path: str | None = None
+    folder_path: str | None = None
+    file_path: str | None = None
+    query: str | None = None
+    provider: str | None = None
+    cadence: str | None = None
+    schedule_id: str | None = None
+    scheduled_objective: str | None = None
+    delivery: DeliveryKind = DeliveryKind.NONE
+    artifact_type: str | None = None
+    page_limit: int | None = Field(default=None, ge=1, le=50)
+    form_fields: dict[str, str] = Field(default_factory=dict)
+    submit: bool = False
+    open_first_result: bool = False
+    needs_plan_first: bool = False
+    use_external_agent: bool = False
+
+    @field_validator("operation")
+    @classmethod
+    def operation_is_simple(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if not cleaned.replace("_", "").replace("-", "").replace(".", "").isalnum():
+            raise ValueError("operation must be a simple operation id")
+        return cleaned
+
+
 class MessageClassification(StrictBaseModel):
     is_task: bool
     task_type: TaskType = TaskType.OTHER
     normalized_objective: str | None = None
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     reason: str
+    intent: OrchestrationIntent | None = None
+
+    @field_validator("task_type", mode="before")
+    @classmethod
+    def task_type_accepts_route_aliases(cls, value: Any) -> Any:
+        if isinstance(value, TaskType):
+            return value
+        if value is None:
+            return TaskType.OTHER
+        route_aliases = {
+            "conversation": TaskType.QUESTION,
+            "status": TaskType.STATUS_REQUEST,
+            "desktop.observe": TaskType.DESKTOP_OBSERVATION,
+            "computer.use": TaskType.OTHER,
+            "browser.open": TaskType.OTHER,
+            "browser.control": TaskType.OTHER,
+            "filesystem.manage": TaskType.OTHER,
+            "document.manage": TaskType.OTHER,
+            "artifact.deliver": TaskType.OTHER,
+            "coding.agent": TaskType.DEVELOPMENT,
+            "schedule.manage": TaskType.OTHER,
+            "adapter.factory": TaskType.DEVELOPMENT,
+            "workspace.manage": TaskType.DEVELOPMENT,
+            "configuration": TaskType.CONFIGURATION,
+            "unknown": TaskType.OTHER,
+        }
+        return route_aliases.get(str(value).strip().lower(), value)
 
 
 class CapabilityAccessSummary(StrictBaseModel):

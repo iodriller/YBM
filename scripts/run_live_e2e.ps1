@@ -5,7 +5,8 @@ param(
   [switch]$IncludeGuarded,
   [switch]$DryRun,
   [string]$BackendUrl = "http://127.0.0.1:8765",
-  [string]$LogRoot = ".agent_control/live_e2e_runs"
+  [string]$LogRoot = ".agent_control/live_e2e_runs",
+  [double]$PauseBetweenSeconds = 5.0
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,7 +16,8 @@ Set-Location $Root
 $argsList = @(
   "e2e/live_telegram_e2e.py",
   "--backend-url", $BackendUrl,
-  "--log-root", $LogRoot
+  "--log-root", $LogRoot,
+  "--pause-between-seconds", "$PauseBetweenSeconds"
 )
 
 foreach ($item in $Case) {

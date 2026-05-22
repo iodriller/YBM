@@ -18,8 +18,17 @@ channels:
     polling: true
 
 llm:
-  default_profile: "localdeploy_gemma3_4b"
+  default_profile: "localdeploy_gemma3_12b"
   profiles:
+    localdeploy_gemma3_12b:
+      provider: "openai_compatible"
+      model: "gemma3_12b_ollama_safe"
+      base_url: "http://127.0.0.1:8000/v1"
+      api_key_env: null
+      timeout_seconds: 360
+      max_tokens: 9000
+      temperature: 0.2
+      context_limit: 32768
     localdeploy_gemma3_4b:
       provider: "openai_compatible"
       model: "gemma3_4b_ollama_safe"
@@ -196,6 +205,8 @@ adapters:
       - ".agent_control/workspaces"
     require_session_approval: true
     max_ui_elements: 80
+  artifact_delivery:
+    recent_artifact_fallback_enabled: false
   stt:
     enabled: false
     provider: "local_whisper"

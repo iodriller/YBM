@@ -416,6 +416,7 @@ class TelegramIntakeService:
                 "normalized_objective": classification.normalized_objective,
                 "confidence": classification.confidence,
                 "reason": classification.reason,
+                "intent": classification.intent.model_dump(mode="json") if classification.intent else None,
                 "llm": classification_trace(inbound),
             },
         )
@@ -443,6 +444,7 @@ class TelegramIntakeService:
                 "task_type": classification.task_type.value,
                 "classification_confidence": classification.confidence,
                 "classification_reason": classification.reason,
+                "orchestration_intent": classification.intent.model_dump(mode="json") if classification.intent else None,
                 "original_message_text": inbound.text,
             },
         )
@@ -458,6 +460,7 @@ class TelegramIntakeService:
                 "source_message_id": inbound.id,
                 "classification_confidence": classification.confidence,
                 "classification_reason": classification.reason,
+                "orchestration_intent": classification.intent.model_dump(mode="json") if classification.intent else None,
             },
         )
         return TelegramUpdateResult(

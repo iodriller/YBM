@@ -179,8 +179,11 @@ def test_default_browser_form_fill_plan_uses_control_steps() -> None:
     assert plan is not None
     assert [step.tool_name for step in plan.steps] == ["browser.open", "browser.control", "browser.control"]
     assert plan.steps[1].tool_input["operation"] == "extract_page_state"
+    assert plan.steps[1].tool_input["url_contains"] == "http://127.0.0.1:57246/form.html"
     assert plan.steps[2].tool_input["operation"] == "fill_form_step"
-    assert plan.steps[2].tool_input["fields"] == {"name": "Oney", "email": "oney@example.com. Do not submit."}
+    assert plan.steps[2].tool_input["url_contains"] == "http://127.0.0.1:57246/form.html"
+    assert plan.steps[2].tool_input["fields"] == {"name": "Oney", "email": "oney@example.com"}
+    assert plan.steps[2].tool_input["submit"] is False
 
 
 def test_default_browser_control_plan_opens_url_before_clicking() -> None:

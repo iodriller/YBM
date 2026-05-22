@@ -1,35 +1,108 @@
 from __future__ import annotations
 
-from agent_control.llm.classifier import heuristic_classification
-from agent_control.schemas import ChannelType, InboundMessage, MessageKind, TaskType
+import pytest
+
+from agent_control.llm.classifier import LLMMessageClassifier, emergency_classification
+from agent_control.schemas import (
+    ChannelType,
+    InboundMessage,
+    IntentRoute,
+    MessageClassification,
+    MessageKind,
+    OrchestrationIntent,
+    TaskType,
+)
 
 
-def test_heuristic_classifier_routes_desktop_screenshot_to_desktop_observation() -> None:
-    classification = heuristic_classification(
+class RetryProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def generate_structured(self, system_prompt, user_prompt, output_model):
+        self.calls += 1
+        if self.calls == 1:
+            raise ValueError("bad json")
+        return MessageClassification(
+            is_task=True,
+            task_type=TaskType.OTHER,
+            normalized_objective=None,
+            confidence=0.91,
+            reason="LLM routed recurring work",
+            intent=OrchestrationIntent(
+                route=IntentRoute.SCHEDULE_MANAGE,
+                operation="create",
+                objective="Check the product page every morning",
+                reasoning="The user asked for recurring monitoring.",
+                cadence="daily",
+                scheduled_objective="Check the product page",
+            ),
+        )
+
+    async def generate_text(self, system_prompt, user_prompt):
+        return "unused"
+
+
+@pytest.mark.asyncio
+async def test_llm_classifier_retries_and_returns_structured_intent() -> None:
+    provider = RetryProvider()
+    classifier = LLMMessageClassifier(provider)
+
+    classification = await classifier.classify(
+        InboundMessage(
+            channel=ChannelType.TELEGRAM,
+            kind=MessageKind.TEXT,
+            sender_id="42",
+            chat_id="100",
+            text="handle this recurring monitor",
+        )
+    )
+
+    assert provider.calls == 2
+    assert classification.is_task is True
+    assert classification.normalized_objective == "Check the product page every morning"
+    assert classification.intent is not None
+    assert classification.intent.route == IntentRoute.SCHEDULE_MANAGE
+    assert classification.intent.cadence == "daily"
+
+
+def test_emergency_classification_does_not_regex_route_when_llm_is_unavailable() -> None:
+    classification = emergency_classification(
         InboundMessage(
             channel=ChannelType.TELEGRAM,
             kind=MessageKind.TEXT,
             sender_id="42",
             chat_id="100",
             text="Take a screenshot of my desktop and send it to me now",
-        )
+        ),
+        "LLM down",
     )
 
-    assert classification.is_task is True
-    assert classification.task_type == TaskType.DESKTOP_OBSERVATION
-    assert classification.normalized_objective == "Take a screenshot of my desktop and send it to me now"
+    assert classification.is_task is False
+    assert classification.intent is not None
+    assert classification.intent.route == IntentRoute.CONVERSATION
+    assert classification.reason == "LLM down"
 
 
-def test_heuristic_classifier_routes_scheduled_job_as_task() -> None:
-    classification = heuristic_classification(
-        InboundMessage(
-            channel=ChannelType.TELEGRAM,
-            kind=MessageKind.TEXT,
-            sender_id="42",
-            chat_id="100",
-            text="Set up a scheduled job every day to check a website.",
-        )
+def test_message_classification_accepts_route_alias_task_type() -> None:
+    classification = MessageClassification.model_validate(
+        {
+            "is_task": True,
+            "task_type": "browser.control",
+            "normalized_objective": "Fill the form and send a screenshot",
+            "confidence": 0.88,
+            "reason": "The user asked to fill a browser form.",
+            "intent": {
+                "route": "browser.control",
+                "operation": "fill_form_step",
+                "objective": "Fill the form and send a screenshot",
+                "reasoning": "Browser form filling is required.",
+                "url": "https://form.test",
+                "form_fields": {"name": "Oney"},
+                "submit": False,
+            },
+        }
     )
 
-    assert classification.is_task is True
     assert classification.task_type == TaskType.OTHER
+    assert classification.intent is not None
+    assert classification.intent.route == IntentRoute.BROWSER_CONTROL

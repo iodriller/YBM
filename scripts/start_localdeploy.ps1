@@ -42,7 +42,7 @@ if (-not (Test-Path -LiteralPath $python)) {
   $python = "python"
 }
 
-Write-Host "Starting LocalDeploy Gemma 3 4B API server..."
+Write-Host "Starting LocalDeploy Gemma 3 API server..."
 Start-Process -FilePath $python -ArgumentList "api_server.py" -WorkingDirectory $LocalDeployRoot -WindowStyle Hidden
 
 for ($i = 0; $i -lt 90; $i++) {

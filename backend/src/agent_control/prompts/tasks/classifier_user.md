@@ -1,4 +1,4 @@
-Classify this inbound message.
+Classify this inbound message and return a complete JSON object.
 
 Channel: ${channel}
 Kind: ${kind}
@@ -7,8 +7,9 @@ Chat: ${chat_id}
 Text:
 ${text}
 
-Return:
-- is_task true only if it should spawn a persisted task.
-- task_type as one of the allowed enum values.
-- normalized_objective as the concise work objective when is_task is true.
-- reason explaining the decision.
+Required behavior:
+- Decide whether this should spawn a persisted task.
+- Fill task_type, normalized_objective, confidence, and reason.
+- Fill intent with a route, operation, objective, reasoning, and any extracted fields when the message is actionable.
+- For non-task status/help/conversation, use intent.route=status or conversation.
+- Use null for unknown optional fields; do not invent local paths, URLs, fields, or providers.

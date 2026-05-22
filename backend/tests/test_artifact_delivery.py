@@ -171,7 +171,7 @@ async def test_artifact_delivery_sends_screenshot_from_task_metadata(tmp_path) -
 
 
 @pytest.mark.asyncio
-async def test_artifact_delivery_sends_recent_artifact_when_current_task_has_none(tmp_path) -> None:
+async def test_artifact_delivery_does_not_send_recent_artifact_by_default(tmp_path) -> None:
     repos, _audit = _repos(tmp_path)
     document = tmp_path / "report.txt"
     document.write_text("latest output", encoding="utf-8")
@@ -184,6 +184,38 @@ async def test_artifact_delivery_sends_recent_artifact_when_current_task_has_non
         repos.tasks,
         telegram_client=client,
         allowed_roots=[str(tmp_path)],
+    )
+
+    result = await adapter.execute(
+        ToolCallRequest(
+            task_id=task.id,
+            tool_name="artifact.deliver",
+            capability=Capability.TELEGRAM_SEND,
+            risk_level=RiskLevel.LOW,
+            input={"operation": "send_latest", "caption": "latest"},
+        )
+    )
+
+    assert result.status == ToolResultStatus.FAILED
+    assert "no deliverable artifact" in (result.error_message or "")
+    assert client.documents == []
+
+
+@pytest.mark.asyncio
+async def test_artifact_delivery_sends_recent_artifact_when_cache_fallback_enabled(tmp_path) -> None:
+    repos, _audit = _repos(tmp_path)
+    document = tmp_path / "report.txt"
+    document.write_text("latest output", encoding="utf-8")
+    previous = repos.tasks.create("previous", metadata={"source_chat_id": "100"})
+    task = repos.tasks.create("send latest output", metadata={"source_chat_id": "100"})
+    repos.artifacts.create(Artifact(task_id=previous.id, type=ArtifactType.DOCUMENT, uri=str(document), content_preview="report"))
+    client = FakeTelegramClient()
+    adapter = ArtifactDeliveryAdapter(
+        repos.artifacts,
+        repos.tasks,
+        telegram_client=client,
+        allowed_roots=[str(tmp_path)],
+        recent_fallback_enabled=True,
     )
 
     result = await adapter.execute(

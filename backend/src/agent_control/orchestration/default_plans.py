@@ -10,6 +10,9 @@ from agent_control.scheduler import cadence_from_text, objective_from_schedule_t
 from agent_control.tools.local_workspace import workspace_dir_for_task
 from agent_control.schemas import (
     Capability,
+    DeliveryKind,
+    IntentRoute,
+    OrchestrationIntent,
     PlanModel,
     PlanPostcondition,
     PlanStep,
@@ -21,6 +24,10 @@ from agent_control.schemas import (
 
 
 def build_default_task_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | None:
+    intent_plan = _build_intent_plan(settings, task)
+    if intent_plan is not None:
+        return intent_plan
+
     filesystem_plan = _build_filesystem_manage_plan(settings, task)
     if filesystem_plan is not None:
         return filesystem_plan
@@ -50,6 +57,656 @@ def build_default_task_plan(settings: AppSettings, task: TaskRecord) -> PlanMode
     if artifact_plan is not None:
         return artifact_plan
     return build_default_vscode_development_plan(settings, task)
+
+
+def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | None:
+    intent = _task_intent(task)
+    if intent is None or intent.route in {IntentRoute.CONVERSATION, IntentRoute.STATUS, IntentRoute.UNKNOWN}:
+        return None
+
+    objective = intent.objective or task.objective
+    policy_send = settings.capabilities.get(Capability.TELEGRAM_SEND)
+
+    if intent.route == IntentRoute.DESKTOP_OBSERVE:
+        desktop_policy = settings.capabilities.get(Capability.DESKTOP_CONTROL)
+        if (
+            not settings.adapters.computer_use.enabled
+            or not settings.adapters.desktop.control_enabled
+            or desktop_policy is None
+            or not desktop_policy.enabled
+        ):
+            return None
+        steps = [
+            PlanStep(
+                title="Observe desktop",
+                description="Capture the local desktop state and summarize visible windows/UI.",
+                required_capabilities=[Capability.DESKTOP_CONTROL],
+                risk_level=RiskLevel.CRITICAL,
+                requires_approval=desktop_policy.requires_approval,
+                tool_name="computer.use",
+                tool_input={
+                    "operation": "observe",
+                    "objective": objective,
+                    "include_screenshot": True,
+                    "include_ui_tree": True,
+                    "summarize": True,
+                    "timeout_seconds": 60,
+                },
+                expected_output="Desktop observation, screenshot path, and summary.",
+            )
+        ]
+        if intent.delivery == DeliveryKind.SCREENSHOT and policy_send and policy_send.enabled:
+            steps.append(_intent_delivery_step(settings, objective, "send_screenshot", screenshot=True))
+        return PlanModel(
+            objective=objective,
+            assumptions=["The LLM router selected desktop observation."],
+            required_capabilities=[Capability.DESKTOP_CONTROL, *([Capability.TELEGRAM_SEND] if len(steps) > 1 else [])],
+            steps=steps,
+            success_criteria=["The desktop state is observed and summarized."],
+            postconditions=[
+                *_desktop_postconditions(),
+                *(
+                    [
+                        PlanPostcondition(
+                            type=PostconditionType.ARTIFACT_DELIVERED,
+                            description="The requested desktop screenshot is delivered to Telegram.",
+                        )
+                    ]
+                    if len(steps) > 1
+                    else []
+                ),
+            ],
+        )
+
+    if intent.route == IntentRoute.COMPUTER_USE:
+        desktop_policy = settings.capabilities.get(Capability.DESKTOP_CONTROL)
+        if (
+            not settings.adapters.computer_use.enabled
+            or not settings.adapters.desktop.control_enabled
+            or desktop_policy is None
+            or not desktop_policy.enabled
+        ):
+            return None
+        operation = intent.operation if intent.operation in {"observe", "act", "run_goal"} else "run_goal"
+        if operation == "observe":
+            tool_input = {
+                "operation": "observe",
+                "objective": objective,
+                "include_screenshot": True,
+                "include_ui_tree": True,
+                "summarize": True,
+                "timeout_seconds": 60,
+            }
+        elif operation == "act":
+            tool_input = {
+                "operation": "act",
+                "objective": objective,
+                "action": {"type": "open_path", "path": intent.path or intent.folder_path or intent.file_path}
+                if (intent.path or intent.folder_path or intent.file_path)
+                else {"type": "wait", "seconds": settings.adapters.computer_use.step_delay_seconds},
+                "timeout_seconds": 60,
+            }
+        else:
+            tool_input = {
+                "operation": "run_goal",
+                "objective": objective,
+                "max_steps": settings.adapters.computer_use.max_steps,
+                "include_ui_tree": True,
+                "require_vision": True,
+                "timeout_seconds": 240,
+            }
+        return PlanModel(
+            objective=objective,
+            assumptions=["The LLM router selected bounded local computer use."],
+            required_capabilities=[Capability.DESKTOP_CONTROL],
+            steps=[
+                PlanStep(
+                    title="Run computer-use action",
+                    description="Use the bounded computer-use adapter for the requested desktop action.",
+                    required_capabilities=[Capability.DESKTOP_CONTROL],
+                    risk_level=RiskLevel.CRITICAL,
+                    requires_approval=desktop_policy.requires_approval,
+                    tool_name="computer.use",
+                    tool_input=tool_input,
+                    expected_output="Desktop observation, actions taken, and final summary.",
+                )
+            ],
+            success_criteria=["The requested bounded desktop action is completed or a clear adapter error is reported."],
+            postconditions=_desktop_postconditions(),
+        )
+
+    if intent.route == IntentRoute.FILESYSTEM_MANAGE:
+        if not settings.adapters.computer_use.enabled:
+            return None
+        write_policy = settings.capabilities.get(Capability.FILESYSTEM_WRITE)
+        if write_policy is None or not write_policy.enabled:
+            return None
+        root = intent.folder_path or intent.path
+        if not root:
+            return None
+        operation = intent.operation if intent.operation in {"inspect_folder", "search", "organize_plan", "apply_manifest"} else "organize_plan"
+        if operation == "search":
+            steps = [
+                PlanStep(
+                    title="Search scoped folder",
+                    description="Search inside the requested folder using filesystem APIs.",
+                    required_capabilities=[Capability.FILESYSTEM_WRITE],
+                    risk_level=RiskLevel.HIGH,
+                    requires_approval=write_policy.requires_approval,
+                    tool_name="filesystem.manage",
+                    tool_input={
+                        "operation": "search",
+                        "root": root,
+                        "query": intent.query or "*",
+                        "include_content": False,
+                        "timeout_seconds": 60,
+                    },
+                    expected_output="Matching file paths under the configured allowed root.",
+                )
+            ]
+        elif operation == "inspect_folder":
+            steps = [
+                PlanStep(
+                    title="Inspect scoped folder",
+                    description="List and summarize the requested folder using filesystem APIs.",
+                    required_capabilities=[Capability.FILESYSTEM_WRITE],
+                    risk_level=RiskLevel.HIGH,
+                    requires_approval=write_policy.requires_approval,
+                    tool_name="filesystem.manage",
+                    tool_input={"operation": "inspect_folder", "root": root, "timeout_seconds": 60},
+                    expected_output="Folder entries and summary.",
+                )
+            ]
+        else:
+            steps = [
+                PlanStep(
+                    title="Plan folder organization",
+                    description="Create a move/copy manifest before changing files.",
+                    required_capabilities=[Capability.FILESYSTEM_WRITE],
+                    risk_level=RiskLevel.HIGH,
+                    requires_approval=write_policy.requires_approval,
+                    tool_name="filesystem.manage",
+                    tool_input={
+                        "operation": "organize_plan",
+                        "root": root,
+                        "strategy": "by_type",
+                        "recursive": False,
+                        "timeout_seconds": 60,
+                    },
+                    expected_output="A proposed file organization manifest.",
+                ),
+                PlanStep(
+                    title="Apply folder organization manifest",
+                    description="Apply the generated manifest inside the same allowed folder.",
+                    required_capabilities=[Capability.FILESYSTEM_WRITE],
+                    risk_level=RiskLevel.HIGH,
+                    requires_approval=write_policy.requires_approval,
+                    tool_name="filesystem.manage",
+                    tool_input={
+                        "operation": "apply_manifest",
+                        "root": root,
+                        "manifest": "{{last_manifest}}",
+                        "dry_run": False,
+                        "timeout_seconds": 120,
+                    },
+                    expected_output="Changed paths from the applied manifest.",
+                ),
+            ]
+        return PlanModel(
+            objective=objective,
+            assumptions=["The LLM router selected scoped filesystem APIs instead of desktop UI automation."],
+            required_capabilities=[Capability.FILESYSTEM_WRITE],
+            steps=steps,
+            success_criteria=["The filesystem operation reports changed paths or readable results."],
+            postconditions=_file_organization_postconditions(required=operation not in {"inspect_folder", "search"}),
+        )
+
+    if intent.route == IntentRoute.BROWSER_OPEN:
+        open_policy = settings.capabilities.get(Capability.BROWSER_OPEN)
+        if not settings.adapters.browser.enabled or open_policy is None or not open_policy.enabled:
+            return None
+        operation = intent.operation if intent.operation in {"open", "search", "research", "inspect_tabs", "screenshot", "summarize_page", "research_pages"} else None
+        if operation is None:
+            operation = "screenshot" if intent.delivery == DeliveryKind.SCREENSHOT else "research_pages" if intent.page_limit else "research"
+        tool_input: dict[str, object] = {"operation": operation, "objective": objective, "timeout_seconds": 180 if operation == "research_pages" else 90}
+        if intent.url:
+            tool_input["url"] = intent.url
+        if intent.query:
+            tool_input["query"] = intent.query
+        if intent.page_limit:
+            tool_input["page_limit"] = intent.page_limit
+        if intent.open_first_result:
+            tool_input["open_first_result"] = True
+        if operation == "screenshot":
+            tool_input.setdefault("full_page", True)
+        steps = [
+            PlanStep(
+                title="Use Chrome browser adapter",
+                description="Use the browser adapter for the LLM-selected browser task.",
+                required_capabilities=[Capability.BROWSER_OPEN],
+                risk_level=RiskLevel.LOW,
+                requires_approval=open_policy.requires_approval,
+                tool_name="browser.open",
+                tool_input=tool_input,
+                expected_output="Browser state, page summary, research results, or screenshot path.",
+            )
+        ]
+        if intent.delivery == DeliveryKind.SCREENSHOT and policy_send and policy_send.enabled:
+            steps.append(_intent_delivery_step(settings, objective, "send_screenshot", screenshot=True))
+        return PlanModel(
+            objective=objective,
+            assumptions=["The LLM router selected the Chrome browser adapter."],
+            required_capabilities=[Capability.BROWSER_OPEN, *([Capability.TELEGRAM_SEND] if len(steps) > 1 else [])],
+            steps=steps,
+            success_criteria=["The browser adapter reports the requested result."],
+            postconditions=[
+                *_browser_postconditions(),
+                *(
+                    [
+                        PlanPostcondition(
+                            type=PostconditionType.ARTIFACT_DELIVERED,
+                            description="The requested browser artifact is delivered to Telegram.",
+                        )
+                    ]
+                    if len(steps) > 1
+                    else []
+                ),
+            ],
+        )
+
+    if intent.route == IntentRoute.BROWSER_CONTROL:
+        control_policy = settings.capabilities.get(Capability.BROWSER_CONTROL)
+        if not settings.adapters.browser.enabled or control_policy is None or not control_policy.enabled:
+            return None
+        open_policy = settings.capabilities.get(Capability.BROWSER_OPEN)
+        steps: list[PlanStep] = []
+        required = [Capability.BROWSER_CONTROL]
+        if intent.url and open_policy and open_policy.enabled:
+            required.insert(0, Capability.BROWSER_OPEN)
+            steps.append(
+                PlanStep(
+                    title="Open requested browser page",
+                    description="Open the target URL before applying browser control.",
+                    required_capabilities=[Capability.BROWSER_OPEN],
+                    risk_level=RiskLevel.LOW,
+                    requires_approval=open_policy.requires_approval,
+                    tool_name="browser.open",
+                    tool_input={"operation": "open", "url": intent.url, "new_tab": True, "timeout_seconds": 60},
+                    expected_output="Requested page is open in Chrome.",
+                )
+            )
+        operation = intent.operation if intent.operation in {"navigate", "close_tab", "click", "fill_form", "check_page_update", "extract_page_state", "fill_form_step"} else None
+        operation = operation or ("check_page_update" if intent.query else "fill_form_step" if intent.form_fields else "navigate")
+        if operation in {"fill_form", "fill_form_step"}:
+            if not any(step.tool_name == "browser.control" and step.tool_input.get("operation") == "extract_page_state" for step in steps):
+                steps.append(
+                    PlanStep(
+                        title="Extract form fields",
+                        description="Inspect the current page form state before filling fields.",
+                        required_capabilities=[Capability.BROWSER_CONTROL],
+                        risk_level=RiskLevel.CRITICAL,
+                        requires_approval=control_policy.requires_approval,
+                        tool_name="browser.control",
+                        tool_input={
+                            "operation": "extract_page_state",
+                            **({"url_contains": intent.url} if intent.url else {}),
+                            "timeout_seconds": 60,
+                        },
+                        expected_output="Detected form fields.",
+                    )
+                )
+            control_input = {
+                "operation": "fill_form_step",
+                "fields": intent.form_fields,
+                "submit": intent.submit,
+                **({"url_contains": intent.url} if intent.url else {}),
+                "timeout_seconds": 60,
+            }
+        elif operation == "check_page_update":
+            control_input = {"operation": "check_page_update", "url": intent.url, "objective": objective, "timeout_seconds": 90}
+        else:
+            if operation == "navigate" and not intent.url:
+                return None
+            control_input = {"operation": operation, "objective": objective, "timeout_seconds": 60}
+            if intent.url:
+                control_input["url"] = intent.url
+        steps.append(
+            PlanStep(
+                title="Control Chrome through browser adapter",
+                description="Apply the LLM-selected browser control action.",
+                required_capabilities=[Capability.BROWSER_CONTROL],
+                risk_level=RiskLevel.CRITICAL,
+                requires_approval=control_policy.requires_approval,
+                tool_name="browser.control",
+                tool_input=control_input,
+                expected_output="Updated browser state and concise result summary.",
+            )
+        )
+        if operation in {"fill_form", "fill_form_step"} and intent.delivery == DeliveryKind.SCREENSHOT and intent.url:
+            steps.append(
+                PlanStep(
+                    title="Capture filled form screenshot",
+                    description="Capture the browser state after filling the form, without submitting it.",
+                    required_capabilities=[Capability.BROWSER_OPEN],
+                    risk_level=RiskLevel.LOW,
+                    requires_approval=bool(open_policy and open_policy.requires_approval),
+                    tool_name="browser.open",
+                    tool_input={
+                        "operation": "screenshot",
+                        "url_contains": intent.url,
+                        "full_page": True,
+                        "timeout_seconds": 60,
+                    },
+                    expected_output="A screenshot of the filled form for review.",
+                )
+            )
+            if policy_send and policy_send.enabled:
+                steps.append(_intent_delivery_step(settings, objective, "send_screenshot", screenshot=True))
+                required.append(Capability.TELEGRAM_SEND)
+        return PlanModel(
+            objective=objective,
+            assumptions=["The LLM router selected browser control."],
+            required_capabilities=required,
+            steps=steps,
+            success_criteria=["The requested browser control action is performed or a clear adapter error is reported."],
+            postconditions=_browser_postconditions(),
+        )
+
+    if intent.route == IntentRoute.DOCUMENT_MANAGE:
+        policy = settings.capabilities.get(Capability.FILESYSTEM_WRITE)
+        if policy is None or not policy.enabled:
+            return None
+        operation = intent.operation if intent.operation in {"inspect_document", "extract_text", "summarize_pdf", "create_presentation", "update_presentation"} else None
+        if operation is None:
+            operation = "summarize_pdf" if intent.file_path else "create_presentation"
+        tool_input: dict[str, object] = {"operation": operation, "timeout_seconds": 90}
+        if intent.file_path or intent.path:
+            tool_input["path"] = intent.file_path or intent.path
+        if operation in {"create_presentation", "update_presentation"}:
+            content_source = "{{last_output}}" if intent.provider in {"codex", "github_copilot"} else objective
+            tool_input.update({"title": _presentation_title(objective), "content": content_source, "instructions": content_source})
+        steps = [
+            PlanStep(
+                title="Run document operation",
+                description="Use the document adapter for the LLM-selected document task.",
+                required_capabilities=[Capability.FILESYSTEM_WRITE],
+                risk_level=RiskLevel.HIGH,
+                requires_approval=policy.requires_approval,
+                tool_name="document.manage",
+                tool_input=tool_input,
+                expected_output="Document summary or generated file artifact.",
+            )
+        ]
+        if intent.delivery in {DeliveryKind.FILE, DeliveryKind.LATEST} and policy_send and policy_send.enabled:
+            steps.append(_intent_delivery_step(settings, objective, "send_latest", artifact_type=intent.artifact_type or "document"))
+        return PlanModel(
+            objective=objective,
+            assumptions=["The LLM router selected document management."],
+            required_capabilities=[Capability.FILESYSTEM_WRITE, *([Capability.TELEGRAM_SEND] if len(steps) > 1 else [])],
+            steps=steps,
+            success_criteria=["The document adapter reports the requested result."],
+            postconditions=[
+                PlanPostcondition(
+                    type=PostconditionType.PRESENTATION_FILE if "presentation" in operation else PostconditionType.DOCUMENT_SUMMARY,
+                    description="The requested document output is reported.",
+                    required=True,
+                )
+            ],
+        )
+
+    if intent.route == IntentRoute.ARTIFACT_DELIVERY:
+        policy = settings.capabilities.get(Capability.TELEGRAM_SEND)
+        if policy is None or not policy.enabled:
+            return None
+        operation = intent.operation if intent.operation in {"send_file", "send_latest", "send_screenshot", "list_artifacts"} else None
+        if operation is None:
+            operation = "send_file" if (intent.file_path or intent.path) else "send_screenshot" if intent.delivery == DeliveryKind.SCREENSHOT else "send_latest"
+        tool_input: dict[str, object] = {
+            "operation": operation,
+            "caption": f"Result for: {objective[:180]}",
+            "timeout_seconds": 60,
+        }
+        if intent.file_path or intent.path:
+            tool_input["path"] = intent.file_path or intent.path
+        if intent.artifact_type:
+            tool_input["artifact_type"] = intent.artifact_type
+        return PlanModel(
+            objective=objective,
+            assumptions=["The LLM router selected Telegram artifact delivery for current task artifacts or explicit paths."],
+            required_capabilities=[Capability.TELEGRAM_SEND],
+            steps=[
+                PlanStep(
+                    title="Deliver artifact to Telegram",
+                    description="Send the requested current-task artifact, screenshot, or explicit file.",
+                    required_capabilities=[Capability.TELEGRAM_SEND],
+                    risk_level=RiskLevel.LOW,
+                    requires_approval=policy.requires_approval,
+                    tool_name="artifact.deliver",
+                    tool_input=tool_input,
+                    expected_output="Telegram delivery result.",
+                )
+            ],
+            success_criteria=["The requested artifact is sent to Telegram or a clear delivery error is reported."],
+            postconditions=[
+                PlanPostcondition(
+                    type=PostconditionType.ARTIFACT_DELIVERED,
+                    description="The requested artifact is delivered to Telegram.",
+                )
+            ],
+        )
+
+    if intent.route == IntentRoute.CODING_AGENT:
+        policy = settings.capabilities.get(Capability.TERMINAL_RUN)
+        if policy is None or not policy.enabled or not settings.adapters.coding_agent.enabled:
+            return None
+        provider = intent.provider
+        if provider not in {"codex", "github_copilot"}:
+            return None
+        operation = intent.operation if intent.operation in {"plan", "run_step", "run_goal", "status", "limits", "resume", "stop"} else None
+        operation = operation or ("plan" if intent.needs_plan_first else "run_goal")
+        steps = [
+            PlanStep(
+                title=f"Run {provider} coding agent",
+                description="Run the explicitly requested coding agent in a task workspace.",
+                required_capabilities=[Capability.TERMINAL_RUN],
+                risk_level=RiskLevel.HIGH,
+                requires_approval=policy.requires_approval,
+                tool_name="coding.agent",
+                tool_input={
+                    "operation": operation,
+                    "provider": provider,
+                    "objective": objective,
+                    "prompt": objective,
+                    "workspace_dir": str(workspace_dir_for_task(settings.adapters.workspace.root_dir, task.id)),
+                    "timeout_seconds": settings.adapters.coding_agent.timeout_seconds,
+                },
+                expected_output="Coding-agent output, workspace state, status, or limit state.",
+            )
+        ]
+        return PlanModel(
+            objective=objective,
+            assumptions=[f"The LLM router selected explicit {provider} use."],
+            required_capabilities=[Capability.TERMINAL_RUN],
+            steps=steps,
+            success_criteria=["The requested coding-agent operation reports status, output, or limits clearly."],
+            postconditions=[
+                PlanPostcondition(
+                    type=PostconditionType.CODING_AGENT_STEP,
+                    description="The coding agent completed a step or reported a status/limit state.",
+                )
+            ],
+        )
+
+    if intent.route == IntentRoute.SCHEDULE_MANAGE:
+        policy = settings.capabilities.get(Capability.SCHEDULE_MANAGE)
+        if policy is None or not policy.enabled or not settings.scheduler.enabled:
+            return None
+        operation = intent.operation if intent.operation in {"create", "list", "pause", "resume", "delete", "run_now"} else "create"
+        tool_input: dict[str, object] = {"operation": operation, "timeout_seconds": 30}
+        if operation == "create":
+            tool_input.update(
+                {
+                    "objective": intent.scheduled_objective or objective,
+                    "cadence": intent.cadence or "daily",
+                    "timezone": settings.scheduler.default_timezone,
+                    "source_chat_id": task.metadata.get("source_chat_id"),
+                    "metadata": {
+                        "created_from_task_id": task.id,
+                        "created_from_objective": task.objective,
+                        **({"coding_provider": intent.provider} if intent.provider else {}),
+                    },
+                }
+            )
+        elif intent.schedule_id:
+            tool_input["schedule_id"] = intent.schedule_id
+        elif operation != "list":
+            return None
+        return PlanModel(
+            objective=objective,
+            assumptions=["The LLM router selected schedule management."],
+            required_capabilities=[Capability.SCHEDULE_MANAGE],
+            steps=[
+                PlanStep(
+                    title=f"{operation.replace('_', ' ').title()} schedule",
+                    description="Run the selected scheduler operation.",
+                    required_capabilities=[Capability.SCHEDULE_MANAGE],
+                    risk_level=RiskLevel.MEDIUM,
+                    requires_approval=policy.requires_approval,
+                    tool_name="schedule.manage",
+                    tool_input=tool_input,
+                    expected_output="Schedule operation result.",
+                )
+            ],
+            success_criteria=["The schedule operation returns a clear state."],
+            postconditions=[
+                PlanPostcondition(
+                    type=PostconditionType.SCHEDULE_CREATED,
+                    description="A schedule ID and next run timestamp are reported.",
+                    required=operation == "create",
+                )
+            ],
+        )
+
+    if intent.route == IntentRoute.ADAPTER_FACTORY:
+        return _build_adapter_factory_intent_plan(settings, task, intent, objective)
+
+    if intent.route == IntentRoute.WORKSPACE_MANAGE:
+        return _build_workspace_intent_plan(settings, task, intent, objective)
+
+    return None
+
+
+def _task_intent(task: TaskRecord) -> OrchestrationIntent | None:
+    raw = task.metadata.get("orchestration_intent") or task.metadata.get("intent")
+    if not raw:
+        return None
+    try:
+        return OrchestrationIntent.model_validate(raw)
+    except Exception:
+        return None
+
+
+def _intent_delivery_step(
+    settings: AppSettings,
+    objective: str,
+    operation: str,
+    *,
+    screenshot: bool = False,
+    artifact_type: str | None = None,
+) -> PlanStep:
+    policy = settings.capabilities.get(Capability.TELEGRAM_SEND)
+    return PlanStep(
+        title="Deliver task artifact to Telegram",
+        description="Send the current-task artifact requested by the LLM route back to the source Telegram chat.",
+        required_capabilities=[Capability.TELEGRAM_SEND],
+        risk_level=RiskLevel.LOW,
+        requires_approval=bool(policy and policy.requires_approval),
+        tool_name="artifact.deliver",
+        tool_input={
+            "operation": "send_screenshot" if screenshot else operation,
+            "caption": f"Result for: {objective[:180]}",
+            **({"artifact_type": artifact_type} if artifact_type else {}),
+            "timeout_seconds": 60,
+        },
+        expected_output="Telegram delivery result for the requested artifact.",
+    )
+
+
+def _build_adapter_factory_intent_plan(
+    settings: AppSettings,
+    task: TaskRecord,
+    intent: OrchestrationIntent,
+    objective: str,
+) -> PlanModel | None:
+    if not settings.adapters.adapter_factory.enabled:
+        return None
+    policy = settings.capabilities.get(Capability.FILESYSTEM_WRITE)
+    if policy is None or not policy.enabled:
+        return None
+    return PlanModel(
+        objective=objective,
+        assumptions=["The LLM router selected adapter factory work."],
+        required_capabilities=[Capability.FILESYSTEM_WRITE],
+        steps=[
+            PlanStep(
+                title="Scaffold generated adapter proposal",
+                description="Create a reviewable adapter/tool proposal.",
+                required_capabilities=[Capability.FILESYSTEM_WRITE],
+                risk_level=RiskLevel.HIGH,
+                requires_approval=policy.requires_approval,
+                tool_name="adapter.factory",
+                tool_input={
+                    "operation": intent.operation if intent.operation in {"assess", "scaffold"} else "scaffold",
+                    "objective": objective,
+                    "scope_target": settings.adapters.adapter_factory.root_dir,
+                    "timeout_seconds": 30,
+                },
+                expected_output="A generated adapter proposal directory or assessment.",
+            )
+        ],
+        success_criteria=["A reviewable adapter proposal or assessment exists."],
+        postconditions=_adapter_postconditions(),
+    )
+
+
+def _build_workspace_intent_plan(
+    settings: AppSettings,
+    task: TaskRecord,
+    intent: OrchestrationIntent,
+    objective: str,
+) -> PlanModel | None:
+    if not settings.adapters.workspace.enabled:
+        return None
+    policy = settings.capabilities.get(Capability.FILESYSTEM_WRITE)
+    if policy is None or not policy.enabled:
+        return None
+    operation = intent.operation if intent.operation in {"prepare", "write_files", "materialize_static_app", "launch_static", "web_app_preview"} else "web_app_preview"
+    return PlanModel(
+        objective=objective,
+        assumptions=["The LLM router selected local workspace management."],
+        required_capabilities=[Capability.FILESYSTEM_WRITE],
+        steps=[
+            PlanStep(
+                title="Run workspace operation",
+                description="Prepare, create, or launch local workspace artifacts.",
+                required_capabilities=[Capability.FILESYSTEM_WRITE],
+                risk_level=RiskLevel.HIGH,
+                requires_approval=policy.requires_approval,
+                tool_name="workspace.manage",
+                tool_input={
+                    "operation": operation,
+                    "objective": objective,
+                    "scope_target": settings.adapters.workspace.root_dir,
+                    "web_port_start": settings.adapters.workspace.web_port_start,
+                    "open_browser": settings.adapters.workspace.open_browser,
+                    "timeout_seconds": 60,
+                },
+                expected_output="Workspace path, generated files, or preview URL.",
+            )
+        ],
+        success_criteria=["Workspace operation reports local paths and any preview URL."],
+        postconditions=_preview_postconditions() if operation in {"web_app_preview", "launch_static"} else _workspace_postconditions(),
+    )
 
 
 def build_default_vscode_development_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | None:
@@ -318,7 +975,11 @@ def _build_browser_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | 
                         risk_level=RiskLevel.CRITICAL,
                         requires_approval=control_policy.requires_approval,
                         tool_name="browser.control",
-                        tool_input={"operation": "extract_page_state", "timeout_seconds": 60},
+                        tool_input={
+                            "operation": "extract_page_state",
+                            **({"url_contains": url} if url else {}),
+                            "timeout_seconds": 60,
+                        },
                         expected_output="Detected form fields.",
                     ),
                     PlanStep(
@@ -332,12 +993,35 @@ def _build_browser_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | 
                             "operation": "fill_form_step",
                             "fields": _form_fields_from_objective(objective),
                             "submit": _objective_wants_submit(objective),
+                            **({"url_contains": url} if url else {}),
                             "timeout_seconds": 60,
                         },
                         expected_output="Filled form field state.",
                     ),
                 ]
             )
+            if _objective_wants_screenshot(objective) and url and open_enabled and open_policy is not None:
+                steps.append(
+                    PlanStep(
+                        title="Capture filled form screenshot",
+                        description="Capture the browser state after filling the form, without submitting it.",
+                        required_capabilities=[Capability.BROWSER_OPEN],
+                        risk_level=RiskLevel.LOW,
+                        requires_approval=open_policy.requires_approval,
+                        tool_name="browser.open",
+                        tool_input={
+                            "operation": "screenshot",
+                            "url_contains": url,
+                            "full_page": True,
+                            "timeout_seconds": 60,
+                        },
+                        expected_output="A screenshot of the filled form for review.",
+                    )
+                )
+                delivery_step = _artifact_delivery_step(settings, task.objective, screenshot=True)
+                if delivery_step is not None:
+                    steps.append(delivery_step)
+                    required_capabilities.append(Capability.TELEGRAM_SEND)
             return PlanModel(
                 objective=task.objective,
                 assumptions=["The request asks to fill a browser form through Chrome DevTools."],
@@ -506,11 +1190,12 @@ def _build_document_plan(settings: AppSettings, task: TaskRecord) -> PlanModel |
         ]
     elif "powerpoint" in lowered or "presentation" in lowered or "pptx" in lowered:
         operation = "update_presentation" if any(word in lowered for word in ("update", "revise", "change", "edit")) and path else "create_presentation"
+        content_source = "{{last_output}}" if provider else task.objective
         tool_input: dict[str, object] = {
             "operation": operation,
             "title": _presentation_title(task.objective),
-            "content": task.objective,
-            "instructions": task.objective,
+            "content": content_source,
+            "instructions": content_source,
             "timeout_seconds": 90,
         }
         if path:
@@ -1133,6 +1818,11 @@ def _looks_like_delivery_request(objective: str) -> bool:
     return any(phrase in lowered for phrase in ("send it", "send me", "send the", "send a", "send screenshot", "send file"))
 
 
+def _objective_wants_screenshot(objective: str) -> bool:
+    lowered = objective.lower()
+    return "screenshot" in lowered or "screen shot" in lowered
+
+
 def _looks_like_latest_output_delivery_request(objective: str) -> bool:
     lowered = objective.lower()
     return _looks_like_delivery_request(objective) and any(
@@ -1371,6 +2061,18 @@ def _looks_like_page_update_request(objective: str) -> bool:
 
 def _objective_wants_submit(objective: str) -> bool:
     lowered = objective.lower()
+    if any(
+        marker in lowered
+        for marker in (
+            "do not submit",
+            "don't submit",
+            "dont submit",
+            "without submitting",
+            "stop before submitting",
+            "pause before submitting",
+        )
+    ):
+        return False
     return "submit" in lowered or "send the form" in lowered
 
 
@@ -1378,7 +2080,15 @@ def _form_fields_from_objective(objective: str) -> dict[str, str]:
     fields: dict[str, str] = {}
     for key, value in re.findall(r"\b([A-Za-z][A-Za-z0-9 _-]{1,30})\s*=\s*([^,;\n]+)", objective):
         normalized_key = key.strip().split()[-1]
-        fields[normalized_key] = value.strip()
+        cleaned_value = re.split(
+            r"\b(?:do not submit|don't submit|dont submit|without submitting|stop before submitting|pause before submitting)\b",
+            value,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0].strip().rstrip(" ")
+        if normalized_key.lower() in {"email", "e-mail"}:
+            cleaned_value = cleaned_value.rstrip(".")
+        fields[normalized_key] = cleaned_value
     return fields
 
 

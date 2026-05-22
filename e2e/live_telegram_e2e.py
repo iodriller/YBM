@@ -79,6 +79,9 @@ async def run_cases(cases: list[dict[str, Any]], args: argparse.Namespace) -> No
             _write_case_log(log_root, result)
             results.append(result)
             completed[case["id"]] = result
+            pause_seconds = float(case.get("pause_after_seconds") or args.pause_between_seconds or 0)
+            if pause_seconds > 0:
+                await asyncio.sleep(pause_seconds)
 
     summary = _summary(results)
     _write_json(log_root / "summary.json", summary)
@@ -101,11 +104,15 @@ async def run_case(case: dict[str, Any], fixtures: "Fixtures", admin: "AdminClie
     schedule_wait_result: dict[str, Any] | None = None
 
     try:
+        spawn_timeout = min(
+            int(case.get("timeout_seconds", 300)),
+            int(case.get("spawn_timeout_seconds") or 180),
+        )
         spawn_replies = await _wait_for_task_spawn_replies(
             client,
             peer,
             sent.id,
-            timeout_seconds=min(90, case.get("timeout_seconds", 180)),
+            timeout_seconds=spawn_timeout,
         )
         telegram_replies.extend(spawn_replies)
         task_id = _extract_task_id(spawn_replies)
@@ -202,6 +209,10 @@ def _validate_case(
     if len(urls) < int(assertions.get("urls_min") or 0):
         errors.append(f"expected at least {assertions['urls_min']} URL(s), got {len(urls)}")
 
+    local_paths = _local_paths(trace)
+    if len(local_paths) < int(assertions.get("local_paths_min") or 0):
+        errors.append(f"expected at least {assertions['local_paths_min']} local path(s), got {len(local_paths)}")
+
     changed_paths = _changed_paths(metadata, outputs)
     if len(changed_paths) < int(assertions.get("changed_paths_min") or 0):
         errors.append(f"expected at least {assertions['changed_paths_min']} changed path(s), got {len(changed_paths)}")
@@ -231,6 +242,30 @@ def _validate_case(
     if min_tools and len((trace or {}).get("tool_invocations") or []) < min_tools:
         errors.append(f"expected at least {min_tools} tool invocations")
 
+    if assertions.get("plan_required") and not ((trace or {}).get("plan") or {}).get("steps"):
+        errors.append("plan_required expected a persisted plan with steps")
+
+    filled_fields_all = assertions.get("filled_fields_all") or []
+    if filled_fields_all:
+        filled = set(_filled_form_fields(outputs))
+        missing = [field for field in filled_fields_all if field not in filled]
+        if missing:
+            errors.append(f"expected filled form fields missing: {missing}; filled={sorted(filled)}")
+
+    if "form_submitted" in assertions:
+        submitted = _form_submitted(outputs)
+        expected = bool(assertions["form_submitted"])
+        if submitted is not None and submitted != expected:
+            errors.append(f"expected form_submitted={expected}, got {submitted}")
+        if submitted is None:
+            errors.append("expected form submission evidence, but no filled_fields output was found")
+
+    progress_min = int(assertions.get("progress_updates_min") or 0)
+    if progress_min:
+        progress_count = _progress_update_count(trace, replies)
+        if progress_count < progress_min:
+            errors.append(f"expected at least {progress_min} progress update(s), got {progress_count}")
+
     return {
         "ok": not errors,
         "errors": errors,
@@ -239,6 +274,7 @@ def _validate_case(
         "artifact_count": len(artifacts),
         "telegram_media_count": media_count,
         "url_count": len(urls),
+        "local_path_count": len(local_paths),
         "changed_paths": changed_paths,
     }
 
@@ -355,10 +391,22 @@ def prepare_fixtures(*, start_web_server: bool) -> Fixtures:
     (documents_folder / "budget.csv").write_text("name,amount\nsample,10\n", encoding="utf-8")
     shutil.copy2(pdf_path, documents_folder / "sample.pdf")
 
+    image_folder = fixture_root / "images"
+    if image_folder.exists():
+        shutil.rmtree(image_folder)
+    image_folder.mkdir(parents=True)
+    tiny_png = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+        "0000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
+    )
+    (image_folder / "desktop-screenshot.png").write_bytes(tiny_png)
+    (image_folder / "receipt-sample.png").write_bytes(tiny_png)
+
     values = {
         "desktop_folder": str(desktop_folder),
         "pdf_path": str(pdf_path),
         "documents_folder": str(documents_folder),
+        "image_folder": str(image_folder),
     }
     server = None
     if start_web_server:
@@ -544,6 +592,38 @@ def _changed_paths(metadata: dict[str, Any], outputs: list[dict[str, Any]]) -> l
     return sorted(set(paths))
 
 
+def _filled_form_fields(outputs: list[dict[str, Any]]) -> list[str]:
+    fields: list[str] = []
+    for output in outputs:
+        browser_state = output.get("browser_state") if isinstance(output.get("browser_state"), dict) else {}
+        filled = browser_state.get("filled_fields") if isinstance(browser_state, dict) else None
+        if isinstance(filled, dict) and isinstance(filled.get("filled"), list):
+            fields.extend(str(item) for item in filled["filled"])
+    return fields
+
+
+def _form_submitted(outputs: list[dict[str, Any]]) -> bool | None:
+    for output in outputs:
+        browser_state = output.get("browser_state") if isinstance(output.get("browser_state"), dict) else {}
+        filled = browser_state.get("filled_fields") if isinstance(browser_state, dict) else None
+        if isinstance(filled, dict) and "submitted" in filled:
+            return bool(filled["submitted"])
+    return None
+
+
+def _progress_update_count(trace: dict[str, Any] | None, replies: list[dict[str, Any]]) -> int:
+    count = 0
+    for event in (trace or {}).get("timeline") or []:
+        title = str(event.get("title") or event.get("summary") or "").lower()
+        if "progress" in title or "update" in title:
+            count += 1
+    for reply in replies:
+        text = str(reply.get("text") or "").lower()
+        if any(marker in text for marker in ("progress", "% done", "scanned", "completed", "currently")):
+            count += 1
+    return count
+
+
 def _route_decision(trace: dict[str, Any] | None) -> dict[str, Any] | None:
     for item in ((trace or {}).get("raw_audit") or []):
         payload = item.get("payload") or {}
@@ -558,9 +638,27 @@ def _plan_steps(trace: dict[str, Any] | None) -> list[dict[str, Any]]:
 
 
 def _local_paths(trace: dict[str, Any] | None) -> list[str]:
-    text = json.dumps(trace or {}, default=str)
-    paths = re.findall(r"[A-Za-z]:\\\\[^\"\\n\\r]+|[A-Za-z]:\\[^\"\\n\\r]+", text)
+    paths: list[str] = []
+    pattern = re.compile(r"[A-Za-z]:\\[^\n\r\"<>]+")
+    for text in _walk_strings(trace or {}):
+        paths.extend(pattern.findall(text))
     return sorted(set(path.rstrip(".,") for path in paths))
+
+
+def _walk_strings(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        strings: list[str] = []
+        for child in value.values():
+            strings.extend(_walk_strings(child))
+        return strings
+    if isinstance(value, list):
+        strings = []
+        for child in value:
+            strings.extend(_walk_strings(child))
+        return strings
+    return []
 
 
 def _urls(trace: dict[str, Any] | None, replies: list[dict[str, Any]]) -> list[str]:
@@ -676,6 +774,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--tag", action="append", help="Run cases with a tag. Can be supplied more than once.")
     parser.add_argument("--all", action="store_true", help="Run all cases. Guarded cases still need --include-guarded.")
     parser.add_argument("--include-guarded", action="store_true", help="Run external-agent, long, and fault-injection cases.")
+    parser.add_argument("--pause-between-seconds", type=float, default=5.0, help="Wait between live cases so asynchronous services settle.")
     parser.add_argument("--dry-run", action="store_true", help="Print resolved messages without sending Telegram messages.")
     parser.add_argument("--backend-url", default=os.getenv("AGENT_ADMIN_BACKEND_URL", "http://127.0.0.1:8765"))
     parser.add_argument("--admin-token", default=os.getenv("AGENT_ADMIN_TOKEN", ""))

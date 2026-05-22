@@ -781,14 +781,23 @@ def _fill_form_script(fields: dict[str, str], *, submit: bool, submit_selector: 
   const matches = (node, key) => {{
     const wanted = normalize(key);
     const label = node.id ? document.querySelector(`label[for="${{CSS.escape(node.id)}}"]`) : null;
+    const wrappingLabel = node.closest ? node.closest('label') : null;
     const candidates = [
       node.name,
       node.id,
       node.placeholder,
       node.getAttribute('aria-label'),
-      label ? label.innerText : ''
+      label ? label.innerText : '',
+      wrappingLabel ? wrappingLabel.innerText : ''
     ].map(normalize);
     return candidates.some((value) => value === wanted || value.includes(wanted));
+  }};
+  const setNativeValue = (node, value) => {{
+    const prototype = node.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype :
+      node.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, 'value');
+    if (descriptor && descriptor.set) descriptor.set.call(node, value);
+    else node.value = value;
   }};
   const filled = [];
   const nodes = Array.from(document.querySelectorAll('input, textarea, select'));
@@ -796,9 +805,11 @@ def _fill_form_script(fields: dict[str, str], *, submit: bool, submit_selector: 
     const node = nodes.find((item) => matches(item, key));
     if (!node) continue;
     node.focus();
-    node.value = value;
+    setNativeValue(node, value);
+    node.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: value }}));
     node.dispatchEvent(new Event('input', {{ bubbles: true }}));
     node.dispatchEvent(new Event('change', {{ bubbles: true }}));
+    node.blur();
     filled.push(key);
   }}
   if (submit) {{

@@ -18,13 +18,20 @@ def test_live_e2e_cases_cover_all_capability_requirements() -> None:
     case_ids = [case["id"] for case in cases]
     requirement_ids = [item["id"] for item in REQUIREMENT_SPECS]
 
-    assert len(case_ids) == 33
+    assert len(case_ids) == 44
     assert case_ids == requirement_ids
     assert len(case_ids) == len(set(case_ids))
 
     for case in cases:
+        assert case["number"]
         assert case["message"]
         assert case["requirement"]
+        assert case["small_test"]
+        assert case["larger_test"]
+        assert case["tools_required"]
+        assert case["expected_behavior"]
+        assert case["pass_criteria"]
+        assert case["failure_cases"]
         assert case.get("assertions")
         assert "final_status_in" in case["assertions"]
 
@@ -38,5 +45,5 @@ def test_live_e2e_runner_lists_cases_without_telethon() -> None:
         text=True,
     )
 
-    assert "desktop_observation" in result.stdout
-    assert "natural_workflow" in result.stdout
+    assert "desktop_inspection" in result.stdout
+    assert "natural_language_orchestration" in result.stdout

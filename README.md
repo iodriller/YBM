@@ -71,7 +71,7 @@ Stop the YBM background processes started by the stack script:
 Default local LLM and gateway behavior:
 
 - Keep `OPENAI_API_KEY` saved in `.env` for fallback.
-- The active default profile is `localdeploy_gemma3_4b`, which calls LocalDeploy at `http://127.0.0.1:8000/v1` with model `gemma3_4b_ollama_safe`.
+- The active default profile is `localdeploy_gemma3_12b`, which calls LocalDeploy at `http://127.0.0.1:8000/v1` with model `gemma3_12b_ollama_safe`.
 - Non-task Telegram messages get a direct local LLM answer with concise runtime context.
 - The gateway keeps an LLM-updated per-chat memory summary plus a small recent-turn window, not the full conversation.
 - Plain `status` and `/status` return deterministic task state.

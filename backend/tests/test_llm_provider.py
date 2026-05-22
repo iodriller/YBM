@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 
+import httpx
 import pytest
+from pydantic import BaseModel
 
 from agent_control.config import LLMProfileConfig
 from agent_control.llm.providers import OpenAICompatibleProvider
@@ -96,3 +98,61 @@ async def test_openai_compatible_provider_allows_localdeploy_clamping(monkeypatc
     assert result == "ok"
     assert captured["payload"]["max_tokens"] == 4096
     assert captured["payload"]["allow_clamp"] is True
+
+
+class TinyStructuredOutput(BaseModel):
+    route: str
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_provider_retries_structured_without_response_format_on_400(monkeypatch) -> None:
+    profile = LLMProfileConfig(
+        model="gemma3_12b_ollama_safe",
+        base_url="http://127.0.0.1:8000/v1",
+        max_tokens=128,
+    )
+    provider = OpenAICompatibleProvider(profile)
+    payloads: list[dict] = []
+
+    class FakeResponse:
+        def __init__(self, status_code: int, content: str) -> None:
+            self.status_code = status_code
+            self.content = content
+            self.url = "http://127.0.0.1:8000/v1/chat/completions"
+            self.request = httpx.Request("POST", self.url)
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                response = httpx.Response(
+                    self.status_code,
+                    json={"error": {"message": "unsupported response_format json_schema"}},
+                    request=self.request,
+                )
+                raise httpx.HTTPStatusError("bad request", request=self.request, response=response)
+
+        def json(self) -> dict:
+            return {"choices": [{"message": {"content": self.content}}]}
+
+    class FakeAsyncClient:
+        def __init__(self, timeout: int) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def post(self, url: str, *, headers: dict, json: dict):
+            payloads.append(json)
+            if len(payloads) == 1:
+                return FakeResponse(400, "")
+            return FakeResponse(200, '{"route":"desktop.observe"}')
+
+    monkeypatch.setattr("agent_control.llm.providers.httpx.AsyncClient", FakeAsyncClient)
+
+    result = await provider.generate_structured("system", "user", TinyStructuredOutput)
+
+    assert result.route == "desktop.observe"
+    assert "response_format" in payloads[0]
+    assert "response_format" not in payloads[1]

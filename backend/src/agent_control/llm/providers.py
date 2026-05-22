@@ -12,6 +12,7 @@ from pydantic import BaseModel, ValidationError
 
 from agent_control.config import AppSettings, LLMProfileConfig
 from agent_control.config_sync import read_env_value
+from agent_control.prompts import render_prompt
 from agent_control.schemas import PlanModel
 
 T = TypeVar("T", bound=BaseModel)
@@ -47,17 +48,31 @@ class OpenAICompatibleProvider:
 
     async def generate_structured(self, system_prompt: str, user_prompt: str, output_model: type[T]) -> T:
         schema = output_model.model_json_schema()
-        data = await self._chat(
-            system_prompt,
-            user_prompt,
-            response_format={
-                "type": "json_schema",
-                "json_schema": {"name": output_model.__name__, "schema": schema},
-            },
-        )
+        try:
+            data = await self._chat(
+                system_prompt,
+                user_prompt,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {"name": output_model.__name__, "schema": schema},
+                },
+            )
+        except ValueError as exc:
+            if not _should_retry_structured_without_response_format(exc):
+                raise
+            fallback_prompt = render_prompt(
+                "tasks/structured_json_fallback.md",
+                user_prompt=user_prompt,
+                schema=json.dumps(schema, ensure_ascii=True),
+            )
+            data = await self._chat(
+                f"{system_prompt}\nReturn JSON only.",
+                fallback_prompt,
+                response_format=None,
+            )
         content = data["choices"][0]["message"]["content"]
         try:
-            payload = json.loads(content)
+            payload = _loads_json_object(str(content))
             return output_model.model_validate(payload)
         except (json.JSONDecodeError, ValidationError) as exc:
             raise ValueError(f"LLM structured output failed validation: {exc}") from exc
@@ -164,3 +179,30 @@ def _http_error_detail(response: httpx.Response) -> str:
         else:
             text = str(payload)
     return f"LLM request failed with HTTP {response.status_code} at {response.url}: {text}"
+
+
+def _should_retry_structured_without_response_format(exc: ValueError) -> bool:
+    message = str(exc)
+    return "HTTP 400" in message or "response_format" in message or "json_schema" in message
+
+
+def _loads_json_object(content: str) -> dict:
+    text = content.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            raise
+        payload = json.loads(text[start : end + 1])
+    if not isinstance(payload, dict):
+        raise json.JSONDecodeError("structured response was not a JSON object", text, 0)
+    return payload

@@ -4,7 +4,7 @@ from typing import Protocol
 
 from agent_control.llm.providers import LLMProvider
 from agent_control.prompts import prompt_text, render_prompt
-from agent_control.schemas import InboundMessage, MessageClassification, TaskType
+from agent_control.schemas import InboundMessage, IntentRoute, MessageClassification, OrchestrationIntent, TaskType
 
 
 CLASSIFIER_SYSTEM_PROMPT = prompt_text("base/classifier_system.md")
@@ -29,16 +29,30 @@ class LLMMessageClassifier:
                 reason="message has no text content",
             )
         try:
-            return await self.provider.generate_structured(
+            classification = await self.provider.generate_structured(
                 CLASSIFIER_SYSTEM_PROMPT,
                 _classification_prompt(message),
                 MessageClassification,
             )
+            return _normalized_classification(message, classification)
         except Exception as exc:
-            fallback = heuristic_classification(message)
-            return fallback.model_copy(
-                update={"reason": f"{fallback.reason}; LLM classifier fallback after: {exc}"}
-            )
+            try:
+                retry_prompt = render_prompt(
+                    "tasks/structured_retry.md",
+                    original_prompt=_classification_prompt(message),
+                    error=str(exc),
+                )
+                classification = await self.provider.generate_structured(
+                    CLASSIFIER_SYSTEM_PROMPT,
+                    retry_prompt,
+                    MessageClassification,
+                )
+                return _normalized_classification(message, classification)
+            except Exception as retry_exc:
+                return emergency_classification(
+                    message,
+                    f"LLM intent classifier failed after retry: {retry_exc}",
+                )
 
 
 class StaticMessageClassifier:
@@ -77,123 +91,38 @@ def classification_trace(message: InboundMessage) -> dict[str, str]:
     }
 
 
-def heuristic_classification(message: InboundMessage) -> MessageClassification:
+def _normalized_classification(message: InboundMessage, classification: MessageClassification) -> MessageClassification:
     text = (message.text or "").strip()
-    lowered = text.lower()
-    if not text:
-        return MessageClassification(
-            is_task=False,
-            task_type=TaskType.OTHER,
-            confidence=1.0,
-            reason="message has no text content",
+    intent = classification.intent
+    normalized = classification.normalized_objective
+    updates: dict[str, object] = {}
+    if classification.is_task and not normalized:
+        updates["normalized_objective"] = (intent.objective if intent and intent.objective else text) or None
+    if classification.is_task and intent is None:
+        updates["intent"] = OrchestrationIntent(
+            route=IntentRoute.UNKNOWN,
+            operation=None,
+            objective=updates.get("normalized_objective") if isinstance(updates.get("normalized_objective"), str) else text,
+            reasoning="LLM classified the message as a task but did not provide a route.",
         )
+    if intent is not None and not intent.objective and classification.is_task:
+        updates["intent"] = intent.model_copy(update={"objective": normalized or text})
+    if updates:
+        return classification.model_copy(update=updates)
+    return classification
 
-    if lowered in {"hi", "hello", "hey", "yo", "thanks", "thank you"}:
-        return MessageClassification(
-            is_task=False,
-            task_type=TaskType.OTHER,
-            confidence=0.85,
-            reason="short conversational message",
-        )
 
-    if lowered in {"status", "task status", "tasks status", "what is the status"}:
-        return MessageClassification(
-            is_task=False,
-            task_type=TaskType.STATUS_REQUEST,
-            confidence=0.9,
-            reason="status request",
-        )
-
-    if any(phrase in lowered for phrase in {"what can you do", "what are your capabilities", "help", "who are you"}):
-        return MessageClassification(
-            is_task=False,
-            task_type=TaskType.QUESTION,
-            confidence=0.85,
-            reason="capability or help question",
-        )
-
-    desktop_markers = ("my desktop", "desktop", "my screen", "screen shot", "take a screenshot", "screenshot")
-    browser_target_markers = ("browser", "chrome", "website", "web page", "webpage", "http://", "https://", "www.")
-    if any(marker in lowered for marker in desktop_markers) and not any(marker in lowered for marker in browser_target_markers):
-        return MessageClassification(
-            is_task=True,
-            task_type=TaskType.DESKTOP_OBSERVATION,
-            normalized_objective=text,
-            confidence=0.75,
-            reason="heuristic desktop observation request",
-        )
-
-    browser_markers = (
-        "open browser",
-        "open chrome",
-        "search ",
-        "google ",
-        "bing ",
-        "go to ",
-        "open http",
-        "open www.",
-        "website",
-        "web page",
-        "webpage",
-        "what tabs",
-        "current tabs",
-        "close tab",
-        "fill the form",
-        "click ",
-    )
-    if any(marker in lowered for marker in browser_markers):
-        return MessageClassification(
-            is_task=True,
-            task_type=TaskType.OTHER,
-            normalized_objective=text,
-            confidence=0.7,
-            reason="heuristic browser action request",
-        )
-
-    if any(marker in lowered for marker in ("scheduled job", "schedule ", "set up a scheduled", "every day", "every week", "every hour", "every minute")):
-        return MessageClassification(
-            is_task=True,
-            task_type=TaskType.OTHER,
-            normalized_objective=text,
-            confidence=0.75,
-            reason="heuristic scheduled task request",
-        )
-
-    task_markers = (
-        "build",
-        "create",
-        "write",
-        "implement",
-        "fix",
-        "change",
-        "update",
-        "inspect",
-        "run",
-        "generate",
-        "make",
-        "set up",
-    )
-    if any(marker in lowered for marker in task_markers):
-        task_type = TaskType.CONFIGURATION if "config" in lowered or "setting" in lowered else TaskType.DEVELOPMENT
-        return MessageClassification(
-            is_task=True,
-            task_type=task_type,
-            normalized_objective=text,
-            confidence=0.65,
-            reason="heuristic actionable task request",
-        )
-
-    if lowered.endswith("?"):
-        return MessageClassification(
-            is_task=False,
-            task_type=TaskType.QUESTION,
-            confidence=0.75,
-            reason="question",
-        )
-
+def emergency_classification(message: InboundMessage, reason: str) -> MessageClassification:
+    text = (message.text or "").strip()
     return MessageClassification(
         is_task=False,
         task_type=TaskType.OTHER,
-        confidence=0.55,
-        reason="no clear actionable task marker",
+        confidence=0.0,
+        reason=reason if text else "message has no text content",
+        intent=OrchestrationIntent(
+            route=IntentRoute.CONVERSATION,
+            operation=None,
+            objective=None,
+            reasoning="No task was spawned because the LLM router was unavailable.",
+        ),
     )
