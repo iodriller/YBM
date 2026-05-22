@@ -1,0 +1,53 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+
+ROOT = Path(__file__).resolve().parents[2]
+EXTENDED_CASES_PATH = ROOT / "e2e" / "extended_cases.json"
+RUNNER_PATH = ROOT / "e2e" / "live_telegram_e2e.py"
+
+
+def test_extended_e2e_cases_define_folder_explanation_and_code_interpreter() -> None:
+    cases = json.loads(EXTENDED_CASES_PATH.read_text(encoding="utf-8"))
+    by_id = {case["id"]: case for case in cases}
+
+    assert {
+        "code_interpreter_generate_file",
+        "code_interpreter_csv_summary",
+        "code_interpreter_markdown_report",
+        "code_interpreter_json_transform",
+    } <= set(by_id)
+
+    folder_case = by_id["folder_mixed_file_explanation"]
+    assert folder_case["message"].count("{{mixed_content_folder}}") == 1
+    assert folder_case["assertions"]["tools_all"] == ["filesystem.manage:describe_folder"]
+    assert "ocr_status" in folder_case["assertions"]["metadata_any"]
+
+    for case_id in [
+        "code_interpreter_generate_file",
+        "code_interpreter_csv_summary",
+        "code_interpreter_markdown_report",
+        "code_interpreter_json_transform",
+    ]:
+        interpreter_case = by_id[case_id]
+        assert interpreter_case["assertions"]["tools_all"] == ["code.interpreter:generate_and_run"]
+        assert "workspace_dir" in interpreter_case["assertions"]["metadata_any"]
+        assert all("{{" not in item for item in interpreter_case["assertions"].get("bot_reply_contains_any", []))
+
+
+def test_live_e2e_runner_lists_extended_cases() -> None:
+    result = subprocess.run(
+        [sys.executable, str(RUNNER_PATH), "--cases", str(EXTENDED_CASES_PATH), "--list-cases"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "folder_mixed_file_explanation" in result.stdout
+    assert "code_interpreter_generate_file" in result.stdout
+    assert "code_interpreter_csv_summary" in result.stdout

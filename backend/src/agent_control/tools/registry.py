@@ -35,6 +35,9 @@ from agent_control.tools.contracts import (
     BrowserSearchInput,
     BrowserSummarizePageInput,
     BrowserToolOutput,
+    CodeInterpreterGenerateAndRunInput,
+    CodeInterpreterOutput,
+    CodeInterpreterRunPythonInput,
     CodingAgentInput,
     CodingAgentOutput,
     CodingAssistantInput,
@@ -46,6 +49,7 @@ from agent_control.tools.contracts import (
     DocumentManageInput,
     DocumentManageOutput,
     FilesystemCollectFolderSnapshotInput,
+    FilesystemDescribeFolderInput,
     FilesystemFindByDescriptionInput,
     FilesystemOpenFileInput,
     FilesystemResolveDesktopItemInput,
@@ -73,6 +77,7 @@ from agent_control.tools.contracts import (
     WorkspaceWriteFilesInput,
     WorkspaceWriteFilesOutput,
 )
+from agent_control.tools.code_interpreter import CodeInterpreterAdapter
 from agent_control.tools.document_manage import DocumentManageAdapter
 from agent_control.tools.filesystem_manage import FilesystemManageAdapter
 from agent_control.tools.local_workspace import LocalWorkspaceAdapter
@@ -255,6 +260,7 @@ def build_tool_registry(
                 "find_by_description",
                 "open_file",
                 "collect_folder_snapshot",
+                "describe_folder",
                 "organize_plan",
                 "rename_plan",
                 "apply_manifest",
@@ -266,6 +272,7 @@ def build_tool_registry(
                 "find_by_description": FilesystemFindByDescriptionInput,
                 "open_file": FilesystemOpenFileInput,
                 "collect_folder_snapshot": FilesystemCollectFolderSnapshotInput,
+                "describe_folder": FilesystemDescribeFolderInput,
                 "organize_plan": FilesystemOrganizePlanInput,
                 "rename_plan": FilesystemRenamePlanInput,
                 "apply_manifest": FilesystemApplyManifestInput,
@@ -279,6 +286,7 @@ def build_tool_registry(
                     "find_by_description",
                     "open_file",
                     "collect_folder_snapshot",
+                    "describe_folder",
                     "organize_plan",
                     "rename_plan",
                     "apply_manifest",
@@ -289,7 +297,7 @@ def build_tool_registry(
         )
     )
     if settings.adapters.computer_use.enabled:
-        adapters["filesystem.manage"] = FilesystemManageAdapter(settings.adapters.computer_use.allowed_roots)
+        adapters["filesystem.manage"] = FilesystemManageAdapter(settings.adapters.computer_use.allowed_roots, provider=provider)  # type: ignore[arg-type]
 
     factory_enabled = _capability_enabled(settings, Capability.FILESYSTEM_WRITE) and settings.adapters.adapter_factory.enabled
     definitions.append(
@@ -313,6 +321,31 @@ def build_tool_registry(
     )
     if settings.adapters.adapter_factory.enabled:
         adapters["adapter.factory"] = AdapterFactoryAdapter(settings.adapters.adapter_factory)
+
+    code_interpreter_enabled = _capability_enabled(settings, Capability.TERMINAL_RUN) and settings.adapters.code_interpreter.enabled
+    definitions.append(
+        ToolDefinition(
+            name="code.interpreter",
+            capability=Capability.TERMINAL_RUN,
+            enabled=code_interpreter_enabled,
+            description=(
+                "generate and run bounded local Python scripts inside managed workspaces under "
+                f"{settings.adapters.code_interpreter.workspace_root}"
+            ),
+            operations=("run_python", "generate_and_run"),
+            operation_schemas={
+                "run_python": CodeInterpreterRunPythonInput,
+                "generate_and_run": CodeInterpreterGenerateAndRunInput,
+            },
+            operation_output_schemas={
+                "run_python": CodeInterpreterOutput,
+                "generate_and_run": CodeInterpreterOutput,
+            },
+            default_operation="run_python",
+        )
+    )
+    if settings.adapters.code_interpreter.enabled:
+        adapters["code.interpreter"] = CodeInterpreterAdapter(settings.adapters.code_interpreter, provider=provider)  # type: ignore[arg-type]
 
     vscode_enabled = _capability_enabled(settings, Capability.VSCODE_WRITE_FILES) and settings.adapters.vscode.enabled
     definitions.append(

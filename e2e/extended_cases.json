@@ -1,0 +1,135 @@
+[
+  {
+    "number": "EXT-1",
+    "id": "folder_mixed_file_explanation",
+    "requirement": "Explain a folder containing multiple file types by reading extractable content and OCRing images when available.",
+    "small_test": "Describe what is inside this mixed folder.",
+    "larger_test": "Inspect a folder with text, CSV, Markdown, HTML, PDF, and image files; extract content where possible; OCR images if the local vision provider supports it; and explain the files.",
+    "message": "Inspect the folder {{mixed_content_folder}}, read the contents of the files, OCR images if needed, and explain what each file is about.",
+    "setup": ["mixed_content_fixture"],
+    "tags": ["filesystem", "documents", "vision", "extended"],
+    "tools_required": ["filesystem.manage:describe_folder"],
+    "expected_behavior": "The agent uses folder description/content extraction instead of guessing from filenames only. Image OCR is attempted when a local multimodal provider is available and reported clearly when unavailable.",
+    "pass_criteria": "The response mentions real fixture content from at least text/CSV/Markdown/HTML/PDF files and records OCR status for the image.",
+    "failure_cases": [
+      "Only filenames or extensions are described.",
+      "The image content is invented when OCR is unavailable.",
+      "The folder path is lost or a stale artifact is used."
+    ],
+    "size": "medium",
+    "timeout_seconds": 600,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["filesystem.manage:describe_folder"],
+      "metadata_any": ["file_descriptions", "entries", "ocr_status", "summary"],
+      "bot_reply_contains_any": ["automation", "browser-testing", "release", "Mixed folder", "OCR"]
+    }
+  },
+  {
+    "number": "EXT-2",
+    "id": "code_interpreter_generate_file",
+    "requirement": "Use the local code interpreter to write and execute a small generated script in a managed workspace.",
+    "small_test": "Use the local code interpreter to create a small report file.",
+    "larger_test": "Ask the local LLM to generate a bounded Python script, save it in a temporary workspace, execute it, and report stdout plus created files.",
+    "message": "Use the local code interpreter to create a file named interpreter-report.txt with a two-line summary of this test, run the script, and tell me where the file is.",
+    "setup": [],
+    "tags": ["code_interpreter", "extended"],
+    "tools_required": ["code.interpreter:generate_and_run"],
+    "expected_behavior": "The orchestrator routes to code.interpreter, generates Python through the local LLM, runs it inside a managed workspace, and reports created files.",
+    "pass_criteria": "The interpreter workspace contains the generated script and interpreter-report.txt; the final reply includes the workspace path or created file.",
+    "failure_cases": [
+      "The request is routed to Codex or Copilot without being asked.",
+      "The generated code is not executed.",
+      "Files are written outside the managed interpreter workspace."
+    ],
+    "size": "medium",
+    "timeout_seconds": 600,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["code.interpreter:generate_and_run"],
+      "metadata_any": ["workspace_dir", "files_created", "stdout"],
+      "bot_reply_contains_any": ["interpreter-report", "workspace", "created"]
+    }
+  },
+  {
+    "number": "EXT-3",
+    "id": "code_interpreter_csv_summary",
+    "requirement": "Use the local code interpreter for a bounded CSV analysis/report workflow.",
+    "small_test": "Use the local code interpreter to summarize a small CSV dataset.",
+    "larger_test": "Ask the local LLM to generate Python that creates a CSV fixture, reads it, writes a JSON summary, and reports totals from stdout.",
+    "message": "Use the local code interpreter to create a small CSV with expenses for hosting 25, OCR review 45, and browser testing 120. Then run Python to calculate the total and write expense-summary.json.",
+    "setup": [],
+    "tags": ["code_interpreter", "extended"],
+    "tools_required": ["code.interpreter:generate_and_run"],
+    "expected_behavior": "The orchestrator uses code.interpreter, not Codex or Copilot, and the generated script writes a summary file in the managed interpreter workspace.",
+    "pass_criteria": "The interpreter output includes stdout and a created JSON summary file for the CSV calculation.",
+    "failure_cases": [
+      "The task is routed to Codex or Copilot.",
+      "The script is generated but not executed.",
+      "No created file evidence is recorded."
+    ],
+    "size": "medium",
+    "timeout_seconds": 600,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["code.interpreter:generate_and_run"],
+      "tools_forbidden": ["coding.agent", "vscode.copilot_terminal"],
+      "metadata_any": ["workspace_dir", "files_created", "stdout"],
+      "bot_reply_contains_any": ["expense-summary", "total", "190", "workspace"]
+    }
+  },
+  {
+    "number": "EXT-4",
+    "id": "code_interpreter_markdown_report",
+    "requirement": "Use the local code interpreter to generate a small Markdown artifact from structured inline notes.",
+    "small_test": "Use the local code interpreter to create a Markdown report.",
+    "larger_test": "Ask the local LLM to generate and run Python that converts inline bullet notes into a Markdown report in the managed workspace.",
+    "message": "Use the local code interpreter to turn these notes into a Markdown report named meeting-report.md: desktop inspection passed, browser screenshot pending, folder explanation ready.",
+    "setup": [],
+    "tags": ["code_interpreter", "extended"],
+    "tools_required": ["code.interpreter:generate_and_run"],
+    "expected_behavior": "The generated script writes a Markdown report artifact and reports the created path.",
+    "pass_criteria": "A Markdown file is created in the interpreter workspace and the reply mentions the report.",
+    "failure_cases": [
+      "Only a chat answer is returned.",
+      "The report is not written to disk.",
+      "The task uses an external coding assistant unnecessarily."
+    ],
+    "size": "medium",
+    "timeout_seconds": 600,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["code.interpreter:generate_and_run"],
+      "tools_forbidden": ["coding.agent", "vscode.copilot_terminal"],
+      "metadata_any": ["workspace_dir", "files_created", "stdout"],
+      "bot_reply_contains_any": ["meeting-report", "Markdown", "workspace", "created"]
+    }
+  },
+  {
+    "number": "EXT-5",
+    "id": "code_interpreter_json_transform",
+    "requirement": "Use the local code interpreter for a small JSON transformation instead of a hard-coded adapter.",
+    "small_test": "Use the local code interpreter to normalize JSON data.",
+    "larger_test": "Ask the local LLM to generate and run Python that normalizes inline task data into a JSON file and prints a concise summary.",
+    "message": "Use the local code interpreter to normalize this task list into tasks-normalized.json: task A priority high owner Oney; task B priority low owner Agent; task C priority medium owner Oney.",
+    "setup": [],
+    "tags": ["code_interpreter", "extended"],
+    "tools_required": ["code.interpreter:generate_and_run"],
+    "expected_behavior": "The orchestrator treats this as bounded local data transformation and uses code.interpreter.",
+    "pass_criteria": "The interpreter creates a normalized JSON file and reports stdout/workspace evidence.",
+    "failure_cases": [
+      "The route falls back to a generic conversation answer.",
+      "The JSON output is not created.",
+      "The script writes outside the interpreter workspace."
+    ],
+    "size": "medium",
+    "timeout_seconds": 600,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["code.interpreter:generate_and_run"],
+      "tools_forbidden": ["coding.agent", "vscode.copilot_terminal"],
+      "metadata_any": ["workspace_dir", "files_created", "stdout"],
+      "bot_reply_contains_any": ["tasks-normalized", "Oney", "workspace", "created"]
+    }
+  }
+]

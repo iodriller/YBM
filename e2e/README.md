@@ -53,10 +53,22 @@ List cases:
 python e2e/live_telegram_e2e.py --list-cases
 ```
 
+List extended development cases:
+
+```powershell
+python e2e/live_telegram_e2e.py --cases e2e/extended_cases.json --list-cases
+```
+
 Dry-run resolved messages:
 
 ```powershell
 .\scripts\run_live_e2e.ps1 -Case desktop_observation -DryRun
+```
+
+Dry-run an extended case:
+
+```powershell
+python e2e/live_telegram_e2e.py --cases e2e/extended_cases.json --case folder_mixed_file_explanation --dry-run
 ```
 
 Run a safe real case:

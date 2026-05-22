@@ -120,6 +120,7 @@ class IntentRoute(StrEnum):
     FILESYSTEM_MANAGE = "filesystem.manage"
     DOCUMENT_MANAGE = "document.manage"
     ARTIFACT_DELIVERY = "artifact.deliver"
+    CODE_INTERPRETER = "code.interpreter"
     CODING_AGENT = "coding.agent"
     SCHEDULE_MANAGE = "schedule.manage"
     ADAPTER_FACTORY = "adapter.factory"
@@ -309,9 +310,14 @@ class OrchestrationIntent(StrictBaseModel):
             "filesystem.search": IntentRoute.FILESYSTEM_MANAGE,
             "filesystem.organize": IntentRoute.FILESYSTEM_MANAGE,
             "filesystem.rename": IntentRoute.FILESYSTEM_MANAGE,
+            "filesystem.describe": IntentRoute.FILESYSTEM_MANAGE,
             "document.pdf": IntentRoute.DOCUMENT_MANAGE,
             "document.presentation": IntentRoute.DOCUMENT_MANAGE,
             "desktop.screenshot": IntentRoute.DESKTOP_OBSERVE,
+            "python": IntentRoute.CODE_INTERPRETER,
+            "python.run": IntentRoute.CODE_INTERPRETER,
+            "code.run": IntentRoute.CODE_INTERPRETER,
+            "code_interpreter": IntentRoute.CODE_INTERPRETER,
             "coding.codex": IntentRoute.CODING_AGENT,
             "coding.copilot": IntentRoute.CODING_AGENT,
         }
@@ -362,10 +368,15 @@ class MessageClassification(StrictBaseModel):
             "filesystem.search": TaskType.OTHER,
             "filesystem.organize": TaskType.OTHER,
             "filesystem.rename": TaskType.OTHER,
+            "filesystem.describe": TaskType.OTHER,
             "document.manage": TaskType.OTHER,
             "document.pdf": TaskType.OTHER,
             "document.presentation": TaskType.OTHER,
             "artifact.deliver": TaskType.OTHER,
+            "code.interpreter": TaskType.OTHER,
+            "code_interpreter": TaskType.OTHER,
+            "python": TaskType.OTHER,
+            "python.run": TaskType.OTHER,
             "coding.agent": TaskType.DEVELOPMENT,
             "coding.codex": TaskType.DEVELOPMENT,
             "coding.copilot": TaskType.DEVELOPMENT,

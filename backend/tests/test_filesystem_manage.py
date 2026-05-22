@@ -1,11 +1,26 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TypeVar
 
 import pytest
+from pydantic import BaseModel
 
 from agent_control.schemas import Capability, ToolCallRequest
 from agent_control.tools.filesystem_manage import FilesystemManageAdapter
+
+T = TypeVar("T", bound=BaseModel)
+
+
+class FakeVisionProvider:
+    async def generate_text(self, system_prompt: str, user_prompt: str) -> str:
+        return ""
+
+    async def generate_multimodal_text(self, system_prompt: str, user_prompt: str, image_paths: list[str]) -> str:
+        return "Visible text: OCR SAMPLE. The image looks like a small document screenshot."
+
+    async def generate_structured(self, system_prompt: str, user_prompt: str, output_model: type[T]) -> T:
+        raise AssertionError("structured generation is not used")
 
 
 def _request(root: Path, operation: str, **payload):
@@ -66,6 +81,35 @@ async def test_filesystem_manage_rename_plan_and_apply(tmp_path) -> None:
     assert "Renamed 1 file(s)" in apply_result.output["summary"]
     assert apply_result.output["rename_manifest"][0]["before"] == "untitled.txt"
     assert not source.exists()
+
+
+@pytest.mark.asyncio
+async def test_filesystem_manage_describe_folder_extracts_file_content_and_image_ocr(tmp_path) -> None:
+    root = tmp_path / "mixed"
+    root.mkdir()
+    (root / "project_notes.txt").write_text("Alpha project notes about desktop automation.", encoding="utf-8")
+    (root / "budget.csv").write_text("name,amount\nhosting,25\n", encoding="utf-8")
+    image = root / "ocr-note.png"
+    try:
+        from PIL import Image, ImageDraw
+
+        canvas = Image.new("RGB", (240, 80), color="white")
+        draw = ImageDraw.Draw(canvas)
+        draw.text((12, 28), "OCR SAMPLE", fill="black")
+        canvas.save(image)
+    except Exception:
+        image.write_bytes(b"not a real image")
+    adapter = FilesystemManageAdapter([str(tmp_path)], provider=FakeVisionProvider())
+
+    result = await adapter.execute(_request(root, "describe_folder", include_ocr=True))
+
+    assert result.status.value == "succeeded"
+    descriptions = {Path(item["path"]).name: item for item in result.output["file_descriptions"]}
+    assert "desktop automation" in descriptions["project_notes.txt"]["content_preview"]
+    assert "hosting" in descriptions["budget.csv"]["content_preview"]
+    assert descriptions["ocr-note.png"]["ocr_status"] == "completed"
+    assert "OCR SAMPLE" in descriptions["ocr-note.png"]["ocr_text"]
+    assert "Described 3 file(s)" in result.output["summary"]
 
 
 @pytest.mark.asyncio

@@ -163,6 +163,54 @@ class CodingAgentAdapterConfig(StrictBaseModel):
     usage_limit_patterns: list[str] = Field(default_factory=lambda: ["usage limit", "quota exceeded", "limit reached"])
 
 
+class CodeInterpreterAdapterConfig(StrictBaseModel):
+    enabled: bool = True
+    workspace_root: str = ".agent_control/code_interpreter"
+    timeout_seconds: int = Field(default=60, ge=1, le=900)
+    max_code_chars: int = Field(default=20000, ge=100, le=200000)
+    max_output_chars: int = Field(default=12000, ge=100, le=100000)
+    max_files_listed: int = Field(default=200, ge=1, le=5000)
+    python_executable: str | None = None
+    allowed_imports: list[str] = Field(
+        default_factory=lambda: [
+            "base64",
+            "collections",
+            "csv",
+            "datetime",
+            "decimal",
+            "functools",
+            "hashlib",
+            "html",
+            "itertools",
+            "json",
+            "math",
+            "pathlib",
+            "random",
+            "re",
+            "statistics",
+            "string",
+            "textwrap",
+            "typing",
+            "xml",
+            "zipfile",
+        ]
+    )
+    blocked_imports: list[str] = Field(
+        default_factory=lambda: [
+            "ctypes",
+            "httpx",
+            "os",
+            "pip",
+            "requests",
+            "shutil",
+            "socket",
+            "subprocess",
+            "sys",
+            "urllib",
+        ]
+    )
+
+
 class DesktopAdapterConfig(StrictBaseModel):
     screenshot_enabled: bool = False
     control_enabled: bool = False
@@ -220,6 +268,7 @@ class AdaptersConfig(StrictBaseModel):
     terminal: TerminalAdapterConfig = Field(default_factory=TerminalAdapterConfig)
     coding_assistant: CodingAssistantAdapterConfig = Field(default_factory=CodingAssistantAdapterConfig)
     coding_agent: CodingAgentAdapterConfig = Field(default_factory=CodingAgentAdapterConfig)
+    code_interpreter: CodeInterpreterAdapterConfig = Field(default_factory=CodeInterpreterAdapterConfig)
     desktop: DesktopAdapterConfig = Field(default_factory=DesktopAdapterConfig)
     computer_use: ComputerUseAdapterConfig = Field(default_factory=ComputerUseAdapterConfig)
     artifact_delivery: ArtifactDeliveryAdapterConfig = Field(default_factory=ArtifactDeliveryAdapterConfig)

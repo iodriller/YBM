@@ -206,6 +206,30 @@ def test_intent_routes_filesystem_inspect_alias_as_read_only_operation(tmp_path)
     assert plan.steps[0].tool_input["root"] == str(target)
 
 
+def test_intent_routes_filesystem_describe_folder_to_content_extraction(tmp_path) -> None:
+    target = tmp_path / "mixed"
+    target.mkdir()
+
+    plan = build_default_task_plan(
+        _settings(tmp_path),
+        _task(
+            "handle folder explanation",
+            OrchestrationIntent(
+                route=IntentRoute.FILESYSTEM_MANAGE,
+                operation="describe_folder",
+                objective="Explain what the files in this folder contain.",
+                reasoning="The LLM selected folder description.",
+                folder_path=str(target),
+            ),
+        ),
+    )
+
+    assert plan is not None
+    assert [step.tool_name for step in plan.steps] == ["filesystem.manage"]
+    assert plan.steps[0].tool_input["operation"] == "describe_folder"
+    assert plan.steps[0].tool_input["include_ocr"] is True
+
+
 def test_intent_routes_pdf_summary_from_folder_to_search_then_document(tmp_path) -> None:
     target = tmp_path / "desktop_folder"
     target.mkdir()

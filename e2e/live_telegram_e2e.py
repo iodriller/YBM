@@ -556,6 +556,25 @@ def prepare_fixtures(*, start_web_server: bool) -> Fixtures:
     (documents_folder / "budget.csv").write_text("name,amount\nsample,10\n", encoding="utf-8")
     shutil.copy2(pdf_path, documents_folder / "sample.pdf")
 
+    mixed_content_folder = fixture_root / "mixed_content"
+    if mixed_content_folder.exists():
+        shutil.rmtree(mixed_content_folder)
+    mixed_content_folder.mkdir(parents=True)
+    (mixed_content_folder / "automation-notes.txt").write_text(
+        "Alpha automation notes. This text file describes desktop inspection and folder summaries.",
+        encoding="utf-8",
+    )
+    (mixed_content_folder / "budget-data.csv").write_text("category,amount\nbrowser-testing,120\nocr-review,45\n", encoding="utf-8")
+    (mixed_content_folder / "release-summary.md").write_text(
+        "# Release Summary\n\nThe folder contains notes, budget data, a PDF, an HTML page, and an image fixture.",
+        encoding="utf-8",
+    )
+    (mixed_content_folder / "landing-page.html").write_text(
+        "<html><body><h1>Fixture Page</h1><p>This HTML file is part of the mixed content folder.</p></body></html>",
+        encoding="utf-8",
+    )
+    _write_minimal_pdf(mixed_content_folder / "mixed-folder-summary.pdf", "Mixed folder PDF. It covers OCR, documents, and local file explanation.")
+
     image_folder = fixture_root / "images"
     if image_folder.exists():
         shutil.rmtree(image_folder)
@@ -566,6 +585,15 @@ def prepare_fixtures(*, start_web_server: bool) -> Fixtures:
     )
     (image_folder / "desktop-screenshot.png").write_bytes(tiny_png)
     (image_folder / "receipt-sample.png").write_bytes(tiny_png)
+    try:
+        from PIL import Image, ImageDraw
+
+        ocr_image = Image.new("RGB", (320, 100), color="white")
+        draw = ImageDraw.Draw(ocr_image)
+        draw.text((16, 38), "OCR SAMPLE TEXT", fill="black")
+        ocr_image.save(mixed_content_folder / "ocr-sample.png")
+    except Exception:
+        (mixed_content_folder / "ocr-sample.png").write_bytes(tiny_png)
     voice_ogg_path = fixture_root / "voice-command.ogg"
     voice_ogg_path.write_bytes(_fake_ogg_voice_bytes())
 
@@ -573,6 +601,7 @@ def prepare_fixtures(*, start_web_server: bool) -> Fixtures:
         "desktop_folder": str(desktop_folder),
         "pdf_path": str(pdf_path),
         "documents_folder": str(documents_folder),
+        "mixed_content_folder": str(mixed_content_folder),
         "image_folder": str(image_folder),
         "voice_ogg_path": str(voice_ogg_path),
     }

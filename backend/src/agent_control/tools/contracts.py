@@ -346,6 +346,15 @@ class FilesystemCollectFolderSnapshotInput(ToolInputModel):
     max_entries: int = Field(default=200, ge=1, le=5000)
 
 
+class FilesystemDescribeFolderInput(ToolInputModel):
+    operation: Literal["describe_folder"] = "describe_folder"
+    root: str = Field(min_length=1)
+    recursive: bool = False
+    include_ocr: bool = True
+    max_files: int = Field(default=50, ge=1, le=500)
+    max_chars_per_file: int = Field(default=4000, ge=100, le=50000)
+
+
 class FilesystemOrganizePlanInput(ToolInputModel):
     operation: Literal["organize_plan"] = "organize_plan"
     root: str = Field(min_length=1)
@@ -401,6 +410,36 @@ class WorkspaceLaunchStaticOutput(WorkspacePrepareOutput):
 
 class WorkspaceWebAppPreviewOutput(WorkspaceLaunchStaticOutput):
     pass
+
+
+class CodeInterpreterRunPythonInput(ToolInputModel):
+    operation: Literal["run_python"] = "run_python"
+    code: str = Field(min_length=1)
+    objective: str | None = None
+    workspace_dir: str | None = None
+    script_name: str = "script.py"
+
+
+class CodeInterpreterGenerateAndRunInput(ToolInputModel):
+    operation: Literal["generate_and_run"] = "generate_and_run"
+    objective: str = Field(min_length=1)
+    context: str | None = None
+    workspace_dir: str | None = None
+    script_name: str = "script.py"
+
+
+class CodeInterpreterOutput(ToolOutputModel):
+    operation: str = Field(min_length=1)
+    workspace_dir: str = Field(min_length=1)
+    script_path: str | None = None
+    files_before: list[str] = Field(default_factory=list)
+    files_after: list[str] = Field(default_factory=list)
+    files_created: list[str] = Field(default_factory=list)
+    stdout: str = ""
+    stderr: str = ""
+    returncode: int | None = None
+    summary: str | None = None
+    generated: bool = False
 
 
 class AdapterFactoryAssessOutput(ToolOutputModel):

@@ -30,6 +30,7 @@ def case(
     pause_after_seconds: float | None = None,
     post_wait_schedule_seconds: int | None = None,
     input_kind: str | None = None,
+    follow_ups: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "number": number,
@@ -56,6 +57,8 @@ def case(
         payload["post_wait_schedule_seconds"] = post_wait_schedule_seconds
     if input_kind is not None:
         payload["input_kind"] = input_kind
+    if follow_ups:
+        payload["follow_ups"] = follow_ups
     return payload
 
 
@@ -174,6 +177,15 @@ CASES = [
             "changed_paths_min": 1,
             "bot_reply_contains_any": ["moved", "changed", "organized"],
         },
+        follow_ups=[
+            {
+                "id": "case_6_folder_full_list",
+                "message": "What is in that folder? Give me the full list.",
+                "assertions": {
+                    "bot_reply_contains_any": ["notes", "budget", "sample", "documents", "spreadsheets"],
+                },
+            }
+        ],
     ),
     case(
         7,

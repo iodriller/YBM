@@ -1,4 +1,5 @@
 from agent_control.tools.adapter_factory import AdapterFactoryAdapter
+from agent_control.tools.code_interpreter import CodeInterpreterAdapter
 from agent_control.tools.coding_assistant import GenericTerminalAgentAdapter
 from agent_control.tools.local_workspace import LocalWorkspaceAdapter, LocalWorkspaceWebAppAdapter
 from agent_control.tools.stt import DisabledSTTAdapter, STTAdapter, StaticSTTAdapter
@@ -14,6 +15,7 @@ from agent_control.tools.vscode_bridge import (
 
 __all__ = [
     "AdapterFactoryAdapter",
+    "CodeInterpreterAdapter",
     "DisabledSTTAdapter",
     "DisabledTTSAdapter",
     "GenericTerminalAgentAdapter",

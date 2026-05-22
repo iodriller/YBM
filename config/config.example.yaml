@@ -190,6 +190,46 @@ adapters:
     usage_limit_patterns:
       - "usage limit"
       - "quota exceeded"
+  code_interpreter:
+    enabled: true
+    workspace_root: ".agent_control/code_interpreter"
+    timeout_seconds: 60
+    max_code_chars: 20000
+    max_output_chars: 12000
+    max_files_listed: 200
+    python_executable: null
+    allowed_imports:
+      - "base64"
+      - "collections"
+      - "csv"
+      - "datetime"
+      - "decimal"
+      - "functools"
+      - "hashlib"
+      - "html"
+      - "itertools"
+      - "json"
+      - "math"
+      - "pathlib"
+      - "random"
+      - "re"
+      - "statistics"
+      - "string"
+      - "textwrap"
+      - "typing"
+      - "xml"
+      - "zipfile"
+    blocked_imports:
+      - "ctypes"
+      - "httpx"
+      - "os"
+      - "pip"
+      - "requests"
+      - "shutil"
+      - "socket"
+      - "subprocess"
+      - "sys"
+      - "urllib"
   desktop:
     screenshot_enabled: false
     control_enabled: false

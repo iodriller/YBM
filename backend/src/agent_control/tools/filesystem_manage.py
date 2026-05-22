@@ -6,14 +6,17 @@ import re
 import shutil
 from typing import Any
 
+from agent_control.llm.providers import LLMProvider
+from agent_control.prompts import prompt_text, render_prompt
 from agent_control.schemas import ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
 
 
 class FilesystemManageAdapter:
     """Scoped filesystem inspection, search, and organization tool."""
 
-    def __init__(self, allowed_roots: list[str]) -> None:
+    def __init__(self, allowed_roots: list[str], provider: LLMProvider | None = None) -> None:
         self.allowed_roots = [_resolve_root(root) for root in allowed_roots]
+        self.provider = provider
 
     async def execute(self, request: ToolCallRequest) -> ToolCallResult:
         operation = str(request.input.get("operation") or "inspect_folder")
@@ -30,6 +33,8 @@ class FilesystemManageAdapter:
                 output = self._open_file(request)
             elif operation == "collect_folder_snapshot":
                 output = self._collect_folder_snapshot(request)
+            elif operation == "describe_folder":
+                output = await self._describe_folder(request)
             elif operation == "organize_plan":
                 output = self._organize_plan(request)
             elif operation == "rename_plan":
@@ -155,6 +160,77 @@ class FilesystemManageAdapter:
 
     def _collect_folder_snapshot(self, request: ToolCallRequest) -> dict[str, Any]:
         return self._inspect_folder(request)
+
+    async def _describe_folder(self, request: ToolCallRequest) -> dict[str, Any]:
+        root = self._safe_path(str(request.input["root"]))
+        if not root.exists() or not root.is_dir():
+            raise ValueError(f"folder does not exist: {root}")
+        recursive = bool(request.input.get("recursive", False))
+        include_ocr = bool(request.input.get("include_ocr", True))
+        max_files = int(request.input.get("max_files") or 50)
+        max_chars = int(request.input.get("max_chars_per_file") or 4000)
+        iterator = root.rglob("*") if recursive else root.iterdir()
+        files: list[dict[str, Any]] = []
+        for path in iterator:
+            if len(files) >= max_files:
+                break
+            if not path.is_file():
+                continue
+            item = _entry(root, path)
+            item["kind"] = _type_bucket(path)
+            item["extension"] = path.suffix.lower()
+            text = _extract_supported_text(path, max_chars=max_chars)
+            if text:
+                item["content_preview"] = _compact_text(text, limit=1200)
+                item["content_summary"] = _simple_summary(text)
+                item["extracted_text_chars"] = len(text)
+            elif _is_image_file(path):
+                item.update(await self._image_description(path, include_ocr=include_ocr))
+            else:
+                item["content_summary"] = "No supported text extraction is available for this file type."
+            files.append(item)
+        readable = sum(1 for item in files if item.get("content_preview") or item.get("ocr_text"))
+        images = sum(1 for item in files if item.get("kind") == "images")
+        return {
+            "root": str(root),
+            "entries": files,
+            "file_descriptions": files,
+            "summary": (
+                f"Described {len(files)} file(s) under {root}. "
+                f"Extracted readable text from {readable} file(s); inspected {images} image file(s)."
+            ),
+        }
+
+    async def _image_description(self, path: Path, *, include_ocr: bool) -> dict[str, Any]:
+        output: dict[str, Any] = {"ocr_status": "not_requested" if not include_ocr else "unavailable"}
+        try:
+            from PIL import Image
+
+            with Image.open(path) as image:
+                output["image_size"] = {"width": image.width, "height": image.height}
+        except Exception as exc:
+            output["image_error"] = str(exc)
+        if not include_ocr:
+            output["content_summary"] = "Image OCR was not requested."
+            return output
+        if self.provider is None:
+            output["content_summary"] = "Image OCR needs a local multimodal provider; none is configured for filesystem.manage."
+            return output
+        try:
+            description = await self.provider.generate_multimodal_text(
+                prompt_text("base/folder_image_ocr_system.md"),
+                render_prompt("tasks/folder_image_ocr_user.md", file_name=path.name),
+                [str(path)],
+            )
+        except Exception as exc:
+            output["ocr_status"] = "failed"
+            output["ocr_error"] = str(exc)
+            output["content_summary"] = "Image OCR failed; no visual content was inferred."
+            return output
+        output["ocr_status"] = "completed"
+        output["ocr_text"] = _compact_text(description, limit=1200)
+        output["content_summary"] = _simple_summary(description)
+        return output
 
     def _organize_plan(self, request: ToolCallRequest) -> dict[str, Any]:
         root = self._safe_path(str(request.input["root"]))
@@ -423,6 +499,43 @@ def _dedupe_destination(path: Path) -> Path:
 
 def _is_text_file(path: Path) -> bool:
     return path.suffix.lower() in {".txt", ".md", ".py", ".js", ".ts", ".html", ".css", ".json", ".yaml", ".yml", ".csv"}
+
+
+def _is_image_file(path: Path) -> bool:
+    return path.suffix.lower() in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
+
+
+def _extract_supported_text(path: Path, *, max_chars: int) -> str:
+    suffix = path.suffix.lower()
+    if _is_text_file(path):
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        if suffix in {".html", ".htm"}:
+            text = re.sub(r"<script\b.*?</script>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+            text = re.sub(r"<style\b.*?</style>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+            text = re.sub(r"<[^>]+>", " ", text)
+        return _compact_text(text, limit=max_chars)
+    if suffix == ".pdf":
+        try:
+            from pypdf import PdfReader
+
+            reader = PdfReader(str(path))
+            text = "\n\n".join((page.extract_text() or "").strip() for page in reader.pages).strip()
+            return _compact_text(text, limit=max_chars)
+        except Exception:
+            return _compact_text(path.read_bytes().decode("utf-8", errors="ignore"), limit=max_chars)
+    return ""
+
+
+def _compact_text(text: str, *, limit: int) -> str:
+    return re.sub(r"\s+", " ", text).strip()[:limit]
+
+
+def _simple_summary(text: str) -> str:
+    cleaned = _compact_text(text, limit=2000)
+    if not cleaned:
+        return "No readable content was extracted."
+    sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+    return " ".join(sentences[:3]).strip()[:1000] or cleaned[:1000]
 
 
 def _terminal_output(operation: str, output: dict[str, Any]) -> dict[str, Any]:

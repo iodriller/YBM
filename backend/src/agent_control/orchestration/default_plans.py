@@ -225,6 +225,25 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
                     expected_output="Folder entries and summary.",
                 )
             ]
+        elif operation == "describe_folder":
+            steps = [
+                PlanStep(
+                    title="Describe folder contents",
+                    description="Inspect supported files, extract readable content, and summarize what the folder contains.",
+                    required_capabilities=[Capability.FILESYSTEM_WRITE],
+                    risk_level=RiskLevel.HIGH,
+                    requires_approval=write_policy.requires_approval,
+                    tool_name="filesystem.manage",
+                    tool_input={
+                        "operation": "describe_folder",
+                        "root": root,
+                        "recursive": False,
+                        "include_ocr": True,
+                        "timeout_seconds": 180,
+                    },
+                    expected_output="Per-file descriptions, extracted text previews, OCR status, and folder summary.",
+                )
+            ]
         elif operation == "rename_plan":
             steps = [
                 PlanStep(
@@ -301,7 +320,7 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
             required_capabilities=[Capability.FILESYSTEM_WRITE],
             steps=steps,
             success_criteria=["The filesystem operation reports changed paths or readable results."],
-            postconditions=_file_organization_postconditions(required=operation not in {"inspect_folder", "search"}),
+            postconditions=_file_organization_postconditions(required=operation not in {"inspect_folder", "search", "describe_folder"}),
         )
 
     if intent.route == IntentRoute.BROWSER_OPEN:
@@ -651,6 +670,44 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
             ],
         )
 
+    if intent.route == IntentRoute.CODE_INTERPRETER:
+        policy = settings.capabilities.get(Capability.TERMINAL_RUN)
+        if policy is None or not policy.enabled or not settings.adapters.code_interpreter.enabled:
+            return None
+        operation = intent.operation if intent.operation in {"run_python", "generate_and_run"} else "generate_and_run"
+        tool_input: dict[str, object] = {
+            "operation": operation,
+            "objective": objective,
+            "workspace_dir": str(workspace_dir_for_task(settings.adapters.code_interpreter.workspace_root, task.id)),
+            "timeout_seconds": settings.adapters.code_interpreter.timeout_seconds,
+        }
+        if operation == "run_python":
+            tool_input["code"] = intent.query or intent.objective or objective
+        return PlanModel(
+            objective=objective,
+            assumptions=["The LLM router selected bounded local Python code interpretation."],
+            required_capabilities=[Capability.TERMINAL_RUN],
+            steps=[
+                PlanStep(
+                    title="Run local code interpreter",
+                    description="Generate and execute a small Python script inside a managed task workspace.",
+                    required_capabilities=[Capability.TERMINAL_RUN],
+                    risk_level=RiskLevel.MEDIUM,
+                    requires_approval=policy.requires_approval,
+                    tool_name="code.interpreter",
+                    tool_input=tool_input,
+                    expected_output="Interpreter stdout, stderr, changed files, and workspace path.",
+                )
+            ],
+            success_criteria=["The code interpreter produces a clear result or reports execution errors."],
+            postconditions=[
+                PlanPostcondition(
+                    type=PostconditionType.EXTERNAL_COMMAND,
+                    description="A bounded local Python script executed and returned output.",
+                )
+            ],
+        )
+
     if intent.route == IntentRoute.CODING_AGENT:
         policy = settings.capabilities.get(Capability.TERMINAL_RUN)
         if policy is None or not policy.enabled or not settings.adapters.coding_agent.enabled:
@@ -770,6 +827,11 @@ def _filesystem_intent_operation(operation: str | None) -> str:
         "ls": "inspect_folder",
         "read_folder": "inspect_folder",
         "folder_inspection": "inspect_folder",
+        "describe": "describe_folder",
+        "explain": "describe_folder",
+        "summarize": "describe_folder",
+        "summarize_folder": "describe_folder",
+        "folder_description": "describe_folder",
         "find": "search",
         "lookup": "search",
         "organize": "organize_plan",
@@ -780,7 +842,7 @@ def _filesystem_intent_operation(operation: str | None) -> str:
         "apply": "apply_manifest",
     }
     normalized = aliases.get(normalized, normalized)
-    if normalized in {"inspect_folder", "search", "organize_plan", "rename_plan", "apply_manifest"}:
+    if normalized in {"inspect_folder", "search", "describe_folder", "organize_plan", "rename_plan", "apply_manifest"}:
         return normalized
     return "organize_plan"
 

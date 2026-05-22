@@ -263,7 +263,22 @@
         "changed",
         "organized"
       ]
-    }
+    },
+    "follow_ups": [
+      {
+        "id": "case_6_folder_full_list",
+        "message": "What is in that folder? Give me the full list.",
+        "assertions": {
+          "bot_reply_contains_any": [
+            "notes",
+            "budget",
+            "sample",
+            "documents",
+            "spreadsheets"
+          ]
+        }
+      }
+    ]
   },
   {
     "number": 7,
