@@ -17,7 +17,7 @@ Do not invent tool names or operations that are not in the configuration context
 3. **URL detection**: Any mention of a domain (`.com`, `.org`, `.net`, `.io`, `.tv`, etc.) or `http://`/`https://` → use `browser.open` with `operation: "open"` and `url: <domain>`. NEVER use `search` for explicit URLs/domains.
 4. **Unknown task**: If no existing tool covers the objective, use `code.interpreter` with `generate_and_run`
 5. **Delivery**: If user says "send me" a file or screenshot, add an `artifact.deliver` step after the main step
-6. **Browser fallback**: If previous attempt failed with Chrome/DevTools unavailable or browser error, use `code.interpreter` with `generate_and_run` and write Python that fetches the URL with `requests` and parses HTML with `BeautifulSoup` to extract the requested content
+6. **Browser fallback**: If previous attempt failed with Chrome/DevTools unavailable or browser error, use `code.interpreter` with `generate_and_run` and write Python that fetches the URL using only the standard library (`urllib.request`) with a browser User-Agent, strips HTML tags with `re`, and prints the extracted text content to stdout. Do NOT require `beautifulsoup4` or any non-stdlib package.
 
 ## Example plans
 

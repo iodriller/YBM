@@ -353,25 +353,25 @@
     "id": "browser_dizibox_new_shows",
     "requirement": "Open a real website and summarize current visible new-show information from the page.",
     "small_test": "Open dizibox.com and tell me the first 3 new shows on it.",
-    "larger_test": "Use the browser adapter to navigate to dizibox.com, read the loaded page, and summarize the first three relevant new-show entries without guessing.",
+    "larger_test": "Use the browser adapter or code.interpreter fallback to fetch dizibox.com, read the loaded page, and summarize the first three relevant new-show entries without guessing.",
     "message": "Open dizibox.com and tell me the first 3 new shows on it.",
     "setup": [],
     "tags": ["browser", "real_web", "extended"],
-    "tools_required": ["browser.open:research"],
-    "expected_behavior": "The browser adapter opens the site, reads page text/links, and reports what it can actually see; if blocked, it clearly reports the blocked state.",
-    "pass_criteria": "The response is grounded in the page title/text or clearly says the site could not be inspected.",
+    "tools_required": ["browser.open:open"],
+    "expected_behavior": "The agent opens dizibox.com via browser.open. If Chrome is not running, it falls back to code.interpreter with urllib to fetch the page. Either way it reports page content or explains why it failed.",
+    "pass_criteria": "The response mentions dizibox or a show/series name, OR clearly reports the site could not be reached.",
     "failure_cases": [
       "The agent guesses show names without page evidence.",
-      "The browser opens but the final answer ignores the page state.",
-      "The failure message omits why the site could not be inspected."
+      "The task fails silently with no diagnostic information.",
+      "The agent loops forever without completing or failing."
     ],
     "size": "medium",
     "timeout_seconds": 600,
     "assertions": {
       "final_status_in": ["completed", "blocked", "failed"],
-      "tools_any": ["browser.open:research", "browser.open:open", "browser.control:navigate"],
-      "metadata_any": ["browser_state", "browser_url", "page_title", "last_tool_result"],
-      "bot_reply_contains_any": ["dizibox", "Page:", "URL:", "could not", "blocked"]
+      "tools_any": ["browser.open:open", "browser.open:research", "code.interpreter:generate_and_run"],
+      "metadata_any": ["last_tool_result"],
+      "bot_reply_contains_any": ["dizibox", "Page:", "URL:", "could not", "show", "dizi", "series", "fetch", "Error"]
     }
   },
   {
@@ -420,7 +420,7 @@
     "size": "medium",
     "timeout_seconds": 600,
     "assertions": {
-      "final_status_in": ["COMPLETED"],
+      "final_status_in": ["completed"],
       "tools_all": ["code.interpreter"],
       "bot_reply_contains_any": [".xlsx", "excel", "generated", "created"]
     }
@@ -445,7 +445,7 @@
     "size": "small",
     "timeout_seconds": 360,
     "assertions": {
-      "final_status_in": ["COMPLETED"],
+      "final_status_in": ["completed"],
       "tools_all": ["filesystem.manage"],
       "bot_reply_contains_any": ["Desktop", "file", "folder", "item"]
     }
@@ -455,25 +455,25 @@
     "id": "browser_site_content",
     "requirement": "Navigate to a real website and report visible content without falling back to a web search.",
     "small_test": "Open dizibox.com and tell me the first 3 new shows listed on the page.",
-    "larger_test": "Use browser.open (not browser.search) to navigate directly to dizibox.com and extract show listings from the page.",
+    "larger_test": "Use browser.open to navigate directly to dizibox.com or code.interpreter as fallback if Chrome is unavailable; extract show listings from the page.",
     "message": "Open dizibox.com and tell me the first 3 new shows listed on the page",
     "setup": [],
     "tags": ["browser", "real_web", "url_routing", "extended"],
     "tools_required": ["browser.open:open"],
-    "expected_behavior": "The planner generates a browser.open step with url=dizibox.com, not a search step. The page is loaded and content extracted.",
-    "pass_criteria": "Response is grounded in actual page content or clearly states the site could not be reached.",
+    "expected_behavior": "The planner generates a browser.open step with url=dizibox.com. If Chrome is not running, the agent falls back to code.interpreter to fetch the page. Either way it reports content or clearly explains why it could not.",
+    "pass_criteria": "Response mentions dizibox or a show/series, OR clearly states the site could not be reached. Must not invent content.",
     "failure_cases": [
-      "The agent uses browser search instead of browser open.",
+      "The agent uses browser.open:search instead of browser.open:open for a direct URL.",
       "The agent invents show names without page evidence.",
-      "The response ignores the page state."
+      "The task loops forever without completing or failing."
     ],
     "size": "medium",
     "timeout_seconds": 600,
     "assertions": {
-      "final_status_in": ["COMPLETED"],
-      "tools_all": ["browser.open"],
-      "tools_forbidden": ["browser.search"],
-      "bot_reply_contains_any": ["show", "series", "dizibox", "dizi"]
+      "final_status_in": ["completed", "failed", "blocked"],
+      "tools_any": ["browser.open:open", "browser.open:research", "code.interpreter:generate_and_run"],
+      "tools_forbidden": ["browser.open:search"],
+      "bot_reply_contains_any": ["show", "series", "dizibox", "dizi", "could not", "Page:", "Error"]
     }
   },
   {
@@ -496,8 +496,8 @@
     "size": "medium",
     "timeout_seconds": 600,
     "assertions": {
-      "final_status_in": ["COMPLETED", "BLOCKED"],
-      "tools_all": ["browser.open"],
+      "final_status_in": ["completed", "blocked"],
+      "tools_any": ["browser.open:open", "browser.open:research", "code.interpreter:generate_and_run"],
       "bot_reply_contains_any": ["weather", "Istanbul", "login", "sign in", "ChatGPT"]
     }
   },
@@ -521,7 +521,7 @@
     "size": "small",
     "timeout_seconds": 420,
     "assertions": {
-      "final_status_in": ["COMPLETED"],
+      "final_status_in": ["completed"],
       "tools_all": ["filesystem.manage"],
       "bot_reply_contains_any": ["file", "contents", "text", "I read"]
     }

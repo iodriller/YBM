@@ -97,12 +97,12 @@ def test_extended_e2e_cases_include_user_scenario_cases_ext16_to_20() -> None:
     assert "Desktop" in desktop_case["assertions"]["bot_reply_contains_any"]
 
     browser_site_case = by_id["browser_site_content"]
-    assert "browser.open" in browser_site_case["assertions"]["tools_all"]
-    assert "browser.search" in browser_site_case["assertions"]["tools_forbidden"]
+    assert any("browser.open" in t for t in browser_site_case["assertions"]["tools_any"])
+    assert "browser.open:search" in browser_site_case["assertions"]["tools_forbidden"]
     assert "dizibox" in browser_site_case["assertions"]["bot_reply_contains_any"]
 
     chatgpt_case = by_id["browser_chatgpt_interaction"]
-    assert "browser.open" in chatgpt_case["assertions"]["tools_all"]
+    assert any("browser.open" in t for t in chatgpt_case["assertions"]["tools_any"])
     assert "ChatGPT" in chatgpt_case["assertions"]["bot_reply_contains_any"]
 
     read_case = by_id["file_find_and_read"]
