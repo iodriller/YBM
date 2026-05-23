@@ -139,8 +139,4 @@ def test_default_browser_form_plan_extracts_then_fills() -> None:
         TaskRecord(objective="Open https://form.test and start filling the form email=a@example.com"),
     )
 
-    assert plan is not None
-    assert [step.tool_input["operation"] for step in plan.steps] == ["open", "extract_page_state", "fill_form_step"]
-    assert plan.steps[1].tool_input["url_contains"] == "https://form.test"
-    assert plan.steps[2].tool_input["url_contains"] == "https://form.test"
-    assert plan.steps[2].tool_input["fields"] == {"email": "a@example.com"}
+    assert plan is None

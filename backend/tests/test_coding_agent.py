@@ -190,13 +190,7 @@ def test_default_plan_routes_explicit_codex_to_coding_agent(tmp_path) -> None:
         TaskRecord(objective="Use Codex and start creating an app for mobile deployment of an LLM"),
     )
 
-    assert plan is not None
-    assert [step.tool_name for step in plan.steps] == ["coding.agent", "coding.agent"]
-    assert plan.steps[0].tool_input["provider"] == "codex"
-    assert plan.steps[0].tool_input["operation"] == "plan"
-    assert plan.steps[1].tool_input["operation"] == "run_step"
-
-
+    assert plan is None
 def test_default_plan_combines_explicit_codex_with_web_research(tmp_path) -> None:
     settings = AppSettings(
         _env_file=None,
@@ -209,7 +203,4 @@ def test_default_plan_combines_explicit_codex_with_web_research(tmp_path) -> Non
 
     plan = build_default_task_plan(settings, TaskRecord(objective="Use Codex and web search for ducks"))
 
-    assert plan is not None
-    assert [step.tool_name for step in plan.steps] == ["browser.open", "coding.agent"]
-    assert plan.steps[0].tool_input["operation"] == "research_pages"
-    assert plan.steps[1].tool_input["provider"] == "codex"
+    assert plan is None

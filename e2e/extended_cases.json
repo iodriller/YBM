@@ -399,5 +399,131 @@
       "metadata_any": ["browser_state", "browser_url", "page_title", "last_tool_result"],
       "bot_reply_contains_any": ["ChatGPT", "login", "log in", "Page:", "URL:"]
     }
+  },
+  {
+    "number": "EXT-16",
+    "id": "excel_script_generation",
+    "requirement": "Generate and run a Python script that creates an Excel file with sample data.",
+    "small_test": "Create a Python script that generates an Excel file.",
+    "larger_test": "Ask the agent to create a Python script that generates an Excel workbook with sample data and verify it runs successfully in the code interpreter.",
+    "message": "Create a Python script that generates an Excel file with sample data and opens it",
+    "setup": [],
+    "tags": ["code_interpreter", "excel", "extended"],
+    "tools_required": ["code.interpreter:generate_and_run"],
+    "expected_behavior": "The code interpreter generates and runs a script using openpyxl or xlsxwriter without import blocking, producing a .xlsx file.",
+    "pass_criteria": "Task completes, a .xlsx file is created, and stdout confirms the file was generated.",
+    "failure_cases": [
+      "The interpreter blocks openpyxl or xlsxwriter imports.",
+      "The script is generated but not executed.",
+      "No .xlsx file is created."
+    ],
+    "size": "medium",
+    "timeout_seconds": 600,
+    "assertions": {
+      "final_status_in": ["COMPLETED"],
+      "tools_all": ["code.interpreter"],
+      "bot_reply_contains_any": [".xlsx", "excel", "generated", "created"]
+    }
+  },
+  {
+    "number": "EXT-17",
+    "id": "desktop_folder_listing",
+    "requirement": "List all files inside the Desktop folder using filesystem inspection.",
+    "small_test": "Open the Desktop folder and tell me all the files inside it.",
+    "larger_test": "Ask the agent to inspect the Desktop folder and return a full file listing without requiring computer-use approval.",
+    "message": "Open the Desktop folder and tell me all the files inside it",
+    "setup": [],
+    "tags": ["filesystem", "desktop", "extended"],
+    "tools_required": ["filesystem.manage:inspect_folder"],
+    "expected_behavior": "The filesystem adapter inspects the Desktop directory and returns a file list. No computer-use approval is required.",
+    "pass_criteria": "Task completes with a list of files and folders at the Desktop path.",
+    "failure_cases": [
+      "The task waits for computer-use approval.",
+      "No files are listed.",
+      "The agent guesses without inspecting."
+    ],
+    "size": "small",
+    "timeout_seconds": 360,
+    "assertions": {
+      "final_status_in": ["COMPLETED"],
+      "tools_all": ["filesystem.manage"],
+      "bot_reply_contains_any": ["Desktop", "file", "folder", "item"]
+    }
+  },
+  {
+    "number": "EXT-18",
+    "id": "browser_site_content",
+    "requirement": "Navigate to a real website and report visible content without falling back to a web search.",
+    "small_test": "Open dizibox.com and tell me the first 3 new shows listed on the page.",
+    "larger_test": "Use browser.open (not browser.search) to navigate directly to dizibox.com and extract show listings from the page.",
+    "message": "Open dizibox.com and tell me the first 3 new shows listed on the page",
+    "setup": [],
+    "tags": ["browser", "real_web", "url_routing", "extended"],
+    "tools_required": ["browser.open:open"],
+    "expected_behavior": "The planner generates a browser.open step with url=dizibox.com, not a search step. The page is loaded and content extracted.",
+    "pass_criteria": "Response is grounded in actual page content or clearly states the site could not be reached.",
+    "failure_cases": [
+      "The agent uses browser search instead of browser open.",
+      "The agent invents show names without page evidence.",
+      "The response ignores the page state."
+    ],
+    "size": "medium",
+    "timeout_seconds": 600,
+    "assertions": {
+      "final_status_in": ["COMPLETED"],
+      "tools_all": ["browser.open"],
+      "tools_forbidden": ["browser.search"],
+      "bot_reply_contains_any": ["show", "series", "dizibox", "dizi"]
+    }
+  },
+  {
+    "number": "EXT-19",
+    "id": "browser_chatgpt_interaction",
+    "requirement": "Open chatgpt.com, attempt to ask a question, and handle login state gracefully.",
+    "small_test": "Open chatgpt.com and ask it how is the weather in Istanbul.",
+    "larger_test": "Navigate to chatgpt.com, detect login state, attempt interaction if possible, and report either the answer or the login requirement clearly.",
+    "message": "Open chatgpt.com and ask it how is the weather in Istanbul",
+    "setup": [],
+    "tags": ["browser", "external_web_app", "login_detection", "extended"],
+    "tools_required": ["browser.open:open"],
+    "expected_behavior": "The browser opens chatgpt.com. If login is required it clearly states that; otherwise it attempts to send the prompt.",
+    "pass_criteria": "Response either contains weather information from ChatGPT or clearly describes the login/access requirement.",
+    "failure_cases": [
+      "The agent claims it asked ChatGPT without browser evidence.",
+      "The agent ignores a login screen and returns a hallucinated answer.",
+      "No browser interaction is attempted."
+    ],
+    "size": "medium",
+    "timeout_seconds": 600,
+    "assertions": {
+      "final_status_in": ["COMPLETED", "BLOCKED"],
+      "tools_all": ["browser.open"],
+      "bot_reply_contains_any": ["weather", "Istanbul", "login", "sign in", "ChatGPT"]
+    }
+  },
+  {
+    "number": "EXT-20",
+    "id": "file_find_and_read",
+    "requirement": "Find a .txt file on the Desktop and read back its full contents in the response.",
+    "small_test": "Find a .txt file on my Desktop and read me its contents.",
+    "larger_test": "Search the Desktop for a .txt file, then issue a read_file step to retrieve and include its full text content in the response.",
+    "message": "Find a .txt file on my Desktop and read me its contents",
+    "setup": [],
+    "tags": ["filesystem", "desktop", "read_file", "multi_step", "extended"],
+    "tools_required": ["filesystem.manage:search", "filesystem.manage:read_file"],
+    "expected_behavior": "The planner generates a 2-step plan: search for a .txt file, then read_file on the result. Both steps execute and the response includes the file text.",
+    "pass_criteria": "The response names the found file and includes text from inside it.",
+    "failure_cases": [
+      "The agent only says it found the file without reading its contents.",
+      "Only a search step is planned with no read_file follow-up.",
+      "The agent asks for computer-use approval."
+    ],
+    "size": "small",
+    "timeout_seconds": 420,
+    "assertions": {
+      "final_status_in": ["COMPLETED"],
+      "tools_all": ["filesystem.manage"],
+      "bot_reply_contains_any": ["file", "contents", "text", "I read"]
+    }
   }
 ]

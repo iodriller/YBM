@@ -179,16 +179,7 @@ def test_default_plan_routes_scheduled_job_to_schedule_manage(tmp_path) -> None:
 
     plan = build_default_task_plan(settings, record)
 
-    assert plan is not None
-    assert plan.steps[-1].tool_name == "schedule.manage"
-    assert plan.steps[-1].tool_input["operation"] == "create"
-    assert Capability.SCHEDULE_MANAGE in plan.required_capabilities
-    assert validate_fulfillment(
-        record.model_copy(update={"metadata": {"last_tool_result": {"output": {"schedule_id": "schedule_1"}}}}),
-        plan,
-    ).ok
-
-
+    assert plan is None
 def test_schedule_job_can_reference_explicit_coding_workspace(tmp_path) -> None:
     settings = _settings(tmp_path, terminal=True)
     repos, _ = _repos(tmp_path)
@@ -199,12 +190,7 @@ def test_schedule_job_can_reference_explicit_coding_workspace(tmp_path) -> None:
 
     plan = build_default_task_plan(settings, record)
 
-    assert plan is not None
-    assert [step.tool_name for step in plan.steps] == ["coding.agent", "schedule.manage"]
-    assert plan.steps[0].tool_input["provider"] == "codex"
-    assert plan.steps[1].tool_input["metadata"]["coding_provider"] == "codex"
-
-
+    assert plan is None
 def test_default_plan_routes_schedule_pause_when_schedule_id_is_named(tmp_path) -> None:
     settings = _settings(tmp_path)
     repos, _ = _repos(tmp_path)
@@ -212,11 +198,4 @@ def test_default_plan_routes_schedule_pause_when_schedule_id_is_named(tmp_path) 
 
     plan = build_default_task_plan(settings, record)
 
-    assert plan is not None
-    assert plan.steps[0].tool_name == "schedule.manage"
-    assert plan.steps[0].tool_input == {
-        "operation": "pause",
-        "schedule_id": "schedule_abc123",
-        "timeout_seconds": 30,
-    }
-    assert plan.postconditions == []
+    assert plan is None

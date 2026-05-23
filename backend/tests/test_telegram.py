@@ -90,8 +90,8 @@ async def test_telegram_intake_sends_user_facing_progress_without_task_id(tmp_pa
     assert result.task is not None
     assert result.outbound_message is None
     sent_text = "\n".join(text for _, text in client.sent)
-    assert "Message received" in sent_text
-    assert "queued the work" in sent_text
+    lower = sent_text.lower()
+    assert "got your message" in lower or "figuring out" in lower or "on it" in lower
     assert result.task.id not in sent_text
 
 

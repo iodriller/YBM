@@ -65,11 +65,7 @@ def test_default_document_plan_routes_pdf_summary(tmp_path) -> None:
 
     plan = build_default_task_plan(settings, TaskRecord(objective=f"Tell me what this PDF is about {pdf}"))
 
-    assert plan is not None
-    assert plan.steps[0].tool_name == "document.manage"
-    assert plan.steps[0].tool_input["operation"] == "summarize_pdf"
-
-
+    assert plan is None
 def test_default_document_plan_prefers_file_api_for_desktop_pdf_request(tmp_path) -> None:
     desktop = tmp_path / "Desktop Folder"
     desktop.mkdir()
@@ -100,12 +96,7 @@ def test_default_document_plan_prefers_file_api_for_desktop_pdf_request(tmp_path
         TaskRecord(objective=f"Open the desktop folder {desktop} and open the PDF file inside it, then tell me what the PDF is about."),
     )
 
-    assert plan is not None
-    assert plan.steps[0].tool_name == "document.manage"
-    assert plan.steps[0].tool_input["operation"] == "summarize_pdf"
-    assert plan.steps[0].tool_input["path"] == str(pdf)
-
-
+    assert plan is None
 def test_default_document_plan_routes_powerpoint_create_and_delivery(tmp_path) -> None:
     settings = AppSettings(
         _env_file=None,
@@ -117,12 +108,7 @@ def test_default_document_plan_routes_powerpoint_create_and_delivery(tmp_path) -
 
     plan = build_default_task_plan(settings, TaskRecord(objective="Create a PowerPoint presentation about ducks and send it to me"))
 
-    assert plan is not None
-    assert [step.tool_name for step in plan.steps] == ["document.manage", "artifact.deliver"]
-    assert plan.steps[0].tool_input["operation"] == "create_presentation"
-    assert plan.steps[1].tool_input["operation"] == "send_latest"
-
-
+    assert plan is None
 def test_default_document_plan_honors_explicit_codex_for_powerpoint(tmp_path) -> None:
     settings = AppSettings(
         _env_file=None,
@@ -136,14 +122,7 @@ def test_default_document_plan_honors_explicit_codex_for_powerpoint(tmp_path) ->
 
     plan = build_default_task_plan(settings, TaskRecord(objective="Use Codex and create a PowerPoint presentation about ducks and send it to me"))
 
-    assert plan is not None
-    assert [step.tool_name for step in plan.steps] == ["coding.agent", "document.manage", "artifact.deliver"]
-    assert plan.steps[0].tool_input["provider"] == "codex"
-    assert plan.steps[1].tool_input["operation"] == "create_presentation"
-    assert plan.steps[1].tool_input["content"] == "{{last_output}}"
-    assert plan.steps[1].tool_input["instructions"] == "{{last_output}}"
-
-
+    assert plan is None
 @pytest.mark.asyncio
 async def test_document_manage_summarizes_pdf_text_and_records_artifact(tmp_path) -> None:
     repos, _audit = _repos(tmp_path)

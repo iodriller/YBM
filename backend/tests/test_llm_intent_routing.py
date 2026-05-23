@@ -51,6 +51,12 @@ def _task(objective: str, intent: OrchestrationIntent, *, original_message_text:
     return TaskRecord(objective=objective, metadata=metadata)
 
 
+# --- Factory defers non-status tasks to LLM planner ---
+# The LLM planner is now primary. build_default_task_plan only handles status requests;
+# all other routing (browser, filesystem, coding agent, etc.) is done by the LLM planner.
+# The following tests verify that the factory correctly defers these tasks.
+
+
 def test_intent_routes_browser_screenshot_without_text_keywords(tmp_path) -> None:
     plan = build_default_task_plan(
         _settings(tmp_path),
@@ -67,11 +73,7 @@ def test_intent_routes_browser_screenshot_without_text_keywords(tmp_path) -> Non
         ),
     )
 
-    assert plan is not None
-    assert [step.tool_name for step in plan.steps] == ["browser.open", "artifact.deliver"]
-    assert plan.steps[0].tool_input["operation"] == "screenshot"
-    assert plan.steps[0].tool_input["url"] == "https://example.com"
-    assert plan.steps[1].tool_input["operation"] == "send_screenshot"
+    assert plan is None
 
 
 def test_intent_routes_desktop_screenshot_send_operation_to_delivery_step(tmp_path) -> None:
@@ -88,11 +90,7 @@ def test_intent_routes_desktop_screenshot_send_operation_to_delivery_step(tmp_pa
         ),
     )
 
-    assert plan is not None
-    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
-        "computer.use:observe",
-        "artifact.deliver:send_screenshot",
-    ]
+    assert plan is None
 
 
 def test_intent_uses_original_message_for_desktop_screenshot_delivery(tmp_path) -> None:
@@ -111,11 +109,7 @@ def test_intent_uses_original_message_for_desktop_screenshot_delivery(tmp_path) 
         ),
     )
 
-    assert plan is not None
-    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
-        "computer.use:observe",
-        "artifact.deliver:send_screenshot",
-    ]
+    assert plan is None
 
 
 def test_filesystem_route_uses_original_message_for_visual_desktop_observation(tmp_path) -> None:
@@ -134,10 +128,7 @@ def test_filesystem_route_uses_original_message_for_visual_desktop_observation(t
         ),
     )
 
-    assert plan is not None
-    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
-        "computer.use:observe",
-    ]
+    assert plan is None
 
 
 def test_intent_routes_schedule_without_schedule_phrase(tmp_path) -> None:
@@ -156,11 +147,7 @@ def test_intent_routes_schedule_without_schedule_phrase(tmp_path) -> None:
         ),
     )
 
-    assert plan is not None
-    assert [step.tool_name for step in plan.steps] == ["schedule.manage"]
-    assert plan.steps[0].tool_input["operation"] == "create"
-    assert plan.steps[0].tool_input["cadence"] == "daily"
-    assert plan.steps[0].tool_input["objective"] == "Check https://example.com for updates"
+    assert plan is None
 
 
 def test_intent_routes_status_question_to_task_status_tool(tmp_path) -> None:
@@ -200,10 +187,7 @@ def test_intent_routes_explicit_codex_to_coding_agent(tmp_path) -> None:
         ),
     )
 
-    assert plan is not None
-    assert [step.tool_name for step in plan.steps] == ["coding.agent"]
-    assert plan.steps[0].tool_input["provider"] == "codex"
-    assert plan.steps[0].tool_input["operation"] == "plan"
+    assert plan is None
 
 
 def test_intent_routes_codex_presentation_request_through_document_adapter(tmp_path) -> None:
@@ -223,13 +207,7 @@ def test_intent_routes_codex_presentation_request_through_document_adapter(tmp_p
         ),
     )
 
-    assert plan is not None
-    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
-        "coding.agent:run_goal",
-        "document.manage:create_presentation",
-        "artifact.deliver:send_latest",
-    ]
-    assert plan.steps[1].tool_input["content"] == "{{last_output}}"
+    assert plan is None
 
 
 def test_intent_routes_workspace_web_app_without_coding_agent(tmp_path) -> None:
@@ -246,9 +224,7 @@ def test_intent_routes_workspace_web_app_without_coding_agent(tmp_path) -> None:
         ),
     )
 
-    assert plan is not None
-    assert [step.tool_name for step in plan.steps] == ["workspace.manage"]
-    assert plan.steps[0].tool_input["operation"] == "web_app_preview"
+    assert plan is None
 
 
 def test_intent_routes_filesystem_search_without_search_phrase(tmp_path) -> None:
@@ -270,11 +246,7 @@ def test_intent_routes_filesystem_search_without_search_phrase(tmp_path) -> None
         ),
     )
 
-    assert plan is not None
-    assert [step.tool_name for step in plan.steps] == ["filesystem.manage"]
-    assert plan.steps[0].tool_input["operation"] == "search"
-    assert plan.steps[0].tool_input["root"] == str(target)
-    assert plan.steps[0].tool_input["query"] == "resume"
+    assert plan is None
 
 
 def test_intent_routes_desktop_file_listing_to_filesystem_not_computer_use(tmp_path) -> None:
@@ -291,12 +263,7 @@ def test_intent_routes_desktop_file_listing_to_filesystem_not_computer_use(tmp_p
         ),
     )
 
-    assert plan is not None
-    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
-        "filesystem.manage:inspect_folder",
-    ]
-    assert plan.steps[0].requires_approval is False
-    assert plan.steps[0].tool_input["root"] == "desktop"
+    assert plan is None
 
 
 def test_file_lookup_delivery_searches_desktop_then_sends_resolved_file(tmp_path) -> None:
@@ -317,15 +284,7 @@ def test_file_lookup_delivery_searches_desktop_then_sends_resolved_file(tmp_path
         ),
     )
 
-    assert plan is not None
-    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
-        "filesystem.manage:search",
-        "artifact.deliver:send_file",
-    ]
-    assert plan.steps[0].tool_input["root"] == "desktop"
-    assert plan.steps[0].tool_input["query"] == "invoices"
-    assert plan.steps[1].tool_input["path"] == "{{last_entry_path}}"
-    assert [postcondition.type.value for postcondition in plan.postconditions] == ["artifact_delivered"]
+    assert plan is None
 
 
 def test_artifact_delivery_create_file_request_writes_then_sends(tmp_path) -> None:
@@ -348,13 +307,7 @@ def test_artifact_delivery_create_file_request_writes_then_sends(tmp_path) -> No
         ),
     )
 
-    assert plan is not None
-    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
-        "filesystem.manage:write_text_file",
-        "artifact.deliver:send_file",
-    ]
-    assert plan.steps[0].tool_input["path"] == str(target)
-    assert plan.steps[1].tool_input["path"] == str(target)
+    assert plan is None
 
 
 def test_code_interpreter_route_for_web_note_is_repaired_to_multi_tool_plan(tmp_path) -> None:
@@ -377,14 +330,7 @@ def test_code_interpreter_route_for_web_note_is_repaired_to_multi_tool_plan(tmp_
         ),
     )
 
-    assert plan is not None
-    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
-        "browser.open:research",
-        "filesystem.manage:write_text_file",
-        "artifact.deliver:send_file",
-    ]
-    assert plan.steps[0].tool_input["query"] == "Python official documentation"
-    assert plan.steps[1].tool_input["path"] == str(target / "web-research-note.txt")
+    assert plan is None
 
 
 def test_filesystem_intent_locate_and_deliver_does_not_organize_desktop(tmp_path) -> None:
@@ -404,12 +350,7 @@ def test_filesystem_intent_locate_and_deliver_does_not_organize_desktop(tmp_path
         ),
     )
 
-    assert plan is not None
-    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
-        "filesystem.manage:search",
-        "artifact.deliver:send_file",
-    ]
-    assert plan.steps[0].tool_input["query"] == "agent-control-sample"
+    assert plan is None
 
 
 def test_filesystem_intent_placeholder_desktop_path_is_treated_as_search_query(tmp_path) -> None:
@@ -428,13 +369,7 @@ def test_filesystem_intent_placeholder_desktop_path_is_treated_as_search_query(t
         ),
     )
 
-    assert plan is not None
-    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
-        "filesystem.manage:search",
-        "artifact.deliver:send_file",
-    ]
-    assert plan.steps[0].tool_input["root"] == "desktop"
-    assert plan.steps[0].tool_input["query"] == "agent-control-sample.pdf"
+    assert plan is None
 
 
 def test_evaluator_recovery_replaces_missing_desktop_observation_with_filesystem_listing(tmp_path) -> None:
@@ -482,10 +417,7 @@ def test_intent_routes_filesystem_inspect_alias_as_read_only_operation(tmp_path)
         ),
     )
 
-    assert plan is not None
-    assert [step.tool_name for step in plan.steps] == ["filesystem.manage"]
-    assert plan.steps[0].tool_input["operation"] == "inspect_folder"
-    assert plan.steps[0].tool_input["root"] == str(target)
+    assert plan is None
 
 
 def test_intent_routes_filesystem_describe_folder_to_content_extraction(tmp_path) -> None:
@@ -506,10 +438,7 @@ def test_intent_routes_filesystem_describe_folder_to_content_extraction(tmp_path
         ),
     )
 
-    assert plan is not None
-    assert [step.tool_name for step in plan.steps] == ["filesystem.manage"]
-    assert plan.steps[0].tool_input["operation"] == "describe_folder"
-    assert plan.steps[0].tool_input["include_ocr"] is True
+    assert plan is None
 
 
 def test_intent_routes_find_and_read_to_content_search(tmp_path) -> None:
@@ -529,13 +458,7 @@ def test_intent_routes_find_and_read_to_content_search(tmp_path) -> None:
         ),
     )
 
-    assert plan is not None
-    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
-        "filesystem.manage:search",
-    ]
-    assert plan.steps[0].tool_input["root"] == "desktop"
-    assert plan.steps[0].tool_input["query"] == "resume"
-    assert plan.steps[0].tool_input["include_content"] is True
+    assert plan is None
 
 
 def test_intent_routes_desktop_subfolder_listing_to_that_folder(tmp_path) -> None:
@@ -555,11 +478,7 @@ def test_intent_routes_desktop_subfolder_listing_to_that_folder(tmp_path) -> Non
         ),
     )
 
-    assert plan is not None
-    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
-        "filesystem.manage:inspect_folder",
-    ]
-    assert plan.steps[0].tool_input["root"] == "desktop\\resumes"
+    assert plan is None
 
 
 def test_coding_agent_misroute_without_provider_repairs_to_workspace_preview(tmp_path) -> None:
@@ -579,10 +498,7 @@ def test_coding_agent_misroute_without_provider_repairs_to_workspace_preview(tmp
         ),
     )
 
-    assert plan is not None
-    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
-        "workspace.manage:web_app_preview",
-    ]
+    assert plan is None
 
 
 def test_browser_chatgpt_prompt_routes_to_open_then_fill(tmp_path) -> None:
@@ -600,14 +516,7 @@ def test_browser_chatgpt_prompt_routes_to_open_then_fill(tmp_path) -> None:
         ),
     )
 
-    assert plan is not None
-    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
-        "browser.open:open",
-        "browser.control:fill_form_step",
-    ]
-    assert plan.steps[0].tool_input["url"] == "https://chatgpt.com"
-    assert "how is the weather" in plan.steps[1].tool_input["fields"]["message"]
-    assert plan.steps[1].tool_input["submit"] is True
+    assert plan is None
 
 
 def test_intent_routes_pdf_summary_from_folder_to_search_then_document(tmp_path) -> None:
@@ -629,13 +538,7 @@ def test_intent_routes_pdf_summary_from_folder_to_search_then_document(tmp_path)
         ),
     )
 
-    assert plan is not None
-    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
-        "filesystem.manage:search",
-        "document.manage:summarize_pdf",
-    ]
-    assert plan.steps[0].tool_input["query"] == ".pdf"
-    assert plan.steps[1].tool_input["path"] == "{{last_entry_path}}"
+    assert plan is None
 
 
 def test_filesystem_inspect_file_pdf_request_does_not_become_organization(tmp_path) -> None:
@@ -659,14 +562,7 @@ def test_filesystem_inspect_file_pdf_request_does_not_become_organization(tmp_pa
         ),
     )
 
-    assert plan is not None
-    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
-        "filesystem.manage:search",
-        "document.manage:summarize_pdf",
-    ]
-    assert plan.steps[0].tool_input["root"] == str(target)
-    assert plan.steps[0].tool_input["query"] == ".pdf"
-    assert plan.steps[1].tool_input["path"] == "{{last_entry_path}}"
+    assert plan is None
 
 
 def test_intent_routes_filesystem_rename_alias_to_rename_manifest(tmp_path) -> None:
@@ -687,12 +583,7 @@ def test_intent_routes_filesystem_rename_alias_to_rename_manifest(tmp_path) -> N
         ),
     )
 
-    assert plan is not None
-    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
-        "filesystem.manage:rename_plan",
-        "filesystem.manage:apply_manifest",
-    ]
-    assert plan.steps[1].tool_input["manifest"] == "{{last_manifest}}"
+    assert plan is None
 
 
 def test_filesystem_rename_request_overrides_llm_organize_operation(tmp_path) -> None:
@@ -717,11 +608,7 @@ def test_filesystem_rename_request_overrides_llm_organize_operation(tmp_path) ->
         ),
     )
 
-    assert plan is not None
-    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
-        "filesystem.manage:rename_plan",
-        "filesystem.manage:apply_manifest",
-    ]
+    assert plan is None
 
 
 def test_intent_routes_form_fill_to_same_tab_and_review_screenshot(tmp_path) -> None:
@@ -742,18 +629,7 @@ def test_intent_routes_form_fill_to_same_tab_and_review_screenshot(tmp_path) -> 
         ),
     )
 
-    assert plan is not None
-    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
-        "browser.open:open",
-        "browser.control:extract_page_state",
-        "browser.control:fill_form_step",
-        "browser.open:screenshot",
-        "artifact.deliver:send_screenshot",
-    ]
-    assert plan.steps[1].tool_input["url_contains"] == "https://form.test"
-    assert plan.steps[2].tool_input["url_contains"] == "https://form.test"
-    assert plan.steps[2].tool_input["submit"] is False
-    assert plan.steps[3].tool_input["url_contains"] == "https://form.test"
+    assert plan is None
 
 
 def test_intent_routes_browser_control_screenshot_to_capture_and_delivery(tmp_path) -> None:
@@ -772,13 +648,7 @@ def test_intent_routes_browser_control_screenshot_to_capture_and_delivery(tmp_pa
         ),
     )
 
-    assert plan is not None
-    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
-        "browser.open:open",
-        "browser.open:screenshot",
-        "artifact.deliver:send_screenshot",
-    ]
-    assert plan.steps[1].tool_input["url"] == "https://example.com"
+    assert plan is None
 
 
 def test_intent_repairs_browser_control_research_to_browser_open(tmp_path) -> None:
@@ -798,12 +668,7 @@ def test_intent_repairs_browser_control_research_to_browser_open(tmp_path) -> No
         ),
     )
 
-    assert plan is not None
-    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
-        "browser.open:research_pages",
-    ]
-    assert plan.steps[0].tool_input["query"] == "Python official documentation"
-    assert plan.steps[0].tool_input["open_first_result"] is True
+    assert plan is None
 
 
 def test_intent_routes_browser_control_check_alias_to_page_update(tmp_path) -> None:
@@ -821,12 +686,7 @@ def test_intent_routes_browser_control_check_alias_to_page_update(tmp_path) -> N
         ),
     )
 
-    assert plan is not None
-    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
-        "browser.open:open",
-        "browser.control:check_page_update",
-    ]
-    assert plan.steps[1].tool_input["url"] == "https://example.com/episode"
+    assert plan is None
 
 
 def test_intent_repairs_browser_open_episode_research_to_page_update(tmp_path) -> None:
@@ -844,10 +704,7 @@ def test_intent_repairs_browser_open_episode_research_to_page_update(tmp_path) -
         ),
     )
 
-    assert plan is not None
-    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
-        "browser.control:check_page_update",
-    ]
+    assert plan is None
 
 
 def test_intent_repairs_browser_control_episode_research_to_page_update(tmp_path) -> None:
@@ -865,11 +722,7 @@ def test_intent_repairs_browser_control_episode_research_to_page_update(tmp_path
         ),
     )
 
-    assert plan is not None
-    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
-        "browser.open:open",
-        "browser.control:check_page_update",
-    ]
+    assert plan is None
 
 
 def test_llm_route_aliases_are_normalized_before_validation() -> None:

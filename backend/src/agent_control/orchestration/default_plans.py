@@ -24,46 +24,24 @@ from agent_control.schemas import (
 
 
 def build_default_task_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | None:
-    intent_plan = _build_intent_plan(settings, task)
-    if intent_plan is not None:
-        return intent_plan
+    """Fallback plan factory — only handles explicit system commands.
 
+    The LLM planner is the primary planning path. This function is only called when
+    the LLM planner is unavailable or produced no plan. It handles status requests
+    and nothing else; all other task routing belongs to the LLM planner.
+    """
+    # Status requests are handled deterministically without LLM
     status_plan = _build_status_plan(settings, task)
     if status_plan is not None:
         return status_plan
 
-    file_lookup_delivery_plan = _build_file_lookup_delivery_plan(settings, task)
-    if file_lookup_delivery_plan is not None:
-        return file_lookup_delivery_plan
-    filesystem_plan = _build_filesystem_manage_plan(settings, task)
-    if filesystem_plan is not None:
-        return filesystem_plan
-    if _looks_like_latest_output_delivery_request(task.objective):
-        artifact_plan = _build_artifact_delivery_plan(settings, task)
-        if artifact_plan is not None:
-            return artifact_plan
-    document_plan = _build_document_plan(settings, task)
-    if document_plan is not None:
-        return document_plan
-    schedule_plan = _build_schedule_plan(settings, task)
-    if schedule_plan is not None:
-        return schedule_plan
-    adapter_plan = _build_adapter_factory_plan(settings, task)
-    if adapter_plan is not None:
-        return adapter_plan
-    coding_agent_plan = _build_coding_agent_plan(settings, task)
-    if coding_agent_plan is not None:
-        return coding_agent_plan
-    browser_plan = _build_browser_plan(settings, task)
-    if browser_plan is not None:
-        return browser_plan
-    computer_plan = _build_computer_use_plan(settings, task)
-    if computer_plan is not None:
-        return computer_plan
-    artifact_plan = _build_artifact_delivery_plan(settings, task)
-    if artifact_plan is not None:
-        return artifact_plan
-    return build_default_vscode_development_plan(settings, task)
+    # Intent-based status routing
+    intent = _task_intent(task)
+    if intent is not None and intent.route.value == "status":
+        return _build_status_plan(settings, task, objective=intent.objective or task.objective)
+
+    # Everything else is handled by the LLM planner
+    return None
 
 
 def build_evaluator_recovery_plan(settings: AppSettings, task: TaskRecord, failure_reason: str) -> PlanModel | None:

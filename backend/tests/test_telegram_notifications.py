@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_control.channels.telegram_notifications import TelegramTaskNotifier, _task_message, _task_message_without_screenshot
+from agent_control.channels.telegram_notifications import TelegramTaskNotifier, _task_message, _task_message_without_screenshot, _user_facing_task_message
 from agent_control.schemas import TaskRecord, TaskStatus
 
 
@@ -165,3 +165,63 @@ async def test_notifier_reports_photo_delivery_failure(tmp_path) -> None:
     assert len(client.messages) == 2
     assert "Telegram photo delivery failed" in client.messages[1][1]
     assert str(screenshot) in client.messages[1][1]
+
+
+def test_code_interpreter_response_shows_stdout_as_primary_content() -> None:
+    task = TaskRecord(
+        objective="Run a data processing script",
+        status=TaskStatus.COMPLETED,
+        metadata={
+            "last_tool_name": "code.interpreter",
+            "last_tool_result": {
+                "output": {
+                    "operation": "run_python",
+                    "stdout": "Total: 190\nFiles processed: 3",
+                    "summary": "Script ran successfully.",
+                    "files_created": ["expense-summary.json"],
+                    "workspace_dir": "/tmp/code/task_abc",
+                }
+            },
+        },
+    )
+
+    message = _task_message_without_screenshot(task)
+
+    assert "Total: 190" in message
+    assert "expense-summary.json" in message
+    stdout_pos = message.index("Total: 190")
+    files_pos = message.index("expense-summary.json")
+    assert stdout_pos < files_pos
+    assert "Task:" not in message
+    assert "Tool:" not in message
+    assert "Command:" not in message
+
+
+def test_completed_task_messages_do_not_leak_internal_ids() -> None:
+    for tool_name, output in [
+        ("filesystem.manage", {"operation": "inspect_folder", "root": "C:/Desktop", "entries": []}),
+        ("browser.open", {"operation": "open", "url": "https://example.com", "page_title": "Example", "summary": "A page."}),
+        ("code.interpreter", {"operation": "run_python", "stdout": "done", "summary": "ran", "files_created": [], "workspace_dir": "/tmp"}),
+    ]:
+        task = TaskRecord(
+            objective="Test task",
+            status=TaskStatus.COMPLETED,
+            metadata={"last_tool_name": tool_name, "last_tool_result": {"output": output}},
+        )
+        message = _task_message_without_screenshot(task)
+        assert "Task:" not in message, f"Task ID leaked for {tool_name}"
+        assert "Command:" not in message, f"Command ID leaked for {tool_name}"
+
+
+def test_user_facing_message_received_status_is_friendly() -> None:
+    task = TaskRecord(objective="Find my resume", status=TaskStatus.RECEIVED)
+    message = _user_facing_task_message(task)
+    lower = message.lower()
+    assert "working on it" in lower or "got your message" in lower or "on it" in lower
+
+
+def test_user_facing_message_retrying_status_explains_retry() -> None:
+    task = TaskRecord(objective="Do something", status=TaskStatus.RETRYING)
+    message = _user_facing_task_message(task)
+    lower = message.lower()
+    assert "different" in lower or "trying" in lower or "approach" in lower or "retry" in lower

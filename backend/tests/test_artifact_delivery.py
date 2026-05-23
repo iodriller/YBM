@@ -76,13 +76,7 @@ def test_default_artifact_delivery_plan_sends_latest_document() -> None:
 
     plan = build_default_task_plan(settings, TaskRecord(objective="Send me the PDF file you found"))
 
-    assert plan is not None
-    assert plan.required_capabilities == [Capability.TELEGRAM_SEND]
-    assert plan.steps[0].tool_name == "artifact.deliver"
-    assert plan.steps[0].tool_input["operation"] == "send_latest"
-    assert plan.steps[0].tool_input["artifact_type"] == "document"
-
-
+    assert plan is None
 def test_default_artifact_delivery_plan_sends_explicit_file_path(tmp_path) -> None:
     document_dir = tmp_path / "docs folder"
     document_dir.mkdir()
@@ -101,12 +95,7 @@ def test_default_artifact_delivery_plan_sends_explicit_file_path(tmp_path) -> No
 
     plan = build_default_task_plan(settings, TaskRecord(objective=f"Send me the PDF file at {document}."))
 
-    assert plan is not None
-    assert plan.steps[0].tool_name == "artifact.deliver"
-    assert plan.steps[0].tool_input["operation"] == "send_file"
-    assert plan.steps[0].tool_input["path"] == str(document)
-
-
+    assert plan is None
 def test_default_artifact_delivery_plan_handles_latest_output_request() -> None:
     settings = AppSettings(
         _env_file=None,
@@ -129,11 +118,7 @@ def test_default_artifact_delivery_plan_handles_latest_output_request() -> None:
         TaskRecord(objective="Send me the latest output from the current task, including any screenshot or PowerPoint artifact you have."),
     )
 
-    assert plan is not None
-    assert plan.steps[0].tool_name == "artifact.deliver"
-    assert plan.steps[0].tool_input["operation"] == "send_latest"
-
-
+    assert plan is None
 @pytest.mark.asyncio
 async def test_artifact_delivery_sends_screenshot_from_task_metadata(tmp_path) -> None:
     repos, audit = _repos(tmp_path)

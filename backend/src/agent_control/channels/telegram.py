@@ -435,7 +435,7 @@ class TelegramIntakeService:
         if self.classifier is None:
             return self._spawn_failed(inbound, "message classifier is not configured", actor)
 
-        await self._send_progress(inbound.chat_id, "Message received. I am identifying the right workflow.")
+        await self._send_progress(inbound.chat_id, "Got your message, figuring out what to do…")
         try:
             classification_context = memory_context(
                 self.repositories.conversation_memory.get(conversation_id),
@@ -520,7 +520,7 @@ class TelegramIntakeService:
                 "orchestration_intent": classification.intent.model_dump(mode="json") if classification.intent else None,
             },
         )
-        await self._send_progress(inbound.chat_id, "I understood the request and queued the work. I will send the result here when it finishes.")
+        await self._send_progress(inbound.chat_id, "On it — I'll send the result here when it's done.")
         return TelegramUpdateResult(
             authorized=True,
             inbound_message=inbound,

@@ -44,13 +44,14 @@ class LLMProfileConfig(StrictBaseModel):
     api_key_env: str | None = None
     api_key: SecretStr | None = None
     timeout_seconds: int = Field(default=60, ge=1)
-    max_tokens: int = Field(default=4096, ge=1)
+    max_tokens: int = Field(default=6144, ge=1)
     temperature: float = Field(default=0.2, ge=0.0, le=2.0)
     context_limit: int | None = None
 
 
 class LLMConfig(StrictBaseModel):
     default_profile: str = "default"
+    major_profile: str | None = None  # Profile for complex/major tasks (e.g. gemma4 with large context)
     profiles: dict[str, LLMProfileConfig] = Field(default_factory=dict)
 
     @field_validator("profiles")

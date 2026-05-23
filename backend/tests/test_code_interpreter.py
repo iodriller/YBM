@@ -180,7 +180,9 @@ async def test_code_interpreter_fallback_can_create_and_load_excel_workbook(tmp_
     assert "created and loaded" in result.output["stdout"]
 
 
-def test_intent_routes_code_interpreter_to_bounded_python(tmp_path) -> None:
+def test_default_plan_factory_defers_code_interpreter_to_llm_planner(tmp_path) -> None:
+    # The LLM planner is now primary. build_default_task_plan only handles status requests;
+    # code interpreter tasks are routed by the LLM planner, so the factory returns None.
     plan = build_default_task_plan(
         _settings(tmp_path),
         TaskRecord(
@@ -196,14 +198,20 @@ def test_intent_routes_code_interpreter_to_bounded_python(tmp_path) -> None:
         ),
     )
 
-    assert plan is not None
-    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
-        "code.interpreter:generate_and_run"
-    ]
-    assert plan.steps[0].tool_input["workspace_dir"].startswith(str(tmp_path / "code"))
+    assert plan is None
 
 
-def test_code_interpreter_plan_preserves_original_inline_data(tmp_path) -> None:
+def test_import_validation_allows_openpyxl_and_third_party() -> None:
+    from agent_control.tools.code_interpreter import _validate_python
+
+    code = "import openpyxl\nimport pandas\nimport requests\nprint('ok')\n"
+    # Should not raise — third-party imports are permitted by default
+    _validate_python(code, allowed_imports=set(), blocked_imports=set())
+
+
+def test_default_plan_factory_defers_inline_data_task_to_llm_planner(tmp_path) -> None:
+    # The LLM planner handles all non-status tasks. The factory returns None so the
+    # planner can create a plan with full objective and inline data context.
     plan = build_default_task_plan(
         _settings(tmp_path),
         TaskRecord(
@@ -224,6 +232,4 @@ def test_code_interpreter_plan_preserves_original_inline_data(tmp_path) -> None:
         ),
     )
 
-    assert plan is not None
-    assert "task A priority high owner Oney" in plan.steps[0].tool_input["objective"]
-    assert plan.steps[0].tool_input["context"] == "Router objective: Normalize task list to JSON"
+    assert plan is None

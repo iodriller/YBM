@@ -30,6 +30,11 @@ def test_extended_e2e_cases_define_folder_explanation_and_code_interpreter() -> 
         "code_interpreter_excel_generate_and_load",
         "browser_dizibox_new_shows",
         "browser_chatgpt_login_or_answer",
+        "excel_script_generation",
+        "desktop_folder_listing",
+        "browser_site_content",
+        "browser_chatgpt_interaction",
+        "file_find_and_read",
     } <= set(by_id)
 
     folder_case = by_id["folder_mixed_file_explanation"]
@@ -77,6 +82,32 @@ def test_extended_e2e_cases_define_folder_explanation_and_code_interpreter() -> 
     excel_case = by_id["code_interpreter_excel_generate_and_load"]
     assert excel_case["assertions"]["tools_all"] == ["code.interpreter:generate_and_run"]
     assert ".xlsx" in excel_case["assertions"]["bot_reply_contains_any"]
+
+
+def test_extended_e2e_cases_include_user_scenario_cases_ext16_to_20() -> None:
+    cases = json.loads(EXTENDED_CASES_PATH.read_text(encoding="utf-8"))
+    by_id = {case["id"]: case for case in cases}
+
+    excel_case = by_id["excel_script_generation"]
+    assert "code.interpreter" in excel_case["assertions"]["tools_all"]
+    assert ".xlsx" in excel_case["assertions"]["bot_reply_contains_any"]
+
+    desktop_case = by_id["desktop_folder_listing"]
+    assert "filesystem.manage" in desktop_case["assertions"]["tools_all"]
+    assert "Desktop" in desktop_case["assertions"]["bot_reply_contains_any"]
+
+    browser_site_case = by_id["browser_site_content"]
+    assert "browser.open" in browser_site_case["assertions"]["tools_all"]
+    assert "browser.search" in browser_site_case["assertions"]["tools_forbidden"]
+    assert "dizibox" in browser_site_case["assertions"]["bot_reply_contains_any"]
+
+    chatgpt_case = by_id["browser_chatgpt_interaction"]
+    assert "browser.open" in chatgpt_case["assertions"]["tools_all"]
+    assert "ChatGPT" in chatgpt_case["assertions"]["bot_reply_contains_any"]
+
+    read_case = by_id["file_find_and_read"]
+    assert "filesystem.manage" in read_case["assertions"]["tools_all"]
+    assert "I read" in read_case["assertions"]["bot_reply_contains_any"]
 
 
 def test_live_e2e_runner_lists_extended_cases() -> None:

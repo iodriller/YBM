@@ -163,21 +163,19 @@ def _validate_python(code: str, *, allowed_imports: set[str], blocked_imports: s
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                _validate_import(alias.name, allowed_imports=allowed_imports, blocked_imports=blocked_imports)
+                _validate_import(alias.name, blocked_imports=blocked_imports)
         elif isinstance(node, ast.ImportFrom):
-            _validate_import(node.module or "", allowed_imports=allowed_imports, blocked_imports=blocked_imports)
+            _validate_import(node.module or "", blocked_imports=blocked_imports)
         elif isinstance(node, ast.Call):
             name = _call_name(node.func)
             if name in {"eval", "exec", "compile", "__import__", "input"}:
                 raise ValueError(f"blocked unsafe builtin call: {name}")
 
 
-def _validate_import(module: str, *, allowed_imports: set[str], blocked_imports: set[str]) -> None:
+def _validate_import(module: str, *, blocked_imports: set[str]) -> None:
     root = module.split(".", 1)[0]
     if root in blocked_imports:
         raise ValueError(f"blocked import: {root}")
-    if allowed_imports and root not in allowed_imports:
-        raise ValueError(f"import is not allowed in code interpreter: {root}")
 
 
 def _call_name(value: ast.AST) -> str | None:

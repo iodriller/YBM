@@ -13,6 +13,18 @@ from agent_control.storage.repositories import Repositories
 
 PLANNER_SYSTEM_PROMPT = prompt_text("base/planner_system.md")
 
+# Keywords that indicate a complex/major task requiring more LLM context
+_MAJOR_TASK_KEYWORDS = (
+    "create", "build", "generate", "write code", "write a script",
+    "research", "analyze", "open browser", "open chatgpt", "open ",
+    "script", "excel", "python", "automate", "multiple", "step by step",
+)
+
+
+def _is_major_task(objective: str) -> bool:
+    lowered = objective.lower()
+    return any(kw in lowered for kw in _MAJOR_TASK_KEYWORDS)
+
 
 class PlannerService:
     def __init__(
@@ -21,11 +33,13 @@ class PlannerService:
         repositories: Repositories,
         audit: AuditLogger,
         plan_validator: Callable[[PlanModel], PlanModel] | None = None,
+        major_provider: LLMProvider | None = None,
     ) -> None:
         self.provider = provider
         self.repositories = repositories
         self.audit = audit
         self.plan_validator = plan_validator
+        self.major_provider = major_provider
 
     async def plan_task(self, task_id: str, config_context: str = "No extra capability context provided.") -> PlanModel:
         task = self.repositories.tasks.get(task_id)
@@ -35,9 +49,14 @@ class PlannerService:
         self.repositories.tasks.update_status(task_id, TaskStatus.INTERPRETING)
         self.audit.task_state_changed("planner", task_id, task.status, TaskStatus.INTERPRETING)
 
+        # Use the major provider for complex tasks if configured
+        provider = self.provider
+        if self.major_provider is not None and _is_major_task(task.objective):
+            provider = self.major_provider
+
         user_prompt = self._prompt(task.objective, config_context)
         try:
-            plan = await self.provider.generate_structured(PLANNER_SYSTEM_PROMPT, user_prompt, PlanModel)
+            plan = await provider.generate_structured(PLANNER_SYSTEM_PROMPT, user_prompt, PlanModel)
             plan = self._validate_plan(plan)
         except (ValueError, ValidationError) as exc:
             retry_prompt = render_prompt(
@@ -45,7 +64,7 @@ class PlannerService:
                 original_prompt=user_prompt,
                 error=exc,
             )
-            plan = await self.provider.generate_structured(PLANNER_SYSTEM_PROMPT, retry_prompt, PlanModel)
+            plan = await provider.generate_structured(PLANNER_SYSTEM_PROMPT, retry_prompt, PlanModel)
             plan = self._validate_plan(plan)
 
         self.repositories.plans.create(task_id, plan)
@@ -62,6 +81,7 @@ class PlannerService:
                     "system_prompt": PLANNER_SYSTEM_PROMPT,
                     "user_prompt": user_prompt,
                     "config_context": config_context,
+                    "used_major_provider": provider is not self.provider,
                 },
                 "plan": plan.model_dump(mode="json"),
             },

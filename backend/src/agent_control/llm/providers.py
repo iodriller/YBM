@@ -127,6 +127,18 @@ def build_default_llm_provider(settings: AppSettings) -> LLMProvider | None:
     return OpenAICompatibleProvider(profile)
 
 
+def build_major_llm_provider(settings: AppSettings) -> LLMProvider | None:
+    """Build the LLM provider for complex/major tasks, if a major_profile is configured."""
+    if not settings.llm.major_profile:
+        return None
+    profile = settings.llm.profiles.get(settings.llm.major_profile)
+    if profile is None:
+        return None
+    if profile.provider != "openai_compatible":
+        raise ValueError(f"unsupported major LLM provider: {profile.provider}")
+    return OpenAICompatibleProvider(profile)
+
+
 class StaticPlanProvider:
     def __init__(self, plan: PlanModel) -> None:
         self.plan = plan

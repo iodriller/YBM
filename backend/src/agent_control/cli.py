@@ -16,6 +16,7 @@ from agent_control.channels.responder import LLMTelegramResponder
 from agent_control.channels.telegram_notifications import TelegramTaskNotifier
 from agent_control.config import load_settings
 from agent_control.llm import LLMMessageClassifier, build_default_llm_provider
+from agent_control.llm.providers import build_major_llm_provider
 from agent_control.llm.planner import PlannerService
 from agent_control.observation import ArtifactService, ScreenshotService
 from agent_control.orchestration import TaskWorker, ToolExecutor
@@ -99,7 +100,8 @@ async def run_worker() -> None:
         audit_logger=audit,
         telegram_client=_telegram_client(settings),
     )
-    planner = PlannerService(provider, repositories, audit, plan_validator=registry.validate_plan) if provider else None
+    major_provider = build_major_llm_provider(settings)
+    planner = PlannerService(provider, repositories, audit, plan_validator=registry.validate_plan, major_provider=major_provider) if provider else None
     executor = ToolExecutor(
         policy,
         repositories,

@@ -96,10 +96,12 @@ def _task_message_without_screenshot(task: TaskRecord) -> str:
 
 
 def _user_facing_task_message(task: TaskRecord) -> str:
+    if task.status == TaskStatus.RECEIVED:
+        return "Got your message, working on it now…"
     if task.status == TaskStatus.RUNNING:
-        return "I started working on your request."
+        return "On it."
     if task.status == TaskStatus.RETRYING:
-        return "That attempt did not work, so I am trying a repair path now."
+        return "That attempt did not work, so I am trying a different approach now."
     if task.status == TaskStatus.AWAITING_APPROVAL:
         return _trim(
             "I need approval before I can continue. If full access is enabled for this capability, the worker will approve it automatically; otherwise approve it from the admin UI.",
@@ -108,11 +110,11 @@ def _user_facing_task_message(task: TaskRecord) -> str:
     if task.status == TaskStatus.CANCELLED:
         return "Cancelled."
     if task.status in {TaskStatus.BLOCKED, TaskStatus.FAILED}:
-        lines = ["I could not finish this request."]
+        lines = ["I could not complete this request."]
         lines.extend(_failure_lines(task))
         return _trim("\n".join(lines), 3900)
     if task.status != TaskStatus.COMPLETED:
-        return f"Current status: {task.status.value}."
+        return f"Status: {task.status.value}."
 
     answer = _completed_answer(task)
     if answer:
@@ -120,7 +122,7 @@ def _user_facing_task_message(task: TaskRecord) -> str:
     output = _last_output(task)
     if output:
         return _trim(output, 3900)
-    return "Finished."
+    return "Done."
 
 
 def _legacy_task_message_without_screenshot(task: TaskRecord) -> str:
@@ -308,23 +310,33 @@ def _computer_answer(output: dict) -> str:
 
 
 def _code_interpreter_answer(output: dict) -> str:
-    lines = [str(output.get("summary") or "The local Python script finished.")]
+    summary = str(output.get("summary") or "").strip()
+    stdout = str(output.get("stdout") or "").strip()
+    stderr = str(output.get("stderr") or "").strip()
     workspace = output.get("workspace_dir")
-    if workspace:
-        lines.append(f"Workspace: {workspace}")
     files = output.get("files_created") if isinstance(output.get("files_created"), list) else []
+
+    lines: list[str] = []
+    if stdout:
+        lines.append(stdout[:3000])
+    elif summary:
+        lines.append(summary)
+    else:
+        lines.append("The script ran successfully.")
+
     if files:
+        lines.append("")
         lines.append("Created files:")
         lines.extend(f"- {item}" for item in files[:40])
-    stdout = str(output.get("stdout") or "").strip()
-    if stdout:
-        lines.append("")
-        lines.append(stdout[:2600])
-    stderr = str(output.get("stderr") or "").strip()
+    if workspace:
+        lines.append(f"Workspace: {workspace}")
     if stderr:
         lines.append("")
         lines.append("Errors:")
         lines.append(stderr[:1200])
+    if stdout and summary and summary not in stdout:
+        lines.append("")
+        lines.append(summary)
     return "\n".join(lines)
 
 

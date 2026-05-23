@@ -74,6 +74,8 @@ class BrowserAdapter:
             output = self._extract_page_state(client, request)
         elif operation == "fill_form_step":
             output = self._fill_form(client, request)
+        elif operation == "chain":
+            output = self._chain(client, request)
         else:
             raise ValueError(f"unsupported browser operation: {operation}")
 
@@ -277,6 +279,63 @@ class BrowserAdapter:
                     "No fields were changed."
                 )
         return output
+
+    def _chain(self, client: "ChromeDevToolsClient", request: ToolCallRequest) -> dict[str, Any]:
+        """Execute a sequence of browser sub-operations, passing page state between steps."""
+        steps = request.input.get("steps") if isinstance(request.input.get("steps"), list) else []
+        if not steps:
+            raise ValueError("steps list is required for browser chain operation")
+
+        last_output: dict[str, Any] = {}
+        all_summaries: list[str] = []
+
+        for i, step in enumerate(steps):
+            if not isinstance(step, dict):
+                continue
+            operation = str(step.get("operation") or "open")
+            step_input = {**request.input, **step, "operation": operation}
+            # Remove the steps list so sub-operations don't recurse
+            step_input.pop("steps", None)
+            sub_request = request.model_copy(update={"input": step_input})
+
+            if operation == "open":
+                step_output = self._open(client, sub_request)
+            elif operation == "navigate":
+                step_output = self._navigate(client, sub_request)
+            elif operation == "click":
+                step_output = self._click(client, sub_request)
+            elif operation in {"fill_form", "fill_form_step"}:
+                step_output = self._fill_form(client, sub_request)
+            elif operation == "extract_page_state":
+                step_output = self._extract_page_state(client, sub_request)
+            elif operation == "summarize_page":
+                step_output = self._summarize_page(client, sub_request)
+            elif operation == "screenshot":
+                step_output = self._screenshot(client, sub_request)
+            else:
+                step_output = {"summary": f"Skipped unsupported chain sub-operation: {operation}"}
+
+            last_output = step_output
+            step_summary = str(step_output.get("summary") or "")
+            if step_summary:
+                all_summaries.append(f"Step {i + 1} ({operation}): {step_summary}")
+
+            # Stop chain early if login/auth wall detected
+            blocked = (step_output.get("browser_state") or {}).get("blocked_reason")
+            if blocked == "login_required":
+                url = str(step_output.get("url") or "")
+                last_output["summary"] = (
+                    f"I opened {url or 'the page'} but it requires login before I can continue. "
+                    "Let me know how to proceed — you can log in manually and ask me to retry, "
+                    "or I can try a different approach."
+                )
+                last_output["chain_stopped_at"] = i
+                break
+
+        last_output["chain_steps_count"] = len(steps)
+        if all_summaries:
+            last_output["chain_summary"] = "\n".join(all_summaries)
+        return last_output
 
     def _check_page_update(self, client: "ChromeDevToolsClient", request: ToolCallRequest) -> dict[str, Any]:
         input_payload = request.input

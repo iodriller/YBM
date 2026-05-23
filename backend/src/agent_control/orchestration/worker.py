@@ -83,8 +83,9 @@ class TaskWorker:
         tasks = self.repositories.tasks.list_by_statuses(WORKABLE_STATUSES, limit=1)
         if not tasks:
             return None
+        task = tasks[0]
         try:
-            processed = await self.process_task(tasks[0].id)
+            processed = await self.process_task(task.id)
             await self._notify_if_needed(processed)
             return processed
         except Exception as exc:
@@ -115,31 +116,42 @@ class TaskWorker:
             raise KeyError(f"task not found: {task_id}")
 
         if task.status in {TaskStatus.RECEIVED, TaskStatus.INTERPRETING}:
-            default_plan = self.default_plan_factory(task) if self.default_plan_factory else None
-            if default_plan is not None:
-                self.repositories.plans.create(task_id, default_plan)
-                updated = self.repositories.tasks.attach_plan(task_id, default_plan.id, TaskStatus.PLANNED)
-                self.audit.append(
-                    AuditEventType.PLAN_CREATED,
-                    actor="worker",
-                    task_id=task_id,
-                    payload={
-                        "plan_id": default_plan.id,
-                        "step_count": len(default_plan.steps),
-                        "required_capabilities": [
-                            capability.value for capability in default_plan.required_capabilities
-                        ],
-                        "source": "default_vscode_development_plan",
-                        "route_decision": _route_decision(task, default_plan),
-                        "config_context": self.config_context,
-                        "plan": default_plan.model_dump(mode="json"),
-                    },
-                )
-                self.audit.task_state_changed("worker", task_id, task.status, updated.status)
-            elif self.planner is None:
-                return task
-            else:
-                await self.planner.plan_task(task_id, self.config_context)
+            # LLM planner is the primary planning path
+            if self.planner is not None:
+                try:
+                    await self.planner.plan_task(task_id, self.config_context)
+                except Exception:
+                    pass  # fall through to hardcoded fallback below
+            task = self.repositories.tasks.get(task_id)
+            if task is None:
+                raise KeyError(f"task not found after planning: {task_id}")
+
+            # Hardcoded factory is a fallback for system commands (status, etc.)
+            # only when LLM planning did not produce a plan
+            if task.status in {TaskStatus.RECEIVED, TaskStatus.INTERPRETING}:
+                default_plan = self.default_plan_factory(task) if self.default_plan_factory else None
+                if default_plan is not None:
+                    self.repositories.plans.create(task_id, default_plan)
+                    updated = self.repositories.tasks.attach_plan(task_id, default_plan.id, TaskStatus.PLANNED)
+                    self.audit.append(
+                        AuditEventType.PLAN_CREATED,
+                        actor="worker",
+                        task_id=task_id,
+                        payload={
+                            "plan_id": default_plan.id,
+                            "step_count": len(default_plan.steps),
+                            "required_capabilities": [
+                                capability.value for capability in default_plan.required_capabilities
+                            ],
+                            "source": "hardcoded_fallback_plan",
+                            "route_decision": _route_decision(task, default_plan),
+                            "config_context": self.config_context,
+                            "plan": default_plan.model_dump(mode="json"),
+                        },
+                    )
+                    self.audit.task_state_changed("worker", task_id, task.status, updated.status)
+                else:
+                    return task
             task = self.repositories.tasks.get(task_id)
             if task is None:
                 raise KeyError(f"task not found after planning: {task_id}")
@@ -242,6 +254,10 @@ class TaskWorker:
         recovery = self._attach_recovery_plan(task, result.error_message or result.status.value)
         if recovery is not None:
             return recovery
+        # Intelligent re-planning: ask the LLM to create a new plan using the error context
+        replan = await self._replan_with_error(task, result.error_message or result.status.value)
+        if replan is not None:
+            return replan
         return self._transition(task, TaskStatus.FAILED, "tool_failed")
 
     def _process_retrying(self, task: TaskRecord) -> TaskRecord:
@@ -386,6 +402,37 @@ class TaskWorker:
         updated = self.repositories.tasks.update_metadata(task.id, metadata, TaskStatus.RETRYING)
         self.audit.task_state_changed("orchestrator", task.id, task.status, updated.status)
         return updated
+
+    async def _replan_with_error(self, task: TaskRecord, error_context: str) -> TaskRecord | None:
+        """Ask the LLM planner to produce a new plan given the error context (up to 2 replan attempts)."""
+        if self.planner is None:
+            return None
+        replan_count = int(task.metadata.get("replan_count", 0))
+        if replan_count >= 2:
+            return None
+        enriched_objective = (
+            f"{task.objective}\n\n"
+            f"[Previous attempt failed: {error_context[:400]}. "
+            "Try a different approach or different tool to accomplish the same goal.]"
+        )
+        latest = self.repositories.tasks.get(task.id) or task
+        metadata = {
+            **latest.metadata,
+            "replan_count": replan_count + 1,
+            "last_replan_reason": error_context[:400],
+        }
+        self.repositories.tasks.update_metadata(task.id, metadata, TaskStatus.RECEIVED)
+        self.audit.append(
+            AuditEventType.TASK_STATE_CHANGED,
+            actor="orchestrator",
+            task_id=task.id,
+            payload={"reason": "replan_after_failure", "replan_count": replan_count + 1, "error": error_context[:400]},
+        )
+        try:
+            await self.planner.plan_task(task.id, self.config_context + f"\n\nError context: {error_context[:400]}")
+        except Exception:
+            return None
+        return self.repositories.tasks.get(task.id)
 
     async def _notify_if_needed(self, task: TaskRecord) -> None:
         if task.status not in NOTIFIABLE_STATUSES:
