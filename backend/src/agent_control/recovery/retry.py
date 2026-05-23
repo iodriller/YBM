@@ -18,8 +18,10 @@ class RetryPolicy:
         ErrorClass.TRANSIENT,
         ErrorClass.RATE_LIMITED,
         ErrorClass.USAGE_LIMITED,
-        ErrorClass.ADAPTER_FAILED,
-        ErrorClass.VALIDATION_FAILED,
+        # ADAPTER_FAILED and VALIDATION_FAILED are intentionally not retried:
+        # the worker already tries _attach_recovery_plan and then _replan_with_error
+        # for those error classes. Retrying the same failing step wastes cycles
+        # and delays reaching the replan path (e.g. browser not available → fallback).
     }
     RETRYABLE_STATUSES = {ToolResultStatus.RATE_LIMITED, ToolResultStatus.TIMEOUT}
 
