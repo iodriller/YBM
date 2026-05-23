@@ -512,6 +512,104 @@ def test_intent_routes_filesystem_describe_folder_to_content_extraction(tmp_path
     assert plan.steps[0].tool_input["include_ocr"] is True
 
 
+def test_intent_routes_find_and_read_to_content_search(tmp_path) -> None:
+    plan = build_default_task_plan(
+        _settings(tmp_path),
+        _task(
+            "Find the resume file on my desktop and read it to me.",
+            OrchestrationIntent(
+                route=IntentRoute.FILESYSTEM_MANAGE,
+                operation="search",
+                objective="Find the resume file on Desktop and read it.",
+                reasoning="The LLM selected filesystem search.",
+                folder_path="desktop",
+                query="resume",
+            ),
+            original_message_text="Find the resume file on my desktop and read it to me.",
+        ),
+    )
+
+    assert plan is not None
+    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
+        "filesystem.manage:search",
+    ]
+    assert plan.steps[0].tool_input["root"] == "desktop"
+    assert plan.steps[0].tool_input["query"] == "resume"
+    assert plan.steps[0].tool_input["include_content"] is True
+
+
+def test_intent_routes_desktop_subfolder_listing_to_that_folder(tmp_path) -> None:
+    plan = build_default_task_plan(
+        _settings(tmp_path),
+        _task(
+            "Open the resumes folder at my desktop and tell me all the files inside.",
+            OrchestrationIntent(
+                route=IntentRoute.FILESYSTEM_MANAGE,
+                operation="inspect_folder",
+                objective="List all files in the resumes folder on Desktop.",
+                reasoning="The LLM selected filesystem inspection.",
+                delivery=DeliveryKind.FILE,
+                folder_path=r"C:\Users\<user>\Desktop\resumes",
+            ),
+            original_message_text="Open the resumes folder at my desktop and tell me all the files inside.",
+        ),
+    )
+
+    assert plan is not None
+    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
+        "filesystem.manage:inspect_folder",
+    ]
+    assert plan.steps[0].tool_input["root"] == "desktop\\resumes"
+
+
+def test_coding_agent_misroute_without_provider_repairs_to_workspace_preview(tmp_path) -> None:
+    plan = build_default_task_plan(
+        _settings(tmp_path),
+        _task(
+            "Build a simple web app with login and a dashboard.",
+            OrchestrationIntent(
+                route=IntentRoute.CODING_AGENT,
+                operation="create",
+                objective="Build a simple web app with login and a dashboard.",
+                reasoning="The LLM incorrectly selected coding agent without an explicit provider.",
+                provider=None,
+                use_external_agent=False,
+            ),
+            original_message_text="Build a simple web app with login and a dashboard.",
+        ),
+    )
+
+    assert plan is not None
+    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
+        "workspace.manage:web_app_preview",
+    ]
+
+
+def test_browser_chatgpt_prompt_routes_to_open_then_fill(tmp_path) -> None:
+    plan = build_default_task_plan(
+        _settings(tmp_path),
+        _task(
+            "Open chatgpt.com and ask how is the weather and give me the answer.",
+            OrchestrationIntent(
+                route=IntentRoute.BROWSER_OPEN,
+                operation="open",
+                objective="Open ChatGPT and ask how is the weather.",
+                reasoning="The LLM selected browser open.",
+            ),
+            original_message_text="Open chatgpt.com and ask how is the weather and give me the answer.",
+        ),
+    )
+
+    assert plan is not None
+    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
+        "browser.open:open",
+        "browser.control:fill_form_step",
+    ]
+    assert plan.steps[0].tool_input["url"] == "https://chatgpt.com"
+    assert "how is the weather" in plan.steps[1].tool_input["fields"]["message"]
+    assert plan.steps[1].tool_input["submit"] is True
+
+
 def test_intent_routes_pdf_summary_from_folder_to_search_then_document(tmp_path) -> None:
     target = tmp_path / "desktop_folder"
     target.mkdir()

@@ -92,6 +92,38 @@ def _task_message(task: TaskRecord) -> str:
 
 
 def _task_message_without_screenshot(task: TaskRecord) -> str:
+    return _user_facing_task_message(task)
+
+
+def _user_facing_task_message(task: TaskRecord) -> str:
+    if task.status == TaskStatus.RUNNING:
+        return "I started working on your request."
+    if task.status == TaskStatus.RETRYING:
+        return "That attempt did not work, so I am trying a repair path now."
+    if task.status == TaskStatus.AWAITING_APPROVAL:
+        return _trim(
+            "I need approval before I can continue. If full access is enabled for this capability, the worker will approve it automatically; otherwise approve it from the admin UI.",
+            3900,
+        )
+    if task.status == TaskStatus.CANCELLED:
+        return "Cancelled."
+    if task.status in {TaskStatus.BLOCKED, TaskStatus.FAILED}:
+        lines = ["I could not finish this request."]
+        lines.extend(_failure_lines(task))
+        return _trim("\n".join(lines), 3900)
+    if task.status != TaskStatus.COMPLETED:
+        return f"Current status: {task.status.value}."
+
+    answer = _completed_answer(task)
+    if answer:
+        return _trim(answer, 3900)
+    output = _last_output(task)
+    if output:
+        return _trim(output, 3900)
+    return "Finished."
+
+
+def _legacy_task_message_without_screenshot(task: TaskRecord) -> str:
     if task.status == TaskStatus.COMPLETED:
         lines = [f"Done: {_trim(task.objective, 220)}"]
     elif task.status == TaskStatus.AWAITING_APPROVAL:
@@ -136,6 +168,182 @@ def _task_message_without_screenshot(task: TaskRecord) -> str:
         lines.append(f"Error: {_trim(error, 1200)}")
 
     return _trim("\n".join(lines), 3900)
+
+
+def _completed_answer(task: TaskRecord) -> str | None:
+    result = task.metadata.get("last_tool_result")
+    output = result.get("output") if isinstance(result, dict) else None
+    if not isinstance(output, dict):
+        return None
+    tool_name = str(task.metadata.get("last_tool_name") or result.get("tool_name") or "")
+    operation = str(output.get("operation") or "")
+
+    if tool_name == "filesystem.manage":
+        return _filesystem_answer(operation, output)
+    if tool_name == "document.manage":
+        return _document_answer(output)
+    if tool_name in {"browser.open", "browser.control"}:
+        return _browser_answer(operation, output)
+    if tool_name == "computer.use":
+        return _computer_answer(output)
+    if tool_name == "code.interpreter":
+        return _code_interpreter_answer(output)
+    if tool_name == "workspace.manage":
+        return _workspace_answer(output)
+    if tool_name == "artifact.deliver":
+        return _artifact_answer(output)
+    if tool_name == "task.status":
+        return str(output.get("summary") or output.get("text") or _last_output(task) or "").strip() or None
+    return None
+
+
+def _filesystem_answer(operation: str, output: dict) -> str:
+    root = output.get("root")
+    path = output.get("path")
+    entries = output.get("entries") if isinstance(output.get("entries"), list) else []
+    if operation == "read_file":
+        text = str(output.get("text") or output.get("content_preview") or "").strip()
+        header = f"I read {Path(str(path)).name if path else 'the file'}."
+        if text:
+            return f"{header}\n\n{text[:3400]}"
+        return f"{header}\n\nNo readable text was extracted."
+    if operation in {"inspect_folder", "collect_folder_snapshot"}:
+        lines = [f"I found {len(entries)} item(s)" + (f" in {root}." if root else ".")]
+        lines.extend(_entry_lines(entries, include_preview=False, limit=80))
+        return "\n".join(lines)
+    if operation == "search":
+        lines = [f"I found {len(entries)} matching item(s)" + (f" under {root}." if root else ".")]
+        lines.extend(_entry_lines(entries, include_preview=True, limit=12))
+        return "\n".join(lines)
+    if operation == "describe_folder":
+        lines = [str(output.get("summary") or f"I described {len(entries)} file(s).")]
+        lines.extend(_entry_lines(entries, include_preview=True, limit=20))
+        return "\n".join(lines)
+    if operation == "write_text_file":
+        return f"I created the file:\n{path}"
+    changed = output.get("changed_paths") if isinstance(output.get("changed_paths"), list) else []
+    if changed:
+        lines = [str(output.get("summary") or f"Changed {len(changed)} path(s).")]
+        lines.extend(f"- {item}" for item in changed[:40])
+        return "\n".join(lines)
+    return str(output.get("summary") or "Filesystem request completed.")
+
+
+def _entry_lines(entries: list, *, include_preview: bool, limit: int) -> list[str]:
+    lines: list[str] = []
+    for item in entries[:limit]:
+        if not isinstance(item, dict):
+            continue
+        kind = "folder" if item.get("is_dir") else "file"
+        name = item.get("relative_path") or item.get("path") or ""
+        size = item.get("size_bytes")
+        size_text = f" ({size} bytes)" if size is not None and kind == "file" else ""
+        lines.append(f"- [{kind}] {name}{size_text}")
+        if include_preview:
+            preview = item.get("content_summary") or item.get("content_preview") or item.get("ocr_text")
+            if preview:
+                lines.append(f"  {str(preview)[:900]}")
+    if len(entries) > limit:
+        lines.append(f"- ... {len(entries) - limit} more item(s)")
+    return lines
+
+
+def _document_answer(output: dict) -> str:
+    path = output.get("path")
+    summary = output.get("summary") or output.get("text")
+    if path and summary:
+        return f"Here is what I found in {Path(str(path)).name}:\n\n{str(summary)[:3400]}"
+    if summary:
+        return str(summary)
+    if path:
+        return f"Document output created:\n{path}"
+    return "Document task completed."
+
+
+def _browser_answer(operation: str, output: dict) -> str:
+    title = output.get("page_title") or "Untitled page"
+    url = output.get("url") or output.get("browser_url")
+    summary = str(output.get("summary") or "").strip()
+    lower_summary = summary.lower()
+    if "chatgpt" in str(url).lower() and any(marker in lower_summary for marker in ("log in", "sign up", "sign in", "login")):
+        return (
+            f"I opened ChatGPT, but the page appears to require login before I can send the prompt.\n\n"
+            f"Page: {title}\nURL: {url}\n\n"
+            "Log in in the opened browser session, then ask me to continue, or tell me to use normal web search instead."
+        )
+    lines = [f"Page: {title}"]
+    if url:
+        lines.append(f"URL: {url}")
+    if output.get("visited_urls"):
+        lines.append(f"Visited {len(output['visited_urls'])} page(s).")
+    if summary:
+        lines.append("")
+        lines.append(summary[:3200])
+    screenshot = output.get("screenshot_path")
+    if screenshot:
+        lines.append("")
+        lines.append(f"Screenshot saved locally: {screenshot}")
+    return "\n".join(lines)
+
+
+def _computer_answer(output: dict) -> str:
+    summary = str(output.get("final_summary") or output.get("summary") or "").strip()
+    observation = output.get("observation") if isinstance(output.get("observation"), dict) else {}
+    lines = []
+    if summary:
+        lines.append(summary)
+    active = observation.get("active_window") if isinstance(observation, dict) else None
+    if isinstance(active, dict) and active.get("title"):
+        lines.append(f"Active window: {active['title']}")
+    windows = observation.get("visible_windows") if isinstance(observation, dict) else None
+    if isinstance(windows, list) and windows:
+        lines.append("Visible windows:")
+        for item in windows[:10]:
+            if isinstance(item, dict) and item.get("title"):
+                lines.append(f"- {item['title']}")
+    screenshot = output.get("screenshot_path") or output.get("screenshot_uri")
+    if screenshot:
+        lines.append(f"Screenshot captured: {screenshot}")
+    return "\n".join(lines) or "I inspected the desktop."
+
+
+def _code_interpreter_answer(output: dict) -> str:
+    lines = [str(output.get("summary") or "The local Python script finished.")]
+    workspace = output.get("workspace_dir")
+    if workspace:
+        lines.append(f"Workspace: {workspace}")
+    files = output.get("files_created") if isinstance(output.get("files_created"), list) else []
+    if files:
+        lines.append("Created files:")
+        lines.extend(f"- {item}" for item in files[:40])
+    stdout = str(output.get("stdout") or "").strip()
+    if stdout:
+        lines.append("")
+        lines.append(stdout[:2600])
+    stderr = str(output.get("stderr") or "").strip()
+    if stderr:
+        lines.append("")
+        lines.append("Errors:")
+        lines.append(stderr[:1200])
+    return "\n".join(lines)
+
+
+def _workspace_answer(output: dict) -> str:
+    url = output.get("preview_url") or output.get("url")
+    workspace = output.get("workspace_dir")
+    lines = [str(output.get("summary") or "The local workspace is ready.")]
+    if url:
+        lines.append(f"Open it here: {url}")
+    if workspace:
+        lines.append(f"Workspace: {workspace}")
+    return "\n".join(lines)
+
+
+def _artifact_answer(output: dict) -> str:
+    if output.get("delivered"):
+        path = output.get("path")
+        return "I sent the file or screenshot." + (f"\n{path}" if path else "")
+    return str(output.get("summary") or "Artifact delivery completed.")
 
 
 def _result_lines(task: TaskRecord) -> list[str]:

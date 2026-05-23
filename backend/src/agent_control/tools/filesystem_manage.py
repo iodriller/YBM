@@ -31,6 +31,8 @@ class FilesystemManageAdapter:
                 output = self._find_by_description(request)
             elif operation == "open_file":
                 output = self._open_file(request)
+            elif operation == "read_file":
+                output = self._read_file(request)
             elif operation == "write_text_file":
                 output = self._write_text_file(request)
             elif operation == "collect_folder_snapshot":
@@ -82,6 +84,7 @@ class FilesystemManageAdapter:
                 continue
             matched = query in path.name.lower()
             content_preview = None
+            content_summary = None
             if include_content and path.is_file() and _is_text_file(path):
                 text = path.read_text(encoding="utf-8", errors="ignore")
                 index = text.lower().find(query)
@@ -89,10 +92,21 @@ class FilesystemManageAdapter:
                 if index >= 0:
                     start = max(0, index - 120)
                     content_preview = text[start : index + 240].strip()
+                elif matched:
+                    content_preview = _compact_text(text, limit=1800)
+                if content_preview:
+                    content_summary = _simple_summary(content_preview)
+            elif include_content and matched and path.is_file():
+                text = _extract_supported_text(path, max_chars=3000)
+                if text:
+                    content_preview = text
+                    content_summary = _simple_summary(text)
             if matched:
                 item = _entry(root, path)
                 if content_preview:
                     item["content_preview"] = content_preview
+                if content_summary:
+                    item["content_summary"] = content_summary
                 results.append(item)
                 if len(results) >= max_results:
                     break
@@ -158,6 +172,26 @@ class FilesystemManageAdapter:
             "entries": [_entry(path.parent, path)],
             "changed_paths": [str(path)],
             "summary": f"Opened {path}.",
+        }
+
+    def _read_file(self, request: ToolCallRequest) -> dict[str, Any]:
+        path = self._safe_path(str(request.input["path"]))
+        if not path.exists() or not path.is_file():
+            raise ValueError(f"file does not exist: {path}")
+        max_chars = int(request.input.get("max_chars") or 12000)
+        text = _extract_supported_text(path, max_chars=max_chars)
+        if not text:
+            text = path.read_bytes()[:max_chars].decode("utf-8", errors="ignore")
+        text = _compact_text(text, limit=max_chars)
+        summary = _simple_summary(text) if text else "No readable text was extracted from this file."
+        return {
+            "root": str(path.parent),
+            "path": str(path),
+            "entries": [_entry(path.parent, path)],
+            "text": text,
+            "content_preview": text[:4000],
+            "content_summary": summary,
+            "summary": f"Read {path.name}. {summary}",
         }
 
     def _write_text_file(self, request: ToolCallRequest) -> dict[str, Any]:
@@ -569,11 +603,44 @@ def _simple_summary(text: str) -> str:
 
 
 def _terminal_output(operation: str, output: dict[str, Any]) -> dict[str, Any]:
+    content = _human_filesystem_output(operation, output)
     return {
-        "content": output.get("summary") or f"filesystem.manage {operation} completed.",
+        "content": content,
         "is_final": True,
         "exit_code": 0,
     }
+
+
+def _human_filesystem_output(operation: str, output: dict[str, Any]) -> str:
+    lines = [str(output.get("summary") or f"filesystem.manage {operation} completed.")]
+    entries = output.get("entries")
+    if isinstance(entries, list) and entries:
+        lines.append("")
+        lines.append("Entries:")
+        for item in entries[:60]:
+            if not isinstance(item, dict):
+                continue
+            kind = "folder" if item.get("is_dir") else "file"
+            name = item.get("relative_path") or item.get("path") or ""
+            size = item.get("size_bytes")
+            suffix = f" ({size} bytes)" if size is not None and not item.get("is_dir") else ""
+            lines.append(f"- [{kind}] {name}{suffix}")
+            preview = item.get("content_preview") or item.get("content_summary")
+            if preview:
+                lines.append(f"  {str(preview)[:1200]}")
+        if len(entries) > 60:
+            lines.append(f"- ... {len(entries) - 60} more item(s)")
+    text = output.get("text") or output.get("content_preview")
+    if text and operation == "read_file":
+        lines.append("")
+        lines.append("Content:")
+        lines.append(str(text)[:5000])
+    changed = output.get("changed_paths")
+    if isinstance(changed, list) and changed:
+        lines.append("")
+        lines.append("Changed paths:")
+        lines.extend(f"- {path}" for path in changed[:60])
+    return "\n".join(lines)
 
 
 def _failed(request: ToolCallRequest, message: str) -> ToolCallResult:

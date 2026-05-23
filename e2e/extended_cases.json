@@ -266,5 +266,138 @@
       "metadata_any": ["workspace_dir", "files_created", "stdout"],
       "bot_reply_contains_any": ["route-checklist", "workspace", "created", "Markdown"]
     }
+  },
+  {
+    "number": "EXT-11",
+    "id": "desktop_find_file_and_read_contents",
+    "requirement": "Find a file from Desktop by description and read its contents back, not only report that it exists.",
+    "small_test": "Find the resume notes file on my desktop and read it to me.",
+    "larger_test": "Search the Desktop for a file by description, include readable file content in the response, and avoid stale artifact fallback.",
+    "message": "Find the resume notes file from my desktop and read it to me.",
+    "setup": ["desktop_fixture"],
+    "tags": ["filesystem", "desktop", "read_file", "extended"],
+    "tools_required": ["filesystem.manage:search"],
+    "expected_behavior": "The filesystem search includes content previews for matched readable files and the Telegram response includes the file contents.",
+    "pass_criteria": "The response names the matching file and includes content from inside it.",
+    "failure_cases": [
+      "The agent only says it found the file without reading contents.",
+      "The agent searches a stale artifact cache instead of Desktop.",
+      "The agent asks for computer-use approval for a filesystem task."
+    ],
+    "size": "small",
+    "timeout_seconds": 420,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["filesystem.manage:search"],
+      "tools_forbidden": ["computer.use", "artifact.deliver:send_latest"],
+      "metadata_any": ["last_tool_result", "last_tool_output_text"],
+      "bot_reply_contains_any": ["oney-resume-notes", "Python automation", "local LLM orchestration"]
+    }
+  },
+  {
+    "number": "EXT-12",
+    "id": "desktop_resumes_folder_full_listing",
+    "requirement": "Open/list a named Desktop subfolder and return all visible files inside it.",
+    "small_test": "Open the resumes folder at my desktop and tell me all the files inside.",
+    "larger_test": "Resolve the named Desktop subfolder, inspect it through filesystem APIs, and return a readable file list.",
+    "message": "Open the resumes folder at my desktop and tell me all the files inside.",
+    "setup": ["desktop_fixture"],
+    "tags": ["filesystem", "desktop", "folder_listing", "extended"],
+    "tools_required": ["filesystem.manage:inspect_folder"],
+    "expected_behavior": "The route resolves desktop\\resumes rather than inspecting the whole Desktop or using computer-use approval.",
+    "pass_criteria": "The response lists files from the resumes folder, including the fixture files.",
+    "failure_cases": [
+      "The agent lists the Desktop root instead of the resumes folder.",
+      "The task waits for computer-use approval.",
+      "The response omits actual file names."
+    ],
+    "size": "small",
+    "timeout_seconds": 420,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["filesystem.manage:inspect_folder"],
+      "tools_forbidden": ["computer.use"],
+      "metadata_any": ["last_tool_result", "last_tool_output_text"],
+      "bot_reply_contains_any": ["oney-resume-notes.txt", "cover-letter-draft.md", "resumes"]
+    }
+  },
+  {
+    "number": "EXT-13",
+    "id": "code_interpreter_excel_generate_and_load",
+    "requirement": "Create and run a local Python script that generates and loads an Excel workbook.",
+    "small_test": "Create a Python script to generate and load an Excel file.",
+    "larger_test": "Ask naturally for a local Excel-generation script; the code interpreter should allow imports and produce a workbook in the managed workspace.",
+    "message": "Create a simple Python script to generate and load an Excel file, run it locally, and tell me where the workbook is.",
+    "setup": [],
+    "tags": ["code_interpreter", "excel", "extended"],
+    "tools_required": ["code.interpreter:generate_and_run"],
+    "expected_behavior": "The orchestrator uses code.interpreter, imports are not blocked by default, and the generated workbook is created and loaded.",
+    "pass_criteria": "The task completes with workbook.xlsx or another .xlsx file and stdout confirms it was loaded.",
+    "failure_cases": [
+      "The interpreter blocks normal imports.",
+      "The agent returns only code without running it.",
+      "The workbook is not created."
+    ],
+    "size": "medium",
+    "timeout_seconds": 600,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["code.interpreter:generate_and_run"],
+      "tools_forbidden": ["coding.agent", "vscode.copilot_terminal"],
+      "metadata_any": ["workspace_dir", "files_created", "stdout"],
+      "bot_reply_contains_any": ["workbook", ".xlsx", "created"]
+    }
+  },
+  {
+    "number": "EXT-14",
+    "id": "browser_dizibox_new_shows",
+    "requirement": "Open a real website and summarize current visible new-show information from the page.",
+    "small_test": "Open dizibox.com and tell me the first 3 new shows on it.",
+    "larger_test": "Use the browser adapter to navigate to dizibox.com, read the loaded page, and summarize the first three relevant new-show entries without guessing.",
+    "message": "Open dizibox.com and tell me the first 3 new shows on it.",
+    "setup": [],
+    "tags": ["browser", "real_web", "extended"],
+    "tools_required": ["browser.open:research"],
+    "expected_behavior": "The browser adapter opens the site, reads page text/links, and reports what it can actually see; if blocked, it clearly reports the blocked state.",
+    "pass_criteria": "The response is grounded in the page title/text or clearly says the site could not be inspected.",
+    "failure_cases": [
+      "The agent guesses show names without page evidence.",
+      "The browser opens but the final answer ignores the page state.",
+      "The failure message omits why the site could not be inspected."
+    ],
+    "size": "medium",
+    "timeout_seconds": 600,
+    "assertions": {
+      "final_status_in": ["completed", "blocked", "failed"],
+      "tools_any": ["browser.open:research", "browser.open:open", "browser.control:navigate"],
+      "metadata_any": ["browser_state", "browser_url", "page_title", "last_tool_result"],
+      "bot_reply_contains_any": ["dizibox", "Page:", "URL:", "could not", "blocked"]
+    }
+  },
+  {
+    "number": "EXT-15",
+    "id": "browser_chatgpt_login_or_answer",
+    "requirement": "Open ChatGPT in the browser, try to ask a prompt, and handle login-gated state intelligently.",
+    "small_test": "Open chatgpt.com and ask how is the weather and give me the answer.",
+    "larger_test": "Navigate to ChatGPT, attempt to fill/send the prompt if an input is available, and if login is required ask the user to log in or choose another tool.",
+    "message": "Open chatgpt.com and ask how is the weather and give me the answer.",
+    "setup": [],
+    "tags": ["browser", "external_web_app", "extended"],
+    "tools_required": ["browser.control:fill_form_step"],
+    "expected_behavior": "The browser adapter reports the actual ChatGPT page state. If login is required, it does not pretend to have asked the question.",
+    "pass_criteria": "The response either contains a real read answer from ChatGPT or clearly reports login/account access is required.",
+    "failure_cases": [
+      "The agent claims it asked ChatGPT without evidence.",
+      "The agent ignores a login screen.",
+      "The response gives a weather answer from the local LLM instead of browser state."
+    ],
+    "size": "medium",
+    "timeout_seconds": 600,
+    "assertions": {
+      "final_status_in": ["completed", "blocked", "failed"],
+      "tools_any": ["browser.control:fill_form_step", "browser.open:open", "browser.control:navigate"],
+      "metadata_any": ["browser_state", "browser_url", "page_title", "last_tool_result"],
+      "bot_reply_contains_any": ["ChatGPT", "login", "log in", "Page:", "URL:"]
+    }
   }
 ]

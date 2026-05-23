@@ -182,44 +182,8 @@ class CodeInterpreterAdapterConfig(StrictBaseModel):
     max_output_chars: int = Field(default=12000, ge=100, le=100000)
     max_files_listed: int = Field(default=200, ge=1, le=5000)
     python_executable: str | None = None
-    allowed_imports: list[str] = Field(
-        default_factory=lambda: [
-            "base64",
-            "collections",
-            "csv",
-            "datetime",
-            "decimal",
-            "functools",
-            "hashlib",
-            "html",
-            "itertools",
-            "json",
-            "math",
-            "pathlib",
-            "random",
-            "re",
-            "statistics",
-            "string",
-            "textwrap",
-            "typing",
-            "xml",
-            "zipfile",
-        ]
-    )
-    blocked_imports: list[str] = Field(
-        default_factory=lambda: [
-            "ctypes",
-            "httpx",
-            "os",
-            "pip",
-            "requests",
-            "shutil",
-            "socket",
-            "subprocess",
-            "sys",
-            "urllib",
-        ]
-    )
+    allowed_imports: list[str] = Field(default_factory=list)
+    blocked_imports: list[str] = Field(default_factory=list)
 
 
 class DesktopAdapterConfig(StrictBaseModel):

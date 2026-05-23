@@ -435,6 +435,7 @@ class TelegramIntakeService:
         if self.classifier is None:
             return self._spawn_failed(inbound, "message classifier is not configured", actor)
 
+        await self._send_progress(inbound.chat_id, "Message received. I am identifying the right workflow.")
         try:
             classification_context = memory_context(
                 self.repositories.conversation_memory.get(conversation_id),
@@ -519,12 +520,13 @@ class TelegramIntakeService:
                 "orchestration_intent": classification.intent.model_dump(mode="json") if classification.intent else None,
             },
         )
+        await self._send_progress(inbound.chat_id, "I understood the request and queued the work. I will send the result here when it finishes.")
         return TelegramUpdateResult(
             authorized=True,
             inbound_message=inbound,
             classification=classification,
             task=task,
-            outbound_message=self._out(inbound.chat_id, f"Task spawned: {task.id}"),
+            outbound_message=None,
         )
 
     async def _non_task_response(
@@ -614,8 +616,20 @@ class TelegramIntakeService:
             authorized=True,
             inbound_message=inbound,
             classification=classification,
-            outbound_message=self._out(inbound.chat_id, f"No task spawned: {reason}"),
+            outbound_message=self._out(inbound.chat_id, f"I could not start this request: {reason}"),
         )
+
+    async def _send_progress(self, chat_id: str, text: str) -> None:
+        if self.bot_api is None:
+            return
+        try:
+            await self.bot_api.send_message(chat_id, text)
+        except Exception as exc:
+            self.audit.append(
+                AuditEventType.ERROR,
+                actor="telegram_progress",
+                payload={"error": "progress_send_failed", "reason": str(exc), "chat_id": chat_id},
+            )
 
     def _apply_command(self, command: CommandEnvelope) -> TaskSignal | None:
         payload = command.payload
@@ -722,7 +736,7 @@ class TelegramIntakeService:
         active = [task for task in recent if task.status in active_statuses]
         lines = [f"{len(recent)} recent task(s), {len(active)} active."]
         for task in recent[:5]:
-            lines.append(f"{task.id} | {task.status.value} | {task.objective[:80]}")
+            lines.append(f"- {task.status.value}: {task.objective[:120]}")
         return "\n".join(lines)
 
     @staticmethod

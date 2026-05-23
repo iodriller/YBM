@@ -932,9 +932,11 @@ async def test_worker_notifies_once_on_completion(tmp_path) -> None:
     await worker.process_next()
     await worker.process_next()
 
-    assert len(notifier.tasks) == 1
-    assert notifier.tasks[0].status == TaskStatus.COMPLETED
-    assert repos.tasks.get(task.id).metadata["notified_statuses"] == [TaskStatus.COMPLETED.value]
+    assert [item.status for item in notifier.tasks] == [TaskStatus.RUNNING, TaskStatus.COMPLETED]
+    assert repos.tasks.get(task.id).metadata["notified_statuses"] == [
+        TaskStatus.COMPLETED.value,
+        TaskStatus.RUNNING.value,
+    ]
 
 
 def _stop_process(pid: int) -> None:

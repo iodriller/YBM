@@ -263,6 +263,19 @@ class BrowserAdapter:
         client.wait(float(input_payload.get("wait_seconds") or self.config.default_wait_seconds))
         output = self._summarize_target(client, target)
         output["browser_state"] = {**(output.get("browser_state") or {}), "filled_fields": filled}
+        filled_items = filled.get("filled") if isinstance(filled, dict) else None
+        if isinstance(filled_items, list) and not filled_items:
+            summary = str(output.get("summary") or "")
+            url = str(output.get("url") or output.get("browser_url") or "")
+            if _looks_like_login_or_auth_page(summary, url):
+                output["browser_state"] = {
+                    **(output.get("browser_state") or {}),
+                    "blocked_reason": "login_required",
+                }
+                output["summary"] = (
+                    "The page appears to require login or account access before the requested form/prompt can be filled. "
+                    "No fields were changed."
+                )
         return output
 
     def _check_page_update(self, client: "ChromeDevToolsClient", request: ToolCallRequest) -> dict[str, Any]:
@@ -591,7 +604,7 @@ def _target_url(url: Any, query: Any, objective: Any, *, search_template: str, f
 
 
 def _first_url(value: str) -> str | None:
-    match = re.search(r"https?://[^\s<>()]+|www\.[^\s<>()]+", value)
+    match = re.search(r"https?://[^\s<>()]+|www\.[^\s<>()]+|\b[A-Za-z0-9.-]+\.(?:com|org|net|io|ai|dev|edu|gov|co)\b", value)
     return match.group(0).rstrip(".,") if match else None
 
 
@@ -660,6 +673,11 @@ def _update_markers(text: str) -> list[str]:
     return markers[:20]
 
 
+def _looks_like_login_or_auth_page(summary: str, url: str) -> bool:
+    lowered = f"{summary}\n{url}".lower()
+    return any(marker in lowered for marker in ("log in", "login", "sign in", "sign up", "authentication", "create account"))
+
+
 def _tab_summary(target: BrowserTarget) -> dict[str, str]:
     return {"id": target.id, "title": target.title, "url": target.url}
 
@@ -691,7 +709,7 @@ def _page_summary_text(page: dict[str, Any]) -> str:
     text = str(page.get("text") or "").strip()
     if text:
         lines.append("")
-        lines.append(_clip(text, 2200))
+        lines.append(_clip(text, 5000))
     return "\n".join(lines)
 
 
@@ -793,6 +811,10 @@ def _fill_form_script(fields: dict[str, str], *, submit: bool, submit_selector: 
     return candidates.some((value) => value === wanted || value.includes(wanted));
   }};
   const setNativeValue = (node, value) => {{
+    if (node.isContentEditable || node.getAttribute('contenteditable') === 'true') {{
+      node.textContent = value;
+      return;
+    }}
     const prototype = node.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype :
       node.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
     const descriptor = Object.getOwnPropertyDescriptor(prototype, 'value');
@@ -800,7 +822,7 @@ def _fill_form_script(fields: dict[str, str], *, submit: bool, submit_selector: 
     else node.value = value;
   }};
   const filled = [];
-  const nodes = Array.from(document.querySelectorAll('input, textarea, select'));
+  const nodes = Array.from(document.querySelectorAll('input, textarea, select, [contenteditable="true"], [role="textbox"]'));
   for (const [key, value] of Object.entries(fields)) {{
     const node = nodes.find((item) => matches(item, key));
     if (!node) continue;

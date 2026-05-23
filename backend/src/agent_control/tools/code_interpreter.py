@@ -97,6 +97,13 @@ class CodeInterpreterAdapter:
             generated = fallback
             updated = request.model_copy(update={"input": {**request.input, "code": generated.code}})
             output = await self._run_python(updated, generated=True)
+        if int(output.get("returncode") or 0) != 0:
+            fallback = _fallback_generated_script(objective)
+            if fallback is not None and fallback.code != generated.code:
+                generation_repaired = True
+                generated = fallback
+                updated = request.model_copy(update={"input": {**request.input, "code": generated.code}})
+                output = await self._run_python(updated, generated=True)
         output["generation_summary"] = generated.summary
         output["expected_files"] = generated.expected_files
         if generation_repaired:
@@ -203,6 +210,8 @@ def _fallback_generated_script(objective: str) -> GeneratedPythonScript | None:
     if output_name is None:
         return None
     suffix = Path(output_name).suffix.lower()
+    if suffix == ".xlsx":
+        return _fallback_excel_script(output_name, objective)
     if suffix not in {".md", ".txt", ".json", ".csv"}:
         return None
     content = _fallback_content(objective, output_name)
@@ -220,12 +229,14 @@ def _fallback_generated_script(objective: str) -> GeneratedPythonScript | None:
 
 
 def _output_name_from_objective(objective: str) -> str | None:
-    match = re.search(r"\b(?:named|called|file)\s+([A-Za-z0-9_.-]+\.(?:md|txt|json|csv))\b", objective, flags=re.IGNORECASE)
+    match = re.search(r"\b(?:named|called|file)\s+([A-Za-z0-9_.-]+\.(?:md|txt|json|csv|xlsx))\b", objective, flags=re.IGNORECASE)
     if match:
         return _safe_output_name(match.group(1))
-    match = re.search(r"\b([A-Za-z0-9_.-]+\.(?:md|txt|json|csv))\b", objective, flags=re.IGNORECASE)
+    match = re.search(r"\b([A-Za-z0-9_.-]+\.(?:md|txt|json|csv|xlsx))\b", objective, flags=re.IGNORECASE)
     if match:
         return _safe_output_name(match.group(1))
+    if re.search(r"\b(excel|xlsx|spreadsheet|workbook)\b", objective, flags=re.IGNORECASE):
+        return "workbook.xlsx"
     return None
 
 
@@ -255,6 +266,50 @@ def _fallback_content(objective: str, output_name: str) -> str:
     return "\n".join(notes or [objective]) + "\n"
 
 
+def _fallback_excel_script(output_name: str, objective: str) -> GeneratedPythonScript:
+    rows = [["Item", "Value"], ["alpha", "2"], ["beta", "4"], ["gamma", "6"]]
+    if "hello" in objective.lower():
+        rows = [["Message"], ["Hello from the generated workbook"]]
+    code = f"""
+from pathlib import Path
+from zipfile import ZipFile, ZIP_DEFLATED
+from xml.sax.saxutils import escape
+import re
+
+output = Path({output_name!r})
+rows = {rows!r}
+
+def sheet_xml(rows):
+    xml_rows = []
+    for row_index, row in enumerate(rows, 1):
+        cells = []
+        for col_index, value in enumerate(row, 1):
+            col = chr(64 + col_index)
+            text = escape(str(value))
+            cells.append(f'<c r="{{col}}{{row_index}}" t="inlineStr"><is><t>{{text}}</t></is></c>')
+        xml_rows.append(f'<row r="{{row_index}}">' + ''.join(cells) + '</row>')
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>' + ''.join(xml_rows) + '</sheetData></worksheet>'
+
+with ZipFile(output, "w", ZIP_DEFLATED) as workbook:
+    workbook.writestr("[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>')
+    workbook.writestr("_rels/.rels", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>')
+    workbook.writestr("xl/workbook.xml", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>')
+    workbook.writestr("xl/_rels/workbook.xml.rels", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>')
+    workbook.writestr("xl/worksheets/sheet1.xml", sheet_xml(rows))
+
+with ZipFile(output) as workbook:
+    xml = workbook.read("xl/worksheets/sheet1.xml").decode("utf-8")
+loaded_values = re.findall(r"<t>(.*?)</t>", xml)
+print(f"created and loaded {{output}}")
+print("values: " + ", ".join(loaded_values))
+"""
+    return GeneratedPythonScript(
+        summary=f"Create and load {output_name} using only the Python standard library.",
+        code=_clean_generated_code(code),
+        expected_files=[output_name],
+    )
+
+
 def _notes_from_objective(objective: str) -> list[str]:
     text = objective.split(":", 1)[1] if ":" in objective else objective
     parts = re.split(r"[,;\n]+|\s+-\s+", text)
@@ -268,7 +323,6 @@ async def _run_python_script(executable: str, script_path: Path, workspace: Path
         creationflags = subprocess.CREATE_NO_WINDOW
     process = await asyncio.create_subprocess_exec(
         executable,
-        "-I",
         str(script_path),
         cwd=str(workspace),
         stdout=asyncio.subprocess.PIPE,

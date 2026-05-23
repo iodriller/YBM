@@ -14,7 +14,13 @@ class RetryDecision(StrictBaseModel):
 
 
 class RetryPolicy:
-    RETRYABLE_ERRORS = {ErrorClass.TRANSIENT, ErrorClass.RATE_LIMITED, ErrorClass.USAGE_LIMITED}
+    RETRYABLE_ERRORS = {
+        ErrorClass.TRANSIENT,
+        ErrorClass.RATE_LIMITED,
+        ErrorClass.USAGE_LIMITED,
+        ErrorClass.ADAPTER_FAILED,
+        ErrorClass.VALIDATION_FAILED,
+    }
     RETRYABLE_STATUSES = {ToolResultStatus.RATE_LIMITED, ToolResultStatus.TIMEOUT}
 
     def __init__(self, limits: LimitsConfig) -> None:

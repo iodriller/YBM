@@ -25,6 +25,11 @@ def test_extended_e2e_cases_define_folder_explanation_and_code_interpreter() -> 
         "implicit_code_interpreter_numbers_report",
         "implicit_code_interpreter_csv_transform",
         "implicit_code_interpreter_markdown_from_notes",
+        "desktop_find_file_and_read_contents",
+        "desktop_resumes_folder_full_listing",
+        "code_interpreter_excel_generate_and_load",
+        "browser_dizibox_new_shows",
+        "browser_chatgpt_login_or_answer",
     } <= set(by_id)
 
     folder_case = by_id["folder_mixed_file_explanation"]
@@ -61,6 +66,18 @@ def test_extended_e2e_cases_define_folder_explanation_and_code_interpreter() -> 
         assert implicit_case["assertions"]["tools_all"] == ["code.interpreter:generate_and_run"]
         assert "coding.agent" in implicit_case["assertions"]["tools_forbidden"]
 
+    read_case = by_id["desktop_find_file_and_read_contents"]
+    assert read_case["assertions"]["tools_all"] == ["filesystem.manage:search"]
+    assert "local LLM orchestration" in read_case["assertions"]["bot_reply_contains_any"]
+
+    resumes_case = by_id["desktop_resumes_folder_full_listing"]
+    assert resumes_case["assertions"]["tools_all"] == ["filesystem.manage:inspect_folder"]
+    assert "oney-resume-notes.txt" in resumes_case["assertions"]["bot_reply_contains_any"]
+
+    excel_case = by_id["code_interpreter_excel_generate_and_load"]
+    assert excel_case["assertions"]["tools_all"] == ["code.interpreter:generate_and_run"]
+    assert ".xlsx" in excel_case["assertions"]["bot_reply_contains_any"]
+
 
 def test_live_e2e_runner_lists_extended_cases() -> None:
     result = subprocess.run(
@@ -76,3 +93,5 @@ def test_live_e2e_runner_lists_extended_cases() -> None:
     assert "code_interpreter_csv_summary" in result.stdout
     assert "desktop_file_search_then_delivery" in result.stdout
     assert "implicit_code_interpreter_numbers_report" in result.stdout
+    assert "desktop_find_file_and_read_contents" in result.stdout
+    assert "code_interpreter_excel_generate_and_load" in result.stdout

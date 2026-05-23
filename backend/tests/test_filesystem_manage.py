@@ -109,6 +109,44 @@ async def test_filesystem_manage_write_text_file_inside_allowed_root(tmp_path) -
 
 
 @pytest.mark.asyncio
+async def test_filesystem_manage_search_by_name_includes_readable_content_preview(tmp_path) -> None:
+    root = tmp_path / "desktop"
+    root.mkdir()
+    report = root / "resume-notes.txt"
+    report.write_text("Oney resume notes include Python, orchestration, and local automation.", encoding="utf-8")
+    adapter = FilesystemManageAdapter([str(tmp_path)])
+
+    result = await adapter.execute(_request(root, "search", query="resume", include_content=True))
+
+    assert result.status.value == "succeeded"
+    assert result.output["entries"][0]["relative_path"] == "resume-notes.txt"
+    assert "Python, orchestration" in result.output["entries"][0]["content_preview"]
+    assert "resume-notes.txt" in result.output["terminal_output"][0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_filesystem_manage_read_file_returns_contents(tmp_path) -> None:
+    root = tmp_path / "desktop"
+    root.mkdir()
+    report = root / "readme.txt"
+    report.write_text("This file explains the desktop automation test fixture.", encoding="utf-8")
+    adapter = FilesystemManageAdapter([str(tmp_path)])
+
+    result = await adapter.execute(
+        ToolCallRequest(
+            task_id="task_fs",
+            tool_name="filesystem.manage",
+            capability=Capability.FILESYSTEM_WRITE,
+            input={"operation": "read_file", "path": str(report), "max_chars": 1000},
+        )
+    )
+
+    assert result.status.value == "succeeded"
+    assert "desktop automation test fixture" in result.output["text"]
+    assert "Content:" in result.output["terminal_output"][0]["content"]
+
+
+@pytest.mark.asyncio
 async def test_filesystem_manage_describe_folder_extracts_file_content_and_image_ocr(tmp_path) -> None:
     root = tmp_path / "mixed"
     root.mkdir()

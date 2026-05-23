@@ -344,6 +344,12 @@ class FilesystemOpenFileInput(ToolInputModel):
     path: str = Field(min_length=1)
 
 
+class FilesystemReadFileInput(ToolInputModel):
+    operation: Literal["read_file"] = "read_file"
+    path: str = Field(min_length=1)
+    max_chars: int = Field(default=12000, ge=100, le=100000)
+
+
 class FilesystemWriteTextFileInput(ToolInputModel):
     operation: Literal["write_text_file"] = "write_text_file"
     path: str = Field(min_length=1)
@@ -577,7 +583,11 @@ class ComputerUseOutput(ToolOutputModel):
 class FilesystemManageOutput(ToolOutputModel):
     operation: str = Field(min_length=1)
     root: str | None = None
+    path: str | None = None
     entries: list[dict[str, Any]] = Field(default_factory=list)
+    text: str | None = None
+    content_preview: str | None = None
+    content_summary: str | None = None
     manifest: list[dict[str, Any]] = Field(default_factory=list)
     changed_paths: list[str] = Field(default_factory=list)
     dry_run: bool = False

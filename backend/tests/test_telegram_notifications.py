@@ -94,7 +94,38 @@ def test_task_message_without_screenshot_keeps_photo_path_out_of_text(tmp_path) 
 
     assert "Screenshot:" not in message
     assert str(screenshot) not in message
-    assert "Tool: computer.use" in message
+    assert "Tool:" not in message
+
+
+def test_completed_filesystem_search_message_includes_file_contents() -> None:
+    task = TaskRecord(
+        objective="Find the resume notes file from my desktop and read it to me.",
+        status=TaskStatus.COMPLETED,
+        metadata={
+            "last_tool_name": "filesystem.manage",
+            "last_tool_result": {
+                "output": {
+                    "operation": "search",
+                    "root": "C:/Users/oneye/Desktop",
+                    "entries": [
+                        {
+                            "relative_path": "oney-resume-notes.txt",
+                            "is_dir": False,
+                            "size_bytes": 100,
+                            "content_preview": "Oney resume notes include Python automation and local LLM orchestration.",
+                        }
+                    ],
+                }
+            },
+        },
+    )
+
+    message = _task_message_without_screenshot(task)
+
+    assert "oney-resume-notes.txt" in message
+    assert "Python automation" in message
+    assert "Task:" not in message
+    assert "Tool:" not in message
 
 
 @pytest.mark.asyncio

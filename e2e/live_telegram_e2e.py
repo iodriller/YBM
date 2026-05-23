@@ -127,6 +127,13 @@ async def run_case(case: dict[str, Any], fixtures: "Fixtures", admin: "AdminClie
         )
         telegram_replies.extend(spawn_replies)
         task_id = _extract_task_id(spawn_replies)
+        if not task_id:
+            task_id = await _find_new_task_id_from_admin(
+                admin,
+                before_summary,
+                resolved_message,
+                timeout_seconds=spawn_timeout,
+            )
         if task_id:
             trace = await _wait_for_terminal_trace(admin, task_id, timeout_seconds=int(case.get("timeout_seconds", 300)))
         else:
@@ -493,8 +500,36 @@ async def _wait_for_task_spawn_replies(client: Any, peer: Any, min_id: int, *, t
         latest = [_telegram_message(message) for message in sorted(messages, key=lambda item: item.id) if not getattr(message, "out", False)]
         if _extract_task_id(latest):
             return latest
+        text = "\n".join(str(message.get("text") or "").lower() for message in latest)
+        if "queued the work" in text or "queued it" in text or "i understood the request" in text:
+            return latest
         await asyncio.sleep(2)
     return latest
+
+
+async def _find_new_task_id_from_admin(
+    admin: "AdminClient",
+    before_summary: dict[str, Any],
+    message: str,
+    *,
+    timeout_seconds: int,
+) -> str | None:
+    before_ids = {str(task.get("id")) for task in (before_summary.get("tasks") or []) if task.get("id")}
+    message_lower = message.lower().strip()
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        summary = admin.summary()
+        for task in summary.get("tasks") or []:
+            task_id = str(task.get("id") or "")
+            if not task_id or task_id in before_ids:
+                continue
+            objective = str(task.get("objective") or "").lower()
+            metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+            original = str(metadata.get("original_message_text") or "").lower()
+            if message_lower in {objective, original} or objective in message_lower or original in message_lower:
+                return task_id
+        await asyncio.sleep(2)
+    return None
 
 
 async def _wait_for_terminal_trace(admin: "AdminClient", task_id: str, *, timeout_seconds: int) -> dict[str, Any]:
@@ -576,6 +611,16 @@ def prepare_fixtures(*, start_web_server: bool) -> Fixtures:
     desktop_folder.mkdir(parents=True, exist_ok=True)
     pdf_path = desktop_folder / "agent-control-sample.pdf"
     _write_minimal_pdf(pdf_path, "Agent Control E2E PDF. This file describes desktop automation, browser testing, and artifact delivery.")
+    resumes_folder = Path.home() / "Desktop" / "resumes"
+    resumes_folder.mkdir(parents=True, exist_ok=True)
+    (resumes_folder / "oney-resume-notes.txt").write_text(
+        "Oney resume notes: Python automation, local LLM orchestration, desktop control, browser automation.",
+        encoding="utf-8",
+    )
+    (resumes_folder / "cover-letter-draft.md").write_text(
+        "# Cover Letter Draft\n\nFocus on autonomous agent-control systems and pragmatic software engineering.",
+        encoding="utf-8",
+    )
 
     documents_folder = fixture_root / "documents"
     if documents_folder.exists():
@@ -628,6 +673,7 @@ def prepare_fixtures(*, start_web_server: bool) -> Fixtures:
 
     values = {
         "desktop_folder": str(desktop_folder),
+        "resumes_folder": str(resumes_folder),
         "pdf_path": str(pdf_path),
         "documents_folder": str(documents_folder),
         "mixed_content_folder": str(mixed_content_folder),

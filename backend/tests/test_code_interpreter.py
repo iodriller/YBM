@@ -143,13 +143,41 @@ async def test_code_interpreter_falls_back_when_structured_generation_fails_for_
 
 
 @pytest.mark.asyncio
-async def test_code_interpreter_blocks_unsafe_imports(tmp_path) -> None:
+async def test_code_interpreter_allows_imports_by_default(tmp_path) -> None:
     adapter = CodeInterpreterAdapter(_settings(tmp_path).adapters.code_interpreter)
+
+    result = await adapter.execute(_request(tmp_path, "run_python", code="import subprocess\nprint('bad')\n"))
+
+    assert result.status.value == "succeeded"
+    assert "bad" in result.output["stdout"]
+
+
+@pytest.mark.asyncio
+async def test_code_interpreter_can_block_configured_imports(tmp_path) -> None:
+    config = _settings(tmp_path).adapters.code_interpreter.model_copy(update={"blocked_imports": ["subprocess"]})
+    adapter = CodeInterpreterAdapter(config)
 
     result = await adapter.execute(_request(tmp_path, "run_python", code="import subprocess\nprint('bad')\n"))
 
     assert result.status.value == "failed"
     assert "blocked import" in (result.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_code_interpreter_fallback_can_create_and_load_excel_workbook(tmp_path) -> None:
+    adapter = CodeInterpreterAdapter(_settings(tmp_path).adapters.code_interpreter, provider=BrokenStructuredProvider())
+
+    result = await adapter.execute(
+        _request(
+            tmp_path,
+            "generate_and_run",
+            objective="Create a simple Python script to generate and load an Excel workbook.",
+        )
+    )
+
+    assert result.status.value == "succeeded"
+    assert "workbook.xlsx" in result.output["files_created"]
+    assert "created and loaded" in result.output["stdout"]
 
 
 def test_intent_routes_code_interpreter_to_bounded_python(tmp_path) -> None:

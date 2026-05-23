@@ -68,7 +68,7 @@ def build_default_task_plan(settings: AppSettings, task: TaskRecord) -> PlanMode
 
 def build_evaluator_recovery_plan(settings: AppSettings, task: TaskRecord, failure_reason: str) -> PlanModel | None:
     reason = failure_reason.lower()
-    if int(task.metadata.get("evaluator_repair_count", 0)) >= 1:
+    if int(task.metadata.get("evaluator_repair_count", 0)) >= 2:
         return None
     if "expected_desktop_observation_missing" in reason:
         if _looks_like_desktop_file_listing(task.objective):
@@ -243,23 +243,36 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
         write_policy = settings.capabilities.get(Capability.FILESYSTEM_WRITE)
         if write_policy is None or not write_policy.enabled:
             return None
-        root = intent.folder_path or intent.path or _root_from_objective(objective)
+        root = (
+            _usable_intent_path(intent.folder_path)
+            or _folder_root_from_request(request_text)
+            or _usable_intent_path(intent.path)
+            or _usable_intent_path(intent.file_path)
+            or _root_from_objective(objective)
+        )
         if not root:
             return None
-        if intent.delivery in {DeliveryKind.FILE, DeliveryKind.LATEST} or _looks_like_delivery_request(_task_request_text(task)):
-            file_lookup_plan = _build_file_lookup_delivery_plan(settings, task, intent=intent)
-            if file_lookup_plan is not None:
-                return file_lookup_plan
         operation = _filesystem_intent_operation(intent.operation)
         if _looks_like_rename_request(request_text):
             operation = "rename_plan"
+        listing_or_description = operation in {"inspect_folder", "describe_folder"} and not _looks_like_delivery_request(request_text)
+        if not listing_or_description and (
+            intent.delivery in {DeliveryKind.FILE, DeliveryKind.LATEST} or _looks_like_delivery_request(_task_request_text(task))
+        ):
+            file_lookup_plan = _build_file_lookup_delivery_plan(settings, task, intent=intent)
+            if file_lookup_plan is not None:
+                return file_lookup_plan
+        if _looks_like_find_and_read_request(request_text, objective) and operation == "search":
+            operation = "search"
         if operation == "organize_plan" and _looks_like_file_search(objective):
+            operation = "search"
+        if operation == "read_file" and not (intent.file_path or intent.path):
             operation = "search"
         if operation == "search":
             steps = [
                 PlanStep(
                     title="Search scoped folder",
-                    description="Search inside the requested folder using filesystem APIs.",
+                    description="Search inside the requested folder and include readable file previews when possible.",
                     required_capabilities=[Capability.FILESYSTEM_WRITE],
                     risk_level=RiskLevel.HIGH,
                     requires_approval=write_policy.requires_approval,
@@ -268,10 +281,28 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
                         "operation": "search",
                         "root": root,
                         "query": intent.query or _query_from_file_reference(intent.file_path or intent.path) or "*",
-                        "include_content": False,
+                        "include_content": True,
                         "timeout_seconds": 60,
                     },
-                    expected_output="Matching file paths under the configured allowed root.",
+                    expected_output="Matching file paths and readable content previews under the configured allowed root.",
+                )
+            ]
+        elif operation == "read_file":
+            steps = [
+                PlanStep(
+                    title="Read scoped file",
+                    description="Read the requested file content through filesystem APIs.",
+                    required_capabilities=[Capability.FILESYSTEM_WRITE],
+                    risk_level=RiskLevel.HIGH,
+                    requires_approval=write_policy.requires_approval,
+                    tool_name="filesystem.manage",
+                    tool_input={
+                        "operation": "read_file",
+                        "path": intent.file_path or intent.path,
+                        "max_chars": 16000,
+                        "timeout_seconds": 60,
+                    },
+                    expected_output="Readable file content and a concise summary.",
                 )
             ]
         elif operation == "inspect_folder":
@@ -386,6 +417,9 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
         )
 
     if intent.route == IntentRoute.BROWSER_OPEN:
+        prompt_plan = _build_browser_prompt_interaction_plan(settings, task, intent, request_text, objective)
+        if prompt_plan is not None:
+            return prompt_plan
         open_policy = settings.capabilities.get(Capability.BROWSER_OPEN)
         if not settings.adapters.browser.enabled or open_policy is None or not open_policy.enabled:
             return None
@@ -466,6 +500,9 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
         )
 
     if intent.route == IntentRoute.BROWSER_CONTROL:
+        prompt_plan = _build_browser_prompt_interaction_plan(settings, task, intent, request_text, objective)
+        if prompt_plan is not None:
+            return prompt_plan
         control_policy = settings.capabilities.get(Capability.BROWSER_CONTROL)
         if not settings.adapters.browser.enabled or control_policy is None or not control_policy.enabled:
             return None
@@ -793,6 +830,10 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
             document_plan = _build_document_plan(settings, task)
             if document_plan is not None:
                 return document_plan
+        if intent.provider not in {"codex", "github_copilot"} and _looks_like_local_web_app_build(request_text):
+            workspace_plan = _build_workspace_intent_plan(settings, task, intent, request_text)
+            if workspace_plan is not None:
+                return workspace_plan
         policy = settings.capabilities.get(Capability.TERMINAL_RUN)
         if policy is None or not policy.enabled or not settings.adapters.coding_agent.enabled:
             return None
@@ -951,6 +992,9 @@ def _filesystem_intent_operation(operation: str | None) -> str:
         "list": "inspect_folder",
         "ls": "inspect_folder",
         "read_folder": "inspect_folder",
+        "read_file": "read_file",
+        "read": "read_file",
+        "file_read": "read_file",
         "folder_inspection": "inspect_folder",
         "describe": "describe_folder",
         "explain": "describe_folder",
@@ -976,7 +1020,7 @@ def _filesystem_intent_operation(operation: str | None) -> str:
         "apply": "apply_manifest",
     }
     normalized = aliases.get(normalized, normalized)
-    if normalized in {"inspect_folder", "search", "describe_folder", "organize_plan", "rename_plan", "apply_manifest"}:
+    if normalized in {"inspect_folder", "search", "read_file", "describe_folder", "organize_plan", "rename_plan", "apply_manifest"}:
         return normalized
     return "organize_plan"
 
@@ -1036,6 +1080,33 @@ def _browser_control_operation(operation: str | None, objective: str) -> str | N
 def _objective_wants_page_update_check(objective: str) -> bool:
     lowered = objective.lower()
     return any(marker in lowered for marker in ("new episode", "new content", "new release", "came out", "published"))
+
+
+def _looks_like_browser_prompt_interaction(objective: str) -> bool:
+    lowered = objective.lower()
+    has_browser_app = any(marker in lowered for marker in ("chatgpt", "claude", "gemini", "web form", "form website"))
+    asks_to_enter = any(marker in lowered for marker in ("ask ", "type ", "enter ", "fill ", "prompt ", "send this", "with this information"))
+    return has_browser_app and asks_to_enter
+
+
+def _prompt_from_browser_prompt_interaction(objective: str) -> str | None:
+    patterns = [
+        r"\bask\s+(?:it\s+)?(?:to\s+)?(.+?)(?:\s+and\s+give\s+me\s+the\s+answer|[.!?]?$)",
+        r"\bprompt\s*[:\-]\s*(.+)$",
+        r"\btype\s+(.+?)(?:\s+into|\s+in|\s+on|[.!?]?$)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, objective, flags=re.IGNORECASE)
+        if match:
+            prompt = re.sub(r"\s+", " ", match.group(1)).strip(" .,:;\"'")
+            if prompt:
+                return prompt
+    return None
+
+
+def _looks_like_submit_prompt(objective: str) -> bool:
+    lowered = objective.lower()
+    return any(marker in lowered for marker in ("ask ", "send the prompt", "submit", "give me the answer"))
 
 
 def _build_pdf_summary_intent_plan(
@@ -1217,6 +1288,73 @@ def _build_workspace_intent_plan(
         ],
         success_criteria=["Workspace operation reports local paths and any preview URL."],
         postconditions=_preview_postconditions() if operation in {"web_app_preview", "launch_static"} else _workspace_postconditions(),
+    )
+
+
+def _build_browser_prompt_interaction_plan(
+    settings: AppSettings,
+    task: TaskRecord,
+    intent: OrchestrationIntent,
+    request_text: str,
+    objective: str,
+) -> PlanModel | None:
+    if not _looks_like_browser_prompt_interaction(request_text):
+        return None
+    open_policy = settings.capabilities.get(Capability.BROWSER_OPEN)
+    control_policy = settings.capabilities.get(Capability.BROWSER_CONTROL)
+    if (
+        not settings.adapters.browser.enabled
+        or open_policy is None
+        or not open_policy.enabled
+        or control_policy is None
+        or not control_policy.enabled
+    ):
+        return None
+    url = intent.url or _first_url_from_text(request_text) or ("https://chatgpt.com" if "chatgpt" in request_text.lower() else None)
+    if not url:
+        return None
+    url = _normalize_url_for_plan(url)
+    prompt = intent.query or _prompt_from_browser_prompt_interaction(request_text) or objective
+    fields = intent.form_fields or {
+        "message": prompt,
+        "prompt": prompt,
+        "textarea": prompt,
+        "chat": prompt,
+    }
+    return PlanModel(
+        objective=objective,
+        assumptions=["The user asked to interact with a browser-based prompt or form, so the browser adapter opens the page and tries to enter the prompt."],
+        required_capabilities=[Capability.BROWSER_OPEN, Capability.BROWSER_CONTROL],
+        steps=[
+            PlanStep(
+                title="Open browser app",
+                description="Open the requested browser application before entering the prompt.",
+                required_capabilities=[Capability.BROWSER_OPEN],
+                risk_level=RiskLevel.LOW,
+                requires_approval=open_policy.requires_approval,
+                tool_name="browser.open",
+                tool_input={"operation": "open", "url": url, "new_tab": True, "timeout_seconds": 60},
+                expected_output="Requested browser app is open.",
+            ),
+            PlanStep(
+                title="Enter browser prompt",
+                description="Fill the visible prompt field if one is available; report login or blocked states clearly.",
+                required_capabilities=[Capability.BROWSER_CONTROL],
+                risk_level=RiskLevel.CRITICAL,
+                requires_approval=control_policy.requires_approval,
+                tool_name="browser.control",
+                tool_input={
+                    "operation": "fill_form_step",
+                    "url_contains": url,
+                    "fields": fields,
+                    "submit": bool(intent.submit or _looks_like_submit_prompt(request_text)),
+                    "timeout_seconds": 90,
+                },
+                expected_output="Updated page state or a clear blocked/login-required summary.",
+            ),
+        ],
+        success_criteria=["The prompt is entered when possible, or the browser state explains why it could not be entered."],
+        postconditions=_browser_postconditions(),
     )
 
 
@@ -2334,12 +2472,39 @@ def _build_filesystem_manage_plan(settings: AppSettings, task: TaskRecord) -> Pl
         return None
     if not _looks_like_filesystem_manage_request(task.objective):
         return None
-    root = _path_from_objective(task.objective) or _root_from_objective(task.objective)
+    root = _path_from_objective(task.objective) or _folder_root_from_request(_task_request_text(task)) or _root_from_objective(task.objective)
     if root is None:
         return None
     write_policy = settings.capabilities.get(Capability.FILESYSTEM_WRITE)
     if write_policy is None or not write_policy.enabled:
         return None
+
+    explicit_path = _path_from_objective(task.objective)
+    if explicit_path and _looks_like_find_and_read_request(_task_request_text(task), task.objective):
+        return PlanModel(
+            objective=task.objective,
+            assumptions=["The request asks to read an explicit file path through scoped filesystem APIs."],
+            required_capabilities=[Capability.FILESYSTEM_WRITE],
+            steps=[
+                PlanStep(
+                    title="Read scoped file",
+                    description="Read the requested file content through filesystem APIs.",
+                    required_capabilities=[Capability.FILESYSTEM_WRITE],
+                    risk_level=RiskLevel.HIGH,
+                    requires_approval=write_policy.requires_approval,
+                    tool_name="filesystem.manage",
+                    tool_input={
+                        "operation": "read_file",
+                        "path": explicit_path,
+                        "max_chars": 16000,
+                        "timeout_seconds": 60,
+                    },
+                    expected_output="Readable file content and a concise summary.",
+                )
+            ],
+            success_criteria=["The file content is returned or a clear extraction error is reported."],
+            postconditions=_file_organization_postconditions(required=False),
+        )
 
     if _looks_like_file_search(task.objective) or _looks_like_desktop_file_listing(task.objective):
         operation = "inspect_folder" if _looks_like_desktop_file_listing(task.objective) else "search"
@@ -2545,6 +2710,20 @@ def _build_adapter_factory_plan(settings: AppSettings, task: TaskRecord) -> Plan
 
 def _looks_like_launchable_web_app(objective: str) -> bool:
     return bool(expected_fulfillment(objective).get("preview_url"))
+
+
+def _looks_like_local_web_app_build(objective: str) -> bool:
+    lowered = objective.lower()
+    return any(marker in lowered for marker in ("web app", "website", "site", "dashboard", "frontend", "html app")) and any(
+        marker in lowered for marker in ("build", "create", "make", "generate", "launch")
+    )
+
+
+def _normalize_url_for_plan(value: str) -> str:
+    stripped = value.strip()
+    if stripped.startswith(("http://", "https://", "about:")):
+        return stripped
+    return f"https://{stripped}"
 
 
 def _workspace_postconditions() -> list[PlanPostcondition]:
@@ -2904,6 +3083,47 @@ def _root_from_objective(objective: str) -> str | None:
     return None
 
 
+def _folder_root_from_request(objective: str) -> str | None:
+    lowered = objective.lower()
+    root_alias = _root_from_objective(objective)
+    if not root_alias:
+        return None
+
+    folder_name: str | None = None
+    patterns = [
+        r"\b([A-Za-z0-9_. -]{2,80}?)\s+folder\s+(?:on|at|in)\s+(?:my\s+)?(?:desktop|documents|downloads)\b",
+        r"\bfolder\s+(?:named|called)\s+([A-Za-z0-9_. -]{2,80}?)(?:\s+(?:on|at|in)\s+(?:my\s+)?(?:desktop|documents|downloads)|[.!?]|$)",
+        r"\bopen\s+(?:the\s+)?([A-Za-z0-9_. -]{2,80}?)\s+folder\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, objective, flags=re.IGNORECASE)
+        if match:
+            folder_name = _clean_folder_name(match.group(1))
+            break
+    if not folder_name:
+        return None
+    if folder_name.lower() in {"desktop", "documents", "downloads"}:
+        return folder_name.lower()
+    if folder_name.lower() in {"my", "the", "a", "an", "this", "that"}:
+        return None
+    if root_alias == "desktop" and folder_name.lower() in {"download", "downloads"}:
+        return "downloads"
+    if root_alias == "documents" and folder_name.lower() in {"desktop", "downloads"}:
+        return folder_name.lower()
+    return f"{root_alias}\\{folder_name}"
+
+
+def _clean_folder_name(value: str) -> str:
+    cleaned = re.sub(
+        r"\b(open|the|a|an|my|folder|directory|named|called|at|on|in|and|tell|me|all|files|inside|inside it)\b",
+        " ",
+        value,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .,:;\"'")
+    return cleaned
+
+
 def _path_from_objective(objective: str) -> str | None:
     quoted = _quoted_text(objective)
     if quoted and _looks_like_path(quoted):
@@ -2958,6 +3178,15 @@ def _usable_explicit_path(value: str) -> bool:
     return _looks_like_path(value) and not re.search(r"<[^>]+>|\{[^}]+\}", value)
 
 
+def _usable_intent_path(value: str | None) -> str | None:
+    if not value:
+        return None
+    text = value.strip()
+    if not text or re.search(r"<[^>]+>|\{[^}]+\}", text):
+        return None
+    return text
+
+
 def _query_from_file_reference(value: str | None) -> str | None:
     if not value:
         return None
@@ -2968,6 +3197,11 @@ def _query_from_file_reference(value: str | None) -> str | None:
         return None
     name = Path(text.replace("/", "\\")).name
     return name or text
+
+
+def _looks_like_find_and_read_request(*values: str) -> bool:
+    combined = " ".join(value for value in values if value).lower()
+    return any(marker in combined for marker in ("read it", "read me", "read the file", "what inside", "what is inside", "contents", "content of"))
 
 
 def _search_query_from_objective(objective: str) -> str:
@@ -3132,7 +3366,7 @@ def _browser_control_input(objective: str) -> tuple[str, dict[str, object]]:
 def _first_url_from_text(value: str) -> str | None:
     import re
 
-    match = re.search(r"https?://[^\s<>()]+|www\.[^\s<>()]+", value)
+    match = re.search(r"https?://[^\s<>()]+|www\.[^\s<>()]+|\b[A-Za-z0-9.-]+\.(?:com|org|net|io|ai|dev|edu|gov|co)\b", value)
     return match.group(0).rstrip(".,") if match else None
 
 

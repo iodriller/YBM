@@ -62,9 +62,37 @@ def test_telegram_text_update_creates_task(tmp_path) -> None:
     assert result.task is not None
     assert result.task.objective == "Build a todo app"
     assert result.task.metadata["task_type"] == TaskType.DEVELOPMENT.value
-    assert result.outbound_message is not None
-    assert "Task spawned:" in (result.outbound_message.text or "")
+    assert result.outbound_message is None
     assert repos.tasks.get(result.task.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_telegram_intake_sends_user_facing_progress_without_task_id(tmp_path) -> None:
+    service, repos = _service(
+        tmp_path,
+        TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
+        classifier=StaticMessageClassifier(),
+    )
+    client = FakeTelegramClient([])
+    service.bot_api = client  # type: ignore[assignment]
+
+    result = await service.handle_update_async(
+        {
+            "message": {
+                "message_id": 15,
+                "from": {"id": 42},
+                "chat": {"id": 100},
+                "text": "Build a todo app",
+            }
+        }
+    )
+
+    assert result.task is not None
+    assert result.outbound_message is None
+    sent_text = "\n".join(text for _, text in client.sent)
+    assert "Message received" in sent_text
+    assert "queued the work" in sent_text
+    assert result.task.id not in sent_text
 
 
 def test_telegram_duplicate_message_is_ignored_without_crashing_or_spawning_again(tmp_path) -> None:
@@ -145,7 +173,7 @@ def test_telegram_classifier_can_reject_task_spawn(tmp_path) -> None:
 
     assert result.task is None
     assert result.outbound_message is not None
-    assert "No task spawned" in (result.outbound_message.text or "")
+    assert "I could not start this request" in (result.outbound_message.text or "")
     assert events[0].payload["reason"] == "question only"
 
 
@@ -201,7 +229,8 @@ def test_telegram_plain_status_does_not_require_slash(tmp_path) -> None:
     )
 
     assert result.outbound_message is not None
-    assert task.id in (result.outbound_message.text or "")
+    assert task.id not in (result.outbound_message.text or "")
+    assert "received: Build app" in (result.outbound_message.text or "")
 
 
 def test_telegram_rich_status_question_spawns_traceable_status_task(tmp_path) -> None:
@@ -238,8 +267,7 @@ def test_telegram_rich_status_question_spawns_traceable_status_task(tmp_path) ->
 
     assert result.task is not None
     assert result.task.metadata["task_type"] == TaskType.STATUS_REQUEST.value
-    assert result.outbound_message is not None
-    assert "Task spawned:" in (result.outbound_message.text or "")
+    assert result.outbound_message is None
     assert repos.tasks.get(result.task.id) is not None
 
 

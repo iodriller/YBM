@@ -51,6 +51,8 @@ NOTIFIABLE_STATUSES = {
     TaskStatus.CANCELLED,
     TaskStatus.COMPLETED,
     TaskStatus.FAILED,
+    TaskStatus.RETRYING,
+    TaskStatus.RUNNING,
 }
 
 
@@ -226,6 +228,10 @@ class TaskWorker:
             return self._transition(task, TaskStatus.AWAITING_APPROVAL, "tool_approval_required")
         if result.status == ToolResultStatus.DENIED:
             return self._transition(task, TaskStatus.BLOCKED, "tool_policy_denied")
+        if result.error_class in {ErrorClass.ADAPTER_FAILED, ErrorClass.VALIDATION_FAILED}:
+            recovery = self._attach_recovery_plan(task, result.error_message or result.status.value)
+            if recovery is not None:
+                return recovery
         retry = self._retry_decision(task, result)
         if retry:
             if retry.status == TaskStatus.BLOCKED and result.error_class != ErrorClass.USAGE_LIMITED:
@@ -320,7 +326,7 @@ class TaskWorker:
             return None
         latest = self.repositories.tasks.get(task.id) or task
         repair_count = int(latest.metadata.get("evaluator_repair_count", 0))
-        if repair_count >= 1:
+        if repair_count >= 2:
             return None
         plan = self.recovery_plan_factory(latest, reason)
         if plan is None:
@@ -501,7 +507,7 @@ class TaskWorker:
                     "fulfillment_missing": [item.value for item in validation.missing],
                     "fulfillment_retry_count": retry_count + 1,
                 }
-                if retry_count < 1:
+                if retry_count < 2:
                     updated = self.repositories.tasks.update_metadata(latest.id, metadata, TaskStatus.RECEIVED)
                     self.audit.task_state_changed("validator", latest.id, latest.status, updated.status)
                     self.audit.append(
