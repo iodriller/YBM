@@ -13,11 +13,11 @@ from agent_control.storage.repositories import Repositories
 
 PLANNER_SYSTEM_PROMPT = prompt_text("base/planner_system.md")
 
-# Keywords that indicate a complex/major task requiring more LLM context
+# Keywords that indicate a complex/major task needing a larger LLM context window
 _MAJOR_TASK_KEYWORDS = (
-    "create", "build", "generate", "write code", "write a script",
-    "research", "analyze", "open browser", "open chatgpt", "open ",
-    "script", "excel", "python", "automate", "multiple", "step by step",
+    "write code", "write a script", "generate report", "automate",
+    "excel", "create a script", "build a script", "step by step",
+    "research and", "analyze and",
 )
 
 
@@ -54,7 +54,11 @@ class PlannerService:
         if self.major_provider is not None and _is_major_task(task.objective):
             provider = self.major_provider
 
-        user_prompt = self._prompt(task.objective, config_context)
+        # Use enriched objective during replanning (includes error context from failed attempt)
+        objective = str(task.metadata.get("replan_objective") or task.objective).strip()
+        raw_memory = str(task.metadata.get("memory_context") or "").strip()
+        memory_section = f"## Conversation context\n{raw_memory}\n\n" if raw_memory else ""
+        user_prompt = self._prompt(objective, config_context, memory_section)
         try:
             plan = await provider.generate_structured(PLANNER_SYSTEM_PROMPT, user_prompt, PlanModel)
             plan = self._validate_plan(plan)
@@ -95,5 +99,10 @@ class PlannerService:
         return self.plan_validator(plan)
 
     @staticmethod
-    def _prompt(objective: str, config_context: str) -> str:
-        return render_prompt("tasks/planner_user.md", objective=objective, config_context=config_context)
+    def _prompt(objective: str, config_context: str, memory_context: str = "") -> str:
+        return render_prompt(
+            "tasks/planner_user.md",
+            objective=objective,
+            config_context=config_context,
+            memory_context=memory_context,
+        )

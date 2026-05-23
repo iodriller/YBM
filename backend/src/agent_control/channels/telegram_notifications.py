@@ -110,7 +110,9 @@ def _user_facing_task_message(task: TaskRecord) -> str:
     if task.status == TaskStatus.CANCELLED:
         return "Cancelled."
     if task.status in {TaskStatus.BLOCKED, TaskStatus.FAILED}:
-        lines = ["I could not complete this request."]
+        error = _last_error(task)
+        first_line = _failure_headline(task, error)
+        lines = [first_line]
         lines.extend(_failure_lines(task))
         return _trim("\n".join(lines), 3900)
     if task.status != TaskStatus.COMPLETED:
@@ -438,6 +440,22 @@ def _path_from_screenshot_value(value: object) -> Path | None:
     return path if path.exists() and path.is_file() else None
 
 
+def _failure_headline(task: TaskRecord, error: str | None) -> str:
+    if not error:
+        return "I could not complete this request."
+    low = error.lower()
+    if "chrome" in low or "devtools" in low or "browser" in low or "websocket" in low:
+        return (
+            "Browser task failed — Chrome is not running with remote debugging enabled.\n"
+            "Start Chrome with: chrome --remote-debugging-port=9222 --remote-allow-origins=*"
+        )
+    if "planning" in low or "plan failed" in low or "no plan" in low:
+        return "I could not plan this task."
+    if "capability" in low or "disabled" in low or "not enabled" in low:
+        return "A required capability is not enabled for this task."
+    return "I could not complete this request."
+
+
 def _failure_lines(task: TaskRecord) -> list[str]:
     lines = []
     gap = task.metadata.get("fulfillment_gap")
@@ -509,10 +527,15 @@ def _last_usage(task: TaskRecord) -> str | None:
 
 
 def _last_error(task: TaskRecord) -> str | None:
+    fallback = (
+        task.metadata.get("last_worker_error")
+        or task.metadata.get("planning_error")
+        or task.metadata.get("last_replan_reason")
+    )
     result = task.metadata.get("last_tool_result")
     if not isinstance(result, dict):
-        return task.metadata.get("last_worker_error")
-    value = result.get("error_message") or task.metadata.get("last_worker_error")
+        return fallback
+    value = result.get("error_message") or fallback
     return str(value) if value else None
 
 

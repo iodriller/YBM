@@ -2,7 +2,8 @@ Create an execution plan for this objective:
 
 ${objective}
 
-Configuration/capability context (only use capabilities that are listed as enabled):
+${memory_context}
+Configuration and available tools (only use capabilities listed as enabled):
 ${config_context}
 
 Requirements:

@@ -1009,6 +1009,16 @@ _ADMIN_HTML = """
     .activity.paused .activity-dot { background: var(--muted); }
     .activity.done .activity-dot { background: var(--success); }
     .activity.bad .activity-dot { background: var(--danger); }
+    .live-section { display: grid; gap: 10px; }
+    .live-task { border: 2px solid var(--accent); border-radius: 8px; background: var(--panel); overflow: hidden; animation: fadeIn 0.25s ease; }
+    .live-task-bar { height: 3px; background: linear-gradient(90deg, var(--accent) 0%, transparent 100%); background-size: 200% 100%; animation: shimmer 2s linear infinite; }
+    .live-task-body { padding: 10px 12px; }
+    .live-task-header { display: flex; gap: 10px; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+    .live-task-output { margin-top: 8px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; background: var(--bg); padding: 8px 10px; border-radius: 5px; max-height: 120px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; border: 1px solid var(--border); color: var(--muted); }
+    .poll-label { font-size: 11px; color: var(--muted); }
+    .idle-note { color: var(--muted); font-size: 13px; padding: 4px 0; }
+    @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
     .task-meta { color: var(--muted); font-size: 12px; margin-top: 4px; }
     .task-toolbar { margin-bottom: 12px; }
     .task-id { font-size: 12px; }
@@ -1152,6 +1162,13 @@ _ADMIN_HTML = """
     <section class="panel wide">
       <h2>Overview</h2>
       <div id="overview" class="status-grid"></div>
+    </section>
+    <section class="panel wide">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+        <h2 style="margin:0">Live Activity</h2>
+        <span id="poll-label" class="poll-label"></span>
+      </div>
+      <div id="live-feed" class="live-section"><div class="idle-note">Loading…</div></div>
     </section>
     <section class="panel">
       <h2>Configuration</h2>
@@ -1863,6 +1880,60 @@ _ADMIN_HTML = """
         .filter(item => Number.isInteger(item));
     }
 
+    const ACTIVE_STATUSES = new Set(["received", "interpreting", "planned", "running", "retrying", "awaiting_approval"]);
+    let _pollTimer = null;
+
+    function scheduleNextRefresh(activeTasks) {
+      clearTimeout(_pollTimer);
+      _pollTimer = setTimeout(autoRefresh, activeTasks > 0 ? 2000 : 10000);
+    }
+
+    async function autoRefresh() { await refresh(); }
+
+    function extractLastOutput(task) {
+      const meta = task.metadata || {};
+      const result = meta.last_tool_result || {};
+      const out = result.output || {};
+      const text = out.stdout || out.summary || out.response || out.content || out.text || out.result || null;
+      if (text) return String(text);
+      if (result.error_message) return `Error: ${result.error_message}`;
+      if (meta.last_worker_error) return `Error: ${meta.last_worker_error}`;
+      return null;
+    }
+
+    function renderLiveFeed(tasks) {
+      const active = tasks.filter(t => ACTIVE_STATUSES.has(t.status));
+      const el = document.getElementById("live-feed");
+      if (!el) return;
+      if (!active.length) {
+        el.innerHTML = '<div class="idle-note">No active tasks — idle.</div>';
+        return;
+      }
+      el.innerHTML = active.map(task => {
+        const activity = activityForStatus(task.status);
+        const lastOutput = extractLastOutput(task);
+        const step = task.current_step_id ? ` · step ${escapeHtml(task.current_step_id)}` : "";
+        return `
+          <div class="live-task">
+            <div class="live-task-bar"></div>
+            <div class="live-task-body">
+              <div class="live-task-header">
+                <span class="activity active"><span class="activity-dot"></span>&thinsp;<strong>${escapeHtml(activity.label)}</strong><span class="muted">${step}</span></span>
+                <code class="task-id">${escapeHtml(task.id)}</code>
+              </div>
+              <div class="task-objective">${escapeHtml(task.objective)}</div>
+              ${lastOutput ? `<div class="live-task-output">${escapeHtml(lastOutput.slice(0, 600))}</div>` : ""}
+              <div class="row" style="margin-top:8px;">
+                <button class="primary" data-task-id="${escapeHtml(task.id)}" data-task-details="open">Details</button>
+                <button ${taskActionDisabled(task, "pause") ? "disabled" : ""} data-task-id="${escapeHtml(task.id)}" data-task-action="pause">Pause</button>
+                <button ${taskActionDisabled(task, "cancel") ? "disabled" : ""} data-task-id="${escapeHtml(task.id)}" data-task-action="cancel">Cancel</button>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join("");
+    }
+
     async function refresh() {
       const status = document.getElementById("status");
       try {
@@ -1885,12 +1956,18 @@ _ADMIN_HTML = """
         populateConfigForms(data.config);
         renderAccessModes(data.access_modes || {});
         renderTasks(data.tasks || [], data.task_pagination || {});
+        renderLiveFeed(data.tasks || []);
         if (!auditCustomView) {
           auditLimit = 20;
           renderAudit(data.audit || []);
         }
+        const activeCount = (data.tasks || []).filter(t => ACTIVE_STATUSES.has(t.status)).length;
+        scheduleNextRefresh(activeCount);
+        const pollEl = document.getElementById("poll-label");
+        if (pollEl) pollEl.textContent = `↻ ${new Date().toLocaleTimeString()} · ${activeCount > 0 ? "2s" : "10s"}`;
       } catch (error) {
         status.innerHTML = `<span class="danger">${error.message}</span>`;
+        scheduleNextRefresh(0);
       }
     }
 
@@ -2101,7 +2178,6 @@ _ADMIN_HTML = """
     }, true);
 
     refresh();
-    setInterval(refresh, 10000);
   </script>
 </body>
 </html>

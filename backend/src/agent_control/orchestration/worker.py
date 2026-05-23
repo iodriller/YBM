@@ -117,11 +117,18 @@ class TaskWorker:
 
         if task.status in {TaskStatus.RECEIVED, TaskStatus.INTERPRETING}:
             # LLM planner is the primary planning path
+            _planner_error: str | None = None
             if self.planner is not None:
                 try:
                     await self.planner.plan_task(task_id, self.config_context)
-                except Exception:
-                    pass  # fall through to hardcoded fallback below
+                except Exception as exc:
+                    _planner_error = str(exc)
+                    self.audit.append(
+                        AuditEventType.ERROR,
+                        actor="planner",
+                        task_id=task_id,
+                        payload={"error": "planning_failed", "reason": str(exc)},
+                    )
             task = self.repositories.tasks.get(task_id)
             if task is None:
                 raise KeyError(f"task not found after planning: {task_id}")
@@ -151,7 +158,13 @@ class TaskWorker:
                     )
                     self.audit.task_state_changed("worker", task_id, task.status, updated.status)
                 else:
-                    return task
+                    # Neither LLM planner nor hardcoded factory produced a plan.
+                    # Fail the task so it does not loop forever in INTERPRETING.
+                    reason = _planner_error or "no plan could be produced for this objective"
+                    meta = {**task.metadata, "planning_error": reason[:800], "last_worker_error": reason[:800]}
+                    failed = self.repositories.tasks.update_metadata(task.id, meta, TaskStatus.FAILED)
+                    self.audit.task_state_changed("worker", task_id, task.status, TaskStatus.FAILED)
+                    return failed
             task = self.repositories.tasks.get(task_id)
             if task is None:
                 raise KeyError(f"task not found after planning: {task_id}")
@@ -420,6 +433,7 @@ class TaskWorker:
             **latest.metadata,
             "replan_count": replan_count + 1,
             "last_replan_reason": error_context[:400],
+            "replan_objective": enriched_objective,
         }
         self.repositories.tasks.update_metadata(task.id, metadata, TaskStatus.RECEIVED)
         self.audit.append(

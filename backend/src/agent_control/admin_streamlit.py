@@ -54,6 +54,7 @@ def _render_live_page(state: dict[str, str]) -> None:
         return
 
     _render_header(summary)
+    _render_live_activity(summary, state)
     _render_operations(summary, state)
     st.divider()
     _render_tasks(summary, state)
@@ -102,6 +103,48 @@ def _render_header(summary: dict[str, Any]) -> None:
     warnings = summary.get("warnings") or []
     for warning in warnings:
         st.warning(warning)
+
+
+def _extract_last_output(task: dict[str, Any]) -> str | None:
+    meta = task.get("metadata") or {}
+    result = meta.get("last_tool_result") or {}
+    out = result.get("output") or {}
+    text = (
+        out.get("stdout") or out.get("summary") or out.get("response")
+        or out.get("content") or out.get("text") or out.get("result") or None
+    )
+    if text:
+        return str(text)
+    if result.get("error_message"):
+        return f"Error: {result['error_message']}"
+    if meta.get("last_worker_error"):
+        return f"Error: {meta['last_worker_error']}"
+    return None
+
+
+def _render_live_activity(summary: dict[str, Any], state: dict[str, str]) -> None:
+    tasks = summary.get("tasks") or []
+    active = [task for task in tasks if task.get("status") in ACTIVE_STATUSES]
+    if not active:
+        return
+    st.markdown("### Live Activity")
+    for task in active:
+        status = str(task.get("status") or "")
+        last_output = _extract_last_output(task)
+        step = task.get("current_step_id")
+        with st.container(border=True):
+            cols = st.columns([3, 1, 1, 1])
+            cols[0].markdown(f"**{html_escape(task.get('objective') or '')}**")
+            cols[1].metric("Status", _activity_label(status))
+            cols[2].metric("Updated", _relative_time(task.get("updated_at")))
+            cols[3].metric("Step", step or "—")
+            if last_output:
+                _wrapped_text(last_output[:800], css_class="live-output-text")
+            btn_cols = st.columns([1, 1, 6])
+            if btn_cols[0].button("Pause", key=f"live-pause-{task['id']}", disabled=_action_disabled(task, "pause")):
+                _task_signal(state, task["id"], "pause")
+            if btn_cols[1].button("Cancel", key=f"live-cancel-{task['id']}", disabled=_action_disabled(task, "cancel")):
+                _task_signal(state, task["id"], "cancel")
 
 
 def _render_operations(summary: dict[str, Any], state: dict[str, str]) -> None:
@@ -1528,6 +1571,22 @@ def _inject_css() -> None:
           border-radius: 6px;
           padding: 8px 12px;
           border: 1px solid rgba(49, 51, 63, 0.12);
+        }
+        .live-output-text {
+          white-space: pre-wrap;
+          overflow-wrap: anywhere;
+          word-break: break-word;
+          max-height: 160px;
+          overflow-y: auto;
+          border: 1px solid rgba(9, 105, 218, 0.3);
+          border-radius: 6px;
+          padding: 8px 12px;
+          background: rgba(9, 105, 218, 0.04);
+          font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+          font-size: 0.81rem;
+          line-height: 1.4;
+          color: #374151;
+          margin-top: 6px;
         }
         </style>
         """,

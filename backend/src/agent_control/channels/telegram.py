@@ -489,6 +489,12 @@ class TelegramIntakeService:
             if voice_attachment is not None
             else {}
         )
+        # Snapshot conversation memory so the planner has prior context available
+        _mem_ctx = memory_context(
+            self.repositories.conversation_memory.get(conversation_id),
+            recent_turns=5,
+            max_chars=1600,
+        )
         task = self.repositories.tasks.create(
             objective,
             conversation_id=conversation_id,
@@ -502,6 +508,7 @@ class TelegramIntakeService:
                 "classification_reason": classification.reason,
                 "orchestration_intent": classification.intent.model_dump(mode="json") if classification.intent else None,
                 "original_message_text": inbound.text,
+                "memory_context": _mem_ctx,
                 **voice_metadata,
             },
         )
