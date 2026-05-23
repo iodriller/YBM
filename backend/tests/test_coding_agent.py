@@ -66,8 +66,62 @@ async def test_coding_agent_runs_codex_with_workspace(tmp_path) -> None:
 
     assert result.status == ToolResultStatus.SUCCEEDED
     assert runner.calls[0][0][:2] == [str(codex), "exec"]
+    assert "-a" not in runner.calls[0][0]
+    assert "--skip-git-repo-check" in runner.calls[0][0]
     assert result.output["provider"] == "codex"
     assert result.output["workspace_dir"].endswith("task_task_code")
+
+
+@pytest.mark.asyncio
+async def test_coding_agent_runs_copilot_with_workspace_and_autonomy_flags(tmp_path) -> None:
+    copilot = tmp_path / "copilot.exe"
+    copilot.write_text("", encoding="utf-8")
+    runner = FakeRunner(stdout='{"status":"ok"}')
+    adapter = CodingAgentAdapter(
+        CodingAgentAdapterConfig(enabled=True, copilot_path=str(copilot), workspace_root=str(tmp_path / "workspaces")),
+        runner=runner,
+    )
+
+    result = await adapter.execute(
+        ToolCallRequest(
+            task_id="task_code",
+            tool_name="coding.agent",
+            capability=Capability.TERMINAL_RUN,
+            risk_level=RiskLevel.HIGH,
+            input={"operation": "run_goal", "provider": "github_copilot", "prompt": "create component"},
+        )
+    )
+
+    command = runner.calls[0][0]
+    assert result.status == ToolResultStatus.SUCCEEDED
+    assert command[:2] == [str(copilot), "-p"]
+    assert "-C" in command
+    assert "--allow-all" in command
+    assert "--no-ask-user" in command
+
+
+@pytest.mark.asyncio
+async def test_coding_agent_reports_nonzero_exit_as_failed(tmp_path) -> None:
+    codex = tmp_path / "codex.exe"
+    codex.write_text("", encoding="utf-8")
+    adapter = CodingAgentAdapter(
+        CodingAgentAdapterConfig(enabled=True, codex_path=str(codex), workspace_root=str(tmp_path)),
+        runner=FakeRunner(stderr="bad flag", returncode=2),
+    )
+
+    result = await adapter.execute(
+        ToolCallRequest(
+            task_id="task_code",
+            tool_name="coding.agent",
+            capability=Capability.TERMINAL_RUN,
+            risk_level=RiskLevel.HIGH,
+            input={"operation": "run_step", "provider": "codex", "prompt": "continue"},
+        )
+    )
+
+    assert result.status == ToolResultStatus.FAILED
+    assert result.error_class.value == "adapter_failed"
+    assert "exit code 2" in (result.error_message or "")
 
 
 @pytest.mark.asyncio
@@ -86,6 +140,30 @@ async def test_coding_agent_reports_usage_limit(tmp_path) -> None:
             capability=Capability.TERMINAL_RUN,
             risk_level=RiskLevel.HIGH,
             input={"operation": "run_step", "provider": "codex", "prompt": "continue"},
+        )
+    )
+
+    assert result.status == ToolResultStatus.RATE_LIMITED
+    assert result.output["limit_state"]["limited"] is True
+    assert result.error_class.value == "usage_limited"
+
+
+@pytest.mark.asyncio
+async def test_coding_agent_detects_copilot_quota_json_output(tmp_path) -> None:
+    copilot = tmp_path / "copilot.exe"
+    copilot.write_text("", encoding="utf-8")
+    adapter = CodingAgentAdapter(
+        CodingAgentAdapterConfig(enabled=True, copilot_path=str(copilot), workspace_root=str(tmp_path)),
+        runner=FakeRunner(stdout='{"type":"session.error","data":{"errorCode":"quota_exceeded","message":"You have no quota"}}', returncode=1),
+    )
+
+    result = await adapter.execute(
+        ToolCallRequest(
+            task_id="task_code",
+            tool_name="coding.agent",
+            capability=Capability.TERMINAL_RUN,
+            risk_level=RiskLevel.HIGH,
+            input={"operation": "run_step", "provider": "github_copilot", "prompt": "continue"},
         )
     )
 

@@ -15,6 +15,7 @@ from agent_control.schemas import (
     ApprovalRequest,
     ApprovalStatus,
     AuditEventType,
+    ErrorClass,
     PlanModel,
     PlanStep,
     TaskRecord,
@@ -28,6 +29,7 @@ from agent_control.storage.audit import AuditLogger
 from agent_control.storage.repositories import Repositories
 
 DefaultPlanFactory = Callable[[TaskRecord], PlanModel | None]
+RecoveryPlanFactory = Callable[[TaskRecord, str], PlanModel | None]
 
 
 class TaskNotificationSink(Protocol):
@@ -62,6 +64,7 @@ class TaskWorker:
         retry_policy: RetryPolicy | None = None,
         config_context: str = "No extra capability context provided.",
         default_plan_factory: DefaultPlanFactory | None = None,
+        recovery_plan_factory: RecoveryPlanFactory | None = None,
         notification_sink: TaskNotificationSink | None = None,
     ) -> None:
         self.repositories = repositories
@@ -71,6 +74,7 @@ class TaskWorker:
         self.retry_policy = retry_policy
         self.config_context = config_context
         self.default_plan_factory = default_plan_factory
+        self.recovery_plan_factory = recovery_plan_factory
         self.notification_sink = notification_sink
 
     async def process_next(self) -> TaskRecord | None:
@@ -224,7 +228,14 @@ class TaskWorker:
             return self._transition(task, TaskStatus.BLOCKED, "tool_policy_denied")
         retry = self._retry_decision(task, result)
         if retry:
+            if retry.status == TaskStatus.BLOCKED and result.error_class != ErrorClass.USAGE_LIMITED:
+                recovery = self._attach_recovery_plan(retry, result.error_message or result.status.value)
+                if recovery is not None:
+                    return recovery
             return retry
+        recovery = self._attach_recovery_plan(task, result.error_message or result.status.value)
+        if recovery is not None:
+            return recovery
         return self._transition(task, TaskStatus.FAILED, "tool_failed")
 
     def _process_retrying(self, task: TaskRecord) -> TaskRecord:
@@ -240,8 +251,22 @@ class TaskWorker:
         terminal_denials = {ApprovalStatus.REJECTED, ApprovalStatus.CANCELLED, ApprovalStatus.EXPIRED}
         if any(approval.status in terminal_denials for approval in approvals):
             return self._transition(task, TaskStatus.BLOCKED, "approval_not_granted")
-        if any(approval.status == ApprovalStatus.PENDING for approval in approvals):
-            return task
+        pending = [approval for approval in approvals if approval.status == ApprovalStatus.PENDING]
+        if pending:
+            if not self._pending_approvals_auto_grantable(pending):
+                return task
+            for approval in pending:
+                self.repositories.approvals.set_status(approval.id, ApprovalStatus.APPROVED)
+                self.audit.append(
+                    AuditEventType.APPROVAL_DECIDED,
+                    actor="policy",
+                    task_id=task.id,
+                    payload={
+                        "approval_id": approval.id,
+                        "status": ApprovalStatus.APPROVED.value,
+                        "reason": "full_access_policy",
+                    },
+                )
         if not task.plan_id:
             return self._transition(task, TaskStatus.BLOCKED, "approved_task_missing_plan")
         plan = self.repositories.plans.get(task.plan_id)
@@ -280,9 +305,61 @@ class TaskWorker:
             for approval in self.repositories.approvals.list_for_task(task_id)
         )
 
+    def _pending_approvals_auto_grantable(self, approvals: list[ApprovalRequest]) -> bool:
+        if self.executor is None:
+            return False
+        settings = self.executor.policy.settings
+        for approval in approvals:
+            policy = settings.capabilities.get(approval.capability)
+            if policy is None or not policy.enabled or policy.requires_approval:
+                return False
+        return True
+
+    def _attach_recovery_plan(self, task: TaskRecord, reason: str) -> TaskRecord | None:
+        if self.recovery_plan_factory is None:
+            return None
+        latest = self.repositories.tasks.get(task.id) or task
+        repair_count = int(latest.metadata.get("evaluator_repair_count", 0))
+        if repair_count >= 1:
+            return None
+        plan = self.recovery_plan_factory(latest, reason)
+        if plan is None:
+            return None
+        self.repositories.plans.create(latest.id, plan)
+        metadata = {
+            **latest.metadata,
+            "evaluator_repair_count": repair_count + 1,
+            "evaluator_repair_reason": reason,
+            "evaluator_repair_plan_id": plan.id,
+        }
+        updated = self.repositories.tasks.update_metadata(latest.id, metadata)
+        updated = self.repositories.tasks.attach_plan(updated.id, plan.id, TaskStatus.PLANNED)
+        self.repositories.tasks.set_current_step(updated.id, None)
+        self.audit.append(
+            AuditEventType.PLAN_CREATED,
+            actor="evaluator",
+            task_id=latest.id,
+            payload={
+                "plan_id": plan.id,
+                "step_count": len(plan.steps),
+                "reason": reason,
+                "plan": plan.model_dump(mode="json"),
+            },
+        )
+        self.audit.task_state_changed("evaluator", latest.id, latest.status, updated.status)
+        return self.repositories.tasks.get(latest.id) or updated
+
     def _retry_decision(self, task: TaskRecord, result: ToolCallResult) -> TaskRecord | None:
         if self.retry_policy is None:
             return None
+        if result.error_class == ErrorClass.USAGE_LIMITED:
+            metadata = {
+                **task.metadata,
+                "intervention_summary": self.retry_policy.intervention_summary(result),
+            }
+            updated = self.repositories.tasks.update_metadata(task.id, metadata, TaskStatus.BLOCKED)
+            self.audit.task_state_changed("orchestrator", task.id, task.status, updated.status)
+            return updated
         current_retry_count = int(task.metadata.get("retry_count", 0))
         decision = self.retry_policy.evaluate(result, current_retry_count)
         if not decision.retry:
@@ -375,6 +452,7 @@ class TaskWorker:
             ("coding_agent_workspace", "workspace_dir"),
             ("coding_agent_session_id", "session_id"),
             ("coding_agent_limit_state", "limit_state"),
+            ("changed_files", "changed_files"),
             ("schedule_id", "schedule_id"),
             ("scheduled_task_id", "task_id"),
             ("schedule_next_run_at", "next_run_at"),
@@ -412,6 +490,9 @@ class TaskWorker:
             validation = validate_fulfillment(latest, plan)
             gap = validation.first_gap
             if gap:
+                recovery = self._attach_recovery_plan(latest, gap)
+                if recovery is not None:
+                    return recovery
                 retry_count = int(latest.metadata.get("fulfillment_retry_count", 0))
                 metadata = {
                     **latest.metadata,

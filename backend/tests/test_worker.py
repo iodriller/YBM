@@ -10,7 +10,7 @@ import pytest
 from agent_control.config import AppSettings, CapabilityPolicy, WorkspaceAdapterConfig
 from agent_control.llm import PlannerService, StaticPlanProvider
 from agent_control.orchestration import StaticToolAdapter, TaskWorker, ToolExecutor
-from agent_control.orchestration.default_plans import build_default_vscode_development_plan
+from agent_control.orchestration.default_plans import build_default_vscode_development_plan, build_evaluator_recovery_plan
 from agent_control.policy import PolicyEngine
 from agent_control.recovery import RetryPolicy
 from agent_control.schemas import (
@@ -138,7 +138,7 @@ async def test_worker_resumes_after_step_approval(tmp_path) -> None:
             )
         },
     )
-    adapter = StaticToolAdapter()
+    adapter = StaticToolAdapter({"terminal_output": [{"content": "done", "is_final": True, "exit_code": 0}]})
     executor = ToolExecutor(
         PolicyEngine(settings, audit),
         repos,
@@ -159,6 +159,57 @@ async def test_worker_resumes_after_step_approval(tmp_path) -> None:
     assert adapter.requests
 
 
+@pytest.mark.asyncio
+async def test_worker_auto_grants_stale_approval_when_capability_is_full_access(tmp_path) -> None:
+    repos, audit = _repos(tmp_path)
+    task = repos.tasks.create("Run terminal step")
+    plan = repos.plans.create(
+        task.id,
+        PlanModel(
+            objective=task.objective,
+            steps=[
+                PlanStep(
+                    title="Run terminal step",
+                    description="A previously approval-gated step.",
+                    required_capabilities=[Capability.TERMINAL_RUN],
+                    risk_level=RiskLevel.MEDIUM,
+                    requires_approval=True,
+                    tool_name="terminal",
+                )
+            ],
+        ),
+    )
+    repos.tasks.attach_plan(task.id, plan.id)
+    settings = AppSettings(
+        _env_file=None,
+        capabilities={
+            Capability.TERMINAL_RUN: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.HIGH,
+            )
+        },
+    )
+    adapter = StaticToolAdapter({"terminal_output": [{"content": "done", "is_final": True, "exit_code": 0}]})
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"terminal": adapter},
+    )
+    worker = TaskWorker(repos, audit, executor=executor)
+
+    awaiting = await worker.process_task(task.id)
+    running = await worker.process_task(task.id)
+    completed = await worker.process_task(task.id)
+
+    assert awaiting.status == TaskStatus.AWAITING_APPROVAL
+    assert running.status == TaskStatus.RUNNING
+    assert completed.status == TaskStatus.COMPLETED
+    assert repos.approvals.list_for_task(task.id)[0].status == ApprovalStatus.APPROVED
+    assert adapter.requests
+
+
 class TransientFailureAdapter:
     async def execute(self, request: ToolCallRequest) -> ToolCallResult:
         return ToolCallResult(
@@ -166,6 +217,30 @@ class TransientFailureAdapter:
             status=ToolResultStatus.TIMEOUT,
             error_class=ErrorClass.TRANSIENT,
             error_message="temporary failure",
+        )
+
+
+class UsageLimitAdapter:
+    async def execute(self, request: ToolCallRequest) -> ToolCallResult:
+        return ToolCallResult(
+            request_id=request.id,
+            status=ToolResultStatus.RATE_LIMITED,
+            error_class=ErrorClass.USAGE_LIMITED,
+            error_message="tool quota reached",
+            output={"limit_state": {"limited": True, "kind": "usage"}},
+        )
+
+
+class FailingAdapter:
+    def __init__(self, message: str) -> None:
+        self.message = message
+
+    async def execute(self, request: ToolCallRequest) -> ToolCallResult:
+        return ToolCallResult(
+            request_id=request.id,
+            status=ToolResultStatus.FAILED,
+            error_class=ErrorClass.ADAPTER_FAILED,
+            error_message=self.message,
         )
 
 
@@ -289,6 +364,54 @@ async def test_worker_marks_retrying_for_transient_failure(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_worker_blocks_usage_limited_tools_without_blind_retries(tmp_path) -> None:
+    repos, audit = _repos(tmp_path)
+    task = repos.tasks.create("Run usage limited step")
+    plan = repos.plans.create(
+        task.id,
+        PlanModel(
+            objective="Run usage limited step",
+            steps=[
+                PlanStep(
+                    title="Usage limited",
+                    description="A usage-limited external tool.",
+                    required_capabilities=[Capability.TERMINAL_RUN],
+                    risk_level=RiskLevel.HIGH,
+                    tool_name="coding.agent",
+                )
+            ],
+            success_criteria=["Step completed or limit reported."],
+        ),
+    )
+    repos.tasks.attach_plan(task.id, plan.id)
+    settings = AppSettings(
+        _env_file=None,
+        capabilities={
+            Capability.TERMINAL_RUN: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.HIGH,
+            )
+        },
+        limits={"max_retries": 3, "retry_backoff_seconds": 1},
+    )
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"coding.agent": UsageLimitAdapter()},
+    )
+    worker = TaskWorker(repos, audit, executor=executor, retry_policy=RetryPolicy(settings.limits))
+
+    running = await worker.process_task(task.id)
+    blocked = await worker.process_task(running.id)
+
+    assert blocked.status == TaskStatus.BLOCKED
+    assert "retry_count" not in blocked.metadata
+    assert "limit" in blocked.metadata["intervention_summary"].lower()
+
+
+@pytest.mark.asyncio
 async def test_worker_requeues_when_launch_request_lacks_preview_url(tmp_path) -> None:
     repos, audit = _repos(tmp_path)
     task = repos.tasks.create("Create a modern app and launch it")
@@ -333,6 +456,73 @@ async def test_worker_requeues_when_launch_request_lacks_preview_url(tmp_path) -
     assert requeued.metadata["fulfillment_gap"] == "expected_preview_url_missing"
     assert requeued.metadata["fulfillment_missing"][0] == "preview_url"
     assert requeued.metadata["fulfillment_retry_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_worker_evaluator_attaches_recovery_plan_for_delivery_root_failure(tmp_path) -> None:
+    repos, audit = _repos(tmp_path)
+    task = repos.tasks.create(
+        "Find me the file about invoices from my desktop and send it to me.",
+        metadata={"original_message_text": "Find me the file about invoices from my desktop and send it to me."},
+    )
+    plan = repos.plans.create(
+        task.id,
+        PlanModel(
+            objective=task.objective,
+            steps=[
+                PlanStep(
+                    title="Broken delivery",
+                    description="Attempt direct delivery with an invalid path.",
+                    required_capabilities=[Capability.TELEGRAM_SEND],
+                    risk_level=RiskLevel.LOW,
+                    tool_name="artifact.deliver",
+                    tool_input={"operation": "send_file", "path": "desktop/invoices.pdf"},
+                )
+            ],
+        ),
+    )
+    repos.tasks.attach_plan(task.id, plan.id)
+    settings = AppSettings(
+        _env_file=None,
+        adapters={"computer_use": {"enabled": True, "allowed_roots": [str(Path.home())]}},
+        capabilities={
+            Capability.TELEGRAM_SEND: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.LOW,
+            ),
+            Capability.FILESYSTEM_WRITE: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.HIGH,
+            ),
+        },
+    )
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"artifact.deliver": FailingAdapter("path is outside configured delivery roots")},
+    )
+    worker = TaskWorker(
+        repos,
+        audit,
+        executor=executor,
+        recovery_plan_factory=lambda item, reason: build_evaluator_recovery_plan(settings, item, reason),
+    )
+
+    await worker.process_task(task.id)
+    repaired = await worker.process_task(task.id)
+    repair_plan = repos.plans.get(repaired.plan_id or "")
+
+    assert repaired.status == TaskStatus.PLANNED
+    assert repaired.metadata["evaluator_repair_count"] == 1
+    assert repaired.metadata["evaluator_repair_reason"] == "path is outside configured delivery roots"
+    assert repair_plan is not None
+    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in repair_plan.steps] == [
+        "filesystem.manage:search",
+        "artifact.deliver:send_file",
+    ]
 
 
 @pytest.mark.asyncio

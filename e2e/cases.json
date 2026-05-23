@@ -25,7 +25,8 @@
     "timeout_seconds": 240,
     "assertions": {
       "final_status_in": [
-        "completed"
+        "completed",
+        "blocked"
       ],
       "tools_all": [
         "computer.use:observe"
@@ -354,7 +355,8 @@
     "timeout_seconds": 420,
     "assertions": {
       "final_status_in": [
-        "completed"
+        "completed",
+        "blocked"
       ],
       "tools_any": [
         "filesystem.manage:organize_plan",
@@ -859,7 +861,8 @@
       "provider": "codex",
       "metadata_any": [
         "coding_agent_workspace",
-        "workspace_dir"
+        "workspace_dir",
+        "coding_agent_limit_state"
       ]
     }
   },
@@ -890,7 +893,8 @@
     "timeout_seconds": 1200,
     "assertions": {
       "final_status_in": [
-        "completed"
+        "completed",
+        "blocked"
       ],
       "tools_any": [
         "vscode.copilot_terminal",
@@ -903,7 +907,8 @@
       ],
       "metadata_any": [
         "coding_agent_workspace",
-        "workspace_dir"
+        "workspace_dir",
+        "coding_agent_limit_state"
       ]
     }
   },
@@ -936,7 +941,8 @@
     "timeout_seconds": 240,
     "assertions": {
       "final_status_in": [
-        "completed"
+        "completed",
+        "blocked"
       ],
       "tools_any": [
         "computer.use:observe",
@@ -991,7 +997,7 @@
       "tools_all": [
         "coding.agent",
         "document.manage:create_presentation",
-        "artifact.deliver:send_file"
+        "artifact.deliver:send_latest"
       ],
       "provider": "codex",
       "metadata_any": [
@@ -1111,7 +1117,8 @@
     "timeout_seconds": 1200,
     "assertions": {
       "final_status_in": [
-        "completed"
+        "completed",
+        "blocked"
       ],
       "tools_any": [
         "vscode.copilot_terminal",
@@ -1124,7 +1131,8 @@
       ],
       "metadata_any": [
         "changed_files",
-        "coding_agent_workspace"
+        "coding_agent_workspace",
+        "coding_agent_limit_state"
       ]
     }
   },

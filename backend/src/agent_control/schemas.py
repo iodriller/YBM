@@ -266,6 +266,13 @@ class CommandEnvelope(StrictBaseModel):
 
 
 class OrchestrationIntent(StrictBaseModel):
+    model_config = ConfigDict(
+        extra="ignore",
+        str_strip_whitespace=True,
+        validate_assignment=True,
+        use_enum_values=False,
+    )
+
     route: IntentRoute
     operation: str | None = None
     objective: str | None = None

@@ -28,6 +28,9 @@ def build_default_task_plan(settings: AppSettings, task: TaskRecord) -> PlanMode
     if intent_plan is not None:
         return intent_plan
 
+    file_lookup_delivery_plan = _build_file_lookup_delivery_plan(settings, task)
+    if file_lookup_delivery_plan is not None:
+        return file_lookup_delivery_plan
     filesystem_plan = _build_filesystem_manage_plan(settings, task)
     if filesystem_plan is not None:
         return filesystem_plan
@@ -59,6 +62,27 @@ def build_default_task_plan(settings: AppSettings, task: TaskRecord) -> PlanMode
     return build_default_vscode_development_plan(settings, task)
 
 
+def build_evaluator_recovery_plan(settings: AppSettings, task: TaskRecord, failure_reason: str) -> PlanModel | None:
+    reason = failure_reason.lower()
+    if int(task.metadata.get("evaluator_repair_count", 0)) >= 1:
+        return None
+    if "expected_desktop_observation_missing" in reason:
+        if _looks_like_desktop_file_listing(task.objective):
+            return _build_filesystem_manage_plan(settings, task)
+        return _build_computer_use_plan(settings, task)
+    if (
+        "outside configured delivery roots" in reason
+        or "no deliverable artifact" in reason
+        or "expected_artifact_delivered_missing" in reason
+    ):
+        return _build_file_lookup_delivery_plan(settings, task) or _build_artifact_delivery_plan(settings, task)
+    if "tool adapter not registered" in reason or "unregistered tool" in reason:
+        return _build_adapter_factory_plan(settings, task)
+    if "unsupported operation" in reason or "validation" in reason:
+        return _build_code_interpreter_recovery_plan(settings, task, failure_reason)
+    return None
+
+
 def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | None:
     intent = _task_intent(task)
     if intent is None or intent.route in {IntentRoute.CONVERSATION, IntentRoute.STATUS, IntentRoute.UNKNOWN}:
@@ -68,6 +92,8 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
     policy_send = settings.capabilities.get(Capability.TELEGRAM_SEND)
 
     if intent.route == IntentRoute.DESKTOP_OBSERVE:
+        if _looks_like_desktop_file_listing(objective):
+            return _build_filesystem_manage_plan(settings, task.model_copy(update={"objective": objective}))
         desktop_policy = settings.capabilities.get(Capability.DESKTOP_CONTROL)
         if (
             not settings.adapters.computer_use.enabled
@@ -122,6 +148,8 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
         )
 
     if intent.route == IntentRoute.COMPUTER_USE:
+        if _looks_like_desktop_file_listing(objective):
+            return _build_filesystem_manage_plan(settings, task.model_copy(update={"objective": objective}))
         desktop_policy = settings.capabilities.get(Capability.DESKTOP_CONTROL)
         if (
             not settings.adapters.computer_use.enabled
@@ -189,10 +217,16 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
         write_policy = settings.capabilities.get(Capability.FILESYSTEM_WRITE)
         if write_policy is None or not write_policy.enabled:
             return None
-        root = intent.folder_path or intent.path
+        root = intent.folder_path or intent.path or _root_from_objective(objective)
         if not root:
             return None
+        if intent.delivery in {DeliveryKind.FILE, DeliveryKind.LATEST} or _looks_like_delivery_request(_task_request_text(task)):
+            file_lookup_plan = _build_file_lookup_delivery_plan(settings, task, intent=intent)
+            if file_lookup_plan is not None:
+                return file_lookup_plan
         operation = _filesystem_intent_operation(intent.operation)
+        if operation == "organize_plan" and _looks_like_file_search(objective):
+            operation = "search"
         if operation == "search":
             steps = [
                 PlanStep(
@@ -205,7 +239,7 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
                     tool_input={
                         "operation": "search",
                         "root": root,
-                        "query": intent.query or "*",
+                        "query": intent.query or _query_from_file_reference(intent.file_path or intent.path) or "*",
                         "include_content": False,
                         "timeout_seconds": 60,
                     },
@@ -633,6 +667,11 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
         policy = settings.capabilities.get(Capability.TELEGRAM_SEND)
         if policy is None or not policy.enabled:
             return None
+        intent_path = intent.file_path or intent.path
+        if (not intent_path or not _usable_explicit_path(intent_path)) and intent.delivery != DeliveryKind.SCREENSHOT:
+            file_lookup_plan = _build_file_lookup_delivery_plan(settings, task, intent=intent)
+            if file_lookup_plan is not None:
+                return file_lookup_plan
         operation = intent.operation if intent.operation in {"send_file", "send_latest", "send_screenshot", "list_artifacts"} else None
         if operation is None:
             operation = "send_file" if (intent.file_path or intent.path) else "send_screenshot" if intent.delivery == DeliveryKind.SCREENSHOT else "send_latest"
@@ -709,6 +748,10 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
         )
 
     if intent.route == IntentRoute.CODING_AGENT:
+        if _looks_like_document_request(task.objective) or _looks_like_document_request(objective):
+            document_plan = _build_document_plan(settings, task)
+            if document_plan is not None:
+                return document_plan
         policy = settings.capabilities.get(Capability.TERMINAL_RUN)
         if policy is None or not policy.enabled or not settings.adapters.coding_agent.enabled:
             return None
@@ -819,6 +862,13 @@ def _task_intent(task: TaskRecord) -> OrchestrationIntent | None:
         return None
 
 
+def _task_request_text(task: TaskRecord) -> str:
+    original = task.metadata.get("original_message_text")
+    if isinstance(original, str) and original.strip():
+        return original.strip()
+    return task.objective
+
+
 def _filesystem_intent_operation(operation: str | None) -> str:
     normalized = (operation or "").strip().lower().replace("-", "_")
     aliases = {
@@ -833,7 +883,16 @@ def _filesystem_intent_operation(operation: str | None) -> str:
         "summarize_folder": "describe_folder",
         "folder_description": "describe_folder",
         "find": "search",
+        "find_file": "search",
+        "find_files": "search",
+        "locate": "search",
+        "locate_file": "search",
+        "lookup_file": "search",
         "lookup": "search",
+        "get_file": "search",
+        "send_file": "search",
+        "deliver_file": "search",
+        "retrieve_file": "search",
         "organize": "organize_plan",
         "plan_organization": "organize_plan",
         "rename": "rename_plan",
@@ -1469,18 +1528,21 @@ def _build_browser_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | 
 
 
 def _build_document_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | None:
-    if not _looks_like_document_request(task.objective):
+    request_text = _task_request_text(task)
+    if not _looks_like_document_request(request_text) and not _looks_like_document_request(task.objective):
         return None
-    if _looks_like_latest_output_delivery_request(task.objective):
+    if _looks_like_latest_output_delivery_request(request_text) and not any(
+        marker in request_text.lower() for marker in ("powerpoint", "presentation", "pptx")
+    ):
         return None
     policy = settings.capabilities.get(Capability.FILESYSTEM_WRITE)
     if policy is None or not policy.enabled:
         return None
-    lowered = task.objective.lower()
-    path = _document_path_from_objective(task.objective)
+    lowered = request_text.lower()
+    path = _document_path_from_objective(request_text) or _document_path_from_objective(task.objective)
     steps: list[PlanStep] = []
     required = [Capability.FILESYSTEM_WRITE]
-    provider = _explicit_coding_provider(task.objective)
+    provider = _explicit_coding_provider(request_text) or _explicit_coding_provider(task.objective)
     terminal_policy = settings.capabilities.get(Capability.TERMINAL_RUN)
     if provider and terminal_policy and terminal_policy.enabled and settings.adapters.coding_agent.enabled:
         required.append(Capability.TERMINAL_RUN)
@@ -1495,8 +1557,8 @@ def _build_document_plan(settings: AppSettings, task: TaskRecord) -> PlanModel |
                 tool_input={
                     "operation": "run_goal",
                     "provider": provider,
-                    "objective": task.objective,
-                    "prompt": task.objective,
+                    "objective": request_text,
+                    "prompt": request_text,
                     "workspace_dir": str(workspace_dir_for_task(settings.adapters.workspace.root_dir, task.id)),
                     "timeout_seconds": settings.adapters.coding_agent.timeout_seconds,
                 },
@@ -1529,7 +1591,7 @@ def _build_document_plan(settings: AppSettings, task: TaskRecord) -> PlanModel |
         content_source = "{{last_output}}" if provider else task.objective
         tool_input: dict[str, object] = {
             "operation": operation,
-            "title": _presentation_title(task.objective),
+            "title": _presentation_title(request_text),
             "content": content_source,
             "instructions": content_source,
             "timeout_seconds": 90,
@@ -1557,7 +1619,7 @@ def _build_document_plan(settings: AppSettings, task: TaskRecord) -> PlanModel |
     else:
         return None
 
-    delivery_step = _artifact_delivery_step(settings, task.objective, screenshot=False)
+    delivery_step = _artifact_delivery_step(settings, request_text, screenshot=False)
     if delivery_step is not None:
         steps.append(delivery_step)
         required.append(Capability.TELEGRAM_SEND)
@@ -1857,19 +1919,146 @@ def _build_computer_use_plan(settings: AppSettings, task: TaskRecord) -> PlanMod
     )
 
 
+def _build_file_lookup_delivery_plan(
+    settings: AppSettings,
+    task: TaskRecord,
+    *,
+    intent: OrchestrationIntent | None = None,
+) -> PlanModel | None:
+    request_text = _task_request_text(task)
+    if _objective_wants_screenshot(request_text):
+        return None
+    intent_path = (intent.file_path or intent.path) if intent else None
+    if (intent_path and _usable_explicit_path(intent_path)) or _path_from_objective(request_text):
+        return None
+    if not _looks_like_delivery_request(request_text) and intent is None:
+        return None
+    if not _looks_like_file_reference(request_text) and not (intent and intent.artifact_type):
+        return None
+    root = (intent.folder_path if intent else None) or _root_from_objective(request_text)
+    if not root:
+        return None
+
+    write_policy = settings.capabilities.get(Capability.FILESYSTEM_WRITE)
+    send_policy = settings.capabilities.get(Capability.TELEGRAM_SEND)
+    if write_policy is None or not write_policy.enabled or send_policy is None or not send_policy.enabled:
+        return None
+
+    query = (
+        (intent.query if intent else None)
+        or (_query_from_file_reference(intent_path) if intent_path else None)
+        or _search_query_from_objective(request_text)
+    )
+    if query == "*" and _looks_like_file_reference(request_text):
+        query = _file_query_from_reference(request_text)
+    steps = [
+        PlanStep(
+            title="Find requested file",
+            description="Search the requested safe folder before delivering a file whose exact path was not provided.",
+            required_capabilities=[Capability.FILESYSTEM_WRITE],
+            risk_level=RiskLevel.HIGH,
+            requires_approval=write_policy.requires_approval,
+            tool_name="filesystem.manage",
+            tool_input={
+                "operation": "search",
+                "root": root,
+                "query": query or "*",
+                "include_content": True,
+                "max_results": 20,
+                "timeout_seconds": 90,
+            },
+            expected_output="Matching file paths under the configured allowed root.",
+        ),
+        PlanStep(
+            title="Deliver resolved file",
+            description="Send the first resolved matching file back to the source Telegram chat.",
+            required_capabilities=[Capability.TELEGRAM_SEND],
+            risk_level=RiskLevel.LOW,
+            requires_approval=send_policy.requires_approval,
+            tool_name="artifact.deliver",
+            tool_input={
+                "operation": "send_file",
+                "path": "{{last_entry_path}}",
+                "artifact_type": (intent.artifact_type if intent else None) or "document",
+                "caption": f"Result for: {request_text[:180]}",
+                "timeout_seconds": 60,
+            },
+            expected_output="Telegram delivery result for the resolved file.",
+        ),
+    ]
+    return PlanModel(
+        objective=request_text,
+        assumptions=[
+            "The user asked for a file without an exact path.",
+            "The file is resolved through scoped filesystem search before Telegram delivery.",
+        ],
+        required_capabilities=[Capability.FILESYSTEM_WRITE, Capability.TELEGRAM_SEND],
+        steps=steps,
+        success_criteria=["A matching file is found and delivered, or a clear no-match error is reported."],
+        postconditions=[
+            PlanPostcondition(
+                type=PostconditionType.ARTIFACT_DELIVERED,
+                description="The resolved file is delivered to Telegram.",
+                required=True,
+            ),
+        ],
+    )
+
+
+def _build_code_interpreter_recovery_plan(settings: AppSettings, task: TaskRecord, failure_reason: str) -> PlanModel | None:
+    policy = settings.capabilities.get(Capability.TERMINAL_RUN)
+    if policy is None or not policy.enabled or not settings.adapters.code_interpreter.enabled:
+        return None
+    objective = (
+        "Recover this failed task with a small bounded Python script only if a script is appropriate. "
+        f"Original task: {task.objective}. Failure: {failure_reason}. "
+        "Write outputs inside the managed workspace and print a concise summary."
+    )
+    return PlanModel(
+        objective=task.objective,
+        assumptions=[
+            "The evaluator selected the local code interpreter for a bounded repair attempt.",
+            "The script must operate inside the managed interpreter workspace.",
+        ],
+        required_capabilities=[Capability.TERMINAL_RUN],
+        steps=[
+            PlanStep(
+                title="Run evaluator repair script",
+                description="Use the local code interpreter to generate and run a small repair or diagnostic script.",
+                required_capabilities=[Capability.TERMINAL_RUN],
+                risk_level=RiskLevel.MEDIUM,
+                requires_approval=policy.requires_approval,
+                tool_name="code.interpreter",
+                tool_input={
+                    "operation": "generate_and_run",
+                    "objective": objective,
+                    "workspace_dir": str(workspace_dir_for_task(settings.adapters.code_interpreter.workspace_root, task.id)),
+                    "timeout_seconds": settings.adapters.code_interpreter.timeout_seconds,
+                },
+                expected_output="Interpreter stdout, stderr, changed files, and workspace path.",
+            )
+        ],
+        success_criteria=["The evaluator repair script reports concrete output or a clear reason it cannot repair the task."],
+        postconditions=_workspace_postconditions(),
+    )
+
+
 def _build_filesystem_manage_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | None:
     if not settings.adapters.computer_use.enabled:
         return None
+    if _looks_like_delivery_request(task.objective) and _path_from_objective(task.objective):
+        return None
     if not _looks_like_filesystem_manage_request(task.objective):
         return None
-    root = _path_from_objective(task.objective)
+    root = _path_from_objective(task.objective) or _root_from_objective(task.objective)
     if root is None:
         return None
     write_policy = settings.capabilities.get(Capability.FILESYSTEM_WRITE)
     if write_policy is None or not write_policy.enabled:
         return None
 
-    if _looks_like_file_search(task.objective):
+    if _looks_like_file_search(task.objective) or _looks_like_desktop_file_listing(task.objective):
+        operation = "inspect_folder" if _looks_like_desktop_file_listing(task.objective) else "search"
         query = _search_query_from_objective(task.objective)
         return PlanModel(
             objective=task.objective,
@@ -1877,23 +2066,26 @@ def _build_filesystem_manage_plan(settings: AppSettings, task: TaskRecord) -> Pl
             required_capabilities=[Capability.FILESYSTEM_WRITE],
             steps=[
                 PlanStep(
-                    title="Search scoped folder",
-                    description="Search file names and optional text content inside the requested allowed folder.",
+                    title="Inspect scoped folder" if operation == "inspect_folder" else "Search scoped folder",
+                    description=(
+                        "List files and folders inside the requested allowed folder."
+                        if operation == "inspect_folder"
+                        else "Search file names and optional text content inside the requested allowed folder."
+                    ),
                     required_capabilities=[Capability.FILESYSTEM_WRITE],
                     risk_level=RiskLevel.HIGH,
                     requires_approval=write_policy.requires_approval,
                     tool_name="filesystem.manage",
                     tool_input={
-                        "operation": "search",
+                        "operation": operation,
                         "root": root,
-                        "query": query,
-                        "include_content": False,
+                        **({"query": query, "include_content": True} if operation == "search" else {}),
                         "timeout_seconds": 60,
                     },
-                    expected_output="Matching file paths under the configured allowed root.",
+                    expected_output="Folder entries or matching file paths under the configured allowed root.",
                 )
             ],
-            success_criteria=["Search results are reported."],
+            success_criteria=["Folder entries or search results are reported."],
             postconditions=_file_organization_postconditions(required=False),
         )
 
@@ -2133,6 +2325,14 @@ def _artifact_delivery_step(settings: AppSettings, objective: str, *, screenshot
     policy = settings.capabilities.get(Capability.TELEGRAM_SEND)
     if policy is None or not policy.enabled:
         return None
+    lowered = objective.lower()
+    tool_input: dict[str, object] = {
+        "operation": "send_screenshot" if screenshot or "screenshot" in lowered else "send_latest",
+        "caption": f"Result for: {objective[:180]}",
+        "timeout_seconds": 60,
+    }
+    if not screenshot and any(marker in lowered for marker in ("pdf", "document", "powerpoint", "presentation", "pptx", "file")):
+        tool_input["artifact_type"] = "document"
     return PlanStep(
         title="Deliver task artifact to Telegram",
         description="Send the screenshot or latest task artifact back to the source Telegram chat.",
@@ -2140,11 +2340,7 @@ def _artifact_delivery_step(settings: AppSettings, objective: str, *, screenshot
         risk_level=RiskLevel.LOW,
         requires_approval=policy.requires_approval,
         tool_name="artifact.deliver",
-        tool_input={
-            "operation": "send_screenshot" if screenshot or "screenshot" in objective.lower() else "send_latest",
-            "caption": f"Result for: {objective[:180]}",
-            "timeout_seconds": 60,
-        },
+        tool_input=tool_input,
         expected_output="Telegram delivery result for the requested screenshot or file artifact.",
     )
 
@@ -2209,6 +2405,8 @@ def _explicitly_requests_copilot(objective: str) -> bool:
 def _looks_like_computer_use_request(objective: str) -> bool:
     lowered = objective.lower()
     if _first_url_from_text(objective):
+        return False
+    if _looks_like_desktop_file_listing(objective):
         return False
     if _path_from_objective(objective) and ("pdf" in lowered or _looks_like_delivery_request(objective)):
         return False
@@ -2277,12 +2475,87 @@ def _deterministic_computer_action(objective: str) -> dict[str, object] | None:
 
 def _looks_like_filesystem_manage_request(objective: str) -> bool:
     lowered = objective.lower()
-    return any(marker in lowered for marker in ("organize", "sort files", "clean folder", "search folder", "find file", "search files"))
+    return any(
+        marker in lowered
+        for marker in (
+            "organize",
+            "sort files",
+            "clean folder",
+            "search folder",
+            "find file",
+            "find files",
+            "find me the file",
+            "locate file",
+            "locate the file",
+            "locate and deliver",
+            "search files",
+            "search for",
+            "look for",
+            "get me",
+            "send me",
+        )
+    ) or _looks_like_desktop_file_listing(objective)
 
 
 def _looks_like_file_search(objective: str) -> bool:
     lowered = objective.lower()
-    return any(marker in lowered for marker in ("search folder", "find file", "search files", "find files"))
+    return any(
+        marker in lowered
+        for marker in (
+            "search folder",
+            "find file",
+            "find files",
+            "find me the file",
+            "locate file",
+            "locate the file",
+            "locate and deliver",
+            "search files",
+            "look for",
+            "search for",
+            "get me",
+            "send me",
+        )
+    ) and _looks_like_file_reference(objective)
+
+
+def _looks_like_file_reference(objective: str) -> bool:
+    lowered = objective.lower()
+    return any(marker in lowered for marker in ("file", "files", "pdf", "document", "documents", "folder", "directory"))
+
+
+def _looks_like_desktop_file_listing(objective: str) -> bool:
+    lowered = objective.lower()
+    return "desktop" in lowered and any(
+        marker in lowered
+        for marker in (
+            "list all",
+            "list the",
+            "show all",
+            "show me all",
+            "what files",
+            "which files",
+            "files on",
+            "files at",
+            "files in",
+            "folders on",
+            "folders at",
+            "folders in",
+            "desktop files",
+        )
+    )
+
+
+def _root_from_objective(objective: str) -> str | None:
+    lowered = objective.lower()
+    if "desktop" in lowered:
+        return "desktop"
+    if "download" in lowered:
+        return "downloads"
+    if "document" in lowered:
+        return "documents"
+    if any(marker in lowered for marker in ("my directory", "my folder", "home directory", "user directory")):
+        return str(Path.home())
+    return None
 
 
 def _path_from_objective(objective: str) -> str | None:
@@ -2328,14 +2601,56 @@ def _longest_existing_path_prefix(value: str) -> str | None:
 
 
 def _looks_like_path(value: str) -> bool:
-    return bool(re.match(r"^[A-Za-z]:\\", value) or value.startswith((".", "~", "/")))
+    return bool(
+        re.match(r"^[A-Za-z]:\\", value)
+        or value.startswith((".", "~", "/"))
+        or value.strip().lower() in {"desktop", "documents", "my documents", "downloads", "home", "my directory"}
+    )
+
+
+def _usable_explicit_path(value: str) -> bool:
+    return _looks_like_path(value) and not re.search(r"<[^>]+>|\{[^}]+\}", value)
+
+
+def _query_from_file_reference(value: str | None) -> str | None:
+    if not value:
+        return None
+    text = value.strip().strip("\"'")
+    if not text:
+        return None
+    if _usable_explicit_path(text):
+        return None
+    name = Path(text.replace("/", "\\")).name
+    return name or text
 
 
 def _search_query_from_objective(objective: str) -> str:
+    quoted = _quoted_text(objective)
+    if quoted and not _looks_like_path(quoted):
+        return quoted
+    named = re.search(r"\b(?:named|called)\s+([A-Za-z0-9_.-]+)", objective, flags=re.IGNORECASE)
+    if named:
+        return named.group(1)
     cleaned = re.sub(r"[A-Za-z]:\\[^\n\r\"']+", " ", objective)
-    cleaned = re.sub(r"\b(search|folder|find|file|files|under|in|for)\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"\b(search|look|looking|locate|deliver|named|called|folder|directory|desktop|documents|downloads|find|file|files|send|get|me|the|a|an|and|it|to|about|under|in|at|on|for|from|my|user|users|user's|all|list|show|please)\b",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
     return cleaned or "*"
+
+
+def _file_query_from_reference(objective: str) -> str:
+    lowered = objective.lower()
+    if "pdf" in lowered:
+        return ".pdf"
+    if "powerpoint" in lowered or "pptx" in lowered:
+        return ".pptx"
+    if "document" in lowered:
+        return ".pdf"
+    return "*"
 
 
 def _looks_like_browser_request(objective: str) -> bool:

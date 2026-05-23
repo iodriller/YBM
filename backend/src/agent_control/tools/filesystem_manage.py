@@ -392,7 +392,8 @@ class FilesystemManageAdapter:
 
     @staticmethod
     def _alias_path(value: str) -> Path:
-        lowered = value.strip().lower()
+        normalized = value.strip().strip("\"'").replace("/", "\\")
+        lowered = normalized.lower()
         home = Path.home()
         if lowered in {"desktop", "%desktop%"}:
             return home / "Desktop"
@@ -400,6 +401,18 @@ class FilesystemManageAdapter:
             return home / "Documents"
         if lowered in {"downloads", "%downloads%"}:
             return home / "Downloads"
+        if lowered in {"home", "user", "my directory", "my folder"}:
+            return home
+        for prefix, root in (
+            ("desktop\\", home / "Desktop"),
+            ("documents\\", home / "Documents"),
+            ("my documents\\", home / "Documents"),
+            ("downloads\\", home / "Downloads"),
+            ("home\\", home),
+            ("my directory\\", home),
+        ):
+            if lowered.startswith(prefix):
+                return root / normalized[len(prefix) :]
         return Path(value)
 
 

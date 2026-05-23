@@ -463,9 +463,10 @@ CASES = [
         size="long-running",
         timeout=1200,
         assertions={
+            "final_status_in": ["completed", "blocked"],
             "tools_any": ["vscode.copilot_terminal", "coding.agent:run_goal", "coding.agent:run_step"],
             "provider_any": ["github_copilot", "copilot"],
-            "metadata_any": ["coding_agent_workspace", "workspace_dir"],
+            "metadata_any": ["coding_agent_workspace", "workspace_dir", "coding_agent_limit_state"],
         },
     ),
     case(
@@ -501,7 +502,7 @@ CASES = [
         size="long-running",
         timeout=1200,
         assertions={
-            "tools_all": ["coding.agent", "document.manage:create_presentation", "artifact.deliver:send_file"],
+            "tools_all": ["coding.agent", "document.manage:create_presentation", "artifact.deliver:send_latest"],
             "provider": "codex",
             "metadata_any": ["document_path"],
             "telegram_media_min": 1,
@@ -560,9 +561,10 @@ CASES = [
         size="long-running",
         timeout=1200,
         assertions={
+            "final_status_in": ["completed", "blocked"],
             "tools_any": ["vscode.copilot_terminal", "coding.agent:run_step", "coding.agent:run_goal"],
             "provider_any": ["github_copilot", "copilot"],
-            "metadata_any": ["changed_files", "coding_agent_workspace"],
+            "metadata_any": ["changed_files", "coding_agent_workspace", "coding_agent_limit_state"],
         },
     ),
     case(

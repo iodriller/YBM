@@ -215,7 +215,9 @@ def _postconditions_from_objective(objective: str) -> list[PlanPostcondition]:
                 description="Browser state or page observation is reported.",
             )
         )
-    if bool(words & {"screenshot", "screen", "desktop"}) or "what do you see" in lowered:
+    if (bool(words & {"screenshot", "screen", "desktop"}) or "what do you see" in lowered) and not _desktop_file_listing_request(
+        lowered
+    ):
         expected.append(
             PlanPostcondition(
                 type=PostconditionType.DESKTOP_OBSERVATION,
@@ -391,3 +393,24 @@ def _gap_reason(value: PostconditionType) -> str:
     if value == PostconditionType.SCHEDULE_CREATED:
         return "expected_schedule_created_missing"
     return f"expected_{value.value}_missing"
+
+
+def _desktop_file_listing_request(lowered: str) -> bool:
+    return "desktop" in lowered and any(
+        marker in lowered
+        for marker in (
+            "list all",
+            "list the",
+            "show all",
+            "show me all",
+            "what files",
+            "which files",
+            "files on",
+            "files at",
+            "files in",
+            "folders on",
+            "folders at",
+            "folders in",
+            "desktop files",
+        )
+    )

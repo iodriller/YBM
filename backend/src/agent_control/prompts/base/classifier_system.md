@@ -36,15 +36,16 @@ Routing rules:
 - Presentation requests that explicitly name a presentation-generation adapter use document.manage.
 - Browser tasks stay on browser routes unless the user explicitly asks to use Codex/Copilot for the research.
 - File organization uses filesystem.manage when a path or identifiable folder is available.
-- Use filesystem.manage for known folder inspection, folder description, organization, and renaming. Use code.interpreter when a small custom script is needed to transform local data or generate a simple derived file, and not when Codex/Copilot was explicitly requested.
+- Use filesystem.manage for known folder inspection, desktop file listing/search, folder description, organization, and renaming. Use code.interpreter when a small custom script is needed to transform local data or generate a simple derived file, and not when Codex/Copilot was explicitly requested.
 - Desktop observation uses desktop.observe. Use computer.use for real UI actions like opening apps, clicking, typing, or controlling desktop software.
+- If the user asks to find/get/send a file from Desktop/Documents/Downloads without an exact path, route to filesystem.manage with a folder root and query; delivery can follow after the file is resolved.
 - Sending files/screenshots uses artifact.deliver and should not assume a recent artifact cache exists.
 - Scheduled jobs use schedule.manage. If the user also names Codex/Copilot for job implementation, set use_external_agent=true and provider.
 - Large or multi-step app/coding workflows set needs_plan_first=true.
 - For destructive file operations, set allow_deletion or allow_overwrite only when explicitly allowed.
 
 Intent fields:
-- operation should be a simple id such as observe, screenshot, inspect_folder, describe_folder, organize, rename, search, research, research_pages, summarize_pdf, create_presentation, update_presentation, send_file, send_latest, send_screenshot, generate_and_run, run_python, create, list, pause, resume, delete, limits, status, plan, run_step, run_goal, scaffold, web_app_preview.
+- operation should be a simple id such as observe, screenshot, inspect_folder, describe_folder, organize, rename, search, locate_file, research, research_pages, summarize_pdf, create_presentation, update_presentation, send_file, send_latest, send_screenshot, generate_and_run, run_python, create, list, pause, resume, delete, limits, status, plan, run_step, run_goal, scaffold, web_app_preview.
 - Fill url/path/folder_path/file_path/query/cadence/page_limit/form_fields/provider when the user gives them or context clearly supplies them.
 - delivery can be none, latest, file, or screenshot.
 - submit is true only when the user explicitly asks to submit/send a form.

@@ -19,7 +19,7 @@ from agent_control.llm import LLMMessageClassifier, build_default_llm_provider
 from agent_control.llm.planner import PlannerService
 from agent_control.observation import ArtifactService, ScreenshotService
 from agent_control.orchestration import TaskWorker, ToolExecutor
-from agent_control.orchestration.default_plans import build_default_task_plan
+from agent_control.orchestration.default_plans import build_default_task_plan, build_evaluator_recovery_plan
 from agent_control.policy import PolicyEngine
 from agent_control.recovery import RetryPolicy
 from agent_control.scheduler import run_scheduler_forever
@@ -107,6 +107,7 @@ async def run_worker() -> None:
         retry_policy=RetryPolicy(settings.limits),
         config_context=_worker_config_context(registry),
         default_plan_factory=lambda task: build_default_task_plan(settings, task),
+        recovery_plan_factory=lambda task, reason: build_evaluator_recovery_plan(settings, task, reason),
         notification_sink=_telegram_notifier(settings),
     )
     await worker.run_forever()

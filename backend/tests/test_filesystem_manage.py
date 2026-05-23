@@ -124,3 +124,25 @@ async def test_filesystem_manage_rejects_path_escape(tmp_path) -> None:
 
     assert result.status.value == "failed"
     assert "outside allowed roots" in (result.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_filesystem_manage_resolves_desktop_alias_prefix(monkeypatch, tmp_path) -> None:
+    fake_home = tmp_path / "home"
+    desktop = fake_home / "Desktop"
+    desktop.mkdir(parents=True)
+    (desktop / "invoice.txt").write_text("invoice content", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    adapter = FilesystemManageAdapter([str(fake_home)])
+
+    result = await adapter.execute(
+        ToolCallRequest(
+            task_id="task_fs",
+            tool_name="filesystem.manage",
+            capability=Capability.FILESYSTEM_WRITE,
+            input={"operation": "search", "root": "desktop", "query": "invoice", "include_content": True},
+        )
+    )
+
+    assert result.status.value == "succeeded"
+    assert result.output["entries"][0]["path"] == str((desktop / "invoice.txt").resolve())

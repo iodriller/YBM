@@ -149,7 +149,9 @@ class CodingAssistantAdapterConfig(StrictBaseModel):
     timeout_seconds: int = Field(default=900, ge=1)
     output_limit_chars: int = Field(default=12000, ge=100)
     rate_limit_patterns: list[str] = Field(default_factory=lambda: ["rate limit", "too many requests"])
-    usage_limit_patterns: list[str] = Field(default_factory=lambda: ["usage limit", "quota exceeded"])
+    usage_limit_patterns: list[str] = Field(
+        default_factory=lambda: ["usage limit", "quota exceeded", "quota_exceeded", "no quota"]
+    )
 
 
 class CodingAgentAdapterConfig(StrictBaseModel):
@@ -160,7 +162,16 @@ class CodingAgentAdapterConfig(StrictBaseModel):
     timeout_seconds: int = Field(default=900, ge=1)
     output_limit_chars: int = Field(default=20000, ge=100)
     rate_limit_patterns: list[str] = Field(default_factory=lambda: ["rate limit", "too many requests"])
-    usage_limit_patterns: list[str] = Field(default_factory=lambda: ["usage limit", "quota exceeded", "limit reached"])
+    usage_limit_patterns: list[str] = Field(
+        default_factory=lambda: [
+            "usage limit",
+            "quota exceeded",
+            "quota_exceeded",
+            "no quota",
+            "limit reached",
+            "messages are exhausted",
+        ]
+    )
 
 
 class CodeInterpreterAdapterConfig(StrictBaseModel):

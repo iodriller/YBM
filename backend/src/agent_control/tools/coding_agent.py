@@ -63,12 +63,26 @@ class CodingAgentAdapter:
         limit_state = output.get("limit_state")
         if isinstance(limit_state, dict) and limit_state.get("limited"):
             status = ToolResultStatus.RATE_LIMITED
+        elif output.get("returncode") not in (None, 0):
+            status = ToolResultStatus.FAILED
         return ToolCallResult(
             request_id=request.id,
             status=status,
             output=output,
-            error_class=ErrorClass.USAGE_LIMITED if status == ToolResultStatus.RATE_LIMITED else None,
-            error_message="coding agent usage limit reached" if status == ToolResultStatus.RATE_LIMITED else None,
+            error_class=(
+                ErrorClass.USAGE_LIMITED
+                if status == ToolResultStatus.RATE_LIMITED
+                else ErrorClass.ADAPTER_FAILED
+                if status == ToolResultStatus.FAILED
+                else None
+            ),
+            error_message=(
+                "coding agent usage limit reached"
+                if status == ToolResultStatus.RATE_LIMITED
+                else output.get("summary")
+                if status == ToolResultStatus.FAILED
+                else None
+            ),
         )
 
     async def _run(self, request: ToolCallRequest, operation: str, provider: str) -> dict:
@@ -77,8 +91,11 @@ class CodingAgentAdapter:
             raise ValueError("prompt or objective is required")
         workspace = self._workspace(request)
         workspace.mkdir(parents=True, exist_ok=True)
+        before = _workspace_snapshot(workspace)
         command = self._command(provider, prompt, workspace)
         returncode, stdout, stderr = await self.runner.run(command, cwd=str(workspace), timeout=self.config.timeout_seconds)
+        after = _workspace_snapshot(workspace)
+        changed_files = _changed_files(before, after)
         stdout = stdout[: self.config.output_limit_chars]
         stderr = stderr[: self.config.output_limit_chars]
         combined = f"{stdout}\n{stderr}"
@@ -90,6 +107,9 @@ class CodingAgentAdapter:
             "stderr": stderr,
             "returncode": returncode,
             "limit_state": limit_state,
+            "files_before": sorted(before),
+            "files_after": sorted(after),
+            "changed_files": changed_files,
             "summary": _summary(provider, operation, returncode, stdout, stderr, limit_state),
         }
 
@@ -111,9 +131,31 @@ class CodingAgentAdapter:
         if executable is None:
             raise ValueError(f"{provider} CLI was not found")
         if provider == "codex":
-            return [executable, "exec", "--json", "--cd", str(workspace), "--sandbox", "workspace-write", "-a", "never", prompt]
+            return [
+                executable,
+                "exec",
+                "--json",
+                "--cd",
+                str(workspace),
+                "--sandbox",
+                "workspace-write",
+                "--skip-git-repo-check",
+                prompt,
+            ]
         if provider == "github_copilot":
-            return [executable, "-p", prompt, "--output-format", "json"]
+            args = [
+                "-p",
+                prompt,
+                "-C",
+                str(workspace),
+                "--output-format",
+                "json",
+                "--allow-all",
+                "--no-ask-user",
+            ]
+            if Path(executable).name.lower() in {"gh", "gh.exe"}:
+                return [executable, "copilot", "--", *args]
+            return [executable, *args]
         raise ValueError(f"unsupported coding provider: {provider}")
 
     def _executable(self, provider: str) -> str | None:
@@ -150,6 +192,29 @@ def _summary(provider: str, operation: str, returncode: int, stdout: str, stderr
         text = stdout.strip() or stderr.strip()
         return f"{provider} {operation} completed." + (f" {text[:600]}" if text else "")
     return f"{provider} {operation} failed with exit code {returncode}."
+
+
+def _workspace_snapshot(workspace: Path) -> dict[str, tuple[int, int]]:
+    snapshot: dict[str, tuple[int, int]] = {}
+    if not workspace.exists():
+        return snapshot
+    for path in workspace.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            stat = path.stat()
+            snapshot[str(path.resolve().relative_to(workspace))] = (stat.st_size, int(stat.st_mtime_ns))
+        except OSError:
+            continue
+    return snapshot
+
+
+def _changed_files(before: dict[str, tuple[int, int]], after: dict[str, tuple[int, int]]) -> list[str]:
+    changed = []
+    for path, stat in sorted(after.items()):
+        if before.get(path) != stat:
+            changed.append(path)
+    return changed
 
 
 def _terminal_output(operation: str, output: dict) -> dict:

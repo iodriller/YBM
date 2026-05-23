@@ -131,5 +131,59 @@
       "metadata_any": ["workspace_dir", "files_created", "stdout"],
       "bot_reply_contains_any": ["tasks-normalized", "Oney", "workspace", "created"]
     }
+  },
+  {
+    "number": "EXT-6",
+    "id": "desktop_file_listing_uses_filesystem",
+    "requirement": "List Desktop files through scoped filesystem inspection without getting stuck on computer-use approval.",
+    "small_test": "List all files at my desktop.",
+    "larger_test": "Ask the agent to list Desktop files/folders and verify it uses filesystem APIs rather than visual desktop control.",
+    "message": "List all the files at my desktop.",
+    "setup": ["desktop_fixture"],
+    "tags": ["filesystem", "desktop", "extended"],
+    "tools_required": ["filesystem.manage:inspect_folder"],
+    "expected_behavior": "The orchestrator treats Desktop file listing as a filesystem inspection task, not a computer-use approval-gated visual observation.",
+    "pass_criteria": "The task completes, filesystem.manage inspect_folder runs against Desktop, and no computer.use approval is required.",
+    "failure_cases": [
+      "The task waits for computer-use approval.",
+      "The validator reports expected_desktop_observation_missing.",
+      "The reply guesses without inspecting Desktop entries."
+    ],
+    "size": "small",
+    "timeout_seconds": 360,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["filesystem.manage:inspect_folder"],
+      "tools_forbidden": ["computer.use"],
+      "metadata_any": ["entries", "last_tool_result", "summary"],
+      "bot_reply_contains_any": ["AgentControlE2E", "Desktop", "file", "folder"]
+    }
+  },
+  {
+    "number": "EXT-7",
+    "id": "desktop_file_search_then_delivery",
+    "requirement": "Find a requested file on Desktop by description/name and send the resolved file back through Telegram.",
+    "small_test": "Find me the sample PDF on my desktop and send it to me.",
+    "larger_test": "Search Desktop for a requested file when no exact path is provided, resolve the file path, and deliver that file.",
+    "message": "Find me the file named agent-control-sample from my desktop and send it to me.",
+    "setup": ["desktop_fixture"],
+    "tags": ["filesystem", "artifact_delivery", "desktop", "extended"],
+    "tools_required": ["filesystem.manage:search", "artifact.deliver:send_file"],
+    "expected_behavior": "The orchestrator searches Desktop first, uses the resolved result path, and sends the actual file rather than relying on a recent artifact cache.",
+    "pass_criteria": "The search runs, artifact.deliver sends a file, and the Telegram reply/media corresponds to the Desktop sample PDF.",
+    "failure_cases": [
+      "Artifact delivery rejects the Desktop path as outside configured delivery roots.",
+      "The system sends a stale recent artifact instead of searching Desktop.",
+      "The search result is not passed into artifact delivery."
+    ],
+    "size": "medium",
+    "timeout_seconds": 420,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["filesystem.manage:search", "artifact.deliver:send_file"],
+      "metadata_any": ["artifact_delivery", "last_delivered_artifact_id", "entries"],
+      "telegram_media_min": 1,
+      "bot_reply_contains_any": ["agent-control-sample", "Delivered", "Telegram"]
+    }
   }
 ]

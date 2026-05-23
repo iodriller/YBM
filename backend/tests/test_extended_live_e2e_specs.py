@@ -20,6 +20,8 @@ def test_extended_e2e_cases_define_folder_explanation_and_code_interpreter() -> 
         "code_interpreter_csv_summary",
         "code_interpreter_markdown_report",
         "code_interpreter_json_transform",
+        "desktop_file_listing_uses_filesystem",
+        "desktop_file_search_then_delivery",
     } <= set(by_id)
 
     folder_case = by_id["folder_mixed_file_explanation"]
@@ -38,6 +40,14 @@ def test_extended_e2e_cases_define_folder_explanation_and_code_interpreter() -> 
         assert "workspace_dir" in interpreter_case["assertions"]["metadata_any"]
         assert all("{{" not in item for item in interpreter_case["assertions"].get("bot_reply_contains_any", []))
 
+    listing_case = by_id["desktop_file_listing_uses_filesystem"]
+    assert listing_case["assertions"]["tools_all"] == ["filesystem.manage:inspect_folder"]
+    assert "computer.use" in listing_case["assertions"]["tools_forbidden"]
+
+    delivery_case = by_id["desktop_file_search_then_delivery"]
+    assert delivery_case["assertions"]["tools_all"] == ["filesystem.manage:search", "artifact.deliver:send_file"]
+    assert delivery_case["assertions"]["telegram_media_min"] == 1
+
 
 def test_live_e2e_runner_lists_extended_cases() -> None:
     result = subprocess.run(
@@ -51,3 +61,4 @@ def test_live_e2e_runner_lists_extended_cases() -> None:
     assert "folder_mixed_file_explanation" in result.stdout
     assert "code_interpreter_generate_file" in result.stdout
     assert "code_interpreter_csv_summary" in result.stdout
+    assert "desktop_file_search_then_delivery" in result.stdout

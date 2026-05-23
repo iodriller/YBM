@@ -513,6 +513,9 @@ class CodingAgentOutput(ToolOutputModel):
     stderr: str = ""
     returncode: int | None = None
     limit_state: dict[str, Any] = Field(default_factory=dict)
+    files_before: list[str] = Field(default_factory=list)
+    files_after: list[str] = Field(default_factory=list)
+    changed_files: list[str] = Field(default_factory=list)
     summary: str | None = None
 
 

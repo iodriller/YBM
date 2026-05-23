@@ -321,12 +321,15 @@ def _validate_case(
     task = (trace or {}).get("task") or {}
     metadata = task.get("metadata") or {}
     outputs = _tool_outputs(trace)
+    external_limit_block = _external_limit_blocked(assertions, task, metadata, outputs)
 
     final_status_in = assertions.get("final_status_in")
     if final_status_in and task.get("status") not in set(final_status_in):
         errors.append(f"final status {task.get('status')!r} not in {final_status_in!r}")
 
     for expected in assertions.get("tools_all") or []:
+        if external_limit_block and not _external_tool_expected(expected):
+            continue
         if not _tool_seen(expected, observed_tools):
             errors.append(f"expected tool/operation not seen: {expected}; observed={observed_tools}")
     tools_any = assertions.get("tools_any") or []
@@ -341,11 +344,11 @@ def _validate_case(
         errors.append(f"none of metadata/output evidence keys were found: {metadata_any}")
 
     artifacts = (trace or {}).get("artifacts") or []
-    if len(artifacts) < int(assertions.get("artifacts_min") or 0):
+    if not external_limit_block and len(artifacts) < int(assertions.get("artifacts_min") or 0):
         errors.append(f"expected at least {assertions['artifacts_min']} artifact(s), got {len(artifacts)}")
 
     media_count = len([reply for reply in replies if reply.get("has_media")])
-    if media_count < int(assertions.get("telegram_media_min") or 0):
+    if not external_limit_block and media_count < int(assertions.get("telegram_media_min") or 0):
         errors.append(f"expected at least {assertions['telegram_media_min']} Telegram media replie(s), got {media_count}")
 
     urls = _urls(trace, replies)
@@ -357,7 +360,7 @@ def _validate_case(
         errors.append(f"expected at least {assertions['local_paths_min']} local path(s), got {len(local_paths)}")
 
     changed_paths = _changed_paths(metadata, outputs)
-    if len(changed_paths) < int(assertions.get("changed_paths_min") or 0):
+    if not external_limit_block and len(changed_paths) < int(assertions.get("changed_paths_min") or 0):
         errors.append(f"expected at least {assertions['changed_paths_min']} changed path(s), got {len(changed_paths)}")
 
     provider = assertions.get("provider")
@@ -419,6 +422,7 @@ def _validate_case(
         "url_count": len(urls),
         "local_path_count": len(local_paths),
         "changed_paths": changed_paths,
+        "external_limit_block": external_limit_block,
     }
 
 
@@ -454,6 +458,31 @@ def _reply_conditions_met(replies: list[dict[str, Any]], *, min_count: int, requ
         if not any(needle in text for needle in needles):
             return False
     return True
+
+
+def _external_limit_blocked(
+    assertions: dict[str, Any],
+    task: dict[str, Any],
+    metadata: dict[str, Any],
+    outputs: list[dict[str, Any]],
+) -> bool:
+    if not assertions.get("allow_external_limit_block"):
+        return False
+    if str(task.get("status") or "").lower() not in {"blocked", "failed", "retrying"}:
+        return False
+    limit_state = metadata.get("coding_agent_limit_state")
+    if isinstance(limit_state, dict) and limit_state.get("limited"):
+        return True
+    for output in outputs:
+        value = output.get("limit_state") if isinstance(output, dict) else None
+        if isinstance(value, dict) and value.get("limited"):
+            return True
+    return False
+
+
+def _external_tool_expected(expected: str) -> bool:
+    lowered = expected.lower()
+    return lowered.startswith("coding.agent") or "copilot" in lowered or "codex" in lowered
 
 
 async def _wait_for_task_spawn_replies(client: Any, peer: Any, min_id: int, *, timeout_seconds: int) -> list[dict[str, Any]]:

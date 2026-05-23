@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from agent_control.config import AppSettings, CapabilityPolicy
-from agent_control.orchestration.default_plans import build_default_task_plan
+from agent_control.orchestration.default_plans import build_default_task_plan, build_evaluator_recovery_plan
 from agent_control.schemas import (
     Capability,
     DeliveryKind,
@@ -38,6 +38,7 @@ def _settings(tmp_path: Path) -> AppSettings:
             "computer_use": {"enabled": True, "allowed_roots": [str(tmp_path)]},
             "workspace": {"enabled": True, "root_dir": str(tmp_path / "workspaces")},
             "coding_agent": {"enabled": True, "workspace_root": str(tmp_path / "workspaces")},
+            "code_interpreter": {"enabled": True, "workspace_root": str(tmp_path / "code_interpreter")},
         },
         scheduler={"enabled": True},
     )
@@ -137,6 +138,32 @@ def test_intent_routes_explicit_codex_to_coding_agent(tmp_path) -> None:
     assert plan.steps[0].tool_input["operation"] == "plan"
 
 
+def test_intent_routes_codex_presentation_request_through_document_adapter(tmp_path) -> None:
+    plan = build_default_task_plan(
+        _settings(tmp_path),
+        _task(
+            "Use Codex to prepare the content for a 5-slide PowerPoint, then use the presentation-generation adapter to create the PPTX and send it to me.",
+            OrchestrationIntent(
+                route=IntentRoute.CODING_AGENT,
+                operation="run_goal",
+                objective="Generate presentation content using Codex and create a PowerPoint artifact.",
+                reasoning="The user explicitly asked for Codex and presentation generation.",
+                provider="codex",
+                use_external_agent=True,
+                delivery=DeliveryKind.FILE,
+            ),
+        ),
+    )
+
+    assert plan is not None
+    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
+        "coding.agent:run_goal",
+        "document.manage:create_presentation",
+        "artifact.deliver:send_latest",
+    ]
+    assert plan.steps[1].tool_input["content"] == "{{last_output}}"
+
+
 def test_intent_routes_workspace_web_app_without_coding_agent(tmp_path) -> None:
     plan = build_default_task_plan(
         _settings(tmp_path),
@@ -180,6 +207,134 @@ def test_intent_routes_filesystem_search_without_search_phrase(tmp_path) -> None
     assert plan.steps[0].tool_input["operation"] == "search"
     assert plan.steps[0].tool_input["root"] == str(target)
     assert plan.steps[0].tool_input["query"] == "resume"
+
+
+def test_intent_routes_desktop_file_listing_to_filesystem_not_computer_use(tmp_path) -> None:
+    plan = build_default_task_plan(
+        _settings(tmp_path),
+        _task(
+            "handle desktop files",
+            OrchestrationIntent(
+                route=IntentRoute.DESKTOP_OBSERVE,
+                operation="observe",
+                objective="List all the files at my desktop.",
+                reasoning="The user mentions desktop, but asks for file listing.",
+            ),
+        ),
+    )
+
+    assert plan is not None
+    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
+        "filesystem.manage:inspect_folder",
+    ]
+    assert plan.steps[0].requires_approval is False
+    assert plan.steps[0].tool_input["root"] == "desktop"
+
+
+def test_file_lookup_delivery_searches_desktop_then_sends_resolved_file(tmp_path) -> None:
+    plan = build_default_task_plan(
+        _settings(tmp_path),
+        _task(
+            "handle file delivery",
+            OrchestrationIntent(
+                route=IntentRoute.ARTIFACT_DELIVERY,
+                operation="send_file",
+                objective="Find me the file about invoices from my desktop and send it to me.",
+                reasoning="The user wants a file delivered but did not provide an exact path.",
+                folder_path="desktop",
+                query="invoices",
+                delivery=DeliveryKind.FILE,
+                artifact_type="document",
+            ),
+        ),
+    )
+
+    assert plan is not None
+    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
+        "filesystem.manage:search",
+        "artifact.deliver:send_file",
+    ]
+    assert plan.steps[0].tool_input["root"] == "desktop"
+    assert plan.steps[0].tool_input["query"] == "invoices"
+    assert plan.steps[1].tool_input["path"] == "{{last_entry_path}}"
+    assert [postcondition.type.value for postcondition in plan.postconditions] == ["artifact_delivered"]
+
+
+def test_filesystem_intent_locate_and_deliver_does_not_organize_desktop(tmp_path) -> None:
+    plan = build_default_task_plan(
+        _settings(tmp_path),
+        _task(
+            "Find me the file named agent-control-sample from my desktop and send it to me.",
+            OrchestrationIntent(
+                route=IntentRoute.FILESYSTEM_MANAGE,
+                operation="locate_file",
+                objective="Locate and deliver the file 'agent-control-sample' from the user's desktop.",
+                reasoning="The LLM selected filesystem work but used a locate operation.",
+                file_path="agent-control-sample",
+                folder_path="desktop",
+                delivery=DeliveryKind.FILE,
+            ),
+        ),
+    )
+
+    assert plan is not None
+    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
+        "filesystem.manage:search",
+        "artifact.deliver:send_file",
+    ]
+    assert plan.steps[0].tool_input["query"] == "agent-control-sample"
+
+
+def test_filesystem_intent_placeholder_desktop_path_is_treated_as_search_query(tmp_path) -> None:
+    plan = build_default_task_plan(
+        _settings(tmp_path),
+        _task(
+            "Find me the file named agent-control-sample from my desktop and send it to me.",
+            OrchestrationIntent(
+                route=IntentRoute.FILESYSTEM_MANAGE,
+                operation="send_file",
+                objective="Locate and deliver the file 'agent-control-sample' from the user's desktop.",
+                reasoning="The LLM inferred a placeholder path that is not directly usable.",
+                file_path=r"C:\Users\<user>\Desktop\agent-control-sample.pdf",
+                delivery=DeliveryKind.FILE,
+            ),
+        ),
+    )
+
+    assert plan is not None
+    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
+        "filesystem.manage:search",
+        "artifact.deliver:send_file",
+    ]
+    assert plan.steps[0].tool_input["root"] == "desktop"
+    assert plan.steps[0].tool_input["query"] == "agent-control-sample.pdf"
+
+
+def test_evaluator_recovery_replaces_missing_desktop_observation_with_filesystem_listing(tmp_path) -> None:
+    plan = build_evaluator_recovery_plan(
+        _settings(tmp_path),
+        TaskRecord(objective="List all files at my desktop."),
+        "expected_desktop_observation_missing",
+    )
+
+    assert plan is not None
+    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
+        "filesystem.manage:inspect_folder",
+    ]
+
+
+def test_evaluator_recovery_can_use_code_interpreter_for_validation_failures(tmp_path) -> None:
+    plan = build_evaluator_recovery_plan(
+        _settings(tmp_path),
+        TaskRecord(objective="Normalize these local records into a JSON file."),
+        "validation failed for generated tool input",
+    )
+
+    assert plan is not None
+    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
+        "code.interpreter:generate_and_run",
+    ]
+    assert plan.steps[0].tool_input["workspace_dir"].startswith(str(tmp_path / "code_interpreter"))
 
 
 def test_intent_routes_filesystem_inspect_alias_as_read_only_operation(tmp_path) -> None:

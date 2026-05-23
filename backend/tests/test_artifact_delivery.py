@@ -332,6 +332,38 @@ async def test_artifact_delivery_direct_path_rejects_root_escape(tmp_path) -> No
 
 
 @pytest.mark.asyncio
+async def test_artifact_delivery_resolves_desktop_alias_under_allowed_home(monkeypatch, tmp_path) -> None:
+    fake_home = tmp_path / "home"
+    desktop = fake_home / "Desktop"
+    desktop.mkdir(parents=True)
+    document = desktop / "report.txt"
+    document.write_text("desktop report", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    repos, _audit = _repos(tmp_path)
+    task = repos.tasks.create("send file from desktop", metadata={"source_chat_id": "100"})
+    client = FakeTelegramClient()
+    adapter = ArtifactDeliveryAdapter(
+        repos.artifacts,
+        repos.tasks,
+        telegram_client=client,
+        allowed_roots=[str(fake_home)],
+    )
+
+    result = await adapter.execute(
+        ToolCallRequest(
+            task_id=task.id,
+            tool_name="artifact.deliver",
+            capability=Capability.TELEGRAM_SEND,
+            risk_level=RiskLevel.LOW,
+            input={"operation": "send_file", "path": "desktop/report.txt"},
+        )
+    )
+
+    assert result.status == ToolResultStatus.SUCCEEDED
+    assert client.documents == [("100", str(document.resolve()), "report.txt")]
+
+
+@pytest.mark.asyncio
 async def test_executor_records_artifact_delivery_output(tmp_path) -> None:
     repos, audit = _repos(tmp_path)
     screenshot = tmp_path / "screen.png"

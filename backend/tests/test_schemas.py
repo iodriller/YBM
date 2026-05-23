@@ -13,6 +13,7 @@ from agent_control.schemas import (
     ChannelType,
     InboundMessage,
     MessageKind,
+    OrchestrationIntent,
     PlanModel,
     PlanPostcondition,
     PlanStep,
@@ -70,6 +71,21 @@ def test_inbound_message_forbids_unknown_fields() -> None:
             text="hello",
             unexpected=True,
         )
+
+
+def test_orchestration_intent_ignores_harmless_llm_extra_fields() -> None:
+    intent = OrchestrationIntent.model_validate(
+        {
+            "route": "desktop.observe",
+            "operation": "screenshot",
+            "objective": "Capture VS Code and file directory.",
+            "reasoning": "The user asked for a screenshot.",
+            "screenshot": True,
+        }
+    )
+
+    assert intent.route.value == "desktop.observe"
+    assert not hasattr(intent, "screenshot")
 
 
 def test_tool_call_requires_valid_capability() -> None:

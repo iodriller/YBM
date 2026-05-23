@@ -223,6 +223,9 @@ def _path_from_uri(value: object) -> Path | None:
     if not value:
         return None
     text = str(value)
+    alias_path = _alias_path(text)
+    if alias_path is not None:
+        return alias_path.expanduser().resolve()
     if text.startswith("file:///"):
         parsed = urlparse(text)
         raw_path = unquote(parsed.path)
@@ -230,6 +233,38 @@ def _path_from_uri(value: object) -> Path | None:
             raw_path = raw_path[1:]
         return Path(raw_path).expanduser().resolve()
     return Path(text).expanduser().resolve()
+
+
+def _alias_path(value: str) -> Path | None:
+    normalized = value.strip().strip("\"'").replace("/", "\\")
+    lowered = normalized.lower()
+    home = Path.home()
+    aliases = {
+        "desktop": home / "Desktop",
+        "%desktop%": home / "Desktop",
+        "documents": home / "Documents",
+        "my documents": home / "Documents",
+        "%documents%": home / "Documents",
+        "downloads": home / "Downloads",
+        "%downloads%": home / "Downloads",
+        "home": home,
+        "user": home,
+        "my directory": home,
+        "my folder": home,
+    }
+    if lowered in aliases:
+        return aliases[lowered]
+    for prefix, root in (
+        ("desktop\\", home / "Desktop"),
+        ("documents\\", home / "Documents"),
+        ("my documents\\", home / "Documents"),
+        ("downloads\\", home / "Downloads"),
+        ("home\\", home),
+        ("my directory\\", home),
+    ):
+        if lowered.startswith(prefix):
+            return root / normalized[len(prefix) :]
+    return None
 
 
 def _latest_task_text(task: TaskRecord) -> str | None:
