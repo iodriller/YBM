@@ -165,6 +165,11 @@ class ScheduleManageInput(ToolInputModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class TaskStatusInput(ToolInputModel):
+    operation: Literal["status"] = "status"
+    limit: int = Field(default=10, ge=1, le=50)
+
+
 class BrowserOpenInput(ToolInputModel):
     operation: Literal["open"] = "open"
     url: str | None = None
@@ -337,6 +342,13 @@ class FilesystemFindByDescriptionInput(ToolInputModel):
 class FilesystemOpenFileInput(ToolInputModel):
     operation: Literal["open_file"] = "open_file"
     path: str = Field(min_length=1)
+
+
+class FilesystemWriteTextFileInput(ToolInputModel):
+    operation: Literal["write_text_file"] = "write_text_file"
+    path: str = Field(min_length=1)
+    content: str = ""
+    overwrite: bool = False
 
 
 class FilesystemCollectFolderSnapshotInput(ToolInputModel):
@@ -526,6 +538,13 @@ class ScheduleManageOutput(ToolOutputModel):
     task_id: str | None = None
     next_run_at: str | None = None
     summary: str | None = None
+
+
+class TaskStatusOutput(ToolOutputModel):
+    operation: Literal["status"] = "status"
+    summary: str = Field(min_length=1)
+    task_status: dict[str, Any] = Field(default_factory=dict)
+    plan: dict[str, Any] | None = None
 
 
 class BrowserToolOutput(ToolOutputModel):

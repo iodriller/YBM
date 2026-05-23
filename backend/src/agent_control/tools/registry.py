@@ -52,6 +52,7 @@ from agent_control.tools.contracts import (
     FilesystemDescribeFolderInput,
     FilesystemFindByDescriptionInput,
     FilesystemOpenFileInput,
+    FilesystemWriteTextFileInput,
     FilesystemResolveDesktopItemInput,
     FilesystemApplyManifestInput,
     FilesystemInspectInput,
@@ -61,6 +62,8 @@ from agent_control.tools.contracts import (
     FilesystemSearchInput,
     ScheduleManageInput,
     ScheduleManageOutput,
+    TaskStatusInput,
+    TaskStatusOutput,
     TTSSynthesizeInput,
     TTSSynthesizeOutput,
     VSCodeCopilotTerminalInput,
@@ -82,6 +85,7 @@ from agent_control.tools.document_manage import DocumentManageAdapter
 from agent_control.tools.filesystem_manage import FilesystemManageAdapter
 from agent_control.tools.local_workspace import LocalWorkspaceAdapter
 from agent_control.tools.schedule_manage import ScheduleManageAdapter
+from agent_control.tools.task_status import TaskStatusAdapter
 from agent_control.tools.tts import build_tts_adapter
 from agent_control.tools.vscode_bridge import VSCodeBridgeTerminalAdapter
 
@@ -259,6 +263,7 @@ def build_tool_registry(
                 "resolve_desktop_item",
                 "find_by_description",
                 "open_file",
+                "write_text_file",
                 "collect_folder_snapshot",
                 "describe_folder",
                 "organize_plan",
@@ -271,6 +276,7 @@ def build_tool_registry(
                 "resolve_desktop_item": FilesystemResolveDesktopItemInput,
                 "find_by_description": FilesystemFindByDescriptionInput,
                 "open_file": FilesystemOpenFileInput,
+                "write_text_file": FilesystemWriteTextFileInput,
                 "collect_folder_snapshot": FilesystemCollectFolderSnapshotInput,
                 "describe_folder": FilesystemDescribeFolderInput,
                 "organize_plan": FilesystemOrganizePlanInput,
@@ -285,6 +291,7 @@ def build_tool_registry(
                     "resolve_desktop_item",
                     "find_by_description",
                     "open_file",
+                    "write_text_file",
                     "collect_folder_snapshot",
                     "describe_folder",
                     "organize_plan",
@@ -446,6 +453,22 @@ def build_tool_registry(
             audit_logger,  # type: ignore[arg-type]
             default_timezone=settings.scheduler.default_timezone,
         )
+
+    task_status_enabled = repositories is not None and _capability_enabled(settings, Capability.TELEGRAM_RECEIVE)
+    definitions.append(
+        ToolDefinition(
+            name="task.status",
+            capability=Capability.TELEGRAM_RECEIVE,
+            enabled=task_status_enabled,
+            description="report current task, plan, active, completed, and blocked state for status questions",
+            operations=("status",),
+            input_schema=TaskStatusInput,
+            output_schema=TaskStatusOutput,
+            default_operation="status",
+        )
+    )
+    if repositories is not None:
+        adapters["task.status"] = TaskStatusAdapter(repositories)  # type: ignore[arg-type]
 
     artifact_delivery_enabled = _capability_enabled(settings, Capability.TELEGRAM_SEND)
     definitions.append(

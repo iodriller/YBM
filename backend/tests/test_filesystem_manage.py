@@ -84,6 +84,31 @@ async def test_filesystem_manage_rename_plan_and_apply(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_filesystem_manage_write_text_file_inside_allowed_root(tmp_path) -> None:
+    root = tmp_path / "docs"
+    root.mkdir()
+    adapter = FilesystemManageAdapter([str(tmp_path)])
+
+    result = await adapter.execute(
+        ToolCallRequest(
+            task_id="task_fs",
+            tool_name="filesystem.manage",
+            capability=Capability.FILESYSTEM_WRITE,
+            input={
+                "operation": "write_text_file",
+                "path": str(root / "e2e-output.txt"),
+                "content": "hello\n",
+            },
+        )
+    )
+
+    assert result.status.value == "succeeded"
+    assert (root / "e2e-output.txt").read_text(encoding="utf-8") == "hello\n"
+    assert result.output["path"] == str((root / "e2e-output.txt").resolve())
+    assert result.output["changed_paths"] == [str((root / "e2e-output.txt").resolve())]
+
+
+@pytest.mark.asyncio
 async def test_filesystem_manage_describe_folder_extracts_file_content_and_image_ocr(tmp_path) -> None:
     root = tmp_path / "mixed"
     root.mkdir()

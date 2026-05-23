@@ -37,6 +37,7 @@ def expected_fulfillment(objective: str) -> dict[str, bool]:
         "browser_state": any(item.type == PostconditionType.BROWSER_STATE for item in expected),
         "desktop_observation": any(item.type == PostconditionType.DESKTOP_OBSERVATION for item in expected),
         "file_organization": any(item.type == PostconditionType.FILE_ORGANIZATION for item in expected),
+        "task_status": any(item.type == PostconditionType.TASK_STATUS for item in expected),
         "github_pr": any(item.type == PostconditionType.GITHUB_PR for item in expected),
         "external_command": any(item.type == PostconditionType.EXTERNAL_COMMAND for item in expected),
     }
@@ -111,6 +112,13 @@ def _postconditions_from_plan(plan: PlanModel) -> list[PlanPostcondition]:
                 PlanPostcondition(
                     type=PostconditionType.SCHEDULE_CREATED,
                     description="A schedule ID or scheduled task ID is reported.",
+                )
+            )
+        if step.tool_name == "task.status" and operation in {"", "status"}:
+            expected.append(
+                PlanPostcondition(
+                    type=PostconditionType.TASK_STATUS,
+                    description="Current task and plan status are reported.",
                 )
             )
         if step.tool_name in {"workspace.manage", "workspace.web_app"}:
@@ -315,6 +323,8 @@ def _postcondition_satisfied(task: TaskRecord, expected: PostconditionType) -> b
                 output_keys=("organized_paths", "changed_paths", "moved_files", "changed_files", "files", "manifest", "entries"),
             )
         )
+    if expected == PostconditionType.TASK_STATUS:
+        return bool(_any_value(task, metadata_keys=("task_status",), output_keys=("task_status", "summary")))
     if expected == PostconditionType.GITHUB_PR:
         return bool(
             _any_value(

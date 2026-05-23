@@ -72,10 +72,14 @@ class MessageRepository:
         self.database = database
 
     def create(self, message: InboundMessage, conversation_id: str | None = None) -> InboundMessage:
+        self.try_create(message, conversation_id)
+        return message
+
+    def try_create(self, message: InboundMessage, conversation_id: str | None = None) -> bool:
         with self.database.connect() as connection:
-            connection.execute(
+            cursor = connection.execute(
                 """
-                INSERT INTO messages (
+                INSERT OR IGNORE INTO messages (
                     id, conversation_id, channel, kind, sender_id, chat_id, text,
                     attachments_json, raw_json, correlation_id, received_at
                 )
@@ -95,7 +99,7 @@ class MessageRepository:
                     _dt(message.received_at),
                 ),
             )
-        return message
+            return cursor.rowcount > 0
 
 
 class ConversationMemoryRepository:

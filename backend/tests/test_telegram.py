@@ -67,6 +67,31 @@ def test_telegram_text_update_creates_task(tmp_path) -> None:
     assert repos.tasks.get(result.task.id) is not None
 
 
+def test_telegram_duplicate_message_is_ignored_without_crashing_or_spawning_again(tmp_path) -> None:
+    service, repos = _service(
+        tmp_path,
+        TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
+        classifier=StaticMessageClassifier(),
+    )
+    update = {
+        "message": {
+            "message_id": 1,
+            "from": {"id": 42},
+            "chat": {"id": 100},
+            "text": "Build a todo app",
+        }
+    }
+
+    first = service.handle_update(update)
+    second = service.handle_update(update)
+
+    assert first.task is not None
+    assert second.authorized is True
+    assert second.task is None
+    assert second.outbound_message is None
+    assert len(repos.tasks.list_recent(limit=10)) == 1
+
+
 def test_telegram_caption_update_creates_task(tmp_path) -> None:
     service, repos = _service(
         tmp_path,
@@ -177,6 +202,45 @@ def test_telegram_plain_status_does_not_require_slash(tmp_path) -> None:
 
     assert result.outbound_message is not None
     assert task.id in (result.outbound_message.text or "")
+
+
+def test_telegram_rich_status_question_spawns_traceable_status_task(tmp_path) -> None:
+    service, repos = _service(
+        tmp_path,
+        TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
+        classifier=StaticMessageClassifier(
+            MessageClassification(
+                is_task=False,
+                task_type=TaskType.STATUS_REQUEST,
+                normalized_objective="Report current workflow status.",
+                confidence=0.9,
+                reason="status question",
+                intent={
+                    "route": "status",
+                    "operation": "status",
+                    "objective": "Report current workflow status.",
+                    "reasoning": "The user asks for status.",
+                },
+            )
+        ),
+    )
+
+    result = service.handle_update(
+        {
+            "message": {
+                "message_id": 14,
+                "from": {"id": 42},
+                "chat": {"id": 100},
+                "text": "Where are we? Tell me what remains and whether anything is blocked.",
+            }
+        }
+    )
+
+    assert result.task is not None
+    assert result.task.metadata["task_type"] == TaskType.STATUS_REQUEST.value
+    assert result.outbound_message is not None
+    assert "Task spawned:" in (result.outbound_message.text or "")
+    assert repos.tasks.get(result.task.id) is not None
 
 
 def test_telegram_plain_approve_approves_latest_pending_task(tmp_path) -> None:
@@ -542,6 +606,45 @@ async def test_polling_runner_sends_outbound_command_response(tmp_path) -> None:
 
     assert next_offset == 11
     assert client.sent == [("100", "0 recent task(s), 0 active.")]
+
+
+@pytest.mark.asyncio
+async def test_polling_runner_advances_offset_after_update_processing_error(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
+    database.initialize()
+    repos = Repositories.for_database(database)
+    audit = AuditLogger(repos.audit)
+
+    class BrokenIntake:
+        def __init__(self) -> None:
+            self.audit = audit
+            self.repositories = repos
+
+        async def handle_update_async(self, update: dict) -> None:
+            raise RuntimeError("boom")
+
+    client = FakeTelegramClient(
+        [
+            {
+                "update_id": 12,
+                "message": {
+                    "message_id": 8,
+                    "from": {"id": 42},
+                    "chat": {"id": 100},
+                    "text": "poison",
+                },
+            }
+        ]
+    )
+    runner = TelegramPollingRunner(client, BrokenIntake())  # type: ignore[arg-type]
+
+    next_offset, results = await runner.poll_once()
+
+    assert next_offset == 13
+    assert results == []
+    events = repos.audit.list_recent(limit=5)
+    assert events[0].type == AuditEventType.ERROR
+    assert events[0].payload["error"] == "update_processing_failed"
 
 
 class FakeScreenshotAdapter:

@@ -185,5 +185,86 @@
       "telegram_media_min": 1,
       "bot_reply_contains_any": ["agent-control-sample", "Delivered", "Telegram"]
     }
+  },
+  {
+    "number": "EXT-8",
+    "id": "implicit_code_interpreter_numbers_report",
+    "requirement": "Route a bounded local script request to code.interpreter even when the user does not name the adapter.",
+    "small_test": "Write and run a small local Python script for a numbers report.",
+    "larger_test": "Ask naturally for a small local script that creates a JSON report from inline numbers; the orchestrator should classify it as code.interpreter rather than Codex, Copilot, or chat-only.",
+    "message": "Write and run a small local Python script that creates numbers-summary.json for the numbers 3, 5, and 8. Include the count, total, and average, then tell me where the file is.",
+    "setup": [],
+    "tags": ["code_interpreter", "implicit_route", "extended"],
+    "tools_required": ["code.interpreter:generate_and_run"],
+    "expected_behavior": "The LLM router recognizes a bounded local script/data transformation and selects code.interpreter without being explicitly told the adapter name.",
+    "pass_criteria": "The interpreter runs in the managed workspace, creates numbers-summary.json, and reports stdout or created-file evidence.",
+    "failure_cases": [
+      "The request is answered as plain chat without running code.",
+      "The task is sent to Codex or GitHub Copilot.",
+      "The generated file is missing or outside the interpreter workspace."
+    ],
+    "size": "medium",
+    "timeout_seconds": 600,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["code.interpreter:generate_and_run"],
+      "tools_forbidden": ["coding.agent", "vscode.copilot_terminal"],
+      "metadata_any": ["workspace_dir", "files_created", "stdout"],
+      "bot_reply_contains_any": ["numbers-summary", "workspace", "created", "16"]
+    }
+  },
+  {
+    "number": "EXT-9",
+    "id": "implicit_code_interpreter_csv_transform",
+    "requirement": "Route a natural local CSV generation/transformation task to code.interpreter.",
+    "small_test": "Create a CSV, transform it with Python, and write a JSON output.",
+    "larger_test": "Ask for a small generated CSV and derived JSON output; the orchestrator should use the local interpreter because this is a bounded script task.",
+    "message": "Create a local CSV with rows alpha=2, beta=4, gamma=6, then run a small Python script that writes doubled-values.json with each value doubled and the grand total.",
+    "setup": [],
+    "tags": ["code_interpreter", "implicit_route", "extended"],
+    "tools_required": ["code.interpreter:generate_and_run"],
+    "expected_behavior": "The orchestrator routes the bounded local data transform to code.interpreter and records generated files.",
+    "pass_criteria": "The output includes doubled-values.json in the interpreter workspace and the final reply mentions the generated artifact.",
+    "failure_cases": [
+      "The route falls back to workspace.manage or chat-only.",
+      "The script is generated but not executed.",
+      "External coding agents are used without request."
+    ],
+    "size": "medium",
+    "timeout_seconds": 600,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["code.interpreter:generate_and_run"],
+      "tools_forbidden": ["coding.agent", "vscode.copilot_terminal"],
+      "metadata_any": ["workspace_dir", "files_created", "stdout"],
+      "bot_reply_contains_any": ["doubled-values", "workspace", "created", "24"]
+    }
+  },
+  {
+    "number": "EXT-10",
+    "id": "implicit_code_interpreter_markdown_from_notes",
+    "requirement": "Route a natural generated-file scripting task to code.interpreter.",
+    "small_test": "Run a small script to turn notes into a Markdown checklist.",
+    "larger_test": "Ask naturally for a generated Markdown file from inline notes; the orchestrator should create and run a bounded script rather than returning only a chat answer.",
+    "message": "Run a small local script that turns these notes into a Markdown checklist file named route-checklist.md: inspect desktop, search files, deliver artifact, report summary.",
+    "setup": [],
+    "tags": ["code_interpreter", "implicit_route", "extended"],
+    "tools_required": ["code.interpreter:generate_and_run"],
+    "expected_behavior": "The LLM router selects code.interpreter and the generated script writes the Markdown artifact in the managed workspace.",
+    "pass_criteria": "route-checklist.md is created in the interpreter workspace and the final reply includes created-file evidence.",
+    "failure_cases": [
+      "Only a Markdown snippet is returned in chat.",
+      "The output file is not created.",
+      "Codex or Copilot is used unnecessarily."
+    ],
+    "size": "medium",
+    "timeout_seconds": 600,
+    "assertions": {
+      "final_status_in": ["completed"],
+      "tools_all": ["code.interpreter:generate_and_run"],
+      "tools_forbidden": ["coding.agent", "vscode.copilot_terminal"],
+      "metadata_any": ["workspace_dir", "files_created", "stdout"],
+      "bot_reply_contains_any": ["route-checklist", "workspace", "created", "Markdown"]
+    }
   }
 ]

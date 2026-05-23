@@ -144,15 +144,28 @@ class TelegramPollingRunner:
         results: list[TelegramUpdateResult] = []
         next_offset = offset
         for update in updates:
-            result = await self.intake.handle_update_async(update)
-            results.append(result)
-            if result.outbound_message and result.outbound_message.text:
-                await self.client.send_message(result.outbound_message.chat_id, result.outbound_message.text)
-            if result.outbound_message and result.outbound_message.artifact_ids:
-                await self._send_artifacts(result.outbound_message)
             update_id = update.get("update_id")
-            if isinstance(update_id, int):
-                next_offset = update_id + 1
+            try:
+                result = await self.intake.handle_update_async(update)
+                results.append(result)
+                if result.outbound_message and result.outbound_message.text:
+                    await self.client.send_message(result.outbound_message.chat_id, result.outbound_message.text)
+                if result.outbound_message and result.outbound_message.artifact_ids:
+                    await self._send_artifacts(result.outbound_message)
+            except Exception as exc:
+                if self.intake.audit:
+                    self.intake.audit.append(
+                        AuditEventType.ERROR,
+                        actor="telegram_polling",
+                        payload={
+                            "error": "update_processing_failed",
+                            "update_id": update_id,
+                            "reason": str(exc),
+                        },
+                    )
+            finally:
+                if isinstance(update_id, int):
+                    next_offset = update_id + 1
         return next_offset, results
 
     async def _send_artifacts(self, outbound_message: "OutboundMessage") -> None:
@@ -387,7 +400,8 @@ class TelegramIntakeService:
                         inbound_message=inbound,
                         outbound_message=self._out(inbound.chat_id, f"Voice transcription failed: {exc}"),
                     )
-            self.repositories.messages.create(inbound, conversation_id)
+            if not self.repositories.messages.try_create(inbound, conversation_id):
+                return TelegramUpdateResult(authorized=True, inbound_message=inbound)
             if inbound.text:
                 await self._update_conversation_memory(conversation_id, inbound.text)
 
@@ -453,7 +467,7 @@ class TelegramIntakeService:
             },
         )
 
-        if not classification.is_task:
+        if not classification.is_task and classification.task_type != TaskType.STATUS_REQUEST:
             outbound = await self._non_task_response(inbound, classification, conversation_id)
             if outbound is not None:
                 return TelegramUpdateResult(
@@ -770,7 +784,8 @@ class TelegramVoiceIntakeService:
             result.inbound_message.channel,
             result.inbound_message.chat_id,
         )
-        self.repositories.messages.create(result.inbound_message, conversation_id)
+        if not self.repositories.messages.try_create(result.inbound_message, conversation_id):
+            return result
 
         voice = next(
             (attachment for attachment in result.inbound_message.attachments if isinstance(attachment, VoiceAttachment)),

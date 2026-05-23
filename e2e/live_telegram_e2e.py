@@ -752,8 +752,8 @@ def _guarded(case: dict[str, Any]) -> bool:
 
 def _extract_task_id(messages: list[dict[str, Any]]) -> str | None:
     text = "\n".join(str(message.get("text") or "") for message in messages)
-    match = re.search(r"\btask_[A-Za-z0-9]+\b", text)
-    return match.group(0) if match else None
+    match = re.search(r"\bTask spawned:\s*(task_[A-Za-z0-9]+)\b", text)
+    return match.group(1) if match else None
 
 
 def _telegram_message(message: Any) -> dict[str, Any]:

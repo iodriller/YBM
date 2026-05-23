@@ -115,6 +115,20 @@ def _normalized_classification(message: InboundMessage, classification: MessageC
 
 def emergency_classification(message: InboundMessage, reason: str) -> MessageClassification:
     text = (message.text or "").strip()
+    if text and _looks_actionable_request(text):
+        return MessageClassification(
+            is_task=True,
+            task_type=TaskType.OTHER,
+            normalized_objective=text,
+            confidence=0.2,
+            reason=reason,
+            intent=OrchestrationIntent(
+                route=IntentRoute.UNKNOWN,
+                operation=None,
+                objective=text,
+                reasoning="LLM router was unavailable; the message is actionable but no route was selected.",
+            ),
+        )
     return MessageClassification(
         is_task=False,
         task_type=TaskType.OTHER,
@@ -126,4 +140,32 @@ def emergency_classification(message: InboundMessage, reason: str) -> MessageCla
             objective=None,
             reasoning="No task was spawned because the LLM router was unavailable.",
         ),
+    )
+
+
+def _looks_actionable_request(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "inspect",
+            "open",
+            "create",
+            "organize",
+            "send",
+            "schedule",
+            "run",
+            "search",
+            "browse",
+            "check",
+            "fill",
+            "summarize",
+            "rename",
+            "screenshot",
+            "desktop",
+            "folder",
+            "file",
+            "job",
+            "every day",
+        )
     )

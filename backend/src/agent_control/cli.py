@@ -23,7 +23,7 @@ from agent_control.orchestration.default_plans import build_default_task_plan, b
 from agent_control.policy import PolicyEngine
 from agent_control.recovery import RetryPolicy
 from agent_control.scheduler import run_scheduler_forever
-from agent_control.schemas import TaskStatus
+from agent_control.schemas import AuditEventType, TaskStatus
 from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.tools.registry import build_tool_registry
 from agent_control.tools.stt import build_stt_adapter
@@ -72,7 +72,15 @@ async def poll_telegram() -> None:
     runner = TelegramPollingRunner(client, service)
     offset: int | None = None
     while True:
-        offset, _ = await runner.poll_once(offset=offset, timeout=30)
+        try:
+            offset, _ = await runner.poll_once(offset=offset, timeout=30)
+        except Exception as exc:
+            audit.append(
+                AuditEventType.ERROR,
+                actor="telegram_polling",
+                payload={"error": "poll_once_failed", "reason": str(exc)},
+            )
+            await asyncio.sleep(5)
 
 
 async def run_worker() -> None:

@@ -28,6 +28,10 @@ def build_default_task_plan(settings: AppSettings, task: TaskRecord) -> PlanMode
     if intent_plan is not None:
         return intent_plan
 
+    status_plan = _build_status_plan(settings, task)
+    if status_plan is not None:
+        return status_plan
+
     file_lookup_delivery_plan = _build_file_lookup_delivery_plan(settings, task)
     if file_lookup_delivery_plan is not None:
         return file_lookup_delivery_plan
@@ -85,14 +89,18 @@ def build_evaluator_recovery_plan(settings: AppSettings, task: TaskRecord, failu
 
 def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | None:
     intent = _task_intent(task)
-    if intent is None or intent.route in {IntentRoute.CONVERSATION, IntentRoute.STATUS, IntentRoute.UNKNOWN}:
+    if intent is None or intent.route in {IntentRoute.CONVERSATION, IntentRoute.UNKNOWN}:
         return None
 
     objective = intent.objective or task.objective
+    request_text = _task_request_text(task)
     policy_send = settings.capabilities.get(Capability.TELEGRAM_SEND)
 
+    if intent.route == IntentRoute.STATUS:
+        return _build_status_plan(settings, task, objective=objective)
+
     if intent.route == IntentRoute.DESKTOP_OBSERVE:
-        if _looks_like_desktop_file_listing(objective):
+        if _looks_like_desktop_file_listing(request_text):
             return _build_filesystem_manage_plan(settings, task.model_copy(update={"objective": objective}))
         desktop_policy = settings.capabilities.get(Capability.DESKTOP_CONTROL)
         if (
@@ -122,10 +130,10 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
             )
         ]
         wants_screenshot_delivery = intent.delivery == DeliveryKind.SCREENSHOT or (
-            intent.operation in {"screenshot", "send_screenshot"} and _looks_like_delivery_request(task.objective)
+            intent.operation in {"screenshot", "send_screenshot"} and _looks_like_delivery_request(request_text)
         )
         if wants_screenshot_delivery and policy_send and policy_send.enabled:
-            steps.append(_intent_delivery_step(settings, objective, "send_screenshot", screenshot=True))
+            steps.append(_intent_delivery_step(settings, request_text, "send_screenshot", screenshot=True))
         return PlanModel(
             objective=objective,
             assumptions=["The LLM router selected desktop observation."],
@@ -148,7 +156,7 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
         )
 
     if intent.route == IntentRoute.COMPUTER_USE:
-        if _looks_like_desktop_file_listing(objective):
+        if _looks_like_desktop_file_listing(request_text):
             return _build_filesystem_manage_plan(settings, task.model_copy(update={"objective": objective}))
         desktop_policy = settings.capabilities.get(Capability.DESKTOP_CONTROL)
         if (
@@ -186,32 +194,50 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
                 "require_vision": True,
                 "timeout_seconds": 240,
             }
+        steps = [
+            PlanStep(
+                title="Run computer-use action",
+                description="Use the bounded computer-use adapter for the requested desktop action.",
+                required_capabilities=[Capability.DESKTOP_CONTROL],
+                risk_level=RiskLevel.CRITICAL,
+                requires_approval=desktop_policy.requires_approval,
+                tool_name="computer.use",
+                tool_input=tool_input,
+                expected_output="Desktop observation, actions taken, and final summary.",
+            )
+        ]
+        wants_screenshot_delivery = _objective_wants_screenshot(request_text) and _looks_like_delivery_request(request_text)
+        if wants_screenshot_delivery and policy_send and policy_send.enabled:
+            steps.append(_intent_delivery_step(settings, request_text, "send_screenshot", screenshot=True))
         return PlanModel(
             objective=objective,
             assumptions=["The LLM router selected bounded local computer use."],
-            required_capabilities=[Capability.DESKTOP_CONTROL],
-            steps=[
-                PlanStep(
-                    title="Run computer-use action",
-                    description="Use the bounded computer-use adapter for the requested desktop action.",
-                    required_capabilities=[Capability.DESKTOP_CONTROL],
-                    risk_level=RiskLevel.CRITICAL,
-                    requires_approval=desktop_policy.requires_approval,
-                    tool_name="computer.use",
-                    tool_input=tool_input,
-                    expected_output="Desktop observation, actions taken, and final summary.",
-                )
-            ],
+            required_capabilities=[Capability.DESKTOP_CONTROL, *([Capability.TELEGRAM_SEND] if len(steps) > 1 else [])],
+            steps=steps,
             success_criteria=["The requested bounded desktop action is completed or a clear adapter error is reported."],
-            postconditions=_desktop_postconditions(),
+            postconditions=[
+                *_desktop_postconditions(),
+                *(
+                    [
+                        PlanPostcondition(
+                            type=PostconditionType.ARTIFACT_DELIVERED,
+                            description="The requested desktop screenshot is delivered to Telegram.",
+                        )
+                    ]
+                    if wants_screenshot_delivery and len(steps) > 1
+                    else []
+                ),
+            ],
         )
 
-    if intent.operation == "summarize_pdf" and (intent.file_path or intent.path or intent.folder_path):
+    if _intent_requests_pdf_summary(intent, request_text, objective):
         pdf_plan = _build_pdf_summary_intent_plan(settings, task, intent, objective)
         if pdf_plan is not None:
             return pdf_plan
 
     if intent.route == IntentRoute.FILESYSTEM_MANAGE:
+        if _looks_like_visual_desktop_observation_request(request_text):
+            return _build_computer_use_plan(settings, task.model_copy(update={"objective": request_text}))
         if not settings.adapters.computer_use.enabled:
             return None
         write_policy = settings.capabilities.get(Capability.FILESYSTEM_WRITE)
@@ -225,6 +251,8 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
             if file_lookup_plan is not None:
                 return file_lookup_plan
         operation = _filesystem_intent_operation(intent.operation)
+        if _looks_like_rename_request(request_text):
+            operation = "rename_plan"
         if operation == "organize_plan" and _looks_like_file_search(objective):
             operation = "search"
         if operation == "search":
@@ -442,7 +470,9 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
         if not settings.adapters.browser.enabled or control_policy is None or not control_policy.enabled:
             return None
         open_policy = settings.capabilities.get(Capability.BROWSER_OPEN)
-        if intent.operation in {"search", "research", "research_pages", "summarize_page", "inspect_tabs"}:
+        if intent.operation in {"search", "research", "research_pages", "summarize_page", "inspect_tabs"} and not (
+            intent.url and _objective_wants_page_update_check(objective)
+        ):
             if open_policy is None or not open_policy.enabled:
                 return None
             operation = intent.operation
@@ -668,6 +698,10 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
         if policy is None or not policy.enabled:
             return None
         intent_path = intent.file_path or intent.path
+        if intent_path and _looks_like_file_creation_request(request_text):
+            create_plan = _build_create_and_deliver_file_plan(settings, task, intent_path, request_text)
+            if create_plan is not None:
+                return create_plan
         if (not intent_path or not _usable_explicit_path(intent_path)) and intent.delivery != DeliveryKind.SCREENSHOT:
             file_lookup_plan = _build_file_lookup_delivery_plan(settings, task, intent=intent)
             if file_lookup_plan is not None:
@@ -710,13 +744,20 @@ def _build_intent_plan(settings: AppSettings, task: TaskRecord) -> PlanModel | N
         )
 
     if intent.route == IntentRoute.CODE_INTERPRETER:
+        if _looks_like_web_note_delivery_request(request_text):
+            web_note_plan = _build_web_note_delivery_plan(settings, task, intent, request_text, objective)
+            if web_note_plan is not None:
+                return web_note_plan
         policy = settings.capabilities.get(Capability.TERMINAL_RUN)
         if policy is None or not policy.enabled or not settings.adapters.code_interpreter.enabled:
             return None
         operation = intent.operation if intent.operation in {"run_python", "generate_and_run"} else "generate_and_run"
+        request_text = _task_request_text(task)
+        interpreter_objective = request_text if request_text.strip() else objective
         tool_input: dict[str, object] = {
             "operation": operation,
-            "objective": objective,
+            "objective": interpreter_objective,
+            "context": f"Router objective: {objective}",
             "workspace_dir": str(workspace_dir_for_task(settings.adapters.code_interpreter.workspace_root, task.id)),
             "timeout_seconds": settings.adapters.code_interpreter.timeout_seconds,
         }
@@ -869,6 +910,40 @@ def _task_request_text(task: TaskRecord) -> str:
     return task.objective
 
 
+def _build_status_plan(settings: AppSettings, task: TaskRecord, *, objective: str | None = None) -> PlanModel | None:
+    task_type = str(task.metadata.get("task_type") or "")
+    if task_type != TaskType.STATUS_REQUEST.value and not _looks_like_status_request(task.objective):
+        return None
+    policy = settings.capabilities.get(Capability.TELEGRAM_RECEIVE)
+    if policy is None or not policy.enabled:
+        return None
+    return PlanModel(
+        objective=objective or task.objective,
+        assumptions=["The request asks for current task/workflow status, so the worker reads task and plan state."],
+        required_capabilities=[Capability.TELEGRAM_RECEIVE],
+        steps=[
+            PlanStep(
+                title="Report task status",
+                description="Summarize recent, active, completed, and blocked task state from the repository.",
+                required_capabilities=[Capability.TELEGRAM_RECEIVE],
+                risk_level=RiskLevel.LOW,
+                requires_approval=policy.requires_approval,
+                tool_name="task.status",
+                tool_input={"operation": "status", "limit": 20, "timeout_seconds": 30},
+                expected_output="Current task status, active work, recent completions, blocked work, and plan context.",
+            )
+        ],
+        success_criteria=["A grounded status summary is returned from repository state."],
+        postconditions=[
+            PlanPostcondition(
+                type=PostconditionType.TASK_STATUS,
+                description="Task and plan status were inspected and summarized.",
+                required=True,
+            )
+        ],
+    )
+
+
 def _filesystem_intent_operation(operation: str | None) -> str:
     normalized = (operation or "").strip().lower().replace("-", "_")
     aliases = {
@@ -906,6 +981,30 @@ def _filesystem_intent_operation(operation: str | None) -> str:
     return "organize_plan"
 
 
+def _looks_like_visual_desktop_observation_request(request_text: str) -> bool:
+    if not _looks_like_observation_only(request_text):
+        return False
+    return not _looks_like_desktop_file_listing(request_text)
+
+
+def _intent_requests_pdf_summary(intent: OrchestrationIntent, request_text: str, objective: str) -> bool:
+    if not (intent.file_path or intent.path or intent.folder_path):
+        return False
+    combined = " ".join(part for part in (request_text, objective, intent.objective or "") if part).lower()
+    has_pdf_reference = "pdf" in combined or any(
+        str(value).lower().endswith(".pdf") or "*.pdf" in str(value).lower()
+        for value in (intent.file_path, intent.path, intent.folder_path)
+        if value
+    )
+    if not has_pdf_reference:
+        return False
+    if intent.operation == "summarize_pdf":
+        return True
+    if intent.operation in {"inspect_file", "inspect_document", "extract_text", "open_file", "read_file", "read", "summarize"}:
+        return True
+    return any(marker in combined for marker in ("what the pdf is about", "tell me what", "summarize", "explain", "describe", "read it"))
+
+
 def _browser_control_operation(operation: str | None, objective: str) -> str | None:
     raw = (operation or "").strip().lower()
     aliases = {
@@ -924,6 +1023,8 @@ def _browser_control_operation(operation: str | None, objective: str) -> str | N
     }
     if raw in aliases:
         return aliases[raw]
+    if _objective_wants_page_update_check(objective):
+        return "check_page_update"
     if raw:
         return raw
     lowered = objective.lower()
@@ -950,7 +1051,22 @@ def _build_pdf_summary_intent_plan(
     steps: list[PlanStep] = []
     required = [Capability.FILESYSTEM_WRITE]
     document_path = source
-    if not document_path and intent.folder_path:
+    search_root = intent.folder_path
+    if source and any(marker in source for marker in ("*", "?", "[")):
+        try:
+            search_root = intent.folder_path or str(Path(source).expanduser().parent)
+        except OSError:
+            search_root = intent.folder_path
+        document_path = None
+    elif source:
+        try:
+            candidate = Path(source).expanduser()
+            if candidate.is_dir():
+                search_root = str(candidate)
+                document_path = None
+        except OSError:
+            pass
+    if not document_path and search_root:
         steps.append(
             PlanStep(
                 title="Find PDF in folder",
@@ -961,7 +1077,7 @@ def _build_pdf_summary_intent_plan(
                 tool_name="filesystem.manage",
                 tool_input={
                     "operation": "search",
-                    "root": intent.folder_path,
+                    "root": search_root,
                     "query": ".pdf",
                     "include_content": False,
                     "max_results": 5,
@@ -2005,6 +2121,174 @@ def _build_file_lookup_delivery_plan(
     )
 
 
+def _build_create_and_deliver_file_plan(
+    settings: AppSettings,
+    task: TaskRecord,
+    path: str,
+    request_text: str,
+) -> PlanModel | None:
+    write_policy = settings.capabilities.get(Capability.FILESYSTEM_WRITE)
+    send_policy = settings.capabilities.get(Capability.TELEGRAM_SEND)
+    if write_policy is None or not write_policy.enabled or send_policy is None or not send_policy.enabled:
+        return None
+    content = _text_file_content_from_request(request_text)
+    return PlanModel(
+        objective=request_text,
+        assumptions=[
+            "The user asked to create a local text artifact and send it.",
+            "The file is written through scoped filesystem APIs before delivery.",
+        ],
+        required_capabilities=[Capability.FILESYSTEM_WRITE, Capability.TELEGRAM_SEND],
+        steps=[
+            PlanStep(
+                title="Create requested text file",
+                description="Write the requested text output at the explicit path before delivery.",
+                required_capabilities=[Capability.FILESYSTEM_WRITE],
+                risk_level=RiskLevel.HIGH,
+                requires_approval=write_policy.requires_approval,
+                tool_name="filesystem.manage",
+                tool_input={
+                    "operation": "write_text_file",
+                    "path": path,
+                    "content": content,
+                    "overwrite": False,
+                    "timeout_seconds": 60,
+                },
+                expected_output="Created file path and changed path.",
+            ),
+            PlanStep(
+                title="Deliver created file",
+                description="Send the newly created file back to the source Telegram chat.",
+                required_capabilities=[Capability.TELEGRAM_SEND],
+                risk_level=RiskLevel.LOW,
+                requires_approval=send_policy.requires_approval,
+                tool_name="artifact.deliver",
+                tool_input={
+                    "operation": "send_file",
+                    "path": path,
+                    "artifact_type": "document",
+                    "caption": f"Result for: {request_text[:180]}",
+                    "timeout_seconds": 60,
+                },
+                expected_output="Telegram delivery result for the created file.",
+            ),
+        ],
+        success_criteria=["The text file is created under an allowed root and delivered to Telegram."],
+        postconditions=[
+            PlanPostcondition(
+                type=PostconditionType.FILE_ORGANIZATION,
+                description="The created file path is reported.",
+            ),
+            PlanPostcondition(
+                type=PostconditionType.ARTIFACT_DELIVERED,
+                description="The created file is delivered to Telegram.",
+                required=True,
+            ),
+        ],
+    )
+
+
+def _build_web_note_delivery_plan(
+    settings: AppSettings,
+    task: TaskRecord,
+    intent: OrchestrationIntent,
+    request_text: str,
+    objective: str,
+) -> PlanModel | None:
+    open_policy = settings.capabilities.get(Capability.BROWSER_OPEN)
+    write_policy = settings.capabilities.get(Capability.FILESYSTEM_WRITE)
+    send_policy = settings.capabilities.get(Capability.TELEGRAM_SEND)
+    if (
+        open_policy is None
+        or not open_policy.enabled
+        or write_policy is None
+        or not write_policy.enabled
+        or send_policy is None
+        or not send_policy.enabled
+    ):
+        return None
+    folder = intent.folder_path or intent.file_path or intent.path or _path_from_objective(request_text)
+    if not folder:
+        return None
+    try:
+        output_path = Path(folder).expanduser()
+        if output_path.suffix:
+            note_path = str(output_path)
+        else:
+            note_path = str(output_path / "web-research-note.txt")
+    except OSError:
+        return None
+    query = intent.query or _web_query_from_request(request_text) or objective
+    return PlanModel(
+        objective=objective,
+        assumptions=[
+            "The request combines web research, local note creation, and delivery.",
+            "The browser adapter gathers the source summary; filesystem APIs write the note; delivery sends the file.",
+        ],
+        required_capabilities=[Capability.BROWSER_OPEN, Capability.FILESYSTEM_WRITE, Capability.TELEGRAM_SEND],
+        steps=[
+            PlanStep(
+                title="Research requested topic",
+                description="Search/read the requested source through the browser adapter.",
+                required_capabilities=[Capability.BROWSER_OPEN],
+                risk_level=RiskLevel.LOW,
+                requires_approval=open_policy.requires_approval,
+                tool_name="browser.open",
+                tool_input={
+                    "operation": "research",
+                    "query": query,
+                    "objective": request_text,
+                    "open_first_result": True,
+                    "timeout_seconds": 120,
+                },
+                expected_output="Browser page title, URL, and summary.",
+            ),
+            PlanStep(
+                title="Write research note",
+                description="Persist a short note from the browser result under the requested folder.",
+                required_capabilities=[Capability.FILESYSTEM_WRITE],
+                risk_level=RiskLevel.HIGH,
+                requires_approval=write_policy.requires_approval,
+                tool_name="filesystem.manage",
+                tool_input={
+                    "operation": "write_text_file",
+                    "path": note_path,
+                    "content": "{{last_output}}",
+                    "overwrite": False,
+                    "timeout_seconds": 60,
+                },
+                expected_output="Created note path and changed path.",
+            ),
+            PlanStep(
+                title="Deliver research note",
+                description="Send the created note back to Telegram.",
+                required_capabilities=[Capability.TELEGRAM_SEND],
+                risk_level=RiskLevel.LOW,
+                requires_approval=send_policy.requires_approval,
+                tool_name="artifact.deliver",
+                tool_input={
+                    "operation": "send_file",
+                    "path": note_path,
+                    "artifact_type": "document",
+                    "caption": f"Result for: {request_text[:180]}",
+                    "timeout_seconds": 60,
+                },
+                expected_output="Telegram delivery result for the research note.",
+            ),
+        ],
+        success_criteria=["The web result is summarized, written to a local note, and delivered."],
+        postconditions=[
+            PlanPostcondition(type=PostconditionType.BROWSER_STATE, description="Browser source evidence is reported."),
+            PlanPostcondition(type=PostconditionType.FILE_ORGANIZATION, description="The note file path is reported."),
+            PlanPostcondition(
+                type=PostconditionType.ARTIFACT_DELIVERED,
+                description="The generated note is delivered to Telegram.",
+                required=True,
+            ),
+        ],
+    )
+
+
 def _build_code_interpreter_recovery_plan(settings: AppSettings, task: TaskRecord, failure_reason: str) -> PlanModel | None:
     policy = settings.capabilities.get(Capability.TERMINAL_RUN)
     if policy is None or not policy.enabled or not settings.adapters.code_interpreter.enabled:
@@ -2377,6 +2661,23 @@ def _looks_like_schedule_request(objective: str) -> bool:
     return (explicit_schedule or has_recurring_phrase) and has_action
 
 
+def _looks_like_status_request(objective: str) -> bool:
+    lowered = objective.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "where are we",
+            "what is happening",
+            "what's happening",
+            "what remains",
+            "anything blocked",
+            "task status",
+            "status update",
+            "current status",
+        )
+    )
+
+
 def _schedule_operation(objective: str) -> str:
     lowered = objective.lower()
     if "pause" in lowered:
@@ -2521,6 +2822,51 @@ def _looks_like_file_search(objective: str) -> bool:
 def _looks_like_file_reference(objective: str) -> bool:
     lowered = objective.lower()
     return any(marker in lowered for marker in ("file", "files", "pdf", "document", "documents", "folder", "directory"))
+
+
+def _looks_like_file_creation_request(objective: str) -> bool:
+    lowered = objective.lower()
+    return any(marker in lowered for marker in ("create", "write", "generate", "make")) and any(
+        marker in lowered for marker in ("file", ".txt", ".md", ".json", ".csv", "output")
+    )
+
+
+def _looks_like_web_note_delivery_request(objective: str) -> bool:
+    lowered = objective.lower()
+    return any(marker in lowered for marker in ("search the web", "web search", "research")) and any(
+        marker in lowered for marker in ("create a short note", "create a note", "write a note", "note in")
+    ) and _looks_like_delivery_request(objective)
+
+
+def _web_query_from_request(objective: str) -> str | None:
+    match = re.search(r"\b(?:search the web for|web search for|research)\s+(.+?)(?:,\s*(?:create|write|then)|\s+and\s+(?:create|write)|$)", objective, flags=re.IGNORECASE)
+    if not match:
+        return None
+    query = re.sub(r"\s+", " ", match.group(1)).strip(" .")
+    return query or None
+
+
+def _text_file_content_from_request(objective: str) -> str:
+    match = re.search(r"\b(?:with|containing|content)\s+(.+?)(?:,\s*then|\s+then\s+send|\s+and\s+send|$)", objective, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).strip().strip(".") + "\n"
+    return f"Generated output for request:\n{objective.strip()}\n"
+
+
+def _looks_like_rename_request(objective: str) -> bool:
+    lowered = objective.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "rename",
+            "clearer filename",
+            "clearer filenames",
+            "meaningful filename",
+            "meaningful filenames",
+            "before-and-after",
+            "before and after",
+        )
+    )
 
 
 def _looks_like_desktop_file_listing(objective: str) -> bool:

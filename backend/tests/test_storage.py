@@ -30,3 +30,23 @@ def test_task_lifecycle_and_audit(tmp_path) -> None:
     assert updated.status == TaskStatus.PAUSED
     assert events[0].payload["token"] == "***"
     assert events[1].payload == {"old_status": "received", "new_status": "paused"}
+
+
+def test_message_repository_duplicate_create_is_idempotent(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
+    database.initialize()
+    repos = Repositories.for_database(database)
+
+    conversation_id = repos.conversations.get_or_create(ChannelType.TELEGRAM, "123")
+    message = InboundMessage(
+        id="telegram_1",
+        channel=ChannelType.TELEGRAM,
+        kind=MessageKind.TEXT,
+        sender_id="42",
+        chat_id="123",
+        text="Build a todo app",
+    )
+
+    assert repos.messages.try_create(message, conversation_id) is True
+    assert repos.messages.try_create(message, conversation_id) is False
+    repos.messages.create(message, conversation_id)

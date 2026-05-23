@@ -32,6 +32,22 @@ class FakeScriptProvider:
         )
 
 
+class MalformedMarkdownProvider(FakeScriptProvider):
+    async def generate_structured(self, system_prompt: str, user_prompt: str, output_model: type[T]) -> T:
+        return output_model.model_validate(
+            {
+                "summary": "Malformed Markdown writer.",
+                "code": 'Path("meeting-report.md").write_text("# Meeting\n\n- broken", encoding="utf-8")',
+                "expected_files": ["meeting-report.md"],
+            }
+        )
+
+
+class BrokenStructuredProvider(FakeScriptProvider):
+    async def generate_structured(self, system_prompt: str, user_prompt: str, output_model: type[T]) -> T:
+        raise ValueError("LLM structured output failed validation")
+
+
 def _settings(tmp_path: Path) -> AppSettings:
     return AppSettings(
         _env_file=None,
@@ -92,6 +108,41 @@ async def test_code_interpreter_generate_and_run_uses_local_llm_provider(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_code_interpreter_repairs_malformed_generated_markdown_script(tmp_path) -> None:
+    adapter = CodeInterpreterAdapter(_settings(tmp_path).adapters.code_interpreter, provider=MalformedMarkdownProvider())
+
+    result = await adapter.execute(
+        _request(
+            tmp_path,
+            "generate_and_run",
+            objective="Turn these notes into a Markdown report named meeting-report.md: desktop inspection passed, browser screenshot pending.",
+        )
+    )
+
+    assert result.status.value == "succeeded"
+    assert result.output["generation_repaired"] is True
+    assert "meeting-report.md" in result.output["files_created"]
+    assert "desktop inspection passed" in (tmp_path / "code" / "task_code" / "meeting-report.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_code_interpreter_falls_back_when_structured_generation_fails_for_simple_file(tmp_path) -> None:
+    adapter = CodeInterpreterAdapter(_settings(tmp_path).adapters.code_interpreter, provider=BrokenStructuredProvider())
+
+    result = await adapter.execute(
+        _request(
+            tmp_path,
+            "generate_and_run",
+            objective="Run a small local script that creates route-checklist.md: inspect desktop, search files, deliver artifact.",
+        )
+    )
+
+    assert result.status.value == "succeeded"
+    assert result.output["generation_repaired"] is True
+    assert "route-checklist.md" in result.output["files_created"]
+
+
+@pytest.mark.asyncio
 async def test_code_interpreter_blocks_unsafe_imports(tmp_path) -> None:
     adapter = CodeInterpreterAdapter(_settings(tmp_path).adapters.code_interpreter)
 
@@ -122,3 +173,29 @@ def test_intent_routes_code_interpreter_to_bounded_python(tmp_path) -> None:
         "code.interpreter:generate_and_run"
     ]
     assert plan.steps[0].tool_input["workspace_dir"].startswith(str(tmp_path / "code"))
+
+
+def test_code_interpreter_plan_preserves_original_inline_data(tmp_path) -> None:
+    plan = build_default_task_plan(
+        _settings(tmp_path),
+        TaskRecord(
+            objective="Normalize task list to JSON",
+            metadata={
+                "original_message_text": (
+                    "Use the local code interpreter to normalize this task list into tasks-normalized.json: "
+                    "task A priority high owner Oney; task B priority low owner Agent."
+                ),
+                "orchestration_intent": OrchestrationIntent(
+                    route=IntentRoute.CODE_INTERPRETER,
+                    operation="generate_and_run",
+                    objective="Normalize task list to JSON",
+                    reasoning="The LLM selected bounded Python execution.",
+                    file_path="tasks-normalized.json",
+                ).model_dump(mode="json"),
+            },
+        ),
+    )
+
+    assert plan is not None
+    assert "task A priority high owner Oney" in plan.steps[0].tool_input["objective"]
+    assert plan.steps[0].tool_input["context"] == "Router objective: Normalize task list to JSON"

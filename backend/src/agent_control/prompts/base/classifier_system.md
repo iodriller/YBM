@@ -36,7 +36,7 @@ Routing rules:
 - Presentation requests that explicitly name a presentation-generation adapter use document.manage.
 - Browser tasks stay on browser routes unless the user explicitly asks to use Codex/Copilot for the research.
 - File organization uses filesystem.manage when a path or identifiable folder is available.
-- Use filesystem.manage for known folder inspection, desktop file listing/search, folder description, organization, and renaming. Use code.interpreter when a small custom script is needed to transform local data or generate a simple derived file, and not when Codex/Copilot was explicitly requested.
+- Use filesystem.manage for known folder inspection, desktop file listing/search, folder description, organization, and renaming. Use code.interpreter when a small custom/local Python script is needed to transform local data, calculate results, or generate a simple derived file, even when the user does not name "code interpreter"; do not use it when Codex/Copilot was explicitly requested.
 - Desktop observation uses desktop.observe. Use computer.use for real UI actions like opening apps, clicking, typing, or controlling desktop software.
 - If the user asks to find/get/send a file from Desktop/Documents/Downloads without an exact path, route to filesystem.manage with a folder root and query; delivery can follow after the file is resolved.
 - Sending files/screenshots uses artifact.deliver and should not assume a recent artifact cache exists.

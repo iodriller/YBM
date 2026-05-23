@@ -22,6 +22,9 @@ def test_extended_e2e_cases_define_folder_explanation_and_code_interpreter() -> 
         "code_interpreter_json_transform",
         "desktop_file_listing_uses_filesystem",
         "desktop_file_search_then_delivery",
+        "implicit_code_interpreter_numbers_report",
+        "implicit_code_interpreter_csv_transform",
+        "implicit_code_interpreter_markdown_from_notes",
     } <= set(by_id)
 
     folder_case = by_id["folder_mixed_file_explanation"]
@@ -48,6 +51,16 @@ def test_extended_e2e_cases_define_folder_explanation_and_code_interpreter() -> 
     assert delivery_case["assertions"]["tools_all"] == ["filesystem.manage:search", "artifact.deliver:send_file"]
     assert delivery_case["assertions"]["telegram_media_min"] == 1
 
+    for case_id in [
+        "implicit_code_interpreter_numbers_report",
+        "implicit_code_interpreter_csv_transform",
+        "implicit_code_interpreter_markdown_from_notes",
+    ]:
+        implicit_case = by_id[case_id]
+        assert "implicit_route" in implicit_case["tags"]
+        assert implicit_case["assertions"]["tools_all"] == ["code.interpreter:generate_and_run"]
+        assert "coding.agent" in implicit_case["assertions"]["tools_forbidden"]
+
 
 def test_live_e2e_runner_lists_extended_cases() -> None:
     result = subprocess.run(
@@ -62,3 +75,4 @@ def test_live_e2e_runner_lists_extended_cases() -> None:
     assert "code_interpreter_generate_file" in result.stdout
     assert "code_interpreter_csv_summary" in result.stdout
     assert "desktop_file_search_then_delivery" in result.stdout
+    assert "implicit_code_interpreter_numbers_report" in result.stdout

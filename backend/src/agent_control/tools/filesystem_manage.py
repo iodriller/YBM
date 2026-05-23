@@ -31,6 +31,8 @@ class FilesystemManageAdapter:
                 output = self._find_by_description(request)
             elif operation == "open_file":
                 output = self._open_file(request)
+            elif operation == "write_text_file":
+                output = self._write_text_file(request)
             elif operation == "collect_folder_snapshot":
                 output = self._collect_folder_snapshot(request)
             elif operation == "describe_folder":
@@ -156,6 +158,21 @@ class FilesystemManageAdapter:
             "entries": [_entry(path.parent, path)],
             "changed_paths": [str(path)],
             "summary": f"Opened {path}.",
+        }
+
+    def _write_text_file(self, request: ToolCallRequest) -> dict[str, Any]:
+        path = self._safe_path(str(request.input["path"]))
+        if path.exists() and not bool(request.input.get("overwrite", False)):
+            raise ValueError(f"destination already exists: {path}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        content = str(request.input.get("content") or "")
+        path.write_text(content, encoding="utf-8")
+        return {
+            "root": str(path.parent),
+            "path": str(path),
+            "entries": [_entry(path.parent, path)],
+            "changed_paths": [str(path)],
+            "summary": f"Wrote text file {path}.",
         }
 
     def _collect_folder_snapshot(self, request: ToolCallRequest) -> dict[str, Any]:

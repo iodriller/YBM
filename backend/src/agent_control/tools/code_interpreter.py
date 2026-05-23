@@ -67,20 +67,40 @@ class CodeInterpreterAdapter:
             raise ValueError("LLM provider is required for generate_and_run")
         objective = str(request.input["objective"]).strip()
         workspace = self._workspace(request)
-        generated = await self.provider.generate_structured(
-            prompt_text("base/code_interpreter_system.md"),
-            render_prompt(
-                "tasks/code_interpreter_user.md",
-                objective=objective,
-                context=str(request.input.get("context") or "No extra context."),
-                workspace_dir=str(workspace),
-            ),
-            GeneratedPythonScript,
-        )
+        generation_repaired = False
+        try:
+            generated = await self.provider.generate_structured(
+                prompt_text("base/code_interpreter_system.md"),
+                render_prompt(
+                    "tasks/code_interpreter_user.md",
+                    objective=objective,
+                    context=str(request.input.get("context") or "No extra context."),
+                    workspace_dir=str(workspace),
+                ),
+                GeneratedPythonScript,
+            )
+            generated = generated.model_copy(update={"code": _clean_generated_code(generated.code)})
+        except Exception:
+            fallback = _fallback_generated_script(objective)
+            if fallback is None:
+                raise
+            generated = fallback
+            generation_repaired = True
         updated = request.model_copy(update={"input": {**request.input, "code": generated.code}})
-        output = await self._run_python(updated, generated=True)
+        try:
+            output = await self._run_python(updated, generated=True)
+        except (SyntaxError, ValueError):
+            fallback = _fallback_generated_script(objective)
+            if fallback is None:
+                raise
+            generation_repaired = True
+            generated = fallback
+            updated = request.model_copy(update={"input": {**request.input, "code": generated.code}})
+            output = await self._run_python(updated, generated=True)
         output["generation_summary"] = generated.summary
         output["expected_files"] = generated.expected_files
+        if generation_repaired:
+            output["generation_repaired"] = True
         return output
 
     async def _run_python(self, request: ToolCallRequest, *, generated: bool) -> dict[str, Any]:
@@ -159,6 +179,87 @@ def _call_name(value: ast.AST) -> str | None:
     if isinstance(value, ast.Attribute):
         return value.attr
     return None
+
+
+def _clean_generated_code(code: str) -> str:
+    text = str(code).strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    if "\\n" in text and "\n" not in text:
+        try:
+            text = text.encode("utf-8").decode("unicode_escape")
+        except Exception:
+            pass
+    return text
+
+
+def _fallback_generated_script(objective: str) -> GeneratedPythonScript | None:
+    output_name = _output_name_from_objective(objective)
+    if output_name is None:
+        return None
+    suffix = Path(output_name).suffix.lower()
+    if suffix not in {".md", ".txt", ".json", ".csv"}:
+        return None
+    content = _fallback_content(objective, output_name)
+    code = (
+        "from pathlib import Path\n"
+        f"output = Path({output_name!r})\n"
+        f"output.write_text({content!r}, encoding='utf-8')\n"
+        "print(f'created {output}')\n"
+    )
+    return GeneratedPythonScript(
+        summary=f"Create {output_name} with a deterministic fallback script.",
+        code=code,
+        expected_files=[output_name],
+    )
+
+
+def _output_name_from_objective(objective: str) -> str | None:
+    match = re.search(r"\b(?:named|called|file)\s+([A-Za-z0-9_.-]+\.(?:md|txt|json|csv))\b", objective, flags=re.IGNORECASE)
+    if match:
+        return _safe_output_name(match.group(1))
+    match = re.search(r"\b([A-Za-z0-9_.-]+\.(?:md|txt|json|csv))\b", objective, flags=re.IGNORECASE)
+    if match:
+        return _safe_output_name(match.group(1))
+    return None
+
+
+def _safe_output_name(value: str) -> str | None:
+    name = Path(value.replace("\\", "/")).name.strip()
+    if not name or name in {".", ".."}:
+        return None
+    if ".." in Path(name).parts:
+        return None
+    return name
+
+
+def _fallback_content(objective: str, output_name: str) -> str:
+    suffix = Path(output_name).suffix.lower()
+    notes = _notes_from_objective(objective)
+    if suffix == ".md":
+        title = Path(output_name).stem.replace("-", " ").replace("_", " ").title()
+        bullets = "\n".join(f"- {item}" for item in notes) if notes else f"- Generated from request: {objective}"
+        return f"# {title}\n\n{bullets}\n"
+    if suffix == ".json":
+        import json
+
+        return json.dumps({"source": objective, "items": notes}, indent=2) + "\n"
+    if suffix == ".csv":
+        rows = ["item"] + [item.replace(",", " ") for item in notes]
+        return "\n".join(rows) + "\n"
+    return "\n".join(notes or [objective]) + "\n"
+
+
+def _notes_from_objective(objective: str) -> list[str]:
+    text = objective.split(":", 1)[1] if ":" in objective else objective
+    parts = re.split(r"[,;\n]+|\s+-\s+", text)
+    notes = [re.sub(r"\s+", " ", item).strip(" .") for item in parts]
+    return [item for item in notes if item][:20]
 
 
 async def _run_python_script(executable: str, script_path: Path, workspace: Path, *, timeout: int) -> tuple[int, str, str]:

@@ -65,7 +65,7 @@ async def test_llm_classifier_retries_and_returns_structured_intent() -> None:
     assert classification.intent.cadence == "daily"
 
 
-def test_emergency_classification_does_not_regex_route_when_llm_is_unavailable() -> None:
+def test_emergency_classification_spawns_unknown_task_for_actionable_text_without_route_guessing() -> None:
     classification = emergency_classification(
         InboundMessage(
             channel=ChannelType.TELEGRAM,
@@ -77,10 +77,28 @@ def test_emergency_classification_does_not_regex_route_when_llm_is_unavailable()
         "LLM down",
     )
 
+    assert classification.is_task is True
+    assert classification.intent is not None
+    assert classification.intent.route == IntentRoute.UNKNOWN
+    assert classification.normalized_objective == "Take a screenshot of my desktop and send it to me now"
+    assert classification.reason == "LLM down"
+
+
+def test_emergency_classification_keeps_plain_chat_as_conversation() -> None:
+    classification = emergency_classification(
+        InboundMessage(
+            channel=ChannelType.TELEGRAM,
+            kind=MessageKind.TEXT,
+            sender_id="42",
+            chat_id="100",
+            text="thanks",
+        ),
+        "LLM down",
+    )
+
     assert classification.is_task is False
     assert classification.intent is not None
     assert classification.intent.route == IntentRoute.CONVERSATION
-    assert classification.reason == "LLM down"
 
 
 def test_message_classification_accepts_route_alias_task_type() -> None:

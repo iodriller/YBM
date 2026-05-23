@@ -184,6 +184,7 @@ class PostconditionType(StrEnum):
     BROWSER_STATE = "browser_state"
     DESKTOP_OBSERVATION = "desktop_observation"
     FILE_ORGANIZATION = "file_organization"
+    TASK_STATUS = "task_status"
     GITHUB_PR = "github_pr"
     EXTERNAL_COMMAND = "external_command"
 

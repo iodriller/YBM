@@ -44,8 +44,11 @@ def _settings(tmp_path: Path) -> AppSettings:
     )
 
 
-def _task(objective: str, intent: OrchestrationIntent) -> TaskRecord:
-    return TaskRecord(objective=objective, metadata={"orchestration_intent": intent.model_dump(mode="json")})
+def _task(objective: str, intent: OrchestrationIntent, *, original_message_text: str | None = None) -> TaskRecord:
+    metadata = {"orchestration_intent": intent.model_dump(mode="json")}
+    if original_message_text:
+        metadata["original_message_text"] = original_message_text
+    return TaskRecord(objective=objective, metadata=metadata)
 
 
 def test_intent_routes_browser_screenshot_without_text_keywords(tmp_path) -> None:
@@ -92,6 +95,51 @@ def test_intent_routes_desktop_screenshot_send_operation_to_delivery_step(tmp_pa
     ]
 
 
+def test_intent_uses_original_message_for_desktop_screenshot_delivery(tmp_path) -> None:
+    plan = build_default_task_plan(
+        _settings(tmp_path),
+        _task(
+            "Capture a screenshot of the desktop.",
+            OrchestrationIntent(
+                route=IntentRoute.DESKTOP_OBSERVE,
+                operation="screenshot",
+                objective="Capture a screenshot of the desktop.",
+                reasoning="The LLM normalized away the delivery request.",
+                delivery=DeliveryKind.FILE,
+            ),
+            original_message_text="Send me a screenshot of the desktop.",
+        ),
+    )
+
+    assert plan is not None
+    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
+        "computer.use:observe",
+        "artifact.deliver:send_screenshot",
+    ]
+
+
+def test_filesystem_route_uses_original_message_for_visual_desktop_observation(tmp_path) -> None:
+    plan = build_default_task_plan(
+        _settings(tmp_path),
+        _task(
+            "List files and folders on the user's desktop.",
+            OrchestrationIntent(
+                route=IntentRoute.FILESYSTEM_MANAGE,
+                operation="list",
+                objective="List files and folders on the desktop.",
+                reasoning="The LLM converted a visual desktop question into a file listing.",
+                folder_path="desktop",
+            ),
+            original_message_text="Tell me what is on my desktop right now.",
+        ),
+    )
+
+    assert plan is not None
+    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
+        "computer.use:observe",
+    ]
+
+
 def test_intent_routes_schedule_without_schedule_phrase(tmp_path) -> None:
     plan = build_default_task_plan(
         _settings(tmp_path),
@@ -113,6 +161,26 @@ def test_intent_routes_schedule_without_schedule_phrase(tmp_path) -> None:
     assert plan.steps[0].tool_input["operation"] == "create"
     assert plan.steps[0].tool_input["cadence"] == "daily"
     assert plan.steps[0].tool_input["objective"] == "Check https://example.com for updates"
+
+
+def test_intent_routes_status_question_to_task_status_tool(tmp_path) -> None:
+    plan = build_default_task_plan(
+        _settings(tmp_path),
+        _task(
+            "Where are we? Tell me what remains and whether anything is blocked.",
+            OrchestrationIntent(
+                route=IntentRoute.STATUS,
+                operation="status",
+                objective="Report current workflow status.",
+                reasoning="The user asks for task status.",
+            ),
+            original_message_text="Where are we? Tell me what remains and whether anything is blocked.",
+        ),
+    )
+
+    assert plan is not None
+    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == ["task.status:status"]
+    assert plan.steps[0].tool_input["limit"] == 20
 
 
 def test_intent_routes_explicit_codex_to_coding_agent(tmp_path) -> None:
@@ -258,6 +326,65 @@ def test_file_lookup_delivery_searches_desktop_then_sends_resolved_file(tmp_path
     assert plan.steps[0].tool_input["query"] == "invoices"
     assert plan.steps[1].tool_input["path"] == "{{last_entry_path}}"
     assert [postcondition.type.value for postcondition in plan.postconditions] == ["artifact_delivered"]
+
+
+def test_artifact_delivery_create_file_request_writes_then_sends(tmp_path) -> None:
+    target = tmp_path / "docs" / "e2e-output.txt"
+    target.parent.mkdir()
+
+    plan = build_default_task_plan(
+        _settings(tmp_path),
+        _task(
+            "Create and deliver e2e-output.txt",
+            OrchestrationIntent(
+                route=IntentRoute.ARTIFACT_DELIVERY,
+                operation="send_file",
+                objective="Create and deliver e2e-output.txt",
+                reasoning="The LLM selected delivery for a create-and-send request.",
+                file_path=str(target),
+                delivery=DeliveryKind.FILE,
+            ),
+            original_message_text=f"Create a small text output in {target.parent} named e2e-output.txt, then send me that file.",
+        ),
+    )
+
+    assert plan is not None
+    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
+        "filesystem.manage:write_text_file",
+        "artifact.deliver:send_file",
+    ]
+    assert plan.steps[0].tool_input["path"] == str(target)
+    assert plan.steps[1].tool_input["path"] == str(target)
+
+
+def test_code_interpreter_route_for_web_note_is_repaired_to_multi_tool_plan(tmp_path) -> None:
+    target = tmp_path / "docs"
+    target.mkdir()
+
+    plan = build_default_task_plan(
+        _settings(tmp_path),
+        _task(
+            f"Search Python documentation, create a note in {target}, and deliver the result.",
+            OrchestrationIntent(
+                route=IntentRoute.CODE_INTERPRETER,
+                operation="generate_and_run",
+                objective=f"Search Python documentation, create a note in {target}, and deliver the result.",
+                reasoning="The LLM incorrectly selected code interpreter for web research plus delivery.",
+                file_path=str(target),
+                delivery=DeliveryKind.FILE,
+            ),
+            original_message_text=f"Search the web for Python official documentation, create a short note in {target}, and send me the result.",
+        ),
+    )
+
+    assert plan is not None
+    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
+        "browser.open:research",
+        "filesystem.manage:write_text_file",
+        "artifact.deliver:send_file",
+    ]
+    assert plan.steps[0].tool_input["query"] == "Python official documentation"
+    assert plan.steps[1].tool_input["path"] == str(target / "web-research-note.txt")
 
 
 def test_filesystem_intent_locate_and_deliver_does_not_organize_desktop(tmp_path) -> None:
@@ -413,6 +540,37 @@ def test_intent_routes_pdf_summary_from_folder_to_search_then_document(tmp_path)
     assert plan.steps[1].tool_input["path"] == "{{last_entry_path}}"
 
 
+def test_filesystem_inspect_file_pdf_request_does_not_become_organization(tmp_path) -> None:
+    target = tmp_path / "desktop_folder"
+    target.mkdir()
+
+    plan = build_default_task_plan(
+        _settings(tmp_path),
+        _task(
+            f"Inspect the contents of the PDF file located in {target} and describe its content.",
+            OrchestrationIntent(
+                route=IntentRoute.FILESYSTEM_MANAGE,
+                operation="inspect_file",
+                objective="Describe the content of the PDF file.",
+                reasoning="The LLM selected a generic file inspection operation for a PDF summary request.",
+                file_path=str(target / "*.pdf"),
+                folder_path=str(target),
+                delivery=DeliveryKind.FILE,
+            ),
+            original_message_text=f"Open the desktop folder {target}, find the PDF inside it, and tell me what the PDF is about.",
+        ),
+    )
+
+    assert plan is not None
+    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
+        "filesystem.manage:search",
+        "document.manage:summarize_pdf",
+    ]
+    assert plan.steps[0].tool_input["root"] == str(target)
+    assert plan.steps[0].tool_input["query"] == ".pdf"
+    assert plan.steps[1].tool_input["path"] == "{{last_entry_path}}"
+
+
 def test_intent_routes_filesystem_rename_alias_to_rename_manifest(tmp_path) -> None:
     target = tmp_path / "docs"
     target.mkdir()
@@ -437,6 +595,35 @@ def test_intent_routes_filesystem_rename_alias_to_rename_manifest(tmp_path) -> N
         "filesystem.manage:apply_manifest",
     ]
     assert plan.steps[1].tool_input["manifest"] == "{{last_manifest}}"
+
+
+def test_filesystem_rename_request_overrides_llm_organize_operation(tmp_path) -> None:
+    target = tmp_path / "docs"
+    target.mkdir()
+
+    plan = build_default_task_plan(
+        _settings(tmp_path),
+        _task(
+            f"Inspect, rename, and document files in {target}.",
+            OrchestrationIntent(
+                route=IntentRoute.FILESYSTEM_MANAGE,
+                operation="organize",
+                objective=f"Inspect, rename, and document files in {target}.",
+                reasoning="The LLM selected organization even though the original request is a rename.",
+                folder_path=str(target),
+            ),
+            original_message_text=(
+                f"Inspect every file in {target}, create clearer filenames based on what each file is about, "
+                "rename them consistently, and give me a before-and-after table."
+            ),
+        ),
+    )
+
+    assert plan is not None
+    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
+        "filesystem.manage:rename_plan",
+        "filesystem.manage:apply_manifest",
+    ]
 
 
 def test_intent_routes_form_fill_to_same_tab_and_review_screenshot(tmp_path) -> None:
@@ -561,6 +748,28 @@ def test_intent_repairs_browser_open_episode_research_to_page_update(tmp_path) -
 
     assert plan is not None
     assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
+        "browser.control:check_page_update",
+    ]
+
+
+def test_intent_repairs_browser_control_episode_research_to_page_update(tmp_path) -> None:
+    plan = build_default_task_plan(
+        _settings(tmp_path),
+        _task(
+            "handle episode control research",
+            OrchestrationIntent(
+                route=IntentRoute.BROWSER_CONTROL,
+                operation="research",
+                objective="Check for new episode and provide evidence.",
+                reasoning="The LLM selected browser research for a page update check.",
+                url="https://example.com/episode",
+            ),
+        ),
+    )
+
+    assert plan is not None
+    assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
+        "browser.open:open",
         "browser.control:check_page_update",
     ]
 
