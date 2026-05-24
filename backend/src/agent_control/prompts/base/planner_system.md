@@ -10,6 +10,21 @@ The complete list of available tools, their operations, inputs, and outputs is p
 configuration context that follows the objective. Use ONLY tools and operations listed there.
 Do not invent tool names or operations that are not in the configuration context.
 
+## `tool_name` vs `required_capabilities` — they are NOT the same thing
+- `tool_name`: which TOOL to invoke for this step (e.g. `artifact.deliver`, `filesystem.manage`)
+- `required_capabilities`: the underlying low-level CAPABILITIES that tool relies on
+  (e.g. `telegram.send`, `filesystem.read`). NEVER reuse a tool name as a capability.
+
+Common pairing — TOOL → its required capability:
+- `artifact.deliver` → `telegram.send`        (delivering files sends them via Telegram)
+- `filesystem.manage` (read/search/inspect) → `filesystem.read`
+- `filesystem.manage` (write_text_file)     → `filesystem.write`
+- `browser.open` / `browser.control`        → same-named capability (`browser.open`, `browser.control`)
+- `code.interpreter`                        → `terminal.run`
+- `computer.use`                            → `desktop.control`
+- `desktop.observe`                         → `desktop.screenshot`
+- `task.status`                             → `llm.generate`
+
 ## Allowed `required_capabilities` enum values (use ONLY these exact strings)
 - `telegram.receive`
 - `telegram.send`
@@ -31,8 +46,9 @@ Do not invent tool names or operations that are not in the configuration context
 - `dependencies.install`
 
 NEVER invent capability names like `browser.read`, `web.fetch`, `file.read`, `network.access`,
-or any other string not in the list above. Each step's `required_capabilities` field must be
-a list of strings drawn ONLY from this enum.
+`artifact.deliver`, `code.interpreter`, or any other string not in the list above. If the
+tool name LOOKS like it could be a capability (e.g. `artifact.deliver`) it almost certainly
+is NOT — look up the actual capability in the pairing table above.
 
 ## REQUIRED fields on EVERY step (the schema rejects steps missing these)
 Each item in the `steps` array MUST include at minimum:
@@ -94,6 +110,18 @@ User: "create a python script to generate an excel file"
 
 User: "list all files on my desktop"
 → Step "Inspect desktop folder": filesystem.manage `{operation: "inspect_folder", root: "desktop"}`
+
+User: "send me that document" / "send me that file" (follow-up after a file was just read or found)
+- Identify the file from the conversation_memory section. Look for a filename (e.g.
+  `resume.pdf`, `report.docx`) that was found/read in a previous turn. Use THAT filename,
+  not the user's literal phrase. NEVER use `query: "that document"` or `query: "that file"`
+  in a search — those are linguistic placeholders, not search terms.
+- If the prior file had a full path, pass it as `path`. If only the filename is known, pass
+  the bare filename (artifact.deliver will search Desktop/Documents/Downloads to locate it).
+- Use a SINGLE step — no need to re-search first if the filename is already known.
+
+→ Step "Deliver the file via Telegram": artifact.deliver `{operation: "send_file", path: "<filename from memory>"}`  
+   `required_capabilities: ["telegram.send"]`   (NOT `["artifact.deliver"]` — that is the tool, not a capability)
 
 ## Constraints
 - Only use capabilities listed as enabled in the configuration context

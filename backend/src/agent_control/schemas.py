@@ -435,6 +435,66 @@ class PlanPostcondition(StrictBaseModel):
     required: bool = True
 
 
+# Map common LLM mistakes (tool names / intent routes) to the actual Capability they need.
+# This is intentionally generous — the LLM frequently confuses a TOOL it's calling with the
+# CAPABILITY that tool requires (e.g. tool "artifact.deliver" needs capability "telegram.send").
+# Without this mapping, perfectly correct plans get rejected for a string-level confusion.
+_CAPABILITY_ALIASES: dict[str, str] = {
+    # Tool-name confusions (tool name → underlying capability)
+    "artifact.deliver":       "telegram.send",
+    "filesystem.manage":      "filesystem.read",   # write ops should explicitly list filesystem.write
+    "document.manage":        "filesystem.read",
+    "code.interpreter":       "terminal.run",
+    "computer.use":           "desktop.control",
+    "task.status":            "llm.generate",
+    "coding.agent":           "terminal.run",
+    "workspace.manage":       "filesystem.write",
+    "adapter.factory":        "llm.generate",
+    # IntentRoute sub-types → primary capability
+    "browser.research":       "browser.open",
+    "browser.search":         "browser.open",
+    "browser.screenshot":     "browser.open",
+    "browser.summarize":      "browser.open",
+    "browser.navigate":       "browser.control",
+    "browser.fill_form":      "browser.control",
+    "browser.form":           "browser.control",
+    # Common informal names
+    "telegram":               "telegram.send",
+    "filesystem":             "filesystem.read",
+    "browser":                "browser.open",
+    "desktop":                "desktop.control",
+    "code":                   "terminal.run",
+    "python":                 "terminal.run",
+    "python.run":             "terminal.run",
+    "code.run":               "terminal.run",
+    "screenshot":             "desktop.screenshot",
+}
+
+
+def _normalize_capabilities(value: Any) -> Any:
+    """Translate common LLM mistakes in required_capabilities to valid enum values."""
+    if not isinstance(value, list):
+        return value
+    normalized: list[Any] = []
+    seen: set[str] = set()
+    for item in value:
+        if isinstance(item, Capability):
+            normalized.append(item)
+            seen.add(item.value)
+            continue
+        if item is None:
+            continue
+        key = str(item).strip().lower()
+        mapped = _CAPABILITY_ALIASES.get(key, item)
+        # dedupe after mapping (multiple aliases can collapse to same capability)
+        marker = mapped.value if isinstance(mapped, Capability) else str(mapped).strip().lower()
+        if marker in seen:
+            continue
+        seen.add(marker)
+        normalized.append(mapped)
+    return normalized
+
+
 class PlanStep(StrictBaseModel):
     model_config = ConfigDict(extra="ignore", str_strip_whitespace=True, validate_assignment=True, use_enum_values=False)
     id: str = Field(default_factory=lambda: new_id("step"))
@@ -447,6 +507,11 @@ class PlanStep(StrictBaseModel):
     tool_input: dict[str, Any] = Field(default_factory=dict)
     expected_output: str | None = None
 
+    @field_validator("required_capabilities", mode="before")
+    @classmethod
+    def map_capability_aliases(cls, value: Any) -> Any:
+        return _normalize_capabilities(value)
+
 
 class PlanModel(StrictBaseModel):
     model_config = ConfigDict(extra="ignore", str_strip_whitespace=True, validate_assignment=True, use_enum_values=False)
@@ -458,6 +523,11 @@ class PlanModel(StrictBaseModel):
     steps: list[PlanStep] = Field(default_factory=list)
     success_criteria: list[str] = Field(default_factory=list)
     postconditions: list[PlanPostcondition] = Field(default_factory=list)
+
+    @field_validator("required_capabilities", mode="before")
+    @classmethod
+    def map_capability_aliases(cls, value: Any) -> Any:
+        return _normalize_capabilities(value)
 
     @field_validator("steps")
     @classmethod

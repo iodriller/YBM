@@ -9,5 +9,6 @@ venv/
 config/config.yaml
 agent_control.db
 .agent_control/
+.claude/settings.local.json
 dist/
 node_modules/

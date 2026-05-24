@@ -406,21 +406,27 @@ def _gap_reason(value: PostconditionType) -> str:
 
 
 def _desktop_file_listing_request(lowered: str) -> bool:
-    return "desktop" in lowered and any(
-        marker in lowered
-        for marker in (
-            "list all",
-            "list the",
-            "show all",
-            "show me all",
-            "what files",
-            "which files",
-            "files on",
-            "files at",
-            "files in",
-            "folders on",
-            "folders at",
-            "folders in",
-            "desktop files",
-        )
+    """True when the message uses 'desktop' as a folder path, not as a screen surface.
+
+    This exempts the objective from requiring a DESKTOP_OBSERVATION postcondition.
+    Covers two cases:
+    - Listing the contents of the desktop folder ("list files on desktop")
+    - Acting on a file located on the desktop ("find/read/open X on my desktop")
+    """
+    if "desktop" not in lowered:
+        return False
+    listing_markers = (
+        "list all", "list the", "show all", "show me all",
+        "what files", "which files",
+        "files on", "files at", "files in",
+        "folders on", "folders at", "folders in",
+        "desktop files",
     )
+    file_action_markers = (
+        "find ", "search ", "look for ", "locate ",
+        "read ", "open the ", "open my ", "open a ",
+        "delete ", "remove ", "rename ", "move ", "copy ",
+        "send me ", "share ", "email ", "upload ", "get ",
+        ".pdf", ".docx", ".txt", ".png", ".jpg", ".jpeg", ".xlsx", ".csv",
+    )
+    return any(marker in lowered for marker in listing_markers + file_action_markers)
