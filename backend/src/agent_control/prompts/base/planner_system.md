@@ -34,6 +34,16 @@ NEVER invent capability names like `browser.read`, `web.fetch`, `file.read`, `ne
 or any other string not in the list above. Each step's `required_capabilities` field must be
 a list of strings drawn ONLY from this enum.
 
+## REQUIRED fields on EVERY step (the schema rejects steps missing these)
+Each item in the `steps` array MUST include at minimum:
+- `title`        — a short human label, e.g. "Open dizibox homepage"
+- `description`  — one sentence on what this step does and why
+- `tool_name`    — exact name from the tool list (e.g. "browser.open")
+- `tool_input`   — object with the operation and parameters
+
+A step with `tool_name` but no `title`/`description` will be REJECTED.
+Always emit both `title` and `description` strings, never omit them.
+
 ## DO NOT include these fields anywhere in the plan JSON
 The schema rejects extras. Specifically, do NOT add these fields to a step:
 - `success_criteria` (belongs at plan level, not step level)
@@ -50,21 +60,40 @@ The schema rejects extras. Specifically, do NOT add these fields to a step:
 5. **Delivery**: If user says "send me" a file or screenshot, add an `artifact.deliver` step after the main step
 6. **Browser fallback**: If previous attempt failed with Chrome/DevTools unavailable or browser error, use `code.interpreter` with `generate_and_run` and write Python that fetches the URL using only the standard library (`urllib.request`) with a browser User-Agent, strips HTML tags with `re`, and prints the extracted text content to stdout. Do NOT require `beautifulsoup4` or any non-stdlib package.
 
-## Example plans
+## Example plans (each step shows the REQUIRED title + description fields)
 
 User: "open dizibox.com and tell me the first 3 new shows"
-→ Step 1: browser.open {operation: "open", url: "https://dizibox.com"}
-→ Step 2: browser.open {operation: "summarize_page", objective: "list the first 3 new shows"}
+```json
+{
+  "objective": "List the first 3 new shows on dizibox.com",
+  "steps": [
+    {
+      "title": "Open dizibox homepage",
+      "description": "Load https://dizibox.com in the controlled browser to access the new-shows list.",
+      "tool_name": "browser.open",
+      "tool_input": {"operation": "open", "url": "https://dizibox.com"},
+      "required_capabilities": ["browser.open"]
+    },
+    {
+      "title": "Extract the first 3 new shows",
+      "description": "Summarize the loaded page to extract the first 3 new shows listed.",
+      "tool_name": "browser.open",
+      "tool_input": {"operation": "summarize_page", "objective": "list the first 3 new shows"},
+      "required_capabilities": ["browser.open"]
+    }
+  ]
+}
+```
 
-User: "find the resume.pdf on my desktop and read it to me"
-→ Step 1: filesystem.manage {operation: "search", root: "desktop", query: "resume"}
-→ Step 2: filesystem.manage {operation: "read_file", path: "{{last_entry_path}}", max_chars: 8000}
+User: "find resume.pdf on my desktop and read it to me"
+→ Step "Search desktop": filesystem.manage `{operation: "search", root: "desktop", query: "resume"}`
+→ Step "Read found file": filesystem.manage `{operation: "read_file", path: "{{last_entry_path}}", max_chars: 8000}`
 
 User: "create a python script to generate an excel file"
-→ Step 1: code.interpreter {operation: "generate_and_run", objective: "create a Python script that generates an Excel file with sample data using openpyxl"}
+→ Step "Generate Excel script": code.interpreter `{operation: "generate_and_run", objective: "create a Python script that generates an Excel file with sample data using openpyxl"}`
 
 User: "list all files on my desktop"
-→ Step 1: filesystem.manage {operation: "inspect_folder", root: "desktop"}
+→ Step "Inspect desktop folder": filesystem.manage `{operation: "inspect_folder", root: "desktop"}`
 
 ## Constraints
 - Only use capabilities listed as enabled in the configuration context

@@ -262,7 +262,7 @@ class TaskWorker:
             next_step = self._next_runnable_step(plan.steps, step.id)
             if next_step is None:
                 self.repositories.tasks.set_current_step(task.id, None)
-                replan = await self._synthesize_and_validate(task, step.tool_name or "", result)
+                replan = await self._validate_and_synthesize(task, step.tool_name or "", result)
                 if replan is not None:
                     return replan
                 return self._transition(task, TaskStatus.COMPLETED, "all_steps_completed")
@@ -435,12 +435,18 @@ class TaskWorker:
         self.audit.task_state_changed("orchestrator", task.id, task.status, updated.status)
         return updated
 
-    async def _synthesize_and_validate(
+    async def _validate_and_synthesize(
         self, task: TaskRecord, tool_name: str, result: ToolCallResult
     ) -> TaskRecord | None:
-        """Synthesize a focused answer, then validate it addresses the objective.
+        """Validate raw tool output first; if sufficient, synthesize the final answer.
 
-        Returns a replanned TaskRecord if content is insufficient or invalid, or None to proceed to COMPLETED.
+        Order matters: the validator checks the RAW tool output before the synthesizer
+        runs. If the raw output doesn't contain what was asked (wrong count, missing
+        section, login wall, etc.), we replan immediately with a specific reason — no
+        synthesizer call is wasted on insufficient content, and we avoid the risk of
+        the synthesizer hallucinating a plausible answer from incomplete data.
+
+        Returns a replanned TaskRecord if content is insufficient, or None to proceed to COMPLETED.
         """
         if self.synthesizer is None or not ResponseSynthesizer.is_content_tool(tool_name):
             return None
@@ -448,22 +454,13 @@ class TaskWorker:
         if not raw:
             return None
         original_message = str(task.metadata.get("original_message_text") or "").strip() or None
-        answer = await self.synthesizer.synthesize(task.objective, raw, original_message=original_message)
-        if not answer:
-            sample = raw[:400].replace("\n", " ")
-            return await self._replan_with_error(
-                task,
-                f"Synthesizer marked the content as insufficient. Tool returned: '{sample}'. "
-                f"This was not enough to answer the question. Try a different tool/operation "
-                f"(e.g. summarize_page instead of extract_page_state, or a deeper page scan).",
-            )
 
+        # Step 1: validate raw output BEFORE synthesis.
         if self.validator is not None:
             valid, reason = await self.validator.validate(
                 task.objective,
-                answer,
+                raw,
                 original_message=original_message,
-                raw_snippet=raw[:1500],
             )
             if not valid:
                 self.audit.append(
@@ -471,17 +468,27 @@ class TaskWorker:
                     actor="validator",
                     task_id=task.id,
                     payload={
-                        "action": "answer_rejected",
+                        "action": "raw_output_rejected",
                         "tool": tool_name,
-                        "answer_preview": answer[:200],
                         "reason": reason,
                     },
                 )
                 return await self._replan_with_error(
                     task,
-                    f"Answer rejected by validator: {reason}. Previous answer was: {answer[:300]}. "
-                    f"Use a different tool/operation or extract more of the page content.",
+                    f"Tool output insufficient: {reason}. Use a different tool/operation "
+                    f"or extract more of the page content (e.g. summarize_page instead of "
+                    f"extract_page_state, or a deeper page scan).",
                 )
+
+        # Step 2: synthesize the validated raw output into a focused answer.
+        answer = await self.synthesizer.synthesize(task.objective, raw, original_message=original_message)
+        if not answer:
+            sample = raw[:400].replace("\n", " ")
+            return await self._replan_with_error(
+                task,
+                f"Synthesizer could not extract a focused answer from validated raw output. "
+                f"Sample: '{sample}'. Try a different tool/operation.",
+            )
 
         latest = self.repositories.tasks.get(task.id) or task
         meta = {**latest.metadata, "synthesized_answer": answer}

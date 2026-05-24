@@ -118,6 +118,14 @@ def _user_facing_task_message(task: TaskRecord) -> str:
     if task.status != TaskStatus.COMPLETED:
         return f"Status: {task.status.value}."
 
+    # Synthesizer-produced focused answer wins over raw tool output.
+    # The synthesizer was specifically prompted with the user's objective and
+    # extracts ONLY what was asked for — sending the raw page dump instead
+    # defeats the entire purpose of synthesis.
+    synthesized = str(task.metadata.get("synthesized_answer") or "").strip()
+    if synthesized:
+        return _trim(synthesized, 3900)
+
     answer = _completed_answer(task)
     if answer:
         return _trim(answer, 3900)

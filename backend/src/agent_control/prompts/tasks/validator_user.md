@@ -2,10 +2,7 @@ Objective (normalized): ${objective}
 
 User's original message (preserve language and exact terms): ${original_message}
 
-Proposed answer:
-${answer}
+Raw tool output to evaluate:
+${raw_output}
 
-Raw tool output (snippet — verify answer against this):
-${raw_snippet}
-
-Does this answer address the objective? Apply count check, fabrication check, topic check, and language check.
+Does the raw output contain enough information to answer the objective? Apply count check, topic check, and section check. Return YES or NO: <reason>.
