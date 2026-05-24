@@ -8,6 +8,8 @@ from typing import Any, Protocol
 
 from agent_control.channels.memory import ConversationMemoryService
 from agent_control.llm import PlannerService
+from agent_control.llm.synthesizer import ResponseSynthesizer
+from agent_control.llm.validator import AnswerValidator
 from agent_control.orchestration.executor import ToolExecutor
 from agent_control.orchestration.fulfillment import validate_fulfillment
 from agent_control.recovery import RetryPolicy
@@ -68,6 +70,8 @@ class TaskWorker:
         default_plan_factory: DefaultPlanFactory | None = None,
         recovery_plan_factory: RecoveryPlanFactory | None = None,
         notification_sink: TaskNotificationSink | None = None,
+        synthesizer: ResponseSynthesizer | None = None,
+        validator: AnswerValidator | None = None,
     ) -> None:
         self.repositories = repositories
         self.audit = audit
@@ -78,6 +82,8 @@ class TaskWorker:
         self.default_plan_factory = default_plan_factory
         self.recovery_plan_factory = recovery_plan_factory
         self.notification_sink = notification_sink
+        self.synthesizer = synthesizer
+        self.validator = validator
 
     async def process_next(self) -> TaskRecord | None:
         tasks = self.repositories.tasks.list_by_statuses(WORKABLE_STATUSES, limit=1)
@@ -246,6 +252,9 @@ class TaskWorker:
             next_step = self._next_runnable_step(plan.steps, step.id)
             if next_step is None:
                 self.repositories.tasks.set_current_step(task.id, None)
+                replan = await self._synthesize_and_validate(task, step.tool_name or "", result)
+                if replan is not None:
+                    return replan
                 return self._transition(task, TaskStatus.COMPLETED, "all_steps_completed")
             self.repositories.tasks.set_current_step(task.id, next_step.id)
             return self.repositories.tasks.get(task.id) or task
@@ -415,6 +424,50 @@ class TaskWorker:
         updated = self.repositories.tasks.update_metadata(task.id, metadata, TaskStatus.RETRYING)
         self.audit.task_state_changed("orchestrator", task.id, task.status, updated.status)
         return updated
+
+    async def _synthesize_and_validate(
+        self, task: TaskRecord, tool_name: str, result: ToolCallResult
+    ) -> TaskRecord | None:
+        """Synthesize a focused answer, then validate it addresses the objective.
+
+        Returns a replanned TaskRecord if content is insufficient or invalid, or None to proceed to COMPLETED.
+        """
+        if self.synthesizer is None or not ResponseSynthesizer.is_content_tool(tool_name):
+            return None
+        raw = _tool_output_text(result)
+        if not raw:
+            return None
+        answer = await self.synthesizer.synthesize(task.objective, raw)
+        if not answer:
+            return await self._replan_with_error(
+                task,
+                "The retrieved content did not contain a clear answer to the question. Try a different source or approach.",
+            )
+
+        if self.validator is not None:
+            valid = await self.validator.validate(task.objective, answer)
+            if not valid:
+                self.audit.append(
+                    AuditEventType.TASK_STATE_CHANGED,
+                    actor="validator",
+                    task_id=task.id,
+                    payload={"action": "answer_rejected", "tool": tool_name, "answer_preview": answer[:200]},
+                )
+                return await self._replan_with_error(
+                    task,
+                    f"The answer did not address the question. Answer was: {answer[:300]}. Try a different approach.",
+                )
+
+        latest = self.repositories.tasks.get(task.id) or task
+        meta = {**latest.metadata, "synthesized_answer": answer}
+        self.repositories.tasks.update_metadata(task.id, meta)
+        self.audit.append(
+            AuditEventType.TASK_STATE_CHANGED,
+            actor="synthesizer",
+            task_id=task.id,
+            payload={"action": "answer_synthesized", "tool": tool_name},
+        )
+        return None
 
     async def _replan_with_error(self, task: TaskRecord, error_context: str) -> TaskRecord | None:
         """Ask the LLM planner to produce a new plan given the error context (up to 2 replan attempts)."""

@@ -18,6 +18,8 @@ from agent_control.config import load_settings
 from agent_control.llm import LLMMessageClassifier, build_default_llm_provider
 from agent_control.llm.providers import build_major_llm_provider
 from agent_control.llm.planner import PlannerService
+from agent_control.llm.synthesizer import ResponseSynthesizer
+from agent_control.llm.validator import AnswerValidator
 from agent_control.observation import ArtifactService, ScreenshotService
 from agent_control.orchestration import TaskWorker, ToolExecutor
 from agent_control.orchestration.default_plans import build_default_task_plan, build_evaluator_recovery_plan
@@ -102,6 +104,8 @@ async def run_worker() -> None:
     )
     major_provider = build_major_llm_provider(settings)
     planner = PlannerService(provider, repositories, audit, plan_validator=registry.validate_plan, major_provider=major_provider) if provider else None
+    synthesizer = ResponseSynthesizer(provider) if provider else None
+    validator = AnswerValidator(provider) if provider else None
     executor = ToolExecutor(
         policy,
         repositories,
@@ -119,6 +123,8 @@ async def run_worker() -> None:
         default_plan_factory=lambda task: build_default_task_plan(settings, task),
         recovery_plan_factory=lambda task, reason: build_evaluator_recovery_plan(settings, task, reason),
         notification_sink=_telegram_notifier(settings),
+        synthesizer=synthesizer,
+        validator=validator,
     )
     await worker.run_forever()
 
