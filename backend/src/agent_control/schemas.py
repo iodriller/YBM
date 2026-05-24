@@ -423,6 +423,7 @@ class FormattedAuditEvent(StrictBaseModel):
 
 
 class ApprovalGate(StrictBaseModel):
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True, validate_assignment=True, use_enum_values=False)
     capability: Capability
     risk_level: RiskLevel
     summary: str
@@ -430,6 +431,7 @@ class ApprovalGate(StrictBaseModel):
 
 
 class PlanPostcondition(StrictBaseModel):
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True, validate_assignment=True, use_enum_values=False)
     type: PostconditionType
     description: str
     required: bool = True
@@ -528,6 +530,32 @@ class PlanModel(StrictBaseModel):
     @classmethod
     def map_capability_aliases(cls, value: Any) -> Any:
         return _normalize_capabilities(value)
+
+    @field_validator("postconditions", mode="before")
+    @classmethod
+    def drop_invalid_postconditions(cls, value: Any) -> Any:
+        """Postconditions are optional and inferred by the fulfillment validator.
+
+        Rather than reject the whole plan because the LLM invented a postcondition
+        type (e.g. ``"screenshot"`` instead of ``"desktop_observation"``), silently
+        drop entries that don't validate. The plan steps still execute correctly.
+        """
+        if not isinstance(value, list):
+            return value
+        kept: list[Any] = []
+        for item in value:
+            if isinstance(item, PlanPostcondition):
+                kept.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            try:
+                kept.append(PlanPostcondition.model_validate(item))
+            except Exception:
+                # Drop silently — leaving postconditions empty lets the fulfillment
+                # validator infer them from objective + step tool names.
+                continue
+        return kept
 
     @field_validator("steps")
     @classmethod

@@ -356,7 +356,11 @@ def build_tool_registry(
         )
     )
     if settings.adapters.code_interpreter.enabled:
-        adapters["code.interpreter"] = CodeInterpreterAdapter(settings.adapters.code_interpreter, provider=provider)  # type: ignore[arg-type]
+        adapters["code.interpreter"] = CodeInterpreterAdapter(
+            settings.adapters.code_interpreter,
+            provider=provider,  # type: ignore[arg-type]
+            artifacts=artifact_repository,
+        )
 
     vscode_enabled = _capability_enabled(settings, Capability.VSCODE_WRITE_FILES) and settings.adapters.vscode.enabled
     definitions.append(
@@ -655,6 +659,9 @@ def _artifact_delivery_roots(settings: AppSettings) -> list[str]:
         settings.adapters.workspace.root_dir,
         settings.adapters.browser.screenshot_dir,
         settings.adapters.computer_use.screenshot_dir,
+        # Files produced by code.interpreter live here — without this entry,
+        # "generate a file and send it" requests can't deliver the result.
+        settings.adapters.code_interpreter.workspace_root,
         *settings.adapters.computer_use.allowed_roots,
     ]
 
