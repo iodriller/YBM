@@ -56,20 +56,34 @@ class PlannerService:
 
         # Use enriched objective during replanning (includes error context from failed attempt)
         objective = str(task.metadata.get("replan_objective") or task.objective).strip()
+        original_text = str(task.metadata.get("original_message_text") or "").strip()
+        if original_text and original_text != objective:
+            objective = (
+                f"User's original message (preserve exact wording, language, URLs, and section names):\n"
+                f"{original_text}\n\n"
+                f"Normalized objective: {objective}"
+            )
         raw_memory = str(task.metadata.get("memory_context") or "").strip()
         memory_section = f"## Conversation context\n{raw_memory}\n\n" if raw_memory else ""
         user_prompt = self._prompt(objective, config_context, memory_section)
-        try:
-            plan = await provider.generate_structured(PLANNER_SYSTEM_PROMPT, user_prompt, PlanModel)
-            plan = self._validate_plan(plan)
-        except (ValueError, ValidationError) as exc:
-            retry_prompt = render_prompt(
-                "tasks/structured_retry.md",
-                original_prompt=user_prompt,
-                error=exc,
-            )
-            plan = await provider.generate_structured(PLANNER_SYSTEM_PROMPT, retry_prompt, PlanModel)
-            plan = self._validate_plan(plan)
+        plan: PlanModel | None = None
+        last_error: Exception | None = None
+        current_prompt = user_prompt
+        for attempt in range(3):
+            try:
+                candidate = await provider.generate_structured(PLANNER_SYSTEM_PROMPT, current_prompt, PlanModel)
+                plan = self._validate_plan(candidate)
+                break
+            except (ValueError, ValidationError) as exc:
+                last_error = exc
+                current_prompt = render_prompt(
+                    "tasks/structured_retry.md",
+                    original_prompt=user_prompt,
+                    error=str(exc)[:2000],
+                )
+        if plan is None:
+            assert last_error is not None
+            raise last_error
 
         self.repositories.plans.create(task_id, plan)
         updated = self.repositories.tasks.attach_plan(task_id, plan.id, TaskStatus.PLANNED)

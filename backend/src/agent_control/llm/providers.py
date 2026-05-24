@@ -175,7 +175,7 @@ def _looks_like_localdeploy(profile: LLMProfileConfig) -> bool:
     return (
         hostname in {"127.0.0.1", "localhost", "::1"}
         and parsed.port == 8000
-        and (model.startswith("gemma3_") or "localdeploy" in model or "ollama_safe" in model)
+        and (model.startswith("gemma3_") or model.startswith("qwen3vl_") or model.startswith("qwen25vl_") or "localdeploy" in model or "ollama_safe" in model)
     )
 
 

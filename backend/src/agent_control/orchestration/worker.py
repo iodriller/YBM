@@ -164,10 +164,20 @@ class TaskWorker:
                     )
                     self.audit.task_state_changed("worker", task_id, task.status, updated.status)
                 else:
-                    # Neither LLM planner nor hardcoded factory produced a plan.
-                    # Fail the task so it does not loop forever in INTERPRETING.
+                    # No plan was produced. Treat as a planning failure and try to recover
+                    # by triggering the same replan loop used for execution failures so the
+                    # planner gets another shot with the error context.
                     reason = _planner_error or "no plan could be produced for this objective"
                     meta = {**task.metadata, "planning_error": reason[:800], "last_worker_error": reason[:800]}
+                    self.repositories.tasks.update_metadata(task.id, meta)
+                    replan_count = int(task.metadata.get("replan_count", 0))
+                    if replan_count < 2 and self.planner is not None:
+                        replanned = await self._replan_with_error(
+                            self.repositories.tasks.get(task.id) or task,
+                            f"Planning failed: {reason[:400]}",
+                        )
+                        if replanned is not None:
+                            return replanned
                     failed = self.repositories.tasks.update_metadata(task.id, meta, TaskStatus.FAILED)
                     self.audit.task_state_changed("worker", task_id, task.status, TaskStatus.FAILED)
                     return failed
@@ -437,25 +447,40 @@ class TaskWorker:
         raw = _tool_output_text(result)
         if not raw:
             return None
-        answer = await self.synthesizer.synthesize(task.objective, raw)
+        original_message = str(task.metadata.get("original_message_text") or "").strip() or None
+        answer = await self.synthesizer.synthesize(task.objective, raw, original_message=original_message)
         if not answer:
+            sample = raw[:400].replace("\n", " ")
             return await self._replan_with_error(
                 task,
-                "The retrieved content did not contain a clear answer to the question. Try a different source or approach.",
+                f"Synthesizer marked the content as insufficient. Tool returned: '{sample}'. "
+                f"This was not enough to answer the question. Try a different tool/operation "
+                f"(e.g. summarize_page instead of extract_page_state, or a deeper page scan).",
             )
 
         if self.validator is not None:
-            valid = await self.validator.validate(task.objective, answer)
+            valid, reason = await self.validator.validate(
+                task.objective,
+                answer,
+                original_message=original_message,
+                raw_snippet=raw[:1500],
+            )
             if not valid:
                 self.audit.append(
                     AuditEventType.TASK_STATE_CHANGED,
                     actor="validator",
                     task_id=task.id,
-                    payload={"action": "answer_rejected", "tool": tool_name, "answer_preview": answer[:200]},
+                    payload={
+                        "action": "answer_rejected",
+                        "tool": tool_name,
+                        "answer_preview": answer[:200],
+                        "reason": reason,
+                    },
                 )
                 return await self._replan_with_error(
                     task,
-                    f"The answer did not address the question. Answer was: {answer[:300]}. Try a different approach.",
+                    f"Answer rejected by validator: {reason}. Previous answer was: {answer[:300]}. "
+                    f"Use a different tool/operation or extract more of the page content.",
                 )
 
         latest = self.repositories.tasks.get(task.id) or task

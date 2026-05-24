@@ -21,12 +21,26 @@ class ResponseSynthesizer:
     def is_content_tool(tool_name: str) -> bool:
         return tool_name in _CONTENT_TOOLS
 
-    async def synthesize(self, objective: str, raw_content: str) -> str | None:
-        """Return a focused answer, or None if content is insufficient to answer the question."""
+    async def synthesize(
+        self, objective: str, raw_content: str, *, original_message: str | None = None
+    ) -> str | None:
+        """Return a focused answer, or None if content is insufficient to answer the question.
+
+        ``original_message`` is the user's verbatim message — if provided, the LLM gets
+        both the normalized objective and the original wording so it can preserve URLs,
+        section names, and respond in the user's language.
+        """
         if not raw_content.strip():
             return None
         system_prompt = prompt_text("base/synthesizer_system.md")
-        user_prompt = f"Question: {objective}\n\nRaw content:\n{raw_content[:6000]}"
+        question_block = f"Question: {objective}"
+        if original_message and original_message.strip() and original_message.strip() != objective.strip():
+            question_block = (
+                f"User's original message (use this for language and exact terminology):\n"
+                f"{original_message.strip()}\n\n"
+                f"Normalized question: {objective}"
+            )
+        user_prompt = f"{question_block}\n\nRaw content:\n{raw_content[:6000]}"
         try:
             result = await self.provider.generate_text(system_prompt, user_prompt)
         except Exception:
