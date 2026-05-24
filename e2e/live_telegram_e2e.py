@@ -18,7 +18,11 @@ import time
 from typing import Any
 from urllib import error, parse, request
 
-
+# Ensure stdout/stderr can handle Unicode (Turkish, etc.) on Windows cp1252 consoles.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CASES = ROOT / "e2e" / "cases.json"
