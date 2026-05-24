@@ -436,6 +436,7 @@ class PlanPostcondition(StrictBaseModel):
 
 
 class PlanStep(StrictBaseModel):
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True, validate_assignment=True, use_enum_values=False)
     id: str = Field(default_factory=lambda: new_id("step"))
     title: str
     description: str
@@ -448,6 +449,7 @@ class PlanStep(StrictBaseModel):
 
 
 class PlanModel(StrictBaseModel):
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True, validate_assignment=True, use_enum_values=False)
     id: str = Field(default_factory=lambda: new_id("plan"))
     objective: str
     assumptions: list[str] = Field(default_factory=list)

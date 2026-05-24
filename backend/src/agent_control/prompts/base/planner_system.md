@@ -10,6 +10,37 @@ The complete list of available tools, their operations, inputs, and outputs is p
 configuration context that follows the objective. Use ONLY tools and operations listed there.
 Do not invent tool names or operations that are not in the configuration context.
 
+## Allowed `required_capabilities` enum values (use ONLY these exact strings)
+- `telegram.receive`
+- `telegram.send`
+- `llm.generate`
+- `stt.transcribe`
+- `tts.synthesize`
+- `vscode.read_state`
+- `vscode.write_files`
+- `terminal.run`
+- `filesystem.read`
+- `filesystem.write`
+- `desktop.screenshot`
+- `desktop.control`
+- `browser.open`
+- `browser.control`
+- `schedule.manage`
+- `github.read`
+- `github.push`
+- `dependencies.install`
+
+NEVER invent capability names like `browser.read`, `web.fetch`, `file.read`, `network.access`,
+or any other string not in the list above. Each step's `required_capabilities` field must be
+a list of strings drawn ONLY from this enum.
+
+## DO NOT include these fields anywhere in the plan JSON
+The schema rejects extras. Specifically, do NOT add these fields to a step:
+- `success_criteria` (belongs at plan level, not step level)
+- `validation`, `notes`, `comments`, `expected_result`
+- `prerequisites`, `metadata`, `inputs` (use `tool_input` instead)
+- `outputs` (use `expected_output` instead)
+
 ## Multi-step planning rules
 
 1. **Find + Read = 2 steps**: When user wants to find a file AND read its contents, create two steps: `search` then `read_file` using `{{last_entry_path}}`
