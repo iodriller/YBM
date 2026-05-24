@@ -132,6 +132,14 @@ class ArtifactDeliveryAdapter:
 
         raw_path = request.input.get("path")
         if raw_path:
+            # When the planner passes a bare filename (no separators), prefer
+            # a task artifact with the same basename. Tools that produce files
+            # register them as artifacts (e.g. code.interpreter), so a basename
+            # passed across steps maps directly to the file the prior step made.
+            match = self._artifact_by_basename(request.task_id, str(raw_path))
+            if match is not None:
+                artifact, path = match
+                return artifact, path
             return None, self._safe_path(str(raw_path))
 
         if operation == "send_screenshot":
@@ -151,6 +159,25 @@ class ArtifactDeliveryAdapter:
             if path and path.exists() and path.is_file():
                 return artifact, path
         return None, None
+
+    def _artifact_by_basename(
+        self, task_id: str, raw: str
+    ) -> tuple[Artifact, Path] | None:
+        """If ``raw`` is a bare filename, return the matching task artifact + path.
+
+        Returns ``None`` when ``raw`` contains a path separator (treat as real path)
+        or no artifact with that basename exists.
+        """
+        name = raw.strip().strip("\"'")
+        if "/" in name or "\\" in name or not name:
+            return None
+        for artifact in reversed(self.artifacts.list_for_task(task_id)):
+            path = _path_from_uri(artifact.uri)
+            if path is None or not path.exists() or not path.is_file():
+                continue
+            if path.name == name:
+                return artifact, path
+        return None
 
     def _resolve_recent_artifact_path(self, request: ToolCallRequest) -> tuple[Artifact | None, Path | None]:
         list_recent = getattr(self.artifacts, "list_recent", None)
@@ -210,34 +237,40 @@ class ArtifactDeliveryAdapter:
         """Locate a file by name across common user folders + configured roots.
 
         Used as a fallback when the planner gives a bare filename like
-        ``resume.pdf`` instead of a full path.
+        ``resume.pdf`` instead of a full path. Order matters — search
+        recently-modified locations first (code interpreter workspace,
+        screenshots), then user folders, then bounded recursive scan of
+        allowed roots (depth-limited to keep latency sane on large trees).
         """
         raw = value.strip().strip("\"'")
-        # Only do filename-only resolution (anything with a separator is a real path).
         if "\\" in raw or "/" in raw:
             return None
         filename = raw
         if not filename:
             return None
         home = Path.home()
-        candidate_roots: list[Path] = [
+        # 1. Direct hits in high-signal locations (recent tool outputs, then user folders).
+        priority_roots = [
+            *self.allowed_roots,                       # includes code interpreter + workspaces
             home / "Desktop",
             home / "Documents",
             home / "Downloads",
         ]
-        candidate_roots.extend(self.allowed_roots or [])
         seen: set[Path] = set()
-        for root in candidate_roots:
+        for root in priority_roots:
             if not root or root in seen or not root.exists():
                 continue
             seen.add(root)
             direct = root / filename
             if direct.exists() and direct.is_file():
                 return direct.resolve()
-            # Shallow recursive scan — bounded so we don't walk all of C:\
-            for child in root.rglob(filename):
-                if child.is_file():
-                    return child.resolve()
+        # 2. Bounded recursive scan (depth ≤ 4) — avoids walking all of C:\for fun.
+        #    Code interpreter writes one task-dir deep; workspaces nest one level deeper;
+        #    screenshots are flat. Depth 4 covers all real cases without blowing up latency.
+        for root in seen:
+            for path in _walk_with_max_depth(root, max_depth=4):
+                if path.name == filename and path.is_file():
+                    return path.resolve()
         return None
 
 
@@ -277,6 +310,29 @@ def _path_from_uri(value: object) -> Path | None:
             raw_path = raw_path[1:]
         return Path(raw_path).expanduser().resolve()
     return Path(text).expanduser().resolve()
+
+
+def _walk_with_max_depth(root: Path, *, max_depth: int):
+    """Yield files/dirs under ``root`` up to ``max_depth`` levels deep.
+
+    Cheaper than ``rglob("*")`` on huge trees — stops descending once we hit
+    the depth limit instead of walking everything.
+    """
+    root_depth = len(root.parts)
+    try:
+        stack = [root]
+        while stack:
+            current = stack.pop()
+            try:
+                for entry in current.iterdir():
+                    depth = len(entry.parts) - root_depth
+                    yield entry
+                    if entry.is_dir() and depth < max_depth:
+                        stack.append(entry)
+            except (PermissionError, OSError):
+                continue
+    except (PermissionError, OSError):
+        return
 
 
 def _alias_path(value: str) -> Path | None:

@@ -12,3 +12,4 @@ agent_control.db
 .claude/settings.local.json
 dist/
 node_modules/
+*.xlsx
