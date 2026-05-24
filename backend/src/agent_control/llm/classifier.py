@@ -144,28 +144,30 @@ def emergency_classification(message: InboundMessage, reason: str) -> MessageCla
 
 
 def _looks_actionable_request(text: str) -> bool:
+    """Broad heuristic for whether a message represents an actionable task.
+
+    Used as a last-resort fallback when the LLM classifier fails. Bias toward
+    YES — false positives ("act on this generic chat") get rejected by the
+    planner, while false negatives ("ignore a real task") leave the user
+    waiting with no acknowledgement.
+    """
     lowered = text.lower()
-    return any(
-        marker in lowered
-        for marker in (
-            "inspect",
-            "open",
-            "create",
-            "organize",
-            "send",
-            "schedule",
-            "run",
-            "search",
-            "browse",
-            "check",
-            "fill",
-            "summarize",
-            "rename",
-            "screenshot",
-            "desktop",
-            "folder",
-            "file",
-            "job",
-            "every day",
-        )
+    actionable_markers = (
+        # explicit action verbs
+        "inspect", "open", "create", "organize", "send", "schedule", "run",
+        "search", "browse", "check", "fill", "summarize", "rename", "delete",
+        "remove", "save", "download", "upload", "copy", "move", "extract",
+        "scrape", "fetch", "get", "find", "list", "show", "tell me", "give me",
+        "look", "watch", "monitor", "observe", "navigate", "visit", "click",
+        "type", "write", "build", "make", "generate", "produce", "compute",
+        "calculate", "translate", "convert",
+        # natural-language openings for a request
+        "go to", "head to", "i want", "i'd like", "can you", "could you",
+        "please ", "would you",
+        # nouns that almost always imply action context
+        "screenshot", "desktop", "folder", "file", "job", "task", "chrome",
+        "browser", "page", "url", "website", "site", ".com", ".net", ".org",
+        # scheduling hints
+        "every day", "daily", "weekly", "hourly", "remind me",
     )
+    return any(marker in lowered for marker in actionable_markers)

@@ -207,14 +207,35 @@ def _loads_json_object(content: str) -> dict:
         if lines and lines[-1].startswith("```"):
             lines = lines[:-1]
         text = "\n".join(lines).strip()
+    # Tier 1: strict json
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:
+        # Tier 2: extract outermost {...} and try again
         start = text.find("{")
         end = text.rfind("}")
-        if start < 0 or end <= start:
-            raise
-        payload = json.loads(text[start : end + 1])
+        if start >= 0 and end > start:
+            try:
+                payload = json.loads(text[start : end + 1])
+            except json.JSONDecodeError:
+                payload = _repair_json(text[start : end + 1])
+        else:
+            payload = _repair_json(text)
     if not isinstance(payload, dict):
         raise json.JSONDecodeError("structured response was not a JSON object", text, 0)
     return payload
+
+
+def _repair_json(text: str) -> dict:
+    """Tier 3: tolerate common LLM JSON mistakes (missing commas, single quotes, etc.).
+
+    Uses the json-repair library, which is more permissive than json.loads.
+    """
+    try:
+        import json_repair  # type: ignore
+    except ImportError:
+        raise json.JSONDecodeError("json_repair not installed and standard parse failed", text, 0)
+    repaired = json_repair.loads(text)
+    if not isinstance(repaired, dict):
+        raise json.JSONDecodeError("repaired JSON was not an object", text, 0)
+    return repaired
