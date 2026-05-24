@@ -425,7 +425,10 @@ class FilesystemManageAdapter:
     def _safe_path(self, value: str) -> Path:
         if not self.allowed_roots:
             raise ValueError("no allowed filesystem roots are configured")
-        path = self._alias_path(value).expanduser().resolve()
+        # Some LLMs hallucinate placeholder usernames like "C:\Users\me\Desktop\foo.pdf".
+        # Recover by detecting that pattern and rewriting to the real user's home.
+        rewritten = _rewrite_placeholder_user_path(value)
+        path = self._alias_path(rewritten).expanduser().resolve()
         if not any(root == path or root in path.parents for root in self.allowed_roots):
             allowed = ", ".join(str(root) for root in self.allowed_roots)
             raise ValueError(f"path is outside allowed roots: {path}; allowed roots: {allowed}")
@@ -465,6 +468,37 @@ class FilesystemManageAdapter:
             if lowered.startswith(prefix):
                 return root / normalized[len(prefix) :]
         return Path(value)
+
+
+_PLACEHOLDER_USERNAMES = frozenset({
+    "me", "user", "username", "<user>", "<username>",
+    "{user}", "{username}", "your_user", "your_username", "youruser",
+})
+
+
+def _rewrite_placeholder_user_path(value: str) -> str:
+    """Replace `C:\\Users\\<placeholder>` (e.g. \\Users\\me) with the actual user home.
+
+    The LLM occasionally synthesizes paths with a literal placeholder username
+    because it doesn't actually know the system user. We detect that pattern
+    and rewrite to the real ``Path.home()`` so the request can still succeed.
+    """
+    text = str(value).strip().strip("\"'")
+    normalized = text.replace("/", "\\")
+    lowered = normalized.lower()
+    marker = "\\users\\"
+    idx = lowered.find(marker)
+    if idx < 0:
+        return value
+    rest_start = idx + len(marker)
+    sep_idx = lowered.find("\\", rest_start)
+    user_segment = lowered[rest_start:sep_idx] if sep_idx > 0 else lowered[rest_start:]
+    if user_segment not in _PLACEHOLDER_USERNAMES:
+        return value
+    # Splice from the normalized (back-slash) version so the tail separators are consistent.
+    tail = normalized[(sep_idx if sep_idx > 0 else len(normalized)):]
+    home = Path.home()
+    return str(home) + tail
 
 
 def _resolve_root(value: str) -> Path:

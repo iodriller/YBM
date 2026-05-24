@@ -192,9 +192,53 @@ class ArtifactDeliveryAdapter:
         if path is None:
             raise ValueError(f"invalid file path: {value}")
         path = path.expanduser().resolve()
+
+        # If a bare filename was given (or a path that does not exist where it resolved),
+        # try common locations: Desktop, Documents, Downloads, and recursive search of
+        # the allowed_roots. This makes "send me resume.pdf" work after the user has
+        # previously read it from their Desktop in a separate task.
+        if not path.exists():
+            resolved = self._search_for_filename(value)
+            if resolved is not None:
+                path = resolved
+
         if self.allowed_roots and not any(root == path or root in path.parents for root in self.allowed_roots):
             raise ValueError(f"path is outside configured delivery roots: {path}")
         return path
+
+    def _search_for_filename(self, value: str) -> Path | None:
+        """Locate a file by name across common user folders + configured roots.
+
+        Used as a fallback when the planner gives a bare filename like
+        ``resume.pdf`` instead of a full path.
+        """
+        raw = value.strip().strip("\"'")
+        # Only do filename-only resolution (anything with a separator is a real path).
+        if "\\" in raw or "/" in raw:
+            return None
+        filename = raw
+        if not filename:
+            return None
+        home = Path.home()
+        candidate_roots: list[Path] = [
+            home / "Desktop",
+            home / "Documents",
+            home / "Downloads",
+        ]
+        candidate_roots.extend(self.allowed_roots or [])
+        seen: set[Path] = set()
+        for root in candidate_roots:
+            if not root or root in seen or not root.exists():
+                continue
+            seen.add(root)
+            direct = root / filename
+            if direct.exists() and direct.is_file():
+                return direct.resolve()
+            # Shallow recursive scan — bounded so we don't walk all of C:\
+            for child in root.rglob(filename):
+                if child.is_file():
+                    return child.resolve()
+        return None
 
 
 def _task_chat_id(task: TaskRecord) -> str | None:

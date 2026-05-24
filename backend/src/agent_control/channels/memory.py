@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 from agent_control.llm.providers import LLMProvider
@@ -134,13 +135,44 @@ def _clean_role(value: str) -> str:
     return "user"
 
 
+_PLACEHOLDER_PATH_PATTERN = re.compile(
+    r"[A-Za-z]:[\\/]Users[\\/]"
+    r"(?:me|user|username|youruser|your_user)"
+    r"(?:[\\/][^\s\"'<>]*)?",
+    re.IGNORECASE,
+)
+
+
 def _trim_turn(text: str, limit: int = 600) -> str:
     clean = " ".join(text.split())
     return clean if len(clean) <= limit else f"{clean[: limit - 3]}..."
 
 
+def _strip_placeholder_paths(text: str) -> str:
+    """Remove hallucinated paths like ``C:\\Users\\me\\Desktop\\foo.pdf`` from memory.
+
+    If the LLM stored a placeholder username path in memory, the planner will
+    happily re-use it on the next turn. Strip these before they propagate.
+    Keep the basename if present so 'send me that <file>' still has the filename.
+    """
+    def replace(match: "re.Match[str]") -> str:
+        path = match.group(0)
+        # Try to keep the basename (e.g. "resume.pdf") since that's the useful part.
+        tail = path.replace("/", "\\").rsplit("\\", 1)[-1]
+        if "." in tail and len(tail) > 2:
+            return tail
+        return ""
+
+    return _PLACEHOLDER_PATH_PATTERN.sub(replace, text)
+
+
 def _clean_summary(text: str, limit: int) -> str:
-    clean = " ".join(line.strip() for line in text.strip().splitlines() if line.strip())
+    cleaned_lines = (
+        _strip_placeholder_paths(line.strip())
+        for line in text.strip().splitlines()
+        if line.strip()
+    )
+    clean = " ".join(line for line in cleaned_lines if line)
     if not clean:
         return DEFAULT_SUMMARY
     return clean if len(clean) <= limit else f"{clean[: limit - 3]}..."

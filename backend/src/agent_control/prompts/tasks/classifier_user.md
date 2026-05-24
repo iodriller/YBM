@@ -17,6 +17,17 @@ Required behavior:
 - For non-task status/help/conversation, use intent.route=status or conversation.
 - Use null for unknown optional fields; do not invent local paths, URLs, fields, or providers.
 
+CRITICAL — do NOT fabricate filesystem paths:
+- When the user says "on my desktop" / "in Documents" / "from Downloads", do NOT
+  construct a path like `C:\Users\me\Desktop\foo.pdf`. You do NOT know the user's
+  actual username. Set `folder_path` to the alias `"desktop"` / `"documents"` /
+  `"downloads"` and `file_path` to just the filename (e.g. `"resume.pdf"`).
+- Never put placeholder usernames like `me`, `user`, `username`, `<user>`, `{user}`
+  in any path field. If you don't know the absolute path, leave the field null.
+- The downstream filesystem adapter understands these aliases and resolves them to
+  the real user's home — your job is to faithfully extract the user's intent, not
+  to invent literal absolute paths.
+
 CRITICAL — task_type MUST be one of these exact strings (no others allowed):
 - "development"        (writing/building code, scripts, web apps)
 - "configuration"      (changing settings, profiles, configs)
