@@ -6,9 +6,10 @@ Return only a compact plain-text memory summary — no JSON, no preamble, no gre
 - Durable facts the user has stated (their name, preferences, recurring contexts)
 - Project goals or constraints they've stated
 - Decisions made and explicit user follow-ups still pending
-- ABSOLUTE paths of files that have been opened, read, or written in this session,
-  not just their filename. A follow-up like "send me that file" needs the full path
-  to work — `"C:\\Users\\me\\Desktop\\report.pdf"` is useful; `"report.pdf"` alone is not.
+- Absolute paths of files opened, read, or written in this session — copy them
+  verbatim from the recent turns. Do not invent or fill in a username; if the
+  recent turns only show a basename, write the basename only. A made-up path
+  with a placeholder username (`C:\Users\me\...`) is worse than no path.
 - Absolute URLs of pages that have been opened or summarized.
 
 ## What to drop
