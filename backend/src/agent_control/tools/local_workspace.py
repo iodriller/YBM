@@ -203,7 +203,15 @@ def _safe_segment(value: str) -> str:
 
 
 def _safe_child_path(workspace_dir: Path, relative_path: str) -> Path:
-    target = (workspace_dir / relative_path).resolve()
+    # Accept either a relative path or an absolute path that points INTO the
+    # workspace. The LLM often gives us an absolute path after substituting
+    # {{workspace_dir}} into a `path` field — that path is safe as long as it
+    # actually resolves under the workspace, even if it was passed as absolute.
+    raw = Path(relative_path)
+    if raw.is_absolute():
+        target = raw.resolve()
+    else:
+        target = (workspace_dir / raw).resolve()
     if workspace_dir != target and workspace_dir not in target.parents:
         raise ValueError(f"file path escaped workspace: {relative_path}")
     return target

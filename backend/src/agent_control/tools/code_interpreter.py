@@ -461,10 +461,20 @@ async def _run_python_script(executable: str, script_path: Path, workspace: Path
 
 
 def _safe_child_path(workspace: Path, relative_path: str) -> Path:
-    cleaned = relative_path.replace("\\", "/").strip().lstrip("/")
-    if not cleaned or ".." in Path(cleaned).parts:
+    # Block obviously-malicious traversal even when an absolute path is given.
+    if ".." in Path(relative_path).parts:
         raise ValueError(f"script path escaped workspace: {relative_path}")
-    target = (workspace / cleaned).resolve()
+    # Accept either a relative path or an absolute path that already points
+    # INTO the workspace (e.g. the LLM emitted "{{workspace_dir}}/script.py"
+    # which the executor substituted into an absolute path).
+    raw = Path(relative_path)
+    if raw.is_absolute():
+        target = raw.resolve()
+    else:
+        cleaned = relative_path.replace("\\", "/").strip().lstrip("/")
+        if not cleaned:
+            raise ValueError(f"script path escaped workspace: {relative_path}")
+        target = (workspace / cleaned).resolve()
     if workspace != target and workspace not in target.parents:
         raise ValueError(f"script path escaped workspace: {relative_path}")
     return target

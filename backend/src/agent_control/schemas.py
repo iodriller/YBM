@@ -429,6 +429,15 @@ class ApprovalGate(StrictBaseModel):
     summary: str
     required_before_step: str | None = None
 
+    @field_validator("capability", mode="before")
+    @classmethod
+    def map_capability_alias(cls, value: Any) -> Any:
+        # Same alias table as PlanStep.required_capabilities — the LLM
+        # routinely confuses tool names ("artifact.deliver") with capabilities
+        # ("telegram.send"). Without this, the plan is rejected outright and
+        # the planner replans the same mistake.
+        return _normalize_capability_value(value)
+
 
 class PlanPostcondition(StrictBaseModel):
     model_config = ConfigDict(extra="ignore", str_strip_whitespace=True, validate_assignment=True, use_enum_values=False)
@@ -473,6 +482,20 @@ _CAPABILITY_ALIASES: dict[str, str] = {
 }
 
 
+def _normalize_capability_value(value: Any) -> Any:
+    """Translate a single LLM-produced capability string through the alias table.
+
+    Pass-through for already-Capability values or unknown strings (Pydantic will
+    then validate or reject downstream). The point is to catch the common
+    tool-name-mistaken-for-capability error ("artifact.deliver" → "telegram.send")
+    BEFORE Pydantic rejects it.
+    """
+    if isinstance(value, Capability) or value is None:
+        return value
+    key = str(value).strip().lower()
+    return _CAPABILITY_ALIASES.get(key, value)
+
+
 def _normalize_capabilities(value: Any) -> Any:
     """Translate common LLM mistakes in required_capabilities to valid enum values."""
     if not isinstance(value, list):
@@ -486,8 +509,7 @@ def _normalize_capabilities(value: Any) -> Any:
             continue
         if item is None:
             continue
-        key = str(item).strip().lower()
-        mapped = _CAPABILITY_ALIASES.get(key, item)
+        mapped = _normalize_capability_value(item)
         # dedupe after mapping (multiple aliases can collapse to same capability)
         marker = mapped.value if isinstance(mapped, Capability) else str(mapped).strip().lower()
         if marker in seen:
