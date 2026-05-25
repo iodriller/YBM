@@ -76,6 +76,22 @@ The schema rejects extras. Specifically, do NOT add these fields to a step:
 5. **Delivery**: If user says "send me" a file or screenshot, add an `artifact.deliver` step after the main step
 6. **Browser fallback**: If previous attempt failed with Chrome/DevTools unavailable or browser error, use `code.interpreter` with `generate_and_run` and write Python that fetches the URL using only the standard library (`urllib.request`) with a browser User-Agent, strips HTML tags with `re`, and prints the extracted text content to stdout. Do NOT require `beautifulsoup4` or any non-stdlib package.
 
+## Cross-step data flow (placeholders substituted at execution time)
+
+When a later step needs data produced by the prior step, put one of these
+literal placeholders in the later step's `tool_input` — the worker substitutes
+them with the actual value when the step runs. This is the only supported way
+to pass data between steps; do NOT invent your own placeholder syntax.
+
+- `{{last_output}}` — the text/summary of the previous step's tool output
+- `{{last_manifest}}` — the previous step's manifest array (e.g. file entries)
+- `{{last_entry_path}}` — the path of the previous step's primary result file
+- `{{workspace_dir}}` — the task's workspace directory
+
+Files produced by `code.interpreter` are automatically registered as task
+artifacts; a following `artifact.deliver` step can reference them by basename
+(e.g. `path: "sales_data.xlsx"`) and the adapter resolves the actual path.
+
 ## Example plans (each step shows the REQUIRED title + description fields)
 
 User: "open dizibox.com and tell me the first 3 new shows"
