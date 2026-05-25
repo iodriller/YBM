@@ -25,7 +25,14 @@ class LLMProvider(Protocol):
     async def generate_multimodal_text(self, system_prompt: str, user_prompt: str, image_paths: list[str]) -> str:
         ...
 
-    async def generate_structured(self, system_prompt: str, user_prompt: str, output_model: type[T]) -> T:
+    async def generate_structured(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        output_model: type[T],
+        *,
+        temperature: float | None = None,
+    ) -> T:
         ...
 
 
@@ -46,7 +53,14 @@ class OpenAICompatibleProvider:
         data = await self._chat(system_prompt, content, response_format=None)
         return str(data["choices"][0]["message"]["content"])
 
-    async def generate_structured(self, system_prompt: str, user_prompt: str, output_model: type[T]) -> T:
+    async def generate_structured(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        output_model: type[T],
+        *,
+        temperature: float | None = None,
+    ) -> T:
         schema = output_model.model_json_schema()
         try:
             data = await self._chat(
@@ -56,6 +70,7 @@ class OpenAICompatibleProvider:
                     "type": "json_schema",
                     "json_schema": {"name": output_model.__name__, "schema": schema},
                 },
+                temperature=temperature,
             )
         except ValueError as exc:
             if not _should_retry_structured_without_response_format(exc):
@@ -69,6 +84,7 @@ class OpenAICompatibleProvider:
                 f"{system_prompt}\nReturn JSON only.",
                 fallback_prompt,
                 response_format=None,
+                temperature=temperature,
             )
         content = data["choices"][0]["message"]["content"]
         try:
@@ -82,6 +98,8 @@ class OpenAICompatibleProvider:
         system_prompt: str,
         user_prompt: str | list[dict],
         response_format: dict | None,
+        *,
+        temperature: float | None = None,
     ) -> dict:
         api_key = self._api_key()
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
@@ -91,7 +109,7 @@ class OpenAICompatibleProvider:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            "temperature": self.profile.temperature,
+            "temperature": temperature if temperature is not None else self.profile.temperature,
             "max_tokens": self.profile.max_tokens,
         }
         if self.profile.context_limit is not None:
@@ -152,7 +170,10 @@ class StaticPlanProvider:
         self.prompts.append((system_prompt, user_prompt))
         return self.plan.model_dump_json()
 
-    async def generate_structured(self, system_prompt: str, user_prompt: str, output_model: type[T]) -> T:
+    async def generate_structured(
+        self, system_prompt: str, user_prompt: str, output_model: type[T],
+        *, temperature: float | None = None,
+    ) -> T:
         self.prompts.append((system_prompt, user_prompt))
         return output_model.model_validate(self.plan.model_dump(mode="json"))
 

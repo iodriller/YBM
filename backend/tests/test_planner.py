@@ -18,7 +18,7 @@ class QueuePlanProvider:
         self.prompts.append((system_prompt, user_prompt))
         return self.plans[0].model_dump_json()
 
-    async def generate_structured(self, system_prompt: str, user_prompt: str, output_model):
+    async def generate_structured(self, system_prompt: str, user_prompt: str, output_model, **_ignored_kwargs):
         self.prompts.append((system_prompt, user_prompt))
         return output_model.model_validate(self.plans.pop(0).model_dump(mode="json"))
 

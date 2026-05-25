@@ -362,7 +362,7 @@ class StaticMemoryProvider:
     async def generate_text(self, system_prompt, user_prompt):
         return "User is Oney. They want concise Telegram gateway memory and local workspace automation."
 
-    async def generate_structured(self, system_prompt, user_prompt, output_model):
+    async def generate_structured(self, system_prompt, user_prompt, output_model, **_ignored_kwargs):
         raise NotImplementedError
 
 
@@ -396,7 +396,7 @@ def test_telegram_memory_can_use_llm_summary(tmp_path) -> None:
 
 
 class FailingClassifierProvider:
-    async def generate_structured(self, system_prompt, user_prompt, output_model):
+    async def generate_structured(self, system_prompt, user_prompt, output_model, **_ignored_kwargs):
         raise ValueError("bad json")
 
     async def generate_text(self, system_prompt, user_prompt):

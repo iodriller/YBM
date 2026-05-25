@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -104,6 +105,10 @@ class ToolDefinition:
     output_schema: type[BaseModel] | None = None
     operation_output_schemas: dict[str, type[BaseModel]] | None = None
     default_operation: str | None = None
+    # Worked usage examples shown to the planner. Each entry is a `tool_input`
+    # dict the planner can imitate. The 8B model imitates concrete examples
+    # much more reliably than it follows abstract descriptions.
+    examples: tuple[dict, ...] = ()
 
     def validate_input(self, value: dict) -> dict:
         return self._validate_schema(value, self.input_schema, self.operation_schemas, "input")
@@ -152,6 +157,11 @@ class ToolRegistry:
                 f"- {definition.name}: {status}; capability={definition.capability.value}; "
                 f"lifecycle={definition.lifecycle}; {definition.description}{operations}"
             )
+            if definition.enabled and definition.examples:
+                # Show worked examples inline — the planner imitates these
+                # better than abstract descriptions of input shape.
+                for ex in definition.examples:
+                    lines.append(f"    example tool_input: {json.dumps(ex, ensure_ascii=False)}")
         return "\n".join(lines)
 
     def vault_summary(self) -> str:
@@ -305,6 +315,11 @@ def build_tool_registry(
                 FilesystemManageOutput,
             ),
             default_operation="inspect_folder",
+            examples=(
+                {"operation": "inspect_folder", "root": "desktop"},
+                {"operation": "search", "root": "desktop", "query": "resume"},
+                {"operation": "read_file", "path": "{{last_entry_path}}", "max_chars": 8000},
+            ),
         )
     )
     if settings.adapters.computer_use.enabled:
@@ -353,6 +368,12 @@ def build_tool_registry(
                 "generate_and_run": CodeInterpreterOutput,
             },
             default_operation="run_python",
+            examples=(
+                {"operation": "generate_and_run",
+                 "objective": "compute the 20th Fibonacci number and print it"},
+                {"operation": "generate_and_run",
+                 "objective": "write a Python script using openpyxl that creates sales_data.xlsx with sample sales rows"},
+            ),
         )
     )
     if settings.adapters.code_interpreter.enabled:
@@ -473,6 +494,9 @@ def build_tool_registry(
             input_schema=TaskStatusInput,
             output_schema=TaskStatusOutput,
             default_operation="status",
+            examples=(
+                {"operation": "status", "limit": 10},
+            ),
         )
     )
     if repositories is not None:
@@ -493,6 +517,13 @@ def build_tool_registry(
                 ArtifactDeliveryOutput,
             ),
             default_operation="send_latest",
+            examples=(
+                # Deliver a file by basename — finds files produced by a prior
+                # code.interpreter step automatically (registered as artifacts).
+                {"operation": "send_file", "path": "sales_data.xlsx"},
+                {"operation": "send_screenshot"},
+                {"operation": "send_latest"},
+            ),
         )
     )
     if artifact_repository is not None and task_repository is not None:
@@ -519,6 +550,12 @@ def build_tool_registry(
                 DocumentManageOutput,
             ),
             default_operation="inspect_document",
+            examples=(
+                {"operation": "summarize_pdf", "path": "{{last_entry_path}}"},
+                {"operation": "create_presentation",
+                 "title": "Weekly Update",
+                 "content": "Status: green. Blockers: none."},
+            ),
         )
     )
     if artifact_repository is not None:
@@ -564,6 +601,9 @@ def build_tool_registry(
             enabled=_capability_enabled(settings, Capability.DESKTOP_SCREENSHOT)
             and settings.adapters.desktop.screenshot_enabled,
             description="capture a desktop screenshot through the Telegram command path",
+            examples=(
+                {"operation": "capture"},
+            ),
         )
     )
 
@@ -594,6 +634,11 @@ def build_tool_registry(
                 BrowserToolOutput,
             ),
             default_operation="open",
+            examples=(
+                {"operation": "open", "url": "https://dizibox.com"},
+                {"operation": "summarize_page", "objective": "list the first 5 new episodes"},
+                {"operation": "search", "query": "python official docs"},
+            ),
         )
     )
     definitions.append(
@@ -634,6 +679,13 @@ def build_tool_registry(
                 BrowserToolOutput,
             ),
             default_operation="navigate",
+            examples=(
+                {"operation": "navigate", "url": "https://example.com/contact"},
+                {"operation": "fill_form",
+                 "fields": {"name": "Oney", "email": "oney@example.com", "message": "Hello"},
+                 "submit": True},
+                {"operation": "click", "selector": "button.submit"},
+            ),
         )
     )
     if settings.adapters.browser.enabled:

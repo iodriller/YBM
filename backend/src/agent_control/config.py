@@ -101,6 +101,10 @@ class LimitsConfig(StrictBaseModel):
     tool_timeout_seconds: int = Field(default=900, ge=1)
     max_log_chars: int = Field(default=12000, ge=100)
     retry_backoff_seconds: int = Field(default=30, ge=1)
+    # Wall-clock budget per task enforced by the worker. When exceeded the
+    # task is forcibly transitioned to FAILED so the queue keeps moving.
+    # Individual tasks can override via metadata["task_budget_seconds"].
+    task_budget_seconds: int = Field(default=600, ge=30)
 
 
 class VSCodeAdapterConfig(StrictBaseModel):

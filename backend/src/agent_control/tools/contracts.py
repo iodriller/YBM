@@ -184,6 +184,14 @@ class CodingAgentInput(ToolInputModel):
     session_id: str | None = None
     step_index: int | None = Field(default=None, ge=0)
 
+    @model_validator(mode="after")
+    def _require_input_for_run_ops(self) -> "CodingAgentInput":
+        if self.operation in {"plan", "run_step", "run_goal"} and not (self.prompt or self.objective):
+            raise ValueError(
+                f"coding.agent {self.operation} requires 'prompt' or 'objective'"
+            )
+        return self
+
 
 class ScheduleManageInput(ToolInputModel):
     operation: Literal["create", "list", "pause", "resume", "delete", "run_now"] = "create"
@@ -193,6 +201,14 @@ class ScheduleManageInput(ToolInputModel):
     timezone: str | None = None
     source_chat_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _require_inputs_per_operation(self) -> "ScheduleManageInput":
+        if self.operation == "create" and not self.objective:
+            raise ValueError("schedule.manage create requires 'objective'")
+        if self.operation in {"pause", "resume", "delete", "run_now"} and not self.schedule_id:
+            raise ValueError(f"schedule.manage {self.operation} requires 'schedule_id'")
+        return self
 
 
 class TaskStatusInput(ToolInputModel):
@@ -215,6 +231,12 @@ class BrowserSearchInput(ToolInputModel):
     objective: str | None = None
     open_first_result: bool = False
     wait_seconds: float | None = Field(default=None, ge=0.0, le=30.0)
+
+    @model_validator(mode="after")
+    def _require_query_or_objective(self) -> "BrowserSearchInput":
+        if not (self.query or self.objective):
+            raise ValueError("browser.search requires 'query' or 'objective'")
+        return self
 
 
 class BrowserResearchInput(ToolInputModel):
@@ -263,6 +285,12 @@ class BrowserClickInput(ToolInputModel):
     tab_id: str | None = None
     wait_seconds: float | None = Field(default=None, ge=0.0, le=30.0)
 
+    @model_validator(mode="after")
+    def _require_selector_or_text(self) -> "BrowserClickInput":
+        if not (self.selector or self.text):
+            raise ValueError("browser.click requires 'selector' (CSS) or 'text' (visible text to match)")
+        return self
+
 
 class BrowserFillFormInput(ToolInputModel):
     operation: Literal["fill_form"] = "fill_form"
@@ -291,6 +319,12 @@ class BrowserCheckPageUpdateInput(ToolInputModel):
     previous_observation: str | None = None
     wait_seconds: float | None = Field(default=None, ge=0.0, le=30.0)
 
+    @model_validator(mode="after")
+    def _require_target(self) -> "BrowserCheckPageUpdateInput":
+        if not (self.url or self.objective):
+            raise ValueError("browser.check_page_update requires 'url' or 'objective' to identify the page")
+        return self
+
 
 class BrowserResearchPagesInput(ToolInputModel):
     operation: Literal["research_pages"] = "research_pages"
@@ -298,6 +332,12 @@ class BrowserResearchPagesInput(ToolInputModel):
     objective: str | None = None
     page_limit: int = Field(default=10, ge=1, le=50)
     wait_seconds: float | None = Field(default=None, ge=0.0, le=30.0)
+
+    @model_validator(mode="after")
+    def _require_query_or_objective(self) -> "BrowserResearchPagesInput":
+        if not (self.query or self.objective):
+            raise ValueError("browser.research_pages requires 'query' or 'objective'")
+        return self
 
 
 class BrowserExtractPageStateInput(ToolInputModel):
@@ -332,6 +372,12 @@ class ComputerActInput(ToolInputModel):
     operation: Literal["act"] = "act"
     objective: str | None = None
     action: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _require_action(self) -> "ComputerActInput":
+        if not self.action:
+            raise ValueError("computer.use act requires an 'action' dict describing the UI action")
+        return self
 
 
 class ComputerRunGoalInput(ToolInputModel):

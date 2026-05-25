@@ -71,7 +71,12 @@ class PlannerService:
         current_prompt = user_prompt
         for attempt in range(3):
             try:
-                candidate = await provider.generate_structured(PLANNER_SYSTEM_PROMPT, current_prompt, PlanModel)
+                # Low temperature for planning — the tool/operation/input
+                # choice is near-deterministic given the registry; sampling
+                # noise produces invalid plans the planner has to retry.
+                candidate = await provider.generate_structured(
+                    PLANNER_SYSTEM_PROMPT, current_prompt, PlanModel, temperature=0.1
+                )
                 plan = self._validate_plan(candidate)
                 break
             except (ValueError, ValidationError) as exc:
