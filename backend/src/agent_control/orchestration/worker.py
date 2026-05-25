@@ -59,6 +59,11 @@ NOTIFIABLE_STATUSES = {
 
 
 class TaskWorker:
+    # Default per-task wall-clock budget. A single task that exceeds this is
+    # forcibly transitioned to FAILED so the worker can move on to the queue.
+    # Individual tasks can override via metadata["task_budget_seconds"].
+    DEFAULT_TASK_BUDGET_SECONDS: float = 360.0
+
     def __init__(
         self,
         repositories: Repositories,
@@ -72,6 +77,7 @@ class TaskWorker:
         notification_sink: TaskNotificationSink | None = None,
         synthesizer: ResponseSynthesizer | None = None,
         validator: AnswerValidator | None = None,
+        task_budget_seconds: float | None = None,
     ) -> None:
         self.repositories = repositories
         self.audit = audit
@@ -84,16 +90,39 @@ class TaskWorker:
         self.notification_sink = notification_sink
         self.synthesizer = synthesizer
         self.validator = validator
+        self.task_budget_seconds = (
+            float(task_budget_seconds)
+            if task_budget_seconds is not None
+            else self.DEFAULT_TASK_BUDGET_SECONDS
+        )
 
     async def process_next(self) -> TaskRecord | None:
         tasks = self.repositories.tasks.list_by_statuses(WORKABLE_STATUSES, limit=1)
         if not tasks:
             return None
         task = tasks[0]
+        budget = float(task.metadata.get("task_budget_seconds") or self.task_budget_seconds)
         try:
-            processed = await self.process_task(task.id)
+            processed = await asyncio.wait_for(self.process_task(task.id), timeout=budget)
             await self._notify_if_needed(processed)
             return processed
+        except asyncio.TimeoutError:
+            # Wall-clock budget exceeded — fail the task so the worker can keep
+            # moving. This is the only way a stuck planner/tool call doesn't
+            # starve every queued task behind it.
+            latest = self.repositories.tasks.get(task.id) or task
+            reason = f"task budget {budget:.0f}s exceeded; forcibly failed by worker"
+            metadata = {**latest.metadata, "last_worker_error": reason}
+            failed = self.repositories.tasks.update_metadata(latest.id, metadata, TaskStatus.FAILED)
+            self.audit.task_state_changed("worker", latest.id, latest.status, failed.status)
+            self.audit.append(
+                AuditEventType.ERROR,
+                actor="worker",
+                task_id=latest.id,
+                payload={"error": reason, "status": failed.status.value, "budget_seconds": budget},
+            )
+            await self._notify_if_needed(failed)
+            return failed
         except Exception as exc:
             latest = self.repositories.tasks.get(tasks[0].id)
             if latest is None:

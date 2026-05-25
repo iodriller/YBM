@@ -85,6 +85,13 @@ class PlannerService:
             assert last_error is not None
             raise last_error
 
+        # Force a fresh plan id at persist time. The LLM occasionally echoes back
+        # an `id` from a previous attempt that's already in `plans` (UNIQUE
+        # constraint violation). The id is a storage detail, not a semantic
+        # property — overwrite unconditionally.
+        from agent_control.schemas import new_id as _new_plan_id
+        plan = plan.model_copy(update={"id": _new_plan_id("plan")})
+
         self.repositories.plans.create(task_id, plan)
         updated = self.repositories.tasks.attach_plan(task_id, plan.id, TaskStatus.PLANNED)
         self.audit.append(
