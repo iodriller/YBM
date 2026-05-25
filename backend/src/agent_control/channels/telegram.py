@@ -21,6 +21,7 @@ from agent_control.schemas import (
     ChannelType,
     CommandEnvelope,
     InboundMessage,
+    IntentRoute,
     MessageClassification,
     MessageKind,
     OutboundMessage,
@@ -468,7 +469,34 @@ class TelegramIntakeService:
             },
         )
 
-        if not classification.is_task and classification.task_type != TaskType.STATUS_REQUEST:
+        # Decide chat-only vs spawn-task. Prefer the intent.route enum because
+        # the LLM picks it more consistently than the is_task bool. The bool
+        # was flipping wrong for observation/check requests in production
+        # (e.g. "tell me what is on my desktop" → is_task=False AND
+        # intent.route=desktop.observe; the bool was wrong, the route was right).
+        #
+        # Rules:
+        #  - intent.route is CONVERSATION  → chat-only (model explicitly said chat)
+        #  - intent.route is any other     → spawn task (override is_task=False
+        #                                    so observation tasks aren't dropped)
+        #  - intent missing entirely       → fall back to is_task (legacy behavior)
+        # STATUS_REQUEST task_type still bypasses the gate as before.
+        intent_route = (
+            classification.intent.route
+            if classification.intent is not None
+            else None
+        )
+        if intent_route is None:
+            is_chat_only = (
+                not classification.is_task
+                and classification.task_type != TaskType.STATUS_REQUEST
+            )
+        else:
+            is_chat_only = (
+                intent_route == IntentRoute.CONVERSATION
+                and classification.task_type != TaskType.STATUS_REQUEST
+            )
+        if is_chat_only:
             outbound = await self._non_task_response(inbound, classification, conversation_id)
             if outbound is not None:
                 return TelegramUpdateResult(
