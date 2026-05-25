@@ -22,7 +22,7 @@ class FakeScriptProvider:
     async def generate_multimodal_text(self, system_prompt: str, user_prompt: str, image_paths: list[str]) -> str:
         return ""
 
-    async def generate_structured(self, system_prompt: str, user_prompt: str, output_model: type[T]) -> T:
+    async def generate_structured(self, system_prompt: str, user_prompt: str, output_model: type[T], **_ignored_kwargs) -> T:
         return output_model.model_validate(
             {
                 "summary": "Write a small result file.",
@@ -33,7 +33,7 @@ class FakeScriptProvider:
 
 
 class MalformedMarkdownProvider(FakeScriptProvider):
-    async def generate_structured(self, system_prompt: str, user_prompt: str, output_model: type[T]) -> T:
+    async def generate_structured(self, system_prompt: str, user_prompt: str, output_model: type[T], **_ignored_kwargs) -> T:
         return output_model.model_validate(
             {
                 "summary": "Malformed Markdown writer.",
@@ -44,7 +44,7 @@ class MalformedMarkdownProvider(FakeScriptProvider):
 
 
 class BrokenStructuredProvider(FakeScriptProvider):
-    async def generate_structured(self, system_prompt: str, user_prompt: str, output_model: type[T]) -> T:
+    async def generate_structured(self, system_prompt: str, user_prompt: str, output_model: type[T], **_ignored_kwargs) -> T:
         raise ValueError("LLM structured output failed validation")
 
 

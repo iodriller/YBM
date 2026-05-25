@@ -18,7 +18,7 @@ class RetryProvider:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def generate_structured(self, system_prompt, user_prompt, output_model):
+    async def generate_structured(self, system_prompt, user_prompt, output_model, **_ignored_kwargs):
         self.calls += 1
         if self.calls == 1:
             raise ValueError("bad json")

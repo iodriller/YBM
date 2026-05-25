@@ -19,7 +19,7 @@ class FakeVisionProvider:
     async def generate_multimodal_text(self, system_prompt: str, user_prompt: str, image_paths: list[str]) -> str:
         return "Visible text: OCR SAMPLE. The image looks like a small document screenshot."
 
-    async def generate_structured(self, system_prompt: str, user_prompt: str, output_model: type[T]) -> T:
+    async def generate_structured(self, system_prompt: str, user_prompt: str, output_model: type[T], **_ignored_kwargs) -> T:
         raise AssertionError("structured generation is not used")
 
 

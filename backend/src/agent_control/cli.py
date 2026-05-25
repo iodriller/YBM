@@ -125,6 +125,7 @@ async def run_worker() -> None:
         notification_sink=_telegram_notifier(settings),
         synthesizer=synthesizer,
         validator=validator,
+        task_budget_seconds=float(settings.limits.task_budget_seconds),
     )
     await worker.run_forever()
 

@@ -66,10 +66,10 @@ GUARDED_TAGS = {"codex", "copilot", "external", "quota", "limit", "presentation"
 HARD_CEILING_S = 900
 
 # The runner must wait AT LEAST this long after the case's declared timeout so
-# the worker's own per-task budget (in TaskWorker.DEFAULT_TASK_BUDGET_SECONDS,
-# currently 360s) has time to fire. Without this safety margin the runner
+# the worker's own per-task budget (settings.limits.task_budget_seconds,
+# default 600s) has time to fire. Without this safety margin the runner
 # moves on while the worker is still busy, blocking the next case in queue.
-WORKER_BUDGET_SAFETY_S = 400
+WORKER_BUDGET_SAFETY_S = 640
 
 
 # ---------- HTTP / DB helpers ----------
@@ -161,6 +161,46 @@ def force_fail_task(task_id: str, reason: str) -> bool:
         return changed > 0
     except Exception:
         return False
+
+
+def fetch_classifier_verdict_for_text(message: str) -> dict | None:
+    """Find the latest message_classified audit event matching ``message``.
+
+    Returns a small dict of the most useful classifier fields, or None if not
+    found. Used to surface route + reason + confidence in per-stage diagnostics,
+    so failures at the classifier are visible without grepping audit.json.
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute(
+            "SELECT payload_json FROM audit_events "
+            "WHERE event_type='message_classified' "
+            "AND created_at >= datetime('now','-10 minute') "
+            "ORDER BY created_at DESC LIMIT 25"
+        )
+        for (payload_json,) in c.fetchall():
+            try:
+                p = json.loads(payload_json)
+            except Exception:
+                continue
+            text = str(p.get("text") or "").strip()
+            if text and text == message.strip():
+                return {
+                    "is_task": p.get("is_task"),
+                    "route": (p.get("intent") or {}).get("route"),
+                    "task_type": p.get("task_type"),
+                    "confidence": p.get("confidence"),
+                    "reason": (p.get("reason") or "")[:400],
+                }
+        return None
+    except Exception:
+        return None
+    finally:
+        try:
+            conn.close()  # type: ignore[has-type]
+        except Exception:
+            pass
 
 
 def fetch_task_audit(task_id: str) -> list[dict]:
@@ -274,6 +314,11 @@ class TurnResult:
     status_transitions: list[dict] = field(default_factory=list)
     audit_event_count: int = 0
     error: str | None = None              # exception in the runner itself
+    # Captured from the classifier's audit event for this turn's message —
+    # surfaced in timeline.txt and diagnosis.md so model-judgment failures
+    # don't require grepping audit.json.
+    classifier_verdict: dict | None = None
+    forced_failed_by_runner: bool = False
 
 
 @dataclass
@@ -395,6 +440,8 @@ async def _run_turn(label: str, message: str, max_seconds: int) -> TurnResult:
                     )
             else:
                 turn.error = "no task spawned within 80s — message never classified (telegram intake stuck?)"
+            # Also capture the full classifier verdict for the diagnosis dump.
+            turn.classifier_verdict = fetch_classifier_verdict_for_text(message)
             turn.duration_s = round(time.monotonic() - start_mono, 1)
             return turn
         turn.task_id = task_id
@@ -443,8 +490,13 @@ async def _run_turn(label: str, message: str, max_seconds: int) -> TurnResult:
         if not reached_terminal:
             forced = force_fail_task(task_id, "runner deadline exceeded")
             if forced:
+                turn.forced_failed_by_runner = True
                 elapsed = round(time.monotonic() - start_mono, 1)
                 print(f"    [{elapsed:>6.1f}s] FORCE-FAILED stuck task to unblock queue")
+
+        # Capture the classifier verdict for this turn's message regardless
+        # of pass/fail, so the timeline always shows what the classifier said.
+        turn.classifier_verdict = fetch_classifier_verdict_for_text(message)
 
         # Final capture
         try:
@@ -570,7 +622,16 @@ def _write_stage_artifacts(stage_dir: Path, case: dict, stage: StageResult) -> N
                 f"  Replans:     {turn.replan_count}",
                 f"  Duration:    {turn.duration_s}s",
                 f"  Audit ev:    {turn.audit_event_count}",
+                f"  Force-failed by runner: {turn.forced_failed_by_runner}",
             ])
+            if turn.classifier_verdict:
+                v = turn.classifier_verdict
+                timeline.append(
+                    f"  Classifier:  is_task={v.get('is_task')} "
+                    f"route={v.get('route')} conf={v.get('confidence')} "
+                    f"task_type={v.get('task_type')}"
+                )
+                timeline.append(f"    reason: {(v.get('reason') or '')[:300]}")
             if turn.error:
                 timeline.extend([f"  Runner err:  {turn.error[:400]}"])
             timeline.append("  Transitions:")
@@ -617,7 +678,19 @@ def _write_stage_artifacts(stage_dir: Path, case: dict, stage: StageResult) -> N
                     f"- task_id: `{turn.task_id}`",
                     f"- duration: {turn.duration_s}s",
                     f"- replan_count: {turn.replan_count}",
+                    f"- force_failed_by_runner: `{turn.forced_failed_by_runner}`",
                 ])
+                if turn.classifier_verdict:
+                    v = turn.classifier_verdict
+                    diag.extend([
+                        "",
+                        "**Classifier verdict for this turn:**",
+                        f"- is_task: `{v.get('is_task')}`",
+                        f"- route: `{v.get('route')}`",
+                        f"- task_type: `{v.get('task_type')}`",
+                        f"- confidence: `{v.get('confidence')}`",
+                        f"- reason: {(v.get('reason') or '')[:400]}",
+                    ])
                 if turn.error:
                     diag.extend(["", "**runner_error:**", "```", turn.error[:800], "```"])
                 if turn.last_worker_error:
@@ -695,6 +768,63 @@ def _preflight() -> list[str]:
     return issues
 
 
+def _warn_if_chrome_down() -> None:
+    """Browser cases need Chrome with remote debugging on port 9222.
+
+    The browser adapter auto-launches Chrome on first use, but a heads-up here
+    lets the user fix it before half the suite fails. We do NOT bail — many
+    cases don't need a browser, so we just warn.
+    """
+    if not ping("http://127.0.0.1:9222/json/version", timeout=2.0):
+        try:
+            _try_launch_chrome()
+        except Exception as exc:
+            print(f"  [chrome] WARN: not on :9222 and auto-launch failed: {exc}")
+            print(f"           browser cases will fail. start Chrome with:")
+            print(f"           chrome --remote-debugging-port=9222 --remote-allow-origins=*")
+            return
+        # Re-check after a short pause to give Chrome a moment to bind.
+        import time as _t
+        for _ in range(15):
+            _t.sleep(1)
+            if ping("http://127.0.0.1:9222/json/version", timeout=1.0):
+                print("  [chrome] auto-launched, remote debugging on :9222")
+                return
+        print("  [chrome] WARN: launched but not yet responding on :9222")
+    else:
+        print("  [chrome] already running with remote debugging on :9222")
+
+
+def _try_launch_chrome() -> None:
+    """Best-effort Chrome launch with remote debugging. Windows-focused paths."""
+    import os
+    import shutil
+    import subprocess
+    candidates = [
+        os.environ.get("CHROME_PATH"),
+        shutil.which("chrome"),
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+    ]
+    exe = next((p for p in candidates if p and Path(p).exists()), None)
+    if not exe:
+        raise RuntimeError("Chrome executable not found")
+    user_data_dir = ROOT / ".agent_control" / "browser" / "chrome-profile"
+    user_data_dir.mkdir(parents=True, exist_ok=True)
+    subprocess.Popen(
+        [
+            exe,
+            "--remote-debugging-port=9222",
+            "--remote-allow-origins=*",
+            f"--user-data-dir={user_data_dir}",
+            "--no-first-run",
+            "--no-default-browser-check",
+        ],
+        creationflags=getattr(subprocess, "DETACHED_PROCESS", 0),
+    )
+
+
 # ---------- Main ----------
 
 
@@ -725,8 +855,21 @@ async def main() -> int:
         sizes={s.strip() for s in args.sizes.split(",") if s.strip()},
         include_guarded=args.include_guarded,
     )
-    print(f"Loaded {len(cases_all)} cases, selected {len(selected)} for this run "
-          f"(guarded={'included' if args.include_guarded else 'skipped'}).")
+
+    # Pre-flight inventory: what's actually going to run, how long it might take,
+    # what skipped. This is the single most useful thing to glance at before
+    # walking away from the machine.
+    from collections import Counter
+    size_count = Counter(c.get("size") or "small" for c in selected)
+    declared_total_s = sum(int(c.get("timeout_seconds") or 360) for c in selected)
+    print(f"Loaded {len(cases_all)} cases. Selected {len(selected)} (guarded={'included' if args.include_guarded else 'skipped'}).")
+    print(f"  By size: " + ", ".join(f"{size}={n}" for size, n in size_count.items()))
+    print(f"  Sum of declared timeouts: {declared_total_s}s "
+          f"(~{declared_total_s // 60}m; actual will differ from this upper bound)")
+    skipped = [c for c in cases_all if c not in selected]
+    if skipped:
+        skipped_size = Counter(c.get("size") or "small" for c in skipped)
+        print(f"  Skipped {len(skipped)}: " + ", ".join(f"{size}={n}" for size, n in skipped_size.items()))
 
     run_dir = RESULTS_ROOT / f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -739,6 +882,17 @@ async def main() -> int:
         for c in selected
     )
     fixtures = prepare_fixtures(start_web=needs_web and not args.no_web_fixture)
+
+    # Browser cases need Chrome with remote debugging on :9222. Warn (and
+    # try to auto-launch) before the run rather than after we've burned 20min
+    # on a queue full of browser cases that all fail at the adapter.
+    needs_browser = any(
+        any(t in (c.get("tags") or []) for t in ("browser",))
+        or (c.get("tools_required") and any("browser" in t for t in c["tools_required"]))
+        for c in selected
+    )
+    if needs_browser:
+        _warn_if_chrome_down()
 
     results: list[StageResult] = []
     suite_start = time.monotonic()

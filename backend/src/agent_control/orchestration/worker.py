@@ -61,8 +61,9 @@ NOTIFIABLE_STATUSES = {
 class TaskWorker:
     # Default per-task wall-clock budget. A single task that exceeds this is
     # forcibly transitioned to FAILED so the worker can move on to the queue.
-    # Individual tasks can override via metadata["task_budget_seconds"].
-    DEFAULT_TASK_BUDGET_SECONDS: float = 360.0
+    # Override globally via ``settings.limits.task_budget_seconds`` (config) or
+    # per-task via ``task.metadata["task_budget_seconds"]``.
+    DEFAULT_TASK_BUDGET_SECONDS: float = 600.0
 
     def __init__(
         self,

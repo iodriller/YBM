@@ -29,10 +29,14 @@ class LLMMessageClassifier:
                 reason="message has no text content",
             )
         try:
+            # Low temperature for classification — the choice of route / is_task
+            # is a near-deterministic decision; sampling noise produces the
+            # observed run-to-run flip-flops on borderline observation requests.
             classification = await self.provider.generate_structured(
                 CLASSIFIER_SYSTEM_PROMPT,
                 _classification_prompt(message, context=context),
                 MessageClassification,
+                temperature=0.1,
             )
             return _normalized_classification(message, classification)
         except Exception as exc:
@@ -46,6 +50,7 @@ class LLMMessageClassifier:
                     CLASSIFIER_SYSTEM_PROMPT,
                     retry_prompt,
                     MessageClassification,
+                    temperature=0.1,
                 )
                 return _normalized_classification(message, classification)
             except Exception as retry_exc:
