@@ -134,6 +134,19 @@ class ArtifactDeliverInput(ToolInputModel):
     caption: str | None = None
     mime_type: str | None = None
 
+    @model_validator(mode="after")
+    def _require_target_for_send_file(self) -> "ArtifactDeliverInput":
+        # send_file needs SOMETHING pointing at the file. Without this, the
+        # adapter raises ValueError at execute time and the planner has to
+        # replan from scratch. Encoding the constraint here makes the planner
+        # see a precise schema error instead.
+        if self.operation == "send_file" and not (self.artifact_id or self.path):
+            raise ValueError(
+                "send_file requires 'path' (file path or basename of a prior step's artifact) "
+                "or 'artifact_id'"
+            )
+        return self
+
 
 class DocumentManageInput(ToolInputModel):
     operation: Literal["inspect_document", "extract_text", "summarize_pdf", "create_presentation", "update_presentation"] = "inspect_document"
@@ -143,6 +156,23 @@ class DocumentManageInput(ToolInputModel):
     content: str | None = None
     instructions: str | None = None
     output_name: str | None = None
+
+    @model_validator(mode="after")
+    def _require_inputs_per_operation(self) -> "DocumentManageInput":
+        # Operations that read an existing document need to know which one.
+        # Operations that create one need at least a title or content to work with.
+        op = self.operation
+        if op in {"inspect_document", "extract_text", "summarize_pdf", "update_presentation"} and not (
+            self.path or self.artifact_id
+        ):
+            raise ValueError(
+                f"{op} requires 'path' or 'artifact_id' to identify the document"
+            )
+        if op == "create_presentation" and not (self.title or self.content or self.instructions):
+            raise ValueError(
+                "create_presentation requires at least one of 'title', 'content', or 'instructions'"
+            )
+        return self
 
 
 class CodingAgentInput(ToolInputModel):
@@ -236,7 +266,9 @@ class BrowserClickInput(ToolInputModel):
 
 class BrowserFillFormInput(ToolInputModel):
     operation: Literal["fill_form"] = "fill_form"
-    fields: dict[str, str] = Field(default_factory=dict)
+    # fields is logically required for fill_form — encoding that here instead
+    # of in the browser adapter's runtime check eliminates a class of replans.
+    fields: dict[str, str] = Field(..., min_length=1)
     submit: bool = False
     submit_selector: str | None = None
     tab_id: str | None = None

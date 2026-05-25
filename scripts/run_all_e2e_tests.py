@@ -65,6 +65,12 @@ GUARDED_TAGS = {"codex", "copilot", "external", "quota", "limit", "presentation"
 # whole run from getting stuck on one runaway case.
 HARD_CEILING_S = 900
 
+# The runner must wait AT LEAST this long after the case's declared timeout so
+# the worker's own per-task budget (in TaskWorker.DEFAULT_TASK_BUDGET_SECONDS,
+# currently 360s) has time to fire. Without this safety margin the runner
+# moves on while the worker is still busy, blocking the next case in queue.
+WORKER_BUDGET_SAFETY_S = 400
+
 
 # ---------- HTTP / DB helpers ----------
 
@@ -133,6 +139,30 @@ def _latest_classifier_verdict_for_message(message: str) -> tuple[bool, str] | N
             pass
 
 
+def force_fail_task(task_id: str, reason: str) -> bool:
+    """Mark a task FAILED directly in the DB so the worker stops trying.
+
+    Used by the runner when its own wait deadline has expired but the task is
+    still in a workable status. Without this, the worker would keep grinding
+    on the task and block every queued case behind it.
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute(
+            "UPDATE tasks "
+            "SET status='failed', metadata_json = COALESCE(metadata_json, '{}') "
+            "WHERE id=? AND status NOT IN ('completed','failed','blocked','cancelled')",
+            (task_id,),
+        )
+        changed = c.rowcount
+        conn.commit()
+        conn.close()
+        return changed > 0
+    except Exception:
+        return False
+
+
 def fetch_task_audit(task_id: str) -> list[dict]:
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -159,21 +189,21 @@ def fetch_task_audit(task_id: str) -> list[dict]:
 
 
 def _ensure_fixtures_path() -> None:
-    """Make ``e2e/live_telegram_e2e.py``'s fixtures importable."""
+    """Make ``e2e/fixtures.py`` importable from this script."""
     e2e_dir = str(ROOT / "e2e")
     if e2e_dir not in sys.path:
         sys.path.insert(0, e2e_dir)
 
 
 def prepare_fixtures(start_web: bool) -> dict[str, str]:
-    """Re-use the proven fixture setup. Returns the template values dict.
+    """Build the file/folder fixtures cases depend on. Returns template values.
 
     On any error, fall back to a minimal dict so the run can still proceed with
     cases that don't need fixtures.
     """
     _ensure_fixtures_path()
     try:
-        from live_telegram_e2e import prepare_fixtures as _prep  # type: ignore[import]
+        from fixtures import prepare_fixtures as _prep  # type: ignore[import]
         fx = _prep(start_web_server=start_web)
         return dict(fx.values)
     except Exception as exc:
@@ -373,8 +403,11 @@ async def _run_turn(label: str, message: str, max_seconds: int) -> TurnResult:
         last_status = None
         last_step = None
         last_replan = None
-        ceiling = min(max_seconds, HARD_CEILING_S)
+        # Wait at least long enough for the worker's per-task budget to fire,
+        # then add a small headroom. Cap at HARD_CEILING_S as a hard backstop.
+        ceiling = min(max(max_seconds, WORKER_BUDGET_SAFETY_S) + 30, HARD_CEILING_S)
         deadline = start_mono + ceiling
+        reached_terminal = False
         while time.monotonic() < deadline:
             try:
                 trace = admin_trace(task_id)
@@ -400,8 +433,18 @@ async def _run_turn(label: str, message: str, max_seconds: int) -> TurnResult:
                 last_step = step
                 last_replan = replan
             if status in {"completed", "failed", "blocked", "cancelled"}:
+                reached_terminal = True
                 break
             await asyncio.sleep(3)
+
+        # If the wait expired and the task is STILL non-terminal, force it
+        # FAILED. The worker is presumably still grinding on it; without this
+        # the next queued case would be starved indefinitely.
+        if not reached_terminal:
+            forced = force_fail_task(task_id, "runner deadline exceeded")
+            if forced:
+                elapsed = round(time.monotonic() - start_mono, 1)
+                print(f"    [{elapsed:>6.1f}s] FORCE-FAILED stuck task to unblock queue")
 
         # Final capture
         try:
@@ -698,8 +741,23 @@ async def main() -> int:
     fixtures = prepare_fixtures(start_web=needs_web and not args.no_web_fixture)
 
     results: list[StageResult] = []
+    suite_start = time.monotonic()
+    total = len(selected)
     for idx, case in enumerate(selected, start=1):
         stage_dir = run_dir / f"{idx:02d}_{case.get('id','case')}"
+
+        # Progress banner BEFORE each case so the user knows where we are.
+        passed_so_far = sum(1 for r in results if r.passed)
+        failed_so_far = len(results) - passed_so_far
+        suite_elapsed = time.monotonic() - suite_start
+        eta_s = _estimate_eta(suite_elapsed, idx - 1, total)
+        bar = _progress_bar(idx - 1, total, width=24)
+        print()
+        print(f"{bar} {idx:>3}/{total} ({(idx-1)*100//max(1,total)}%) "
+              f"| pass {passed_so_far} fail {failed_so_far} "
+              f"| elapsed {_fmt_duration(suite_elapsed)} "
+              f"| ETA {eta_s}")
+
         try:
             stage = await _run_one(case, fixtures)
         except Exception as exc:
@@ -721,9 +779,33 @@ async def main() -> int:
 
     print(f"\n{'=' * 78}")
     passed = sum(1 for r in results if r.passed)
+    total_time = _fmt_duration(time.monotonic() - suite_start)
+    print(f"{_progress_bar(len(results), total, width=24)} {len(results)}/{total} done")
     print(f"Summary: {run_dir / 'summary.md'}")
-    print(f"Passed {passed} / {len(results)}")
+    print(f"Passed {passed} / {len(results)}  |  total {total_time}")
     return 0 if passed == len(results) else 2
+
+
+def _progress_bar(done: int, total: int, *, width: int = 24) -> str:
+    if total <= 0:
+        return "[" + " " * width + "]"
+    filled = int(round(width * done / total))
+    return "[" + "#" * filled + "-" * (width - filled) + "]"
+
+
+def _fmt_duration(seconds: float) -> str:
+    s = int(seconds)
+    h, rem = divmod(s, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:d}:{m:02d}:{s:02d}" if h else f"{m:d}:{s:02d}"
+
+
+def _estimate_eta(elapsed_s: float, done: int, total: int) -> str:
+    if done <= 0 or done >= total:
+        return "—"
+    per_case = elapsed_s / done
+    remaining = (total - done) * per_case
+    return _fmt_duration(remaining)
 
 
 if __name__ == "__main__":

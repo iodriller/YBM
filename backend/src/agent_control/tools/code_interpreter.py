@@ -76,18 +76,25 @@ class CodeInterpreterAdapter:
             raise ValueError("LLM provider is required for generate_and_run")
         objective = str(request.input["objective"]).strip()
         workspace = self._workspace(request)
+        context_text = str(request.input.get("context") or "No extra context.")
         generation_repaired = False
-        try:
-            generated = await self.provider.generate_structured(
+        regenerated_from_failure = False
+
+        async def _generate(previous_attempt: str) -> "GeneratedPythonScript":
+            return await self.provider.generate_structured(
                 prompt_text("base/code_interpreter_system.md"),
                 render_prompt(
                     "tasks/code_interpreter_user.md",
                     objective=objective,
-                    context=str(request.input.get("context") or "No extra context."),
+                    context=context_text,
                     workspace_dir=str(workspace),
+                    previous_attempt=previous_attempt,
                 ),
                 GeneratedPythonScript,
             )
+
+        try:
+            generated = await _generate("")
             generated = generated.model_copy(update={"code": _clean_generated_code(generated.code)})
         except Exception:
             fallback = _fallback_generated_script(objective)
@@ -95,28 +102,71 @@ class CodeInterpreterAdapter:
                 raise
             generated = fallback
             generation_repaired = True
+
         updated = request.model_copy(update={"input": {**request.input, "code": generated.code}})
         try:
             output = await self._run_python(updated, generated=True)
-        except (SyntaxError, ValueError):
-            fallback = _fallback_generated_script(objective)
-            if fallback is None:
-                raise
-            generation_repaired = True
-            generated = fallback
-            updated = request.model_copy(update={"input": {**request.input, "code": generated.code}})
-            output = await self._run_python(updated, generated=True)
-        if int(output.get("returncode") or 0) != 0:
-            fallback = _fallback_generated_script(objective)
-            if fallback is not None and fallback.code != generated.code:
+        except (SyntaxError, ValueError) as exc:
+            # Syntax errors mean the LLM produced invalid Python. Regenerate
+            # with the offending code + the parser error. If the retry still
+            # raises (e.g. the LLM produced the same broken code, or
+            # regeneration itself failed), fall back to the static template.
+            regenerated_from_failure = True
+            output = None
+            try:
+                retry_gen = await _generate(_previous_attempt_block(generated.code, str(exc), kind="parse_error"))
+                retry_generated = retry_gen.model_copy(update={"code": _clean_generated_code(retry_gen.code)})
+                retry_updated = request.model_copy(update={"input": {**request.input, "code": retry_generated.code}})
+                try:
+                    output = await self._run_python(retry_updated, generated=True)
+                    generated = retry_generated
+                    updated = retry_updated
+                except (SyntaxError, ValueError):
+                    output = None
+            except Exception:
+                output = None
+            if output is None:
+                fallback = _fallback_generated_script(objective)
+                if fallback is None:
+                    raise exc
                 generation_repaired = True
                 generated = fallback
                 updated = request.model_copy(update={"input": {**request.input, "code": generated.code}})
                 output = await self._run_python(updated, generated=True)
+
+        if int(output.get("returncode") or 0) != 0:
+            # Runtime crash. Show the LLM what its code produced and ask it to
+            # take a different approach (different libraries, different
+            # algorithm, defensive defaults). This is the key fix for the
+            # "LLM regenerates the same broken script" failure class.
+            regenerated_from_failure = True
+            previous_block = _previous_attempt_block(
+                generated.code,
+                f"{output.get('stderr','')}\nstdout: {output.get('stdout','')}",
+                kind="runtime_error",
+            )
+            try:
+                retry_gen = await _generate(previous_block)
+                generated = retry_gen.model_copy(update={"code": _clean_generated_code(retry_gen.code)})
+                updated = request.model_copy(update={"input": {**request.input, "code": generated.code}})
+                output = await self._run_python(updated, generated=True)
+            except Exception:
+                # If the LLM regen call itself fails (provider error, schema
+                # validation, etc.), fall back to the static template as a
+                # final attempt — same as before.
+                fallback = _fallback_generated_script(objective)
+                if fallback is not None and fallback.code != generated.code:
+                    generation_repaired = True
+                    generated = fallback
+                    updated = request.model_copy(update={"input": {**request.input, "code": generated.code}})
+                    output = await self._run_python(updated, generated=True)
+
         output["generation_summary"] = generated.summary
         output["expected_files"] = generated.expected_files
         if generation_repaired:
             output["generation_repaired"] = True
+        if regenerated_from_failure:
+            output["regenerated_from_failure"] = True
         return output
 
     async def _run_python(self, request: ToolCallRequest, *, generated: bool) -> dict[str, Any]:
@@ -231,6 +281,32 @@ def _call_name(value: ast.AST) -> str | None:
     if isinstance(value, ast.Attribute):
         return value.attr
     return None
+
+
+def _previous_attempt_block(prev_code: str, error_text: str, *, kind: str) -> str:
+    """Format the failed prior attempt so the LLM can fix its own mistake.
+
+    ``kind`` is ``"parse_error"`` or ``"runtime_error"``. Truncated aggressively
+    to keep the regeneration prompt under control.
+    """
+    error_snippet = (error_text or "").strip()[-1500:]
+    code_snippet = (prev_code or "").strip()
+    if len(code_snippet) > 1800:
+        code_snippet = code_snippet[:1800] + "\n# ... (truncated)"
+    label = "parse error" if kind == "parse_error" else "runtime error"
+    return (
+        f"Previous attempt to write code for this objective FAILED with a {label}.\n"
+        f"DO NOT regenerate the same script. Take a different approach: use a different\n"
+        f"library, a different algorithm, or simpler defensive defaults. If the previous\n"
+        f"attempt depended on a non-standard package that wasn't installed, switch to the\n"
+        f"Python standard library only.\n"
+        f"\n"
+        f"Previous code:\n"
+        f"```python\n{code_snippet}\n```\n"
+        f"\n"
+        f"Error/stderr from the failed run:\n"
+        f"```\n{error_snippet}\n```"
+    )
 
 
 def _clean_generated_code(code: str) -> str:

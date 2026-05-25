@@ -51,7 +51,7 @@ async def main() -> None:
     print(f"\nLogged in as {me.first_name} (@{me.username})")
     print(f"Session saved to: {SESSION}.session")
     print("\nYou can now run the E2E tests:")
-    print(f"  python e2e/live_telegram_e2e.py --cases e2e/extended_cases.json --case browser_dizibox_new_shows --backend-url http://127.0.0.1:8765")
+    print("  python scripts/run_all_e2e_tests.py --only browser_dizibox_new_shows")
     await client.disconnect()
 
 

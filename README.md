@@ -101,11 +101,11 @@ pytest backend/tests
 Run live Telegram E2E checks:
 
 ```powershell
-python e2e/live_telegram_e2e.py --list-cases
-.\scripts\run_live_e2e.ps1 -Case desktop_observation
+python scripts/run_all_e2e_tests.py --only desktop_inspection
+python scripts/run_all_e2e_tests.py                              # full suite
 ```
 
-See [e2e/README.md](e2e/README.md) for the required Telethon user-session setup and log format. Live results are written under `.agent_control/live_e2e_runs/<timestamp>/`.
+See [e2e/README.md](e2e/README.md) for the required Telethon user-session setup and log format. Live results are written under `.agent_control/e2e_results/run_<timestamp>/`.
 
 If `AGENT_ADMIN_TOKEN` is set, open:
 
