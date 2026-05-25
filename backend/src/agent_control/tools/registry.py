@@ -594,18 +594,14 @@ def build_tool_registry(
             should_continue=should_continue,
         )
 
-    definitions.append(
-        ToolDefinition(
-            name="desktop.screenshot",
-            capability=Capability.DESKTOP_SCREENSHOT,
-            enabled=_capability_enabled(settings, Capability.DESKTOP_SCREENSHOT)
-            and settings.adapters.desktop.screenshot_enabled,
-            description="capture a desktop screenshot through the Telegram command path",
-            examples=(
-                {"operation": "capture"},
-            ),
-        )
-    )
+    # NOTE: There used to be a `desktop.screenshot` ToolDefinition here, but no
+    # adapter was ever registered for it — the planner happily picked it from
+    # the catalog and execution then failed with "tool adapter not registered".
+    # All real screenshot work is done by `computer.use observe` (captures +
+    # returns the image) and `artifact.deliver send_screenshot` (delivers it).
+    # The legacy `/screenshot` command in telegram.py is a separate code path
+    # that uses Capability.DESKTOP_SCREENSHOT directly, unaffected by removing
+    # this tool advertisement. See docs/FIX_PLAN.md Priority 1 for details.
 
     browser_open_enabled = settings.adapters.browser.enabled and _capability_enabled(settings, Capability.BROWSER_OPEN)
     browser_control_enabled = settings.adapters.browser.enabled and _capability_enabled(settings, Capability.BROWSER_CONTROL)

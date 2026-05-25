@@ -47,11 +47,18 @@ def expected_postconditions(task: TaskRecord, plan: PlanModel | None = None) -> 
     if plan and plan.postconditions:
         return tuple(plan.postconditions)
 
-    inferred: list[PlanPostcondition] = []
+    # When the planner has actually produced tool steps, trust the plan-derived
+    # postconditions exclusively. The objective-keyword inference was over-eager
+    # (e.g. "create" + "files" demanded a workspace_dir for filesystem.manage
+    # plans that have no workspace at all). Only fall back to objective text
+    # when the plan produces no postconditions of its own — that covers the
+    # pre-plan state and edge cases where the plan is purely informational.
     if plan is not None:
-        inferred.extend(_postconditions_from_plan(plan))
-    inferred.extend(_postconditions_from_objective(task.objective))
-    return _dedupe(inferred)
+        plan_inferred = _postconditions_from_plan(plan)
+        if plan_inferred:
+            return tuple(_dedupe(plan_inferred))
+
+    return tuple(_dedupe(_postconditions_from_objective(task.objective)))
 
 
 def validate_fulfillment(task: TaskRecord, plan: PlanModel | None = None) -> FulfillmentValidation:

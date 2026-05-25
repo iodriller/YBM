@@ -196,18 +196,33 @@ class FilesystemManageAdapter:
 
     def _write_text_file(self, request: ToolCallRequest) -> dict[str, Any]:
         path = self._safe_path(str(request.input["path"]))
-        if path.exists() and not bool(request.input.get("overwrite", False)):
-            raise ValueError(f"destination already exists: {path}")
+        overwrite = bool(request.input.get("overwrite", False))
+        original_path = path
+        renamed = False
+        # If the destination already exists and the caller didn't ask to
+        # overwrite, auto-rename to a non-colliding sibling (foo.txt → foo-2.txt
+        # → foo-3.txt ...). Never silently destroy data. Subsequent steps can
+        # see the actual path via `path` in the response.
+        if path.exists() and not overwrite:
+            path = _dedupe_destination(path)
+            renamed = True
         path.parent.mkdir(parents=True, exist_ok=True)
         content = str(request.input.get("content") or "")
         path.write_text(content, encoding="utf-8")
-        return {
+        result: dict[str, Any] = {
             "root": str(path.parent),
             "path": str(path),
             "entries": [_entry(path.parent, path)],
             "changed_paths": [str(path)],
-            "summary": f"Wrote text file {path}.",
+            "summary": (
+                f"Wrote text file {path}."
+                if not renamed
+                else f"Wrote text file {path} (requested path {original_path.name} already existed; auto-renamed)."
+            ),
         }
+        if renamed:
+            result["renamed_from"] = str(original_path)
+        return result
 
     def _collect_folder_snapshot(self, request: ToolCallRequest) -> dict[str, Any]:
         return self._inspect_folder(request)
