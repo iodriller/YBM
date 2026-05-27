@@ -18,8 +18,18 @@ channels:
     polling: true
 
 llm:
-  default_profile: "localdeploy_gemma3_12b"
+  default_profile: "localdeploy_qwen3vl_8b"
+  major_profile: "localdeploy_qwen3vl_8b"
   profiles:
+    localdeploy_qwen3vl_8b:
+      provider: "openai_compatible"
+      model: "qwen3vl_8b_ollama"
+      base_url: "http://127.0.0.1:8000/v1"
+      api_key_env: null
+      timeout_seconds: 800
+      max_tokens: 4096
+      temperature: 0.1
+      context_limit: 32768
     localdeploy_gemma3_12b:
       provider: "openai_compatible"
       model: "gemma3_12b_ollama_safe"

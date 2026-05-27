@@ -98,6 +98,18 @@ RepositoriesLoader = Callable[[], Repositories]
 
 
 LLM_PRESETS: dict[str, dict[str, Any]] = {
+    "localdeploy_qwen3vl_8b": {
+        "label": "LocalDeploy Qwen3-VL 8B (recommended)",
+        "profile_name": "localdeploy_qwen3vl_8b",
+        "provider": "openai_compatible",
+        "model": "qwen3vl_8b_ollama",
+        "base_url": "http://127.0.0.1:8000/v1",
+        "api_key_env": None,
+        "timeout_seconds": 800,
+        "max_tokens": 4096,
+        "temperature": 0.1,
+        "context_limit": 32768,
+    },
     "localdeploy_gemma3_12b": {
         "label": "LocalDeploy Gemma 3 12B",
         "profile_name": "localdeploy_gemma3_12b",
@@ -1206,6 +1218,7 @@ _ADMIN_HTML = """
         <label>Preset</label>
         <div class="row">
           <select id="llm-preset">
+            <option value="localdeploy_qwen3vl_8b">LocalDeploy Qwen3-VL 8B (recommended)</option>
             <option value="localdeploy_gemma3_12b">LocalDeploy Gemma 3 12B</option>
             <option value="localdeploy_gemma3_4b">LocalDeploy Gemma 3 4B</option>
             <option value="openai_gpt41">OpenAI GPT-4.1</option>
@@ -1839,7 +1852,9 @@ _ADMIN_HTML = """
           ? "openai_gpt41"
           : profileName === "localdeploy_gemma3_4b"
             ? "localdeploy_gemma3_4b"
-            : "localdeploy_gemma3_12b";
+            : profileName === "localdeploy_gemma3_12b"
+              ? "localdeploy_gemma3_12b"
+              : "localdeploy_qwen3vl_8b";
       }
       document.getElementById("llm-profile").value = profileName;
       document.getElementById("llm-default-profile").value = profileName;
