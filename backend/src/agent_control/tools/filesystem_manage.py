@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 import os
 import re
@@ -9,6 +10,9 @@ from typing import Any
 from agent_control.llm.providers import LLMProvider
 from agent_control.prompts import prompt_text, render_prompt
 from agent_control.schemas import ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+
+
+logger = logging.getLogger(__name__)
 
 
 class FilesystemManageAdapter:
@@ -573,6 +577,7 @@ def _content_for_rename(path: Path) -> str:
     try:
         return path.read_bytes()[:4000].decode("utf-8", errors="ignore")
     except Exception:
+        logger.debug("failed to read bytes for rename hint at %s; falling back to stem", path, exc_info=True)
         return path.stem
 
 
@@ -635,6 +640,7 @@ def _extract_supported_text(path: Path, *, max_chars: int) -> str:
             text = "\n\n".join((page.extract_text() or "").strip() for page in reader.pages).strip()
             return _compact_text(text, limit=max_chars)
         except Exception:
+            logger.debug("pypdf extraction failed for %s; falling back to raw bytes decode", path, exc_info=True)
             return _compact_text(path.read_bytes().decode("utf-8", errors="ignore"), limit=max_chars)
     return ""
 

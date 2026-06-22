@@ -4,7 +4,9 @@ import asyncio
 from collections.abc import Callable
 from datetime import datetime, timedelta
 import json
+import logging
 from typing import Any, Protocol
+from uuid import uuid4
 
 from agent_control.channels.memory import ConversationMemoryService
 from agent_control.llm import PlannerService
@@ -29,6 +31,9 @@ from agent_control.schemas import (
 )
 from agent_control.storage.audit import AuditLogger
 from agent_control.storage.repositories import Repositories
+
+
+logger = logging.getLogger(__name__)
 
 DefaultPlanFactory = Callable[[TaskRecord], PlanModel | None]
 RecoveryPlanFactory = Callable[[TaskRecord, str], PlanModel | None]
@@ -96,16 +101,32 @@ class TaskWorker:
             if task_budget_seconds is not None
             else self.DEFAULT_TASK_BUDGET_SECONDS
         )
+        # Stable id per worker process; written into tasks.claimed_by so
+        # concurrent workers can't race on the same task.
+        self.worker_id = f"worker-{uuid4().hex[:12]}"
 
     async def process_next(self) -> TaskRecord | None:
-        tasks = self.repositories.tasks.list_by_statuses(WORKABLE_STATUSES, limit=1)
-        if not tasks:
+        # Atomically claim a task. Two workers running this call simultaneously
+        # will produce at most one successful claim — the other returns None
+        # and tries again on the next poll. Claim expires after budget+buffer
+        # so a crashed worker doesn't strand the task.
+        claim_expiry = int(self.task_budget_seconds) + 120
+        task = self.repositories.tasks.claim_next(
+            WORKABLE_STATUSES,
+            worker_id=self.worker_id,
+            claim_expiry_seconds=claim_expiry,
+        )
+        if task is None:
             return None
-        task = tasks[0]
         budget = float(task.metadata.get("task_budget_seconds") or self.task_budget_seconds)
         try:
             processed = await asyncio.wait_for(self.process_task(task.id), timeout=budget)
             await self._notify_if_needed(processed)
+            # Once the task is terminal, drop the claim so it can't be
+            # accidentally re-claimed by a stale lookup. Best-effort.
+            if processed.status in {TaskStatus.COMPLETED, TaskStatus.FAILED,
+                                     TaskStatus.BLOCKED, TaskStatus.CANCELLED}:
+                self.repositories.tasks.release_claim(processed.id)
             return processed
         except asyncio.TimeoutError:
             # Wall-clock budget exceeded — fail the task so the worker can keep
@@ -115,6 +136,7 @@ class TaskWorker:
             reason = f"task budget {budget:.0f}s exceeded; forcibly failed by worker"
             metadata = {**latest.metadata, "last_worker_error": reason}
             failed = self.repositories.tasks.update_metadata(latest.id, metadata, TaskStatus.FAILED)
+            self.repositories.tasks.release_claim(failed.id)
             self.audit.task_state_changed("worker", latest.id, latest.status, failed.status)
             self.audit.append(
                 AuditEventType.ERROR,
@@ -125,11 +147,12 @@ class TaskWorker:
             await self._notify_if_needed(failed)
             return failed
         except Exception as exc:
-            latest = self.repositories.tasks.get(tasks[0].id)
+            latest = self.repositories.tasks.get(task.id)
             if latest is None:
                 raise
             metadata = {**latest.metadata, "last_worker_error": str(exc)}
             failed = self.repositories.tasks.update_metadata(latest.id, metadata, TaskStatus.FAILED)
+            self.repositories.tasks.release_claim(failed.id)
             self.audit.task_state_changed("worker", latest.id, latest.status, failed.status)
             self.audit.append(
                 AuditEventType.ERROR,
@@ -560,6 +583,7 @@ class TaskWorker:
         try:
             await self.planner.plan_task(task.id, self.config_context + f"\n\nError context: {error_context[:400]}")
         except Exception:
+            logger.warning("replanning planner call failed for task %s", task.id, exc_info=True)
             return None
         return self.repositories.tasks.get(task.id)
 
