@@ -5,7 +5,7 @@ from pathlib import Path
 import sqlite3
 from collections.abc import Iterator
 
-from agent_control.storage.migrations import SCHEMA_STATEMENTS
+from agent_control.storage.migrations import SCHEMA_STATEMENTS, apply_additive_migrations
 
 
 class Database:
@@ -41,3 +41,4 @@ class Database:
         with self.connect() as connection:
             for statement in SCHEMA_STATEMENTS:
                 connection.execute(statement)
+            apply_additive_migrations(connection)

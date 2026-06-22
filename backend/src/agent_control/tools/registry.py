@@ -211,6 +211,24 @@ class ToolRegistry:
         return plan.model_copy(update={"steps": steps, "required_capabilities": required_capabilities})
 
 
+@dataclass(frozen=True)
+class _RegistryDeps:
+    """Bundle of optional dependencies the per-tool registrars consume."""
+    settings: AppSettings
+    backend_base_url: str
+    provider: object | None = None
+    should_continue: Callable[[str], bool] | None = None
+    artifact_repository: object | None = None
+    task_repository: object | None = None
+    repositories: object | None = None
+    audit_logger: object | None = None
+    telegram_client: object | None = None
+
+
+_Definitions = list[ToolDefinition]
+_Adapters = dict[str, object]
+
+
 def build_tool_registry(
     settings: AppSettings,
     backend_base_url: str,
@@ -222,15 +240,32 @@ def build_tool_registry(
     audit_logger: object | None = None,
     telegram_client: object | None = None,
 ) -> ToolRegistry:
-    adapters: dict[str, object] = {}
-    definitions: list[ToolDefinition] = []
+    deps = _RegistryDeps(
+        settings=settings,
+        backend_base_url=backend_base_url,
+        provider=provider,
+        should_continue=should_continue,
+        artifact_repository=artifact_repository,
+        task_repository=task_repository,
+        repositories=repositories,
+        audit_logger=audit_logger,
+        telegram_client=telegram_client,
+    )
+    adapters: _Adapters = {}
+    definitions: _Definitions = []
+    for register in _REGISTRARS:
+        register(deps, definitions, adapters)
+    return ToolRegistry(adapters=adapters, definitions=tuple(definitions))
 
-    workspace_enabled = _capability_enabled(settings, Capability.FILESYSTEM_WRITE) and settings.adapters.workspace.enabled
+
+def _register_workspace(deps: _RegistryDeps, definitions: _Definitions, adapters: _Adapters) -> None:
+    settings = deps.settings
+    enabled = _capability_enabled(settings, Capability.FILESYSTEM_WRITE) and settings.adapters.workspace.enabled
     definitions.append(
         ToolDefinition(
             name="workspace.manage",
             capability=Capability.FILESYSTEM_WRITE,
-            enabled=workspace_enabled,
+            enabled=enabled,
             description=f"manage task workspaces under {settings.adapters.workspace.root_dir}",
             operations=("prepare", "write_files", "materialize_static_app", "launch_static", "web_app_preview"),
             operation_schemas={
@@ -255,7 +290,10 @@ def build_tool_registry(
         adapters["workspace.manage"] = workspace
         adapters["workspace.web_app"] = workspace
 
-    filesystem_enabled = (
+
+def _register_filesystem(deps: _RegistryDeps, definitions: _Definitions, adapters: _Adapters) -> None:
+    settings = deps.settings
+    enabled = (
         settings.adapters.computer_use.enabled
         and _capability_enabled(settings, Capability.FILESYSTEM_WRITE)
     )
@@ -263,7 +301,7 @@ def build_tool_registry(
         ToolDefinition(
             name="filesystem.manage",
             capability=Capability.FILESYSTEM_WRITE,
-            enabled=filesystem_enabled,
+            enabled=enabled,
             description=(
                 "inspect, search, plan organization, and apply move/copy manifests inside configured "
                 f"roots: {', '.join(settings.adapters.computer_use.allowed_roots) or '<none>'}"
@@ -323,14 +361,20 @@ def build_tool_registry(
         )
     )
     if settings.adapters.computer_use.enabled:
-        adapters["filesystem.manage"] = FilesystemManageAdapter(settings.adapters.computer_use.allowed_roots, provider=provider)  # type: ignore[arg-type]
+        adapters["filesystem.manage"] = FilesystemManageAdapter(
+            settings.adapters.computer_use.allowed_roots,
+            provider=deps.provider,  # type: ignore[arg-type]
+        )
 
-    factory_enabled = _capability_enabled(settings, Capability.FILESYSTEM_WRITE) and settings.adapters.adapter_factory.enabled
+
+def _register_adapter_factory(deps: _RegistryDeps, definitions: _Definitions, adapters: _Adapters) -> None:
+    settings = deps.settings
+    enabled = _capability_enabled(settings, Capability.FILESYSTEM_WRITE) and settings.adapters.adapter_factory.enabled
     definitions.append(
         ToolDefinition(
             name="adapter.factory",
             capability=Capability.FILESYSTEM_WRITE,
-            enabled=factory_enabled,
+            enabled=enabled,
             description=f"scaffold generated adapter proposals under {settings.adapters.adapter_factory.root_dir}",
             operations=("assess", "scaffold"),
             lifecycle="scaffold",
@@ -348,12 +392,15 @@ def build_tool_registry(
     if settings.adapters.adapter_factory.enabled:
         adapters["adapter.factory"] = AdapterFactoryAdapter(settings.adapters.adapter_factory)
 
-    code_interpreter_enabled = _capability_enabled(settings, Capability.TERMINAL_RUN) and settings.adapters.code_interpreter.enabled
+
+def _register_code_interpreter(deps: _RegistryDeps, definitions: _Definitions, adapters: _Adapters) -> None:
+    settings = deps.settings
+    enabled = _capability_enabled(settings, Capability.TERMINAL_RUN) and settings.adapters.code_interpreter.enabled
     definitions.append(
         ToolDefinition(
             name="code.interpreter",
             capability=Capability.TERMINAL_RUN,
-            enabled=code_interpreter_enabled,
+            enabled=enabled,
             description=(
                 "generate and run bounded local Python scripts inside managed workspaces under "
                 f"{settings.adapters.code_interpreter.workspace_root}"
@@ -379,16 +426,19 @@ def build_tool_registry(
     if settings.adapters.code_interpreter.enabled:
         adapters["code.interpreter"] = CodeInterpreterAdapter(
             settings.adapters.code_interpreter,
-            provider=provider,  # type: ignore[arg-type]
-            artifacts=artifact_repository,
+            provider=deps.provider,  # type: ignore[arg-type]
+            artifacts=deps.artifact_repository,
         )
 
-    vscode_enabled = _capability_enabled(settings, Capability.VSCODE_WRITE_FILES) and settings.adapters.vscode.enabled
+
+def _register_vscode(deps: _RegistryDeps, definitions: _Definitions, adapters: _Adapters) -> None:
+    settings = deps.settings
+    enabled = _capability_enabled(settings, Capability.VSCODE_WRITE_FILES) and settings.adapters.vscode.enabled
     definitions.append(
         ToolDefinition(
             name="vscode.copilot_terminal",
             capability=Capability.VSCODE_WRITE_FILES,
-            enabled=vscode_enabled,
+            enabled=enabled,
             description="send a prompt to VS Code/Copilot terminal or local Copilot CLI fallback",
             input_schema=VSCodeCopilotTerminalInput,
             output_schema=VSCodeTerminalToolOutput,
@@ -398,23 +448,26 @@ def build_tool_registry(
         ToolDefinition(
             name="vscode.terminal_command",
             capability=Capability.VSCODE_WRITE_FILES,
-            enabled=vscode_enabled,
+            enabled=enabled,
             description="queue an explicit terminal command through the VS Code bridge",
             input_schema=VSCodeTerminalCommandInput,
             output_schema=VSCodeTerminalToolOutput,
         )
     )
     if settings.adapters.vscode.enabled:
-        vscode = VSCodeBridgeTerminalAdapter(settings.adapters.vscode, backend_base_url)
+        vscode = VSCodeBridgeTerminalAdapter(settings.adapters.vscode, deps.backend_base_url)
         adapters["vscode.terminal_command"] = vscode
         adapters["vscode.copilot_terminal"] = vscode
 
-    coding_enabled = _capability_enabled(settings, Capability.TERMINAL_RUN) and settings.adapters.coding_assistant.enabled
+
+def _register_coding_assistant(deps: _RegistryDeps, definitions: _Definitions, adapters: _Adapters) -> None:
+    settings = deps.settings
+    enabled = _capability_enabled(settings, Capability.TERMINAL_RUN) and settings.adapters.coding_assistant.enabled
     definitions.append(
         ToolDefinition(
             name="coding_assistant",
             capability=Capability.TERMINAL_RUN,
-            enabled=coding_enabled,
+            enabled=enabled,
             description="run the configured local coding assistant command template",
             input_schema=CodingAssistantInput,
             output_schema=CodingAssistantOutput,
@@ -423,12 +476,15 @@ def build_tool_registry(
     if settings.adapters.coding_assistant.enabled:
         adapters["coding_assistant"] = GenericTerminalAgentAdapter(settings.adapters.coding_assistant)
 
-    tts_enabled = _capability_enabled(settings, Capability.TTS_SYNTHESIZE) and settings.adapters.tts.enabled
+
+def _register_tts(deps: _RegistryDeps, definitions: _Definitions, adapters: _Adapters) -> None:
+    settings = deps.settings
+    enabled = _capability_enabled(settings, Capability.TTS_SYNTHESIZE) and settings.adapters.tts.enabled
     definitions.append(
         ToolDefinition(
             name="tts.synthesize",
             capability=Capability.TTS_SYNTHESIZE,
-            enabled=tts_enabled,
+            enabled=enabled,
             description="synthesize local speech audio with the configured Kokoro ONNX runtime",
             operations=("synthesize",),
             input_schema=TTSSynthesizeInput,
@@ -439,12 +495,15 @@ def build_tool_registry(
     if settings.adapters.tts.enabled:
         adapters["tts.synthesize"] = build_tts_adapter(settings.adapters.tts)
 
-    coding_agent_enabled = _capability_enabled(settings, Capability.TERMINAL_RUN) and settings.adapters.coding_agent.enabled
+
+def _register_coding_agent(deps: _RegistryDeps, definitions: _Definitions, adapters: _Adapters) -> None:
+    settings = deps.settings
+    enabled = _capability_enabled(settings, Capability.TERMINAL_RUN) and settings.adapters.coding_agent.enabled
     definitions.append(
         ToolDefinition(
             name="coding.agent",
             capability=Capability.TERMINAL_RUN,
-            enabled=coding_agent_enabled,
+            enabled=enabled,
             description="run explicitly requested Codex or GitHub Copilot CLI work inside a task workspace",
             operations=("plan", "run_step", "run_goal", "status", "limits", "resume", "stop"),
             input_schema=CodingAgentInput,
@@ -459,12 +518,15 @@ def build_tool_registry(
     if settings.adapters.coding_agent.enabled:
         adapters["coding.agent"] = CodingAgentAdapter(settings.adapters.coding_agent)
 
-    schedule_enabled = _capability_enabled(settings, Capability.SCHEDULE_MANAGE) and settings.scheduler.enabled
+
+def _register_schedule(deps: _RegistryDeps, definitions: _Definitions, adapters: _Adapters) -> None:
+    settings = deps.settings
+    enabled = _capability_enabled(settings, Capability.SCHEDULE_MANAGE) and settings.scheduler.enabled
     definitions.append(
         ToolDefinition(
             name="schedule.manage",
             capability=Capability.SCHEDULE_MANAGE,
-            enabled=schedule_enabled,
+            enabled=enabled,
             description="create, list, pause, resume, delete, or run recurring task schedules",
             operations=("create", "list", "pause", "resume", "delete", "run_now"),
             input_schema=ScheduleManageInput,
@@ -476,19 +538,22 @@ def build_tool_registry(
             default_operation="create",
         )
     )
-    if repositories is not None and audit_logger is not None:
+    if deps.repositories is not None and deps.audit_logger is not None:
         adapters["schedule.manage"] = ScheduleManageAdapter(
-            repositories,  # type: ignore[arg-type]
-            audit_logger,  # type: ignore[arg-type]
+            deps.repositories,  # type: ignore[arg-type]
+            deps.audit_logger,  # type: ignore[arg-type]
             default_timezone=settings.scheduler.default_timezone,
         )
 
-    task_status_enabled = repositories is not None and _capability_enabled(settings, Capability.TELEGRAM_RECEIVE)
+
+def _register_task_status(deps: _RegistryDeps, definitions: _Definitions, adapters: _Adapters) -> None:
+    settings = deps.settings
+    enabled = deps.repositories is not None and _capability_enabled(settings, Capability.TELEGRAM_RECEIVE)
     definitions.append(
         ToolDefinition(
             name="task.status",
             capability=Capability.TELEGRAM_RECEIVE,
-            enabled=task_status_enabled,
+            enabled=enabled,
             description="report current task, plan, active, completed, and blocked state for status questions",
             operations=("status",),
             input_schema=TaskStatusInput,
@@ -499,15 +564,18 @@ def build_tool_registry(
             ),
         )
     )
-    if repositories is not None:
-        adapters["task.status"] = TaskStatusAdapter(repositories)  # type: ignore[arg-type]
+    if deps.repositories is not None:
+        adapters["task.status"] = TaskStatusAdapter(deps.repositories)  # type: ignore[arg-type]
 
-    artifact_delivery_enabled = _capability_enabled(settings, Capability.TELEGRAM_SEND)
+
+def _register_artifact_delivery(deps: _RegistryDeps, definitions: _Definitions, adapters: _Adapters) -> None:
+    settings = deps.settings
+    enabled = _capability_enabled(settings, Capability.TELEGRAM_SEND)
     definitions.append(
         ToolDefinition(
             name="artifact.deliver",
             capability=Capability.TELEGRAM_SEND,
-            enabled=artifact_delivery_enabled,
+            enabled=enabled,
             description="list task artifacts and deliver screenshots or files to the source Telegram chat",
             operations=("send_file", "send_latest", "send_screenshot", "list_artifacts"),
             input_schema=ArtifactDeliverInput,
@@ -526,21 +594,24 @@ def build_tool_registry(
             ),
         )
     )
-    if artifact_repository is not None and task_repository is not None:
+    if deps.artifact_repository is not None and deps.task_repository is not None:
         adapters["artifact.deliver"] = ArtifactDeliveryAdapter(
-            artifact_repository,  # type: ignore[arg-type]
-            task_repository,  # type: ignore[arg-type]
-            telegram_client=telegram_client,  # type: ignore[arg-type]
+            deps.artifact_repository,  # type: ignore[arg-type]
+            deps.task_repository,  # type: ignore[arg-type]
+            telegram_client=deps.telegram_client,  # type: ignore[arg-type]
             allowed_roots=_artifact_delivery_roots(settings),
             recent_fallback_enabled=settings.adapters.artifact_delivery.recent_artifact_fallback_enabled,
         )
 
-    document_enabled = _capability_enabled(settings, Capability.FILESYSTEM_WRITE)
+
+def _register_document(deps: _RegistryDeps, definitions: _Definitions, adapters: _Adapters) -> None:
+    settings = deps.settings
+    enabled = _capability_enabled(settings, Capability.FILESYSTEM_WRITE)
     definitions.append(
         ToolDefinition(
             name="document.manage",
             capability=Capability.FILESYSTEM_WRITE,
-            enabled=document_enabled,
+            enabled=enabled,
             description="inspect documents, summarize PDFs, and create or revise PowerPoint files as task artifacts",
             operations=("inspect_document", "extract_text", "summarize_pdf", "create_presentation", "update_presentation"),
             input_schema=DocumentManageInput,
@@ -558,14 +629,17 @@ def build_tool_registry(
             ),
         )
     )
-    if artifact_repository is not None:
+    if deps.artifact_repository is not None:
         adapters["document.manage"] = DocumentManageAdapter(
-            artifact_repository,  # type: ignore[arg-type]
-            provider=provider,
+            deps.artifact_repository,  # type: ignore[arg-type]
+            provider=deps.provider,
             allowed_roots=_document_roots(settings),
         )
 
-    computer_use_enabled = (
+
+def _register_computer_use(deps: _RegistryDeps, definitions: _Definitions, adapters: _Adapters) -> None:
+    settings = deps.settings
+    enabled = (
         settings.adapters.computer_use.enabled
         and settings.adapters.desktop.control_enabled
         and _capability_enabled(settings, Capability.DESKTOP_CONTROL)
@@ -574,7 +648,7 @@ def build_tool_registry(
         ToolDefinition(
             name="computer.use",
             capability=Capability.DESKTOP_CONTROL,
-            enabled=computer_use_enabled,
+            enabled=enabled,
             description="observe and control the local Windows desktop with bounded screenshot/action loops",
             operations=("observe", "act", "run_goal"),
             operation_schemas={
@@ -590,8 +664,8 @@ def build_tool_registry(
     if settings.adapters.computer_use.enabled:
         adapters["computer.use"] = ComputerUseAdapter(
             settings.adapters.computer_use,
-            provider=provider,
-            should_continue=should_continue,
+            provider=deps.provider,
+            should_continue=deps.should_continue,
         )
 
     # NOTE: There used to be a `desktop.screenshot` ToolDefinition here, but no
@@ -603,13 +677,16 @@ def build_tool_registry(
     # that uses Capability.DESKTOP_SCREENSHOT directly, unaffected by removing
     # this tool advertisement. See docs/FIX_PLAN.md Priority 1 for details.
 
-    browser_open_enabled = settings.adapters.browser.enabled and _capability_enabled(settings, Capability.BROWSER_OPEN)
-    browser_control_enabled = settings.adapters.browser.enabled and _capability_enabled(settings, Capability.BROWSER_CONTROL)
+
+def _register_browser(deps: _RegistryDeps, definitions: _Definitions, adapters: _Adapters) -> None:
+    settings = deps.settings
+    open_enabled = settings.adapters.browser.enabled and _capability_enabled(settings, Capability.BROWSER_OPEN)
+    control_enabled = settings.adapters.browser.enabled and _capability_enabled(settings, Capability.BROWSER_CONTROL)
     definitions.append(
         ToolDefinition(
             name="browser.open",
             capability=Capability.BROWSER_OPEN,
-            enabled=browser_open_enabled,
+            enabled=open_enabled,
             description=(
                 "open Chrome, search the web, summarize exposed tabs/pages, and capture browser screenshots "
                 f"through DevTools at {settings.adapters.browser.host}:{settings.adapters.browser.remote_debugging_port}"
@@ -641,7 +718,7 @@ def build_tool_registry(
         ToolDefinition(
             name="browser.control",
             capability=Capability.BROWSER_CONTROL,
-            enabled=browser_control_enabled,
+            enabled=control_enabled,
             description="navigate, close tabs, click elements, and fill simple forms in Chrome through DevTools",
             operations=(
                 "navigate",
@@ -689,7 +766,26 @@ def build_tool_registry(
         adapters["browser.open"] = browser
         adapters["browser.control"] = browser
 
-    return ToolRegistry(adapters=adapters, definitions=tuple(definitions))
+
+# Ordered list of per-tool registrars. build_tool_registry() runs these in
+# order; each one appends its ToolDefinition(s) and optionally wires up an
+# adapter when the underlying integration is enabled.
+_REGISTRARS: tuple[Callable[[_RegistryDeps, _Definitions, _Adapters], None], ...] = (
+    _register_workspace,
+    _register_filesystem,
+    _register_adapter_factory,
+    _register_code_interpreter,
+    _register_vscode,
+    _register_coding_assistant,
+    _register_tts,
+    _register_coding_agent,
+    _register_schedule,
+    _register_task_status,
+    _register_artifact_delivery,
+    _register_document,
+    _register_computer_use,
+    _register_browser,
+)
 
 
 def _capability_enabled(settings: AppSettings, capability: Capability) -> bool:

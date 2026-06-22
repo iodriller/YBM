@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
+import logging
 import sqlite3
 from typing import Any
 
@@ -26,6 +27,9 @@ from agent_control.schemas import (
     utc_now,
 )
 from agent_control.storage.database import Database
+
+
+logger = logging.getLogger(__name__)
 
 
 def _dump(value: Any) -> str:
@@ -238,6 +242,82 @@ class TaskRepository:
                 [*(status.value for status in statuses), limit],
             ).fetchall()
         return [self._row_to_task(row) for row in rows]
+
+    def claim_next(
+        self,
+        statuses: list[TaskStatus],
+        worker_id: str,
+        *,
+        claim_expiry_seconds: int = 1200,
+    ) -> TaskRecord | None:
+        """Atomically claim the oldest workable task for ``worker_id``.
+
+        Uses a single ``UPDATE ... WHERE id = (SELECT ... LIMIT 1) RETURNING *``
+        statement, which SQLite serializes via its write lock. Two workers
+        cannot both succeed at the same SELECT here — exactly one gets the
+        row back; the other gets an empty result and tries again on the
+        next poll.
+
+        Returns ``None`` when no workable task is available. Claims that go
+        stale (worker crashed) become eligible again after ``claim_expiry_seconds``.
+        """
+        if not statuses:
+            return None
+        now = utc_now()
+        expires_at = now + timedelta(seconds=claim_expiry_seconds)
+        placeholders = ",".join("?" for _ in statuses)
+        # The inner SELECT picks the oldest task whose claim is either NULL or
+        # already expired. The UPDATE writes the new claim and returns the row.
+        # Eligible to claim: unclaimed, expired, OR already claimed by THIS
+        # worker (so a single worker can iterate across multiple process_next
+        # calls without re-racing for its own task).
+        sql = f"""
+            UPDATE tasks
+            SET claimed_by = ?, claim_expires_at = ?, updated_at = ?
+            WHERE id = (
+                SELECT id FROM tasks
+                WHERE status IN ({placeholders})
+                  AND (
+                      claimed_by IS NULL
+                      OR claimed_by = ?
+                      OR claim_expires_at IS NULL
+                      OR claim_expires_at < ?
+                  )
+                ORDER BY created_at ASC
+                LIMIT 1
+            )
+            RETURNING *
+        """
+        with self.database.connect() as connection:
+            row = connection.execute(
+                sql,
+                [
+                    worker_id,
+                    _dt(expires_at),
+                    _dt(now),
+                    *(status.value for status in statuses),
+                    worker_id,
+                    _dt(now),
+                ],
+            ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_task(row)
+
+    def release_claim(self, task_id: str) -> None:
+        """Clear the worker claim on a task once it reaches a terminal state.
+
+        Best-effort; failures are intentionally swallowed because this is
+        purely a hint to other workers (the claim would also expire on its own).
+        """
+        try:
+            with self.database.connect() as connection:
+                connection.execute(
+                    "UPDATE tasks SET claimed_by = NULL, claim_expires_at = NULL WHERE id = ?",
+                    (task_id,),
+                )
+        except Exception:
+            logger.debug("release_claim failed for task %s; claim will expire on its own", task_id, exc_info=True)
 
     def update_status(self, task_id: str, status: TaskStatus) -> TaskRecord:
         now = utc_now()

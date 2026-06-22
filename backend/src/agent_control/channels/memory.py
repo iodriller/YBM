@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from typing import Any
 
@@ -8,6 +9,8 @@ from agent_control.llm.providers import LLMProvider
 from agent_control.prompts import render_prompt
 from agent_control.storage.repositories import Repositories
 
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_SUMMARY = "No durable conversation memory yet."
 
@@ -66,6 +69,7 @@ class ConversationMemoryService:
                 timeout=self.summarization_timeout_seconds,
             )
         except Exception:
+            logger.debug("conversation summarization failed; falling back to heuristic summary", exc_info=True)
             return _fallback_summary(existing_summary, recent_turns, self.max_summary_chars)
         return _clean_summary(output, self.max_summary_chars)
 

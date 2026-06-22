@@ -151,3 +151,28 @@ SCHEMA_STATEMENTS = [
     )
     """,
 ]
+
+
+# Additive migrations that need to run on existing databases (idempotent).
+# Use sqlite_master inspection to add columns only if they're missing.
+ADDITIVE_MIGRATIONS = [
+    # Atomic-claim columns on `tasks` so the worker can serialize concurrent
+    # workers via UPDATE...RETURNING. Without this, two workers can both
+    # SELECT the same row and race on it (the cause of duplicate-worker
+    # symptoms we hit earlier).
+    ("tasks", "claimed_by",        "ALTER TABLE tasks ADD COLUMN claimed_by TEXT"),
+    ("tasks", "claim_expires_at",  "ALTER TABLE tasks ADD COLUMN claim_expires_at TEXT"),
+]
+
+
+def apply_additive_migrations(connection) -> None:
+    """Run each additive migration if its column is missing.
+
+    Called from ``Database.initialize`` AFTER ``SCHEMA_STATEMENTS`` so the
+    table exists. Idempotent.
+    """
+    for table, column, statement in ADDITIVE_MIGRATIONS:
+        rows = connection.execute(f"PRAGMA table_info({table})").fetchall()
+        existing = {row[1] for row in rows}
+        if column not in existing:
+            connection.execute(statement)
