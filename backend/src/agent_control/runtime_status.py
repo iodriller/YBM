@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 from agent_control.config import AppSettings
 
+
+logger = logging.getLogger(__name__)
 
 SERVICE_STALE_SECONDS = 30
 
@@ -78,6 +81,7 @@ def _read_json(path: Path) -> dict[str, Any]:
     try:
         return json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception:
+        logger.debug("failed to read service status file %s", path, exc_info=True)
         return {}
 
 

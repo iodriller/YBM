@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import logging
+
 from agent_control.llm.providers import LLMProvider
 from agent_control.prompts import prompt_text, render_prompt
+
+
+logger = logging.getLogger(__name__)
 
 _CONTENT_TOOLS = frozenset({
     "browser.open",
@@ -44,6 +49,7 @@ class ResponseSynthesizer:
         try:
             result = await self.provider.generate_text(system_prompt, user_prompt)
         except Exception:
+            logger.debug("synthesizer provider call failed; treating as insufficient", exc_info=True)
             return None
         text = result.strip()
         if not text or text.upper().startswith("INSUFFICIENT"):

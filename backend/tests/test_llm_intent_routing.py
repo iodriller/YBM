@@ -24,6 +24,7 @@ def _settings(tmp_path: Path) -> AppSettings:
     return AppSettings(
         _env_file=None,
         capabilities={
+            Capability.TELEGRAM_RECEIVE: _policy(),
             Capability.TELEGRAM_SEND: _policy(),
             Capability.BROWSER_OPEN: _policy(),
             Capability.BROWSER_CONTROL: _policy(RiskLevel.CRITICAL),
