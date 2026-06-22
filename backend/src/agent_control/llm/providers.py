@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import base64
 import mimetypes
 from pathlib import Path
@@ -14,6 +15,9 @@ from agent_control.config import AppSettings, LLMProfileConfig
 from agent_control.config_sync import read_env_value
 from agent_control.prompts import render_prompt
 from agent_control.schemas import PlanModel
+
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -191,6 +195,7 @@ def _looks_like_localdeploy(profile: LLMProfileConfig) -> bool:
     try:
         parsed = urlparse(base_url)
     except Exception:
+        logger.debug("failed to parse profile base_url %r for localdeploy detection", base_url, exc_info=True)
         return False
     hostname = (parsed.hostname or "").lower()
     return (

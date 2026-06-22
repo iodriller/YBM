@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import logging
+
 from agent_control.llm.providers import LLMProvider
 from agent_control.prompts import prompt_text, render_prompt
+
+
+logger = logging.getLogger(__name__)
 
 
 class AnswerValidator:
@@ -46,6 +51,7 @@ class AnswerValidator:
         try:
             result = await self.provider.generate_text(system_prompt, user_prompt)
         except Exception:
+            logger.debug("validator provider call failed; passing through to synthesizer", exc_info=True)
             return True, "validator_error"
         text = result.strip()
         if text.upper().startswith("YES"):

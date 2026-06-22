@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -14,6 +15,9 @@ from agent_control.config import ComputerUseAdapterConfig
 from agent_control.llm.providers import LLMProvider
 from agent_control.prompts import prompt_text, render_prompt
 from agent_control.schemas import ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+
+
+logger = logging.getLogger(__name__)
 
 
 class ComputerBackend(Protocol):
@@ -281,6 +285,7 @@ def _cursor_position() -> dict[str, int] | None:
         position = pyautogui.position()
         return {"x": int(position.x), "y": int(position.y)}
     except Exception:
+        logger.debug("pyautogui cursor position lookup failed", exc_info=True)
         return None
 
 
@@ -351,6 +356,7 @@ def _window_snapshot_fallback() -> tuple[list[dict[str, Any]], dict[str, Any] | 
         active = gw.getActiveWindow()
         return windows, _pygetwindow_info(active) if active is not None else None
     except Exception:
+        logger.debug("pygetwindow window snapshot fallback failed", exc_info=True)
         return [], None
 
 
@@ -374,6 +380,7 @@ def _window_visible(window) -> bool:
         try:
             return bool(value() if callable(value) else value)
         except Exception:
+            logger.debug("window visibility probe %r failed; trying next attribute", name, exc_info=True)
             continue
     return False
 
