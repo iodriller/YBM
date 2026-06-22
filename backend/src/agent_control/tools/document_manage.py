@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 import re
 from typing import Any
@@ -8,6 +9,9 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from agent_control.llm.providers import LLMProvider
 from agent_control.schemas import Artifact, ArtifactType, ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
 from agent_control.storage.repositories import ArtifactRepository
+
+
+logger = logging.getLogger(__name__)
 
 
 class DocumentManageAdapter:
@@ -185,6 +189,7 @@ def _extract_text(path: Path) -> str:
             reader = PdfReader(str(path))
             return "\n\n".join((page.extract_text() or "").strip() for page in reader.pages).strip()
         except Exception:
+            logger.debug("pypdf extraction failed for %s; falling back to raw bytes decode", path, exc_info=True)
             return path.read_bytes().decode("utf-8", errors="ignore")
     return path.read_text(encoding="utf-8", errors="ignore")
 

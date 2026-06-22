@@ -5,6 +5,7 @@ import base64
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -21,6 +22,9 @@ except ImportError:  # pragma: no cover - exercised only when optional dependenc
 
 from agent_control.config import BrowserAdapterConfig
 from agent_control.schemas import ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+
+
+logger = logging.getLogger(__name__)
 
 
 class BrowserAdapter:
@@ -607,6 +611,7 @@ class ChromeDevToolsClient:
         try:
             payload = self._json("/json/version", timeout=1.0)
         except Exception:
+            logger.debug("DevTools /json/version probe failed", exc_info=True)
             return None
         return payload if isinstance(payload, dict) else None
 

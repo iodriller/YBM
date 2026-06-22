@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+import logging
 import os
 from pathlib import Path
 import re
@@ -13,6 +14,9 @@ from pydantic import Field
 
 from agent_control.config import VSCodeAdapterConfig
 from agent_control.config_sync import read_env_value
+
+
+logger = logging.getLogger(__name__)
 from agent_control.prompts import render_prompt
 from agent_control.schemas import ErrorClass, StrictBaseModel, ToolCallRequest, ToolCallResult, ToolResultStatus, new_id, utc_now
 
@@ -178,6 +182,7 @@ class VSCodeBridgeTerminalAdapter:
             response.raise_for_status()
             return response.json() is not None
         except Exception:
+            logger.debug("VS Code bridge /vscode/state probe failed", exc_info=True)
             return False
 
     async def _execute_local(self, request: ToolCallRequest, command_text: str) -> ToolCallResult:
