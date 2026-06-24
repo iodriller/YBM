@@ -98,6 +98,12 @@ $env:PYTHONPATH='backend/src'
 pytest backend/tests
 ```
 
+Browser-drive the Streamlit admin UI (port 8501) for diagnosis:
+
+```powershell
+python -m playwright install chromium   # one-time browser download
+```
+
 Run live Telegram E2E checks:
 
 ```powershell
