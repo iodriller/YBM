@@ -24,6 +24,8 @@ test = [
   "pytest>=8.0",
   "pytest-asyncio>=0.23",
   "respx>=0.21",
+  # Browser UI diagnosis (Streamlit admin at :8501): after installing, run: python -m playwright install chromium
+  "playwright>=1.40",
 ]
 e2e = [
   "telethon>=1.36",
