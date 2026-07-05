@@ -52,6 +52,10 @@ class LLMProfileConfig(StrictBaseModel):
 class LLMConfig(StrictBaseModel):
     default_profile: str = "default"
     major_profile: str | None = None  # Profile for complex/major tasks (e.g. gemma4 with large context)
+    # Profile used when the primary profile is unreachable (connection error,
+    # timeout, or HTTP 5xx). Keeps the whole stack usable while the local
+    # model is down or still warming up.
+    fallback_profile: str | None = None
     profiles: dict[str, LLMProfileConfig] = Field(default_factory=dict)
 
     @field_validator("profiles")
@@ -162,9 +166,15 @@ class CodingAssistantAdapterConfig(StrictBaseModel):
 class CodingAgentAdapterConfig(StrictBaseModel):
     enabled: bool = True
     workspace_root: str = ".agent_control/workspaces"
+    session_root: str = ".agent_control/coding_sessions"
     codex_path: str | None = None
     copilot_path: str | None = None
-    timeout_seconds: int = Field(default=900, ge=1)
+    claude_path: str | None = None
+    # Max wall-clock for a background session before it is terminated.
+    timeout_seconds: int = Field(default=3600, ge=1)
+    # How long `start` waits inline before handing the run to the background
+    # watcher. Quick runs return their final result immediately.
+    start_wait_seconds: int = Field(default=20, ge=0)
     output_limit_chars: int = Field(default=20000, ge=100)
     rate_limit_patterns: list[str] = Field(default_factory=lambda: ["rate limit", "too many requests"])
     usage_limit_patterns: list[str] = Field(

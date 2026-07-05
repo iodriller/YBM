@@ -133,7 +133,7 @@ if (Test-HttpOk "http://127.0.0.1:8000/health" -TimeoutSec 10) {
 } else {
   Start-StackScript -Name "localdeploy" -ScriptPath "$Root\scripts\run_localdeploy.ps1" -Supervise
   $localDeployReady = $false
-  for ($i = 0; $i -lt 90; $i++) {
+  for ($i = 0; $i -lt 30; $i++) {
     Start-Sleep -Seconds 1
     if (Test-HttpOk "http://127.0.0.1:8000/health" -TimeoutSec 10) {
       Write-Host "localdeploy is ready at http://127.0.0.1:8000"
@@ -142,7 +142,10 @@ if (Test-HttpOk "http://127.0.0.1:8000/health" -TimeoutSec 10) {
     }
   }
   if (-not $localDeployReady) {
-    throw "localdeploy did not become ready at http://127.0.0.1:8000"
+    # LocalDeploy must not be a single point of failure: LLM calls fail over
+    # to the configured fallback profile while it keeps warming up in the
+    # background, so the rest of the stack starts regardless.
+    Write-Warning "localdeploy not ready at http://127.0.0.1:8000 yet; continuing startup (LLM uses fallback profile until it comes up)"
   }
 }
 & "$Root\scripts\init_db.ps1"

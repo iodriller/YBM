@@ -404,11 +404,14 @@ async def test_worker_blocks_usage_limited_tools_without_blind_retries(tmp_path)
     worker = TaskWorker(repos, audit, executor=executor, retry_policy=RetryPolicy(settings.limits))
 
     running = await worker.process_task(task.id)
-    blocked = await worker.process_task(running.id)
+    clarifying = await worker.process_task(running.id)
 
-    assert blocked.status == TaskStatus.BLOCKED
-    assert "retry_count" not in blocked.metadata
-    assert "limit" in blocked.metadata["intervention_summary"].lower()
+    # Usage limits are the user's call: wait, switch provider, or drop it.
+    # The task pauses with a question instead of dead-ending in BLOCKED.
+    assert clarifying.status == TaskStatus.CLARIFYING
+    assert "retry_count" not in clarifying.metadata
+    assert "limit" in clarifying.metadata["intervention_summary"].lower()
+    assert "limit" in clarifying.metadata["clarifying_question"].lower()
 
 
 @pytest.mark.asyncio
