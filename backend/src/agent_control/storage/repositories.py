@@ -331,6 +331,18 @@ class TaskRepository:
             raise KeyError(f"task not found: {task_id}")
         return self._row_to_task(row)
 
+    def update_objective(self, task_id: str, objective: str) -> TaskRecord:
+        now = utc_now()
+        with self.database.connect() as connection:
+            connection.execute(
+                "UPDATE tasks SET objective = ?, updated_at = ? WHERE id = ?",
+                (objective, _dt(now), task_id),
+            )
+            row = connection.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"task not found: {task_id}")
+        return self._row_to_task(row)
+
     def attach_plan(self, task_id: str, plan_id: str, status: TaskStatus = TaskStatus.PLANNED) -> TaskRecord:
         now = utc_now()
         with self.database.connect() as connection:

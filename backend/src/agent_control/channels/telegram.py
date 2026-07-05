@@ -34,6 +34,14 @@ from agent_control.schemas import (
 from agent_control.storage.audit import AuditLogger
 from agent_control.storage.repositories import Repositories
 from agent_control.observation.screenshot import ScreenshotService
+from agent_control.tools.coding_agent import (
+    PROVIDERS as CODING_PROVIDERS,
+    format_session_status,
+    latest_session,
+    load_sessions,
+    read_log_tail,
+    stop_session_process,
+)
 from agent_control.tools.stt import STTAdapter
 
 
@@ -414,6 +422,13 @@ class TelegramIntakeService:
                         inbound_message=inbound,
                         outbound_message=plain_response,
                     )
+                clarify_response = self._resume_clarifying_task(inbound, conversation_id)
+                if clarify_response is not None:
+                    return TelegramUpdateResult(
+                        authorized=True,
+                        inbound_message=inbound,
+                        outbound_message=clarify_response,
+                    )
                 return await self._classify_and_spawn(inbound, conversation_id)
 
         if result.command:
@@ -564,6 +579,58 @@ class TelegramIntakeService:
             outbound_message=None,
         )
 
+    def _resume_clarifying_task(self, inbound: InboundMessage, conversation_id: str) -> OutboundMessage | None:
+        """Route a reply to the task waiting on a question instead of spawning a new task."""
+        text = (inbound.text or "").strip()
+        if not text:
+            return None
+        task = next(
+            (
+                candidate
+                for candidate in self.repositories.tasks.list_by_statuses([TaskStatus.CLARIFYING], limit=20)
+                if candidate.conversation_id == conversation_id
+                or str(candidate.metadata.get("source_chat_id")) == str(inbound.chat_id)
+            ),
+            None,
+        )
+        if task is None:
+            return None
+        actor = f"telegram:user:{inbound.sender_id}"
+        if text.lower() in {"cancel", "stop", "drop it", "never mind", "nevermind", "forget it", "no"}:
+            self.repositories.tasks.update_status(task.id, TaskStatus.CANCELLED)
+            self.audit.append(
+                AuditEventType.TASK_STATE_CHANGED,
+                actor=actor,
+                task_id=task.id,
+                correlation_id=inbound.correlation_id,
+                payload={"reason": "clarification_cancelled", "status": TaskStatus.CANCELLED.value},
+            )
+            return self._out(inbound.chat_id, f"Cancelled: {task.objective[:200]}")
+
+        # Fold the answer into the objective so replanning sees it, and reset
+        # the attempt counters — the user's input makes this a fresh attempt.
+        objective = f"{task.objective}\n[User clarification: {text}]"
+        self.repositories.tasks.update_objective(task.id, objective)
+        metadata = {
+            **task.metadata,
+            "clarification_answer": text,
+            "answered_clarifying_question": task.metadata.get("clarifying_question"),
+            "retry_count": 0,
+            "replan_count": 0,
+            "evaluator_repair_count": 0,
+            "fulfillment_retry_count": 0,
+        }
+        metadata.pop("clarifying_question", None)
+        self.repositories.tasks.update_metadata(task.id, metadata, TaskStatus.RECEIVED)
+        self.audit.append(
+            AuditEventType.TASK_STATE_CHANGED,
+            actor=actor,
+            task_id=task.id,
+            correlation_id=inbound.correlation_id,
+            payload={"reason": "clarification_answered", "answer": text[:400], "status": TaskStatus.RECEIVED.value},
+        )
+        return self._out(inbound.chat_id, "Got it — resuming the task with your answer.")
+
     async def _non_task_response(
         self,
         inbound: InboundMessage,
@@ -687,6 +754,8 @@ class TelegramIntakeService:
 
         if name == "status":
             return self._out(chat_id, self._status_summary())
+        if name == "agents":
+            return self._out(chat_id, self._agents_summary())
         if name == "tasks":
             tasks = self.repositories.tasks.list_recent(10)
             if not tasks:
@@ -739,7 +808,57 @@ class TelegramIntakeService:
                 return self._out(inbound.chat_id, "No tasks found.")
             lines = [f"{task.id} | {task.status.value} | {task.objective[:80]}" for task in tasks]
             return self._out(inbound.chat_id, "\n".join(lines))
+        agent_reply = self._coding_agent_fast_reply(text)
+        if agent_reply is not None:
+            return self._out(inbound.chat_id, agent_reply)
         return None
+
+    # Deterministic coding-agent queries answered straight from session files,
+    # so "what is codex doing" works instantly even when every LLM is down.
+    _CODING_ALIASES = {"codex": "codex", "claude": "claude_code", "copilot": "github_copilot"}
+    _CODING_STATUS_MARKERS = (
+        "status", "doing", "done", "finished", "finish", "progress", "update",
+        "up to", "how is", "how's", "going", "say", "output", "working",
+    )
+    _CODING_STOP_MARKERS = ("stop", "kill", "abort", "terminate")
+
+    def _coding_agent_fast_reply(self, text: str) -> str | None:
+        if not text or len(text) > 120 or self.settings is None:
+            return None
+        provider = next(
+            (canonical for alias, canonical in self._CODING_ALIASES.items() if alias in text),
+            None,
+        )
+        if provider is None:
+            return None
+        session_root = self.settings.adapters.coding_agent.session_root
+        if any(marker in text for marker in self._CODING_STOP_MARKERS):
+            session = latest_session(session_root, provider=provider)
+            if session is None or session.get("status") != "running":
+                return f"No running {provider} session to stop."
+            stop_session_process(session)
+            return f"Stop requested for {provider} session {session.get('session_id')}. A final report follows once it exits."
+        if any(marker in text for marker in self._CODING_STATUS_MARKERS) or text.strip() == provider:
+            session = latest_session(session_root, provider=provider)
+            if session is None:
+                return f"No {provider} sessions have run yet."
+            log_tail = read_log_tail(str(session.get("log_path") or ""))
+            return format_session_status(session, log_tail=log_tail)[:3900]
+        return None
+
+    def _agents_summary(self) -> str:
+        if self.settings is None:
+            return "Coding agent sessions are not configured."
+        sessions = load_sessions(self.settings.adapters.coding_agent.session_root, limit=8)
+        if not sessions:
+            return "No coding agent sessions yet. Providers: " + ", ".join(CODING_PROVIDERS)
+        lines = ["Recent coding sessions:"]
+        for session in sessions:
+            lines.append(
+                f"- {session.get('provider')} | {session.get('status')} | {session.get('session_id')} | "
+                f"{str(session.get('prompt') or '')[:60]}"
+            )
+        return "\n".join(lines)
 
     def _approve_latest_pending(self, inbound: InboundMessage) -> OutboundMessage:
         chat_id = str(inbound.chat_id)

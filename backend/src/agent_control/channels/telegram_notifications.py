@@ -109,6 +109,11 @@ def _user_facing_task_message(task: TaskRecord) -> str:
         )
     if task.status == TaskStatus.CANCELLED:
         return "Cancelled."
+    if task.status == TaskStatus.CLARIFYING:
+        question = str(task.metadata.get("clarifying_question") or "").strip()
+        if question:
+            return _trim(f"{question}\n\n(Reply here to continue this task, or say 'cancel'.)", 3900)
+        return "I need more input to continue this task — reply here with details, or say 'cancel'."
     if task.status in {TaskStatus.BLOCKED, TaskStatus.FAILED}:
         error = _last_error(task)
         first_line = _failure_headline(task, error)

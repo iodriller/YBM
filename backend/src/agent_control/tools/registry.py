@@ -12,7 +12,7 @@ from agent_control.tools.adapter_factory import AdapterFactoryAdapter
 from agent_control.tools.artifact_delivery import ArtifactDeliveryAdapter
 from agent_control.tools.browser import BrowserAdapter
 from agent_control.tools.coding_assistant import GenericTerminalAgentAdapter
-from agent_control.tools.coding_agent import CodingAgentAdapter
+from agent_control.tools.coding_agent import CodingAgentAdapter, session_completion_message
 from agent_control.tools.computer_use import ComputerUseAdapter
 from agent_control.tools.contracts import (
     AdapterFactoryAssessInput,
@@ -499,24 +499,58 @@ def _register_tts(deps: _RegistryDeps, definitions: _Definitions, adapters: _Ada
 def _register_coding_agent(deps: _RegistryDeps, definitions: _Definitions, adapters: _Adapters) -> None:
     settings = deps.settings
     enabled = _capability_enabled(settings, Capability.TERMINAL_RUN) and settings.adapters.coding_agent.enabled
+    operations = ("start", "plan", "run_step", "run_goal", "status", "limits", "resume", "stop", "get_latest_output")
     definitions.append(
         ToolDefinition(
             name="coding.agent",
             capability=Capability.TERMINAL_RUN,
             enabled=enabled,
-            description="run explicitly requested Codex or GitHub Copilot CLI work inside a task workspace",
-            operations=("plan", "run_step", "run_goal", "status", "limits", "resume", "stop"),
+            description=(
+                "start background Codex, Claude Code, or GitHub Copilot CLI sessions in a task workspace "
+                "and report their status; completion is announced to the source chat automatically"
+            ),
+            operations=operations,
             input_schema=CodingAgentInput,
             output_schema=CodingAgentOutput,
-            operation_output_schemas=_same_output_schema(
-                ("plan", "run_step", "run_goal", "status", "limits", "resume", "stop"),
-                CodingAgentOutput,
-            ),
+            operation_output_schemas=_same_output_schema(operations, CodingAgentOutput),
             default_operation="run_goal",
+            examples=(
+                {"operation": "start", "provider": "codex", "prompt": "fix the failing tests in this repo"},
+                {"operation": "status"},
+                {"operation": "stop", "provider": "codex"},
+            ),
         )
     )
     if settings.adapters.coding_agent.enabled:
-        adapters["coding.agent"] = CodingAgentAdapter(settings.adapters.coding_agent)
+        adapters["coding.agent"] = CodingAgentAdapter(
+            settings.adapters.coding_agent,
+            on_complete=_coding_session_completion_callback(deps),
+        )
+
+
+def _coding_session_completion_callback(deps: _RegistryDeps):
+    """Push a report to the task's source chat when a background coding session ends."""
+    telegram = deps.telegram_client
+    tasks = deps.task_repository
+
+    async def notify(session: dict) -> None:
+        task = None
+        task_id = session.get("task_id")
+        if tasks is not None and task_id:
+            task = tasks.get(str(task_id))  # type: ignore[attr-defined]
+            if task is not None:
+                brief = {
+                    key: session.get(key)
+                    for key in ("session_id", "provider", "status", "returncode", "changed_files", "summary")
+                }
+                tasks.update_metadata(task.id, {**task.metadata, "coding_agent_session": brief})  # type: ignore[attr-defined]
+        chat_id = task.metadata.get("source_chat_id") if task is not None else None
+        if telegram is not None and chat_id:
+            await telegram.send_message(str(chat_id), session_completion_message(session))  # type: ignore[attr-defined]
+
+    if telegram is None and tasks is None:
+        return None
+    return notify
 
 
 def _register_schedule(deps: _RegistryDeps, definitions: _Definitions, adapters: _Adapters) -> None:

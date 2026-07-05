@@ -176,8 +176,12 @@ class DocumentManageInput(ToolInputModel):
 
 
 class CodingAgentInput(ToolInputModel):
-    operation: Literal["plan", "run_step", "run_goal", "status", "limits", "resume", "stop"] = "run_goal"
-    provider: Literal["codex", "github_copilot"]
+    operation: Literal[
+        "start", "plan", "run_step", "run_goal", "status", "limits", "resume", "stop", "get_latest_output"
+    ] = "run_goal"
+    # Provider is required to start a run; status/stop/get_latest_output can
+    # omit it and resolve the latest session.
+    provider: Literal["codex", "github_copilot", "claude_code"] | None = None
     prompt: str | None = None
     objective: str | None = None
     workspace_dir: str | None = None
@@ -186,10 +190,11 @@ class CodingAgentInput(ToolInputModel):
 
     @model_validator(mode="after")
     def _require_input_for_run_ops(self) -> "CodingAgentInput":
-        if self.operation in {"plan", "run_step", "run_goal"} and not (self.prompt or self.objective):
-            raise ValueError(
-                f"coding.agent {self.operation} requires 'prompt' or 'objective'"
-            )
+        if self.operation in {"start", "plan", "run_step", "run_goal", "resume"}:
+            if not self.provider:
+                raise ValueError(f"coding.agent {self.operation} requires 'provider'")
+            if not (self.prompt or self.objective):
+                raise ValueError(f"coding.agent {self.operation} requires 'prompt' or 'objective'")
         return self
 
 
@@ -602,16 +607,18 @@ class DocumentManageOutput(ToolOutputModel):
 
 class CodingAgentOutput(ToolOutputModel):
     operation: str = Field(min_length=1)
-    provider: str = Field(min_length=1)
+    provider: str = ""
     workspace_dir: str | None = None
     session_id: str | None = None
-    stdout: str = ""
-    stderr: str = ""
+    status: str | None = None
+    pid: int | None = None
     returncode: int | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
     limit_state: dict[str, Any] = Field(default_factory=dict)
-    files_before: list[str] = Field(default_factory=list)
-    files_after: list[str] = Field(default_factory=list)
     changed_files: list[str] = Field(default_factory=list)
+    log_path: str | None = None
+    log_tail: str = ""
     summary: str | None = None
 
 

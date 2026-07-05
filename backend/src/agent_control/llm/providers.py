@@ -140,25 +140,91 @@ class OpenAICompatibleProvider:
         return None
 
 
-def build_default_llm_provider(settings: AppSettings) -> LLMProvider | None:
-    profile = settings.llm.profiles.get(settings.llm.default_profile)
+class FailoverLLMProvider:
+    """Try the primary provider first; on unavailability fall back to the secondary.
+
+    Unavailability means the endpoint could not serve the request at all —
+    connection errors, timeouts, or HTTP 5xx. Model-quality failures (invalid
+    structured output, HTTP 4xx) are NOT failed over: they would fail the same
+    way against the fallback or indicate a request bug, and silently switching
+    models on them would mask the real problem.
+    """
+
+    def __init__(self, primary: LLMProvider, fallback: LLMProvider) -> None:
+        self.primary = primary
+        self.fallback = fallback
+
+    async def generate_text(self, system_prompt: str, user_prompt: str) -> str:
+        return await self._call("generate_text", system_prompt, user_prompt)
+
+    async def generate_multimodal_text(self, system_prompt: str, user_prompt: str, image_paths: list[str]) -> str:
+        return await self._call("generate_multimodal_text", system_prompt, user_prompt, image_paths)
+
+    async def generate_structured(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        output_model: type[T],
+        *,
+        temperature: float | None = None,
+    ) -> T:
+        return await self._call(
+            "generate_structured", system_prompt, user_prompt, output_model, temperature=temperature
+        )
+
+    async def _call(self, method: str, *args, **kwargs):
+        try:
+            return await getattr(self.primary, method)(*args, **kwargs)
+        except Exception as exc:
+            if not _is_unavailability(exc):
+                raise
+            logger.warning("primary LLM unavailable (%s); using fallback profile", exc)
+            return await getattr(self.fallback, method)(*args, **kwargs)
+
+
+def _is_unavailability(exc: Exception) -> bool:
+    if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)):
+        return True
+    # OpenAICompatibleProvider wraps HTTP errors in ValueError with the status
+    # in the message; 5xx means the endpoint itself is broken/overloaded.
+    if isinstance(exc, ValueError):
+        message = str(exc)
+        return "failed with HTTP 5" in message
+    return False
+
+
+def _build_profile_provider(settings: AppSettings, profile_name: str | None, role: str) -> LLMProvider | None:
+    if not profile_name:
+        return None
+    profile = settings.llm.profiles.get(profile_name)
     if profile is None:
         return None
     if profile.provider != "openai_compatible":
-        raise ValueError(f"unsupported LLM provider: {profile.provider}")
+        raise ValueError(f"unsupported {role} LLM provider: {profile.provider}")
     return OpenAICompatibleProvider(profile)
+
+
+def _with_fallback(settings: AppSettings, provider: LLMProvider | None, primary_name: str | None) -> LLMProvider | None:
+    if provider is None:
+        return None
+    fallback_name = settings.llm.fallback_profile
+    if not fallback_name or fallback_name == primary_name:
+        return provider
+    fallback = _build_profile_provider(settings, fallback_name, "fallback")
+    if fallback is None:
+        return provider
+    return FailoverLLMProvider(provider, fallback)
+
+
+def build_default_llm_provider(settings: AppSettings) -> LLMProvider | None:
+    provider = _build_profile_provider(settings, settings.llm.default_profile, "default")
+    return _with_fallback(settings, provider, settings.llm.default_profile)
 
 
 def build_major_llm_provider(settings: AppSettings) -> LLMProvider | None:
     """Build the LLM provider for complex/major tasks, if a major_profile is configured."""
-    if not settings.llm.major_profile:
-        return None
-    profile = settings.llm.profiles.get(settings.llm.major_profile)
-    if profile is None:
-        return None
-    if profile.provider != "openai_compatible":
-        raise ValueError(f"unsupported major LLM provider: {profile.provider}")
-    return OpenAICompatibleProvider(profile)
+    provider = _build_profile_provider(settings, settings.llm.major_profile, "major")
+    return _with_fallback(settings, provider, settings.llm.major_profile)
 
 
 class StaticPlanProvider:

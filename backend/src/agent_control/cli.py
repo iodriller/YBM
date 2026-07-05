@@ -113,21 +113,28 @@ async def run_worker() -> None:
         adapters=registry.adapters,
         tool_definitions=registry.definitions,
     )
-    worker = TaskWorker(
-        repositories,
-        audit,
-        planner=planner,
-        executor=executor,
-        retry_policy=RetryPolicy(settings.limits),
-        config_context=_worker_config_context(registry),
-        default_plan_factory=lambda task: build_default_task_plan(settings, task),
-        recovery_plan_factory=lambda task, reason: build_evaluator_recovery_plan(settings, task, reason),
-        notification_sink=_telegram_notifier(settings),
-        synthesizer=synthesizer,
-        validator=validator,
-        task_budget_seconds=float(settings.limits.task_budget_seconds),
-    )
-    await worker.run_forever()
+    notifier = _telegram_notifier(settings)
+    # Run max_parallel_tasks worker loops in one process. claim_next() claims
+    # atomically per worker_id, so quick tasks (status, delivery) are not
+    # starved behind a long-running coding or browser task.
+    workers = [
+        TaskWorker(
+            repositories,
+            audit,
+            planner=planner,
+            executor=executor,
+            retry_policy=RetryPolicy(settings.limits),
+            config_context=_worker_config_context(registry),
+            default_plan_factory=lambda task: build_default_task_plan(settings, task),
+            recovery_plan_factory=lambda task, reason: build_evaluator_recovery_plan(settings, task, reason),
+            notification_sink=notifier,
+            synthesizer=synthesizer,
+            validator=validator,
+            task_budget_seconds=float(settings.limits.task_budget_seconds),
+        )
+        for _ in range(max(settings.limits.max_parallel_tasks, 1))
+    ]
+    await asyncio.gather(*(worker.run_forever() for worker in workers))
 
 
 async def run_scheduler() -> None:

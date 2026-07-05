@@ -12,6 +12,7 @@ from agent_control.channels.memory import ConversationMemoryService
 from agent_control.llm import PlannerService
 from agent_control.llm.synthesizer import ResponseSynthesizer
 from agent_control.llm.validator import AnswerValidator
+from agent_control.orchestration.clarify import build_clarifying_question
 from agent_control.orchestration.executor import ToolExecutor
 from agent_control.orchestration.fulfillment import validate_fulfillment
 from agent_control.recovery import RetryPolicy
@@ -56,6 +57,7 @@ NOTIFIABLE_STATUSES = {
     TaskStatus.AWAITING_APPROVAL,
     TaskStatus.BLOCKED,
     TaskStatus.CANCELLED,
+    TaskStatus.CLARIFYING,
     TaskStatus.COMPLETED,
     TaskStatus.FAILED,
     TaskStatus.RETRYING,
@@ -343,7 +345,9 @@ class TaskWorker:
         replan = await self._replan_with_error(task, result.error_message or result.status.value)
         if replan is not None:
             return replan
-        return self._transition(task, TaskStatus.FAILED, "tool_failed")
+        # Every safe strategy is exhausted — ask the user a targeted question
+        # instead of dying silently.
+        return self._ask_user(task, result.error_message or result.status.value)
 
     def _process_retrying(self, task: TaskRecord) -> TaskRecord:
         next_retry_at = task.metadata.get("next_retry_at")
@@ -460,23 +464,23 @@ class TaskWorker:
         if self.retry_policy is None:
             return None
         if result.error_class == ErrorClass.USAGE_LIMITED:
-            metadata = {
-                **task.metadata,
-                "intervention_summary": self.retry_policy.intervention_summary(result),
-            }
-            updated = self.repositories.tasks.update_metadata(task.id, metadata, TaskStatus.BLOCKED)
-            self.audit.task_state_changed("orchestrator", task.id, task.status, updated.status)
-            return updated
+            return self._ask_user(
+                task,
+                result.error_message or "usage limit reached",
+                extra_metadata={"intervention_summary": self.retry_policy.intervention_summary(result)},
+            )
         current_retry_count = int(task.metadata.get("retry_count", 0))
         decision = self.retry_policy.evaluate(result, current_retry_count)
         if not decision.retry:
             if decision.reason == "retry_limit_reached":
-                metadata = {
-                    **task.metadata,
-                    "retry_count": decision.retry_count,
-                    "intervention_summary": self.retry_policy.intervention_summary(result),
-                }
-                return self.repositories.tasks.update_metadata(task.id, metadata, TaskStatus.BLOCKED)
+                return self._ask_user(
+                    task,
+                    result.error_message or result.status.value,
+                    extra_metadata={
+                        "retry_count": decision.retry_count,
+                        "intervention_summary": self.retry_policy.intervention_summary(result),
+                    },
+                )
             return None
         metadata = {
             **task.metadata,
@@ -486,6 +490,35 @@ class TaskWorker:
         }
         updated = self.repositories.tasks.update_metadata(task.id, metadata, TaskStatus.RETRYING)
         self.audit.task_state_changed("orchestrator", task.id, task.status, updated.status)
+        return updated
+
+    def _ask_user(self, task: TaskRecord, reason: str, *, extra_metadata: dict[str, Any] | None = None) -> TaskRecord:
+        """Pause the task with one targeted question instead of a dead BLOCKED/FAILED end.
+
+        The user's next message in the source chat resumes the task with the
+        answer attached (see TelegramIntakeService). At most two questions per
+        task — after that it fails with the accumulated context.
+        """
+        latest = self.repositories.tasks.get(task.id) or task
+        ask_count = int(latest.metadata.get("clarify_count", 0))
+        if ask_count >= 2:
+            return self._transition(latest, TaskStatus.FAILED, "clarification_attempts_exhausted")
+        question = build_clarifying_question(latest, reason)
+        metadata = {
+            **latest.metadata,
+            **(extra_metadata or {}),
+            "clarify_count": ask_count + 1,
+            "clarifying_question": question,
+            "clarifying_reason": reason[:400],
+        }
+        updated = self.repositories.tasks.update_metadata(latest.id, metadata, TaskStatus.CLARIFYING)
+        self.audit.task_state_changed("orchestrator", latest.id, latest.status, updated.status)
+        self.audit.append(
+            AuditEventType.TASK_STATE_CHANGED,
+            actor="orchestrator",
+            task_id=latest.id,
+            payload={"reason": "clarification_requested", "question": question, "clarify_count": ask_count + 1},
+        )
         return updated
 
     async def _validate_and_synthesize(
@@ -590,14 +623,19 @@ class TaskWorker:
     async def _notify_if_needed(self, task: TaskRecord) -> None:
         if task.status not in NOTIFIABLE_STATUSES:
             return
+        # CLARIFYING can happen more than once per task; key by question number
+        # so the second question is not swallowed by the dedupe set.
+        status_key = task.status.value
+        if task.status == TaskStatus.CLARIFYING:
+            status_key = f"clarifying:{task.metadata.get('clarify_count', 0)}"
         notified = set(task.metadata.get("notified_statuses", []))
-        if self.notification_sink is not None and task.status.value not in notified:
+        if self.notification_sink is not None and status_key not in notified:
             await self.notification_sink.notify(task)
         await self._remember_task_completion(task)
         latest = self.repositories.tasks.get(task.id)
         if latest is None:
             return
-        updated_notified = sorted({*latest.metadata.get("notified_statuses", []), task.status.value})
+        updated_notified = sorted({*latest.metadata.get("notified_statuses", []), status_key})
         self.repositories.tasks.update_metadata(
             task.id,
             {**latest.metadata, "notified_statuses": updated_notified},
@@ -717,15 +755,14 @@ class TaskWorker:
                         payload={"reason": "fulfillment_retry", "gap": gap, "status": updated.status.value},
                     )
                     return updated
-                updated = self.repositories.tasks.update_metadata(latest.id, metadata, TaskStatus.BLOCKED)
-                self.audit.task_state_changed("validator", latest.id, latest.status, updated.status)
+                self.repositories.tasks.update_metadata(latest.id, metadata)
                 self.audit.append(
                     AuditEventType.TASK_STATE_CHANGED,
                     actor="validator",
                     task_id=latest.id,
-                    payload={"reason": "fulfillment_validation_failed", "gap": gap, "status": updated.status.value},
+                    payload={"reason": "fulfillment_validation_failed", "gap": gap},
                 )
-                return updated
+                return self._ask_user(latest, gap)
         updated = self.repositories.tasks.update_status(task.id, status)
         self.audit.task_state_changed("orchestrator", task.id, task.status, updated.status)
         self.audit.append(

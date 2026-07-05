@@ -298,8 +298,12 @@ def _postcondition_satisfied(task: TaskRecord, expected: PostconditionType) -> b
         return isinstance(value, str) and value.lower().endswith(".pptx")
     if expected == PostconditionType.CODING_AGENT_STEP:
         output = _last_output_dict(task)
-        return output.get("provider") in {"codex", "github_copilot"} and (
-            output.get("returncode") == 0 or bool((output.get("limit_state") or {}).get("limited"))
+        # A running background session satisfies the step: the session watcher
+        # reports the final result to the source chat when it ends.
+        return output.get("provider") in {"codex", "github_copilot", "claude_code"} and (
+            output.get("returncode") == 0
+            or output.get("status") == "running"
+            or bool((output.get("limit_state") or {}).get("limited"))
         )
     if expected == PostconditionType.SCHEDULE_CREATED:
         return bool(_any_value(task, metadata_keys=("schedule_id",), output_keys=("schedule_id", "task_id")))
