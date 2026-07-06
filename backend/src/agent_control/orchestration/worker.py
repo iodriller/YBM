@@ -12,9 +12,12 @@ from agent_control.channels.memory import ConversationMemoryService
 from agent_control.llm import PlannerService
 from agent_control.llm.synthesizer import ResponseSynthesizer
 from agent_control.llm.validator import AnswerValidator
+from agent_control.orchestration.attempt_history import append_attempt_history
 from agent_control.orchestration.clarify import build_clarifying_question
 from agent_control.orchestration.executor import ToolExecutor
+from agent_control.orchestration.failure_diagnosis import diagnose_failure
 from agent_control.orchestration.fulfillment import validate_fulfillment
+from agent_control.orchestration.recovery_policy import RecoveryAction, choose_recovery
 from agent_control.recovery import RetryPolicy
 from agent_control.schemas import (
     ApprovalRequest,
@@ -55,6 +58,7 @@ WORKABLE_STATUSES = [
 
 NOTIFIABLE_STATUSES = {
     TaskStatus.AWAITING_APPROVAL,
+    TaskStatus.AWAITING_EXTERNAL,
     TaskStatus.BLOCKED,
     TaskStatus.CANCELLED,
     TaskStatus.CLARIFYING,
@@ -126,8 +130,13 @@ class TaskWorker:
             await self._notify_if_needed(processed)
             # Once the task is terminal, drop the claim so it can't be
             # accidentally re-claimed by a stale lookup. Best-effort.
-            if processed.status in {TaskStatus.COMPLETED, TaskStatus.FAILED,
-                                     TaskStatus.BLOCKED, TaskStatus.CANCELLED}:
+            if processed.status in {
+                TaskStatus.COMPLETED,
+                TaskStatus.FAILED,
+                TaskStatus.BLOCKED,
+                TaskStatus.CANCELLED,
+                TaskStatus.AWAITING_EXTERNAL,
+            }:
                 self.repositories.tasks.release_claim(processed.id)
             return processed
         except asyncio.TimeoutError:
@@ -252,6 +261,9 @@ class TaskWorker:
         if task.status == TaskStatus.RETRYING:
             return self._process_retrying(task)
 
+        if task.status == TaskStatus.AWAITING_EXTERNAL:
+            return task
+
         return task
 
     async def _process_planned(self, task: TaskRecord) -> TaskRecord:
@@ -296,6 +308,15 @@ class TaskWorker:
         if latest is None or latest.status in {TaskStatus.PAUSED, TaskStatus.CANCELLED}:
             return latest or task
 
+        pending_result = _pending_tool_result(latest, step)
+        if pending_result is not None:
+            metadata = {**latest.metadata}
+            metadata.pop("pending_tool_result", None)
+            metadata.pop("awaiting_external", None)
+            latest = self.repositories.tasks.update_metadata(latest.id, metadata, TaskStatus.RUNNING)
+            task = self._record_tool_result(latest.id, step.tool_name, pending_result)
+            return await self._handle_step_result(task, plan, step, pending_result)
+
         resolved_input = _resolve_step_input(latest, step.tool_input)
         request = ToolCallRequest(
             task_id=task.id,
@@ -310,9 +331,72 @@ class TaskWorker:
         step_approved = self._step_is_approved(task.id, step.id)
         result = await self.executor.execute(request, approved=step_approved)
         task = self._record_tool_result(task.id, step.tool_name, result)
+        return await self._handle_step_result(task, plan, step, result)
+
+    async def _handle_step_result(
+        self,
+        task: TaskRecord,
+        plan: PlanModel,
+        step: PlanStep,
+        result: ToolCallResult,
+    ) -> TaskRecord:
         latest = self.repositories.tasks.get(task.id)
         if latest is None or latest.status in {TaskStatus.PAUSED, TaskStatus.CANCELLED}:
             return latest or task
+        operation = _operation_from_step_result(step, result)
+        diagnosis = None if result.status == ToolResultStatus.SUCCEEDED else diagnose_failure(
+            result,
+            tool_name=step.tool_name or "",
+            operation=operation,
+        )
+        recovery_decision = None
+        next_action = "continue"
+        if diagnosis is not None:
+            tentative_metadata = append_attempt_history(
+                latest.metadata,
+                step_id=step.id,
+                tool_name=step.tool_name or "",
+                operation=operation,
+                result=result,
+                diagnosis=diagnosis,
+                next_action="pending",
+            )
+            recovery_decision = choose_recovery(
+                latest.model_copy(update={"metadata": tentative_metadata}),
+                result,
+                diagnosis,
+                tool_name=step.tool_name or "",
+                operation=operation,
+            )
+            next_action = recovery_decision.action
+        elif _is_background_external_result(step, result):
+            next_action = "await_external"
+        metadata = append_attempt_history(
+            latest.metadata,
+            step_id=step.id,
+            tool_name=step.tool_name or "",
+            operation=operation,
+            result=result,
+            diagnosis=diagnosis,
+            next_action=next_action,
+        )
+        if recovery_decision is not None:
+            metadata["recovery_decision"] = recovery_decision.model_dump(mode="json")
+        latest = self.repositories.tasks.update_metadata(latest.id, metadata)
+        if _is_background_external_result(step, result):
+            return self._await_external(latest, step, result)
+        if recovery_decision is not None and recovery_decision.action == RecoveryAction.ASK_USER:
+            extra_metadata: dict[str, Any] = {}
+            if (
+                self.retry_policy is not None
+                and (result.status == ToolResultStatus.RATE_LIMITED or result.error_class == ErrorClass.USAGE_LIMITED)
+            ):
+                extra_metadata["intervention_summary"] = self.retry_policy.intervention_summary(result)
+            return self._ask_user(
+                latest,
+                result.error_message or recovery_decision.reason,
+                extra_metadata=extra_metadata or None,
+            )
         if result.status == ToolResultStatus.SUCCEEDED:
             next_step = self._next_runnable_step(plan.steps, step.id)
             if next_step is None:
@@ -348,6 +432,31 @@ class TaskWorker:
         # Every safe strategy is exhausted — ask the user a targeted question
         # instead of dying silently.
         return self._ask_user(task, result.error_message or result.status.value)
+
+    def _await_external(self, task: TaskRecord, step: PlanStep, result: ToolCallResult) -> TaskRecord:
+        output = result.output if isinstance(result.output, dict) else {}
+        session_id = str(output.get("session_id") or "")
+        metadata = {
+            **task.metadata,
+            "awaiting_external": {
+                "tool_name": step.tool_name,
+                "step_id": step.id,
+                "session_id": session_id,
+                "provider": output.get("provider"),
+                "status": output.get("status"),
+                "request_id": result.request_id,
+                "started_at": output.get("started_at"),
+            },
+        }
+        updated = self.repositories.tasks.update_metadata(task.id, metadata, TaskStatus.AWAITING_EXTERNAL)
+        self.audit.task_state_changed("orchestrator", task.id, task.status, updated.status)
+        self.audit.append(
+            AuditEventType.TASK_STATE_CHANGED,
+            actor="orchestrator",
+            task_id=task.id,
+            payload={"reason": "awaiting_external_session", "session_id": session_id, "tool": step.tool_name},
+        )
+        return updated
 
     def _process_retrying(self, task: TaskRecord) -> TaskRecord:
         next_retry_at = task.metadata.get("next_retry_at")
@@ -785,6 +894,39 @@ def _resolve_step_input(task: TaskRecord, value: Any) -> Any:
         "{{last_entry_path}}": _last_entry_path(task),
     }
     return _replace_placeholders(value, replacements)
+
+
+def _is_background_external_result(step: PlanStep, result: ToolCallResult) -> bool:
+    if step.tool_name != "coding.agent" or result.status != ToolResultStatus.SUCCEEDED:
+        return False
+    output = result.output if isinstance(result.output, dict) else {}
+    return output.get("status") == "running" and bool(output.get("session_id"))
+
+
+def _pending_tool_result(task: TaskRecord, step: PlanStep) -> ToolCallResult | None:
+    pending = task.metadata.get("pending_tool_result")
+    if not isinstance(pending, dict):
+        return None
+    if pending.get("step_id") and pending.get("step_id") != step.id:
+        return None
+    if pending.get("tool_name") and pending.get("tool_name") != step.tool_name:
+        return None
+    result = pending.get("result")
+    if not isinstance(result, dict):
+        return None
+    try:
+        return ToolCallResult.model_validate(result)
+    except Exception:
+        return None
+
+
+def _operation_from_step_result(step: PlanStep, result: ToolCallResult) -> str:
+    output = result.output if isinstance(result.output, dict) else {}
+    if output.get("operation"):
+        return str(output["operation"])
+    if step.tool_input.get("operation"):
+        return str(step.tool_input["operation"])
+    return ""
 
 
 def _replace_placeholders(value: Any, replacements: dict[str, Any]) -> Any:

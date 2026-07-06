@@ -102,3 +102,34 @@ def test_desktop_run_goal_postcondition_requires_completed_output() -> None:
 
     assert not validation.ok
     assert validation.first_gap == "expected_desktop_observation_missing"
+
+
+def test_running_coding_agent_session_does_not_satisfy_postcondition() -> None:
+    task = TaskRecord(
+        objective="Use Codex to fix tests",
+        metadata={
+            "last_tool_result": {
+                "output": {
+                    "provider": "codex",
+                    "status": "running",
+                    "session_id": "codex_abc",
+                    "returncode": None,
+                }
+            }
+        },
+    )
+    plan = PlanModel(
+        objective=task.objective,
+        steps=[PlanStep(title="Run Codex", description="Run coding agent.", tool_name="coding.agent")],
+        postconditions=[
+            PlanPostcondition(
+                type=PostconditionType.CODING_AGENT_STEP,
+                description="Coding agent reaches a terminal result.",
+            )
+        ],
+    )
+
+    validation = validate_fulfillment(task, plan)
+
+    assert not validation.ok
+    assert validation.first_gap == "expected_coding_agent_step_missing"

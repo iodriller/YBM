@@ -17,10 +17,15 @@ from agent_control.tools.computer_use import ComputerUseAdapter
 from agent_control.tools.contracts import (
     AdapterFactoryAssessInput,
     AdapterFactoryAssessOutput,
+    AdapterFactoryPromoteInput,
+    AdapterFactorySandboxExecuteInput,
+    AdapterFactorySandboxOutput,
     AdapterFactoryScaffoldInput,
     AdapterFactoryScaffoldOutput,
+    AdapterFactoryTestConnectorInput,
     ArtifactDeliverInput,
     ArtifactDeliveryOutput,
+    CodeInterpreterBuildTempHelperInput,
     BrowserClickInput,
     BrowserCloseTabInput,
     BrowserCheckPageUpdateInput,
@@ -37,8 +42,12 @@ from agent_control.tools.contracts import (
     BrowserSummarizePageInput,
     BrowserToolOutput,
     CodeInterpreterGenerateAndRunInput,
+    CodeInterpreterHealthInput,
+    CodeInterpreterInspectStateInput,
     CodeInterpreterOutput,
+    CodeInterpreterRepairScriptInput,
     CodeInterpreterRunPythonInput,
+    CodeInterpreterSolveOnceInput,
     CodingAgentInput,
     CodingAgentOutput,
     CodingAssistantInput,
@@ -55,6 +64,8 @@ from agent_control.tools.contracts import (
     FilesystemOpenFileInput,
     FilesystemReadFileInput,
     FilesystemWriteTextFileInput,
+    MCPClientInput,
+    MCPClientOutput,
     FilesystemResolveDesktopItemInput,
     FilesystemApplyManifestInput,
     FilesystemInspectInput,
@@ -86,6 +97,7 @@ from agent_control.tools.code_interpreter import CodeInterpreterAdapter
 from agent_control.tools.document_manage import DocumentManageAdapter
 from agent_control.tools.filesystem_manage import FilesystemManageAdapter
 from agent_control.tools.local_workspace import LocalWorkspaceAdapter
+from agent_control.tools.mcp_client import MCPClientAdapter
 from agent_control.tools.schedule_manage import ScheduleManageAdapter
 from agent_control.tools.task_status import TaskStatusAdapter
 from agent_control.tools.tts import build_tts_adapter
@@ -376,15 +388,21 @@ def _register_adapter_factory(deps: _RegistryDeps, definitions: _Definitions, ad
             capability=Capability.FILESYSTEM_WRITE,
             enabled=enabled,
             description=f"scaffold generated adapter proposals under {settings.adapters.adapter_factory.root_dir}",
-            operations=("assess", "scaffold"),
+            operations=("assess", "scaffold", "sandbox_execute_once", "test_connector", "promote_after_approval"),
             lifecycle="scaffold",
             operation_schemas={
                 "assess": AdapterFactoryAssessInput,
                 "scaffold": AdapterFactoryScaffoldInput,
+                "sandbox_execute_once": AdapterFactorySandboxExecuteInput,
+                "test_connector": AdapterFactoryTestConnectorInput,
+                "promote_after_approval": AdapterFactoryPromoteInput,
             },
             operation_output_schemas={
                 "assess": AdapterFactoryAssessOutput,
                 "scaffold": AdapterFactoryScaffoldOutput,
+                "sandbox_execute_once": AdapterFactorySandboxOutput,
+                "test_connector": AdapterFactorySandboxOutput,
+                "promote_after_approval": AdapterFactorySandboxOutput,
             },
             default_operation="scaffold",
         )
@@ -402,17 +420,35 @@ def _register_code_interpreter(deps: _RegistryDeps, definitions: _Definitions, a
             capability=Capability.TERMINAL_RUN,
             enabled=enabled,
             description=(
-                "generate and run bounded local Python scripts inside managed workspaces under "
+                "generate and run bounded Python scripts through configured local/container backends under "
                 f"{settings.adapters.code_interpreter.workspace_root}"
             ),
-            operations=("run_python", "generate_and_run"),
+            operations=(
+                "run_python",
+                "generate_and_run",
+                "solve_once",
+                "inspect_state",
+                "build_temp_helper",
+                "repair_script",
+                "health",
+            ),
             operation_schemas={
                 "run_python": CodeInterpreterRunPythonInput,
                 "generate_and_run": CodeInterpreterGenerateAndRunInput,
+                "solve_once": CodeInterpreterSolveOnceInput,
+                "inspect_state": CodeInterpreterInspectStateInput,
+                "build_temp_helper": CodeInterpreterBuildTempHelperInput,
+                "repair_script": CodeInterpreterRepairScriptInput,
+                "health": CodeInterpreterHealthInput,
             },
             operation_output_schemas={
                 "run_python": CodeInterpreterOutput,
                 "generate_and_run": CodeInterpreterOutput,
+                "solve_once": CodeInterpreterOutput,
+                "inspect_state": CodeInterpreterOutput,
+                "build_temp_helper": CodeInterpreterOutput,
+                "repair_script": CodeInterpreterOutput,
+                "health": CodeInterpreterOutput,
             },
             default_operation="run_python",
             examples=(
@@ -429,6 +465,37 @@ def _register_code_interpreter(deps: _RegistryDeps, definitions: _Definitions, a
             provider=deps.provider,  # type: ignore[arg-type]
             artifacts=deps.artifact_repository,
         )
+
+
+def _register_mcp_client(deps: _RegistryDeps, definitions: _Definitions, adapters: _Adapters) -> None:
+    settings = deps.settings
+    enabled = (
+        settings.mcp.enabled
+        and bool(settings.mcp.servers)
+        and _capability_enabled(settings, Capability.TERMINAL_RUN)
+    )
+    definitions.append(
+        ToolDefinition(
+            name="mcp.client",
+            capability=Capability.TERMINAL_RUN,
+            enabled=enabled,
+            description="discover and call configured external MCP server tools through stdio",
+            operations=("discover", "list_tools", "call_tool", "health"),
+            input_schema=MCPClientInput,
+            output_schema=MCPClientOutput,
+            operation_output_schemas=_same_output_schema(
+                ("discover", "list_tools", "call_tool", "health"),
+                MCPClientOutput,
+            ),
+            default_operation="list_tools",
+            examples=(
+                {"operation": "list_tools"},
+                {"operation": "call_tool", "server": "example", "tool": "search", "arguments": {"query": "docs"}},
+            ),
+        )
+    )
+    if settings.mcp.enabled:
+        adapters["mcp.client"] = MCPClientAdapter(settings.mcp)
 
 
 def _register_vscode(deps: _RegistryDeps, definitions: _Definitions, adapters: _Adapters) -> None:
@@ -599,7 +666,7 @@ def _register_task_status(deps: _RegistryDeps, definitions: _Definitions, adapte
         )
     )
     if deps.repositories is not None:
-        adapters["task.status"] = TaskStatusAdapter(deps.repositories)  # type: ignore[arg-type]
+        adapters["task.status"] = TaskStatusAdapter(deps.repositories, settings)  # type: ignore[arg-type]
 
 
 def _register_artifact_delivery(deps: _RegistryDeps, definitions: _Definitions, adapters: _Adapters) -> None:
@@ -809,6 +876,7 @@ _REGISTRARS: tuple[Callable[[_RegistryDeps, _Definitions, _Adapters], None], ...
     _register_filesystem,
     _register_adapter_factory,
     _register_code_interpreter,
+    _register_mcp_client,
     _register_vscode,
     _register_coding_assistant,
     _register_tts,

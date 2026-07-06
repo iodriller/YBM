@@ -30,6 +30,13 @@ from agent_control.schemas import AuditEventType, TaskStatus
 from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.tools.registry import build_tool_registry
 from agent_control.tools.stt import build_stt_adapter
+from agent_control.tools.coding_agent import (
+    mark_session_notified,
+    run_coding_agent_session as run_coding_agent_session_once,
+    scan_coding_sessions_once,
+    session_completion_message,
+    terminal_session_result,
+)
 
 
 def build_repositories() -> tuple[Repositories, AuditLogger]:
@@ -147,6 +154,68 @@ async def run_scheduler() -> None:
     )
 
 
+async def run_coding_agent_session(session_root: str, session_id: str) -> None:
+    await run_coding_agent_session_once(session_root, session_id)
+
+
+async def run_coding_session_watcher(poll_interval_seconds: float = 5.0) -> None:
+    settings = load_settings()
+    repositories, audit = build_repositories()
+    telegram = _telegram_client(settings)
+    while True:
+        try:
+            sessions = await scan_coding_sessions_once(settings.adapters.coding_agent.session_root)
+            for session in sessions:
+                error = await _handle_coding_session_completion(settings, repositories, session, telegram)
+                mark_session_notified(
+                    settings.adapters.coding_agent.session_root,
+                    str(session.get("session_id")),
+                    error=error,
+                )
+        except Exception as exc:
+            audit.append(
+                AuditEventType.ERROR,
+                actor="coding_session_watcher",
+                payload={"error": "watcher_scan_failed", "reason": str(exc)},
+            )
+        await asyncio.sleep(poll_interval_seconds)
+
+
+async def _handle_coding_session_completion(settings, repositories: Repositories, session: dict, telegram) -> str | None:
+    error: str | None = None
+    task_id = session.get("task_id")
+    task = repositories.tasks.get(str(task_id)) if task_id else None
+    if task is not None:
+        result = terminal_session_result(session)
+        awaiting = task.metadata.get("awaiting_external") if isinstance(task.metadata, dict) else None
+        metadata = {
+            **task.metadata,
+            "coding_agent_session": _coding_session_brief(session),
+        }
+        if task.status == TaskStatus.AWAITING_EXTERNAL and isinstance(awaiting, dict):
+            metadata["pending_tool_result"] = {
+                "step_id": awaiting.get("step_id"),
+                "tool_name": "coding.agent",
+                "result": result.model_dump(mode="json"),
+            }
+        status = TaskStatus.RUNNING if task.status == TaskStatus.AWAITING_EXTERNAL else task.status
+        repositories.tasks.update_metadata(task.id, metadata, status)
+    chat_id = task.metadata.get("source_chat_id") if task is not None else None
+    if telegram is not None and chat_id:
+        try:
+            await telegram.send_message(str(chat_id), session_completion_message(session))
+        except Exception as exc:
+            error = str(exc)
+    return error
+
+
+def _coding_session_brief(session: dict) -> dict:
+    return {
+        key: session.get(key)
+        for key in ("session_id", "provider", "status", "returncode", "changed_files", "summary", "ended_at")
+    }
+
+
 def _telegram_notifier(settings) -> TelegramTaskNotifier | None:
     if not settings.channels.telegram.enabled:
         return None
@@ -199,7 +268,21 @@ Prefer conservative plans. Use registered tool names exactly and include explici
 
 def main() -> None:
     parser = argparse.ArgumentParser("agent-control")
-    parser.add_argument("command", choices=["init-db", "config-summary", "poll-telegram", "run-worker", "run-scheduler"])
+    parser.add_argument(
+        "command",
+        choices=[
+            "init-db",
+            "config-summary",
+            "poll-telegram",
+            "run-worker",
+            "run-scheduler",
+            "run-coding-agent-session",
+            "run-coding-session-watcher",
+        ],
+    )
+    parser.add_argument("--session-root", default=None)
+    parser.add_argument("--session-id", default=None)
+    parser.add_argument("--poll-interval-seconds", type=float, default=5.0)
     args = parser.parse_args()
 
     if args.command == "init-db":
@@ -212,6 +295,12 @@ def main() -> None:
         asyncio.run(run_worker())
     elif args.command == "run-scheduler":
         asyncio.run(run_scheduler())
+    elif args.command == "run-coding-agent-session":
+        if not args.session_root or not args.session_id:
+            raise SystemExit("--session-root and --session-id are required")
+        asyncio.run(run_coding_agent_session(args.session_root, args.session_id))
+    elif args.command == "run-coding-session-watcher":
+        asyncio.run(run_coding_session_watcher(args.poll_interval_seconds))
 
 
 if __name__ == "__main__":

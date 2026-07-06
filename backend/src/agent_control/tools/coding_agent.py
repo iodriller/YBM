@@ -89,6 +89,7 @@ class CodingAgentAdapter:
     ) -> None:
         self.config = config
         self.spawner = spawner or AsyncProcessSpawner()
+        self._custom_spawner = spawner is not None
         self.on_complete = on_complete
         self._processes: dict[str, ProcessHandle] = {}
         self._watchers: set[asyncio.Task] = set()
@@ -135,31 +136,82 @@ class CodingAgentAdapter:
 
         session_id = str(request.input.get("session_id") or f"{provider}_{uuid4().hex[:12]}")
         log_path = session_root / f"{session_id}.log"
+        event_path = session_root / f"{session_id}.events.jsonl"
         command = self._command(provider, executable, prompt, workspace)
 
         session = {
             "session_id": session_id,
+            "request_id": request.id,
             "provider": provider,
             "operation": operation,
             "prompt": prompt[:2000],
             "task_id": request.task_id,
             "workspace_dir": str(workspace),
             "log_path": str(log_path),
-            "status": "running",
+            "event_path": str(event_path),
+            "status": "starting" if self._use_runner() else "running",
             "pid": None,
+            "child_pid": None,
+            "runner_pid": None,
             "returncode": None,
+            "command": command,
+            "runner_enabled": self._use_runner(),
             "started_at": _now(),
             "ended_at": None,
             "changed_files": [],
             "files_before": _workspace_snapshot(workspace),
             "summary": None,
             "limit_state": {"limited": False, "source": "cli_output"},
+            "timeout_seconds": self.config.timeout_seconds,
+            "output_limit_chars": self.config.output_limit_chars,
+            "rate_limit_patterns": list(self.config.rate_limit_patterns),
+            "usage_limit_patterns": list(self.config.usage_limit_patterns),
         }
+
+        if self._use_runner():
+            _write_session(session_root, session)
+            append_session_event(str(session_root), session_id, "session_queued", {"provider": provider})
+            runner_command = [
+                sys.executable,
+                "-m",
+                "agent_control.cli",
+                "run-coding-agent-session",
+                "--session-root",
+                str(session_root),
+                "--session-id",
+                session_id,
+            ]
+            runner_log_path = session_root / f"{session_id}.runner.log"
+            runner = await self.spawner.spawn(runner_command, cwd=str(workspace), log_path=str(runner_log_path))
+            session["runner_pid"] = runner.pid
+            _write_session(session_root, session)
+            try:
+                await asyncio.wait_for(runner.wait(), timeout=self.config.start_wait_seconds)
+            except (asyncio.TimeoutError, TimeoutError):
+                stored = load_session(str(session_root), session_id) or session
+                output = _session_output(stored, log_tail=read_log_tail(str(log_path)))
+                output["summary"] = (
+                    f"{provider} is working in the background (session {session_id}). "
+                    "Ask for its status any time; the coding-session watcher will report completion."
+                )
+                output["terminal_output"] = [_terminal_output(operation, output)]
+                return ToolCallResult(request_id=request.id, status=ToolResultStatus.SUCCEEDED, output=output)
+            stored = load_session(str(session_root), session_id) or session
+            if stored.get("status") in {"starting", "running"}:
+                stored = _finalize_session(
+                    session_root,
+                    session_id,
+                    -1,
+                    summary="coding session runner exited before writing a final result",
+                )
+            return self._result_from_session(request, operation, stored)
 
         process = await self.spawner.spawn(command, cwd=str(workspace), log_path=str(log_path))
         session["pid"] = process.pid
+        session["child_pid"] = process.pid
         self._processes[session_id] = process
         _write_session(session_root, session)
+        append_session_event(str(session_root), session_id, "session_started", {"pid": process.pid})
 
         try:
             returncode = await asyncio.wait_for(process.wait(), timeout=self.config.start_wait_seconds)
@@ -178,6 +230,9 @@ class CodingAgentAdapter:
         session = self._finalize(session_id, returncode)
         return self._result_from_session(request, operation, session)
 
+    def _use_runner(self) -> bool:
+        return bool(self.config.use_runner and not self._custom_spawner)
+
     async def _watch(self, process: ProcessHandle, session_id: str) -> None:
         timed_out = False
         remaining = max(self.config.timeout_seconds - self.config.start_wait_seconds, 1)
@@ -195,38 +250,8 @@ class CodingAgentAdapter:
             await self.on_complete(session)
 
     def _finalize(self, session_id: str, returncode: int, *, timed_out: bool = False) -> dict:
-        session_root = self._session_root()
-        session = load_session(str(session_root), session_id) or {"session_id": session_id}
         self._processes.pop(session_id, None)
-
-        log_tail = read_log_tail(str(session.get("log_path") or ""), max_chars=self.config.output_limit_chars)
-        limit_state = _limit_state(log_tail, self.config.rate_limit_patterns, self.config.usage_limit_patterns)
-        workspace = Path(str(session.get("workspace_dir") or "."))
-        changed = _changed_files(session.get("files_before") or {}, _workspace_snapshot(workspace))
-
-        if timed_out:
-            status = "failed"
-            summary = f"{session.get('provider')} run exceeded {self.config.timeout_seconds}s and was terminated."
-        elif limit_state.get("limited"):
-            status = "failed"
-            summary = f"{session.get('provider')} reported a {limit_state.get('kind')} limit."
-        elif returncode == 0:
-            status = "completed"
-            summary = _completion_summary(session, changed, log_tail)
-        else:
-            status = "failed"
-            summary = f"{session.get('provider')} exited with code {returncode}. Last output: {log_tail[-600:]}"
-
-        session.update(
-            status=status,
-            returncode=returncode,
-            ended_at=_now(),
-            changed_files=changed,
-            summary=summary,
-            limit_state=limit_state,
-        )
-        _write_session(session_root, session)
-        return session
+        return _finalize_session(self._session_root(), session_id, returncode, timed_out=timed_out)
 
     def _result_from_session(self, request: ToolCallRequest, operation: str, session: dict) -> ToolCallResult:
         output = _session_output(session, log_tail=read_log_tail(str(session.get("log_path") or "")))
@@ -319,27 +344,30 @@ class CodingAgentAdapter:
 
     def _command(self, provider: str, executable: str, prompt: str, workspace: Path) -> list[str]:
         if provider == "codex":
-            return [
+            command = [
                 executable,
                 "exec",
                 "--json",
                 "--cd",
                 str(workspace),
-                "--sandbox",
-                "workspace-write",
-                "--skip-git-repo-check",
-                prompt,
             ]
+            if self.config.codex_sandbox:
+                command.extend(["--sandbox", self.config.codex_sandbox])
+            if self.config.codex_skip_git_repo_check:
+                command.append("--skip-git-repo-check")
+            command.append(prompt)
+            return command
         if provider == "claude_code":
-            return [
+            command = [
                 executable,
                 "-p",
                 prompt,
                 "--output-format",
                 "text",
-                "--permission-mode",
-                "acceptEdits",
             ]
+            if self.config.claude_permission_mode:
+                command.extend(["--permission-mode", self.config.claude_permission_mode])
+            return command
         args = [
             "-p",
             prompt,
@@ -347,9 +375,11 @@ class CodingAgentAdapter:
             str(workspace),
             "--output-format",
             "json",
-            "--allow-all",
-            "--no-ask-user",
         ]
+        if self.config.copilot_allow_all:
+            args.append("--allow-all")
+        if self.config.copilot_no_ask_user:
+            args.append("--no-ask-user")
         if Path(executable).name.lower() in {"gh", "gh.exe"}:
             return [executable, "copilot", "--", *args]
         return [executable, *args]
@@ -396,7 +426,7 @@ def load_session(session_root: str, session_id: str) -> dict | None:
         return None
 
 
-def load_sessions(session_root: str, limit: int = 20) -> list[dict]:
+def load_sessions(session_root: str, limit: int | None = 20) -> list[dict]:
     root = Path(session_root)
     if not root.exists():
         return []
@@ -407,7 +437,7 @@ def load_sessions(session_root: str, limit: int = 20) -> list[dict]:
         except (OSError, json.JSONDecodeError):
             continue
     sessions.sort(key=lambda item: str(item.get("started_at") or ""), reverse=True)
-    return sessions[:limit]
+    return sessions[:limit] if limit is not None else sessions
 
 
 def latest_session(session_root: str, provider: str | None = None) -> dict | None:
@@ -428,15 +458,118 @@ def read_log_tail(log_path: str, max_chars: int = 2000) -> str:
     return data[-max_chars:].decode(errors="replace").strip()
 
 
+def append_session_event(session_root: str, session_id: str, event: str, payload: dict[str, Any] | None = None) -> None:
+    root = Path(session_root)
+    root.mkdir(parents=True, exist_ok=True)
+    session = load_session(session_root, session_id) or {}
+    event_path = Path(str(session.get("event_path") or root / f"{session_id}.events.jsonl"))
+    event_path.parent.mkdir(parents=True, exist_ok=True)
+    record = {"event": event, "created_at": _now(), **(payload or {})}
+    with event_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+
+
+def mark_session_notified(session_root: str, session_id: str, *, error: str | None = None) -> dict | None:
+    root = Path(session_root)
+    session = load_session(session_root, session_id)
+    if session is None:
+        return None
+    session["notified_at"] = _now()
+    if error:
+        session["notification_error"] = error[:1000]
+    _write_session(root, session)
+    return session
+
+
+def terminal_session_result(session: dict) -> ToolCallResult:
+    output = _session_output(session, log_tail=read_log_tail(str(session.get("log_path") or "")))
+    output["terminal_output"] = [_terminal_output(str(session.get("operation") or "status"), output)]
+    request_id = str(session.get("request_id") or f"external_{session.get('session_id') or 'unknown'}")
+    limit_state = session.get("limit_state") or {}
+    if limit_state.get("limited"):
+        return ToolCallResult(
+            request_id=request_id,
+            status=ToolResultStatus.RATE_LIMITED,
+            output=output,
+            error_class=ErrorClass.USAGE_LIMITED,
+            error_message="coding agent usage limit reached",
+        )
+    if session.get("status") == "completed" and session.get("returncode") in (0, None):
+        return ToolCallResult(request_id=request_id, status=ToolResultStatus.SUCCEEDED, output=output)
+    return ToolCallResult(
+        request_id=request_id,
+        status=ToolResultStatus.FAILED,
+        output=output,
+        error_class=ErrorClass.ADAPTER_FAILED,
+        error_message=str(session.get("summary") or "coding agent session failed"),
+    )
+
+
+def _finalize_session(
+    session_root: Path,
+    session_id: str,
+    returncode: int,
+    *,
+    timed_out: bool = False,
+    summary: str | None = None,
+) -> dict:
+    session = load_session(str(session_root), session_id) or {"session_id": session_id}
+    output_limit = int(session.get("output_limit_chars") or 20000)
+    log_tail = read_log_tail(str(session.get("log_path") or ""), max_chars=output_limit)
+    limit_state = _limit_state(
+        log_tail,
+        list(session.get("rate_limit_patterns") or ["rate limit", "too many requests"]),
+        list(session.get("usage_limit_patterns") or ["usage limit", "quota exceeded", "no quota"]),
+    )
+    workspace = Path(str(session.get("workspace_dir") or "."))
+    changed = _changed_files(session.get("files_before") or {}, _workspace_snapshot(workspace))
+
+    if summary:
+        status = "failed" if returncode not in (0, None) else "completed"
+        final_summary = summary
+    elif timed_out:
+        status = "failed"
+        final_summary = f"{session.get('provider')} run exceeded {session.get('timeout_seconds')}s and was terminated."
+    elif limit_state.get("limited"):
+        status = "failed"
+        final_summary = f"{session.get('provider')} reported a {limit_state.get('kind')} limit."
+    elif returncode == 0:
+        status = "completed"
+        final_summary = _completion_summary(session, changed, log_tail)
+    else:
+        status = "failed"
+        final_summary = f"{session.get('provider')} exited with code {returncode}. Last output: {log_tail[-600:]}"
+
+    session.update(
+        status=status,
+        returncode=returncode,
+        ended_at=_now(),
+        changed_files=changed,
+        summary=final_summary,
+        limit_state=limit_state,
+    )
+    _write_session(session_root, session)
+    append_session_event(str(session_root), session_id, status, {"returncode": returncode, "timed_out": timed_out})
+    return session
+
+
 def stop_session_process(session: dict) -> bool:
     """Best-effort cross-process kill by pid; used when the owning worker is gone."""
-    pid = session.get("pid")
-    if not pid:
+    pids = [session.get("pid"), session.get("child_pid"), session.get("runner_pid")]
+    pids = [pid for pid in pids if pid]
+    if not pids:
         return False
+    stopped = False
+    for pid in dict.fromkeys(str(pid) for pid in pids):
+        stopped = _stop_pid(pid) or stopped
+    return stopped
+
+
+def _stop_pid(pid: str) -> bool:
     try:
         if sys.platform == "win32":
             subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                ["taskkill", "/PID", pid, "/T", "/F"],
                 capture_output=True,
                 timeout=15,
                 check=False,
@@ -445,6 +578,31 @@ def stop_session_process(session: dict) -> bool:
             os.kill(int(pid), 15)
         return True
     except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def session_process_alive(session: dict) -> bool:
+    for key in ("runner_pid", "pid", "child_pid"):
+        pid = session.get(key)
+        if pid and _pid_alive(int(pid)):
+            return True
+    return False
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        if sys.platform == "win32":
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            return str(pid) in result.stdout
+        os.kill(pid, 0)
+        return True
+    except (OSError, subprocess.SubprocessError, ValueError):
         return False
 
 
@@ -488,6 +646,90 @@ def session_completion_message(session: dict) -> str:
     lines.append(f"Workspace: {session.get('workspace_dir')}")
     lines.append(f"Session: {session.get('session_id')}")
     return "\n".join(lines)
+
+
+async def run_coding_agent_session(session_root: str, session_id: str) -> dict:
+    """Run one queued coding session to completion.
+
+    The adapter writes the session file and command first, then starts this
+    runner as a separate process. The runner updates the same session file with
+    child PID, return code, changed files, and event records.
+    """
+    root = Path(session_root).expanduser().resolve()
+    session = load_session(str(root), session_id)
+    if session is None:
+        raise KeyError(f"coding session not found: {session_id}")
+    command = list(session.get("command") or [])
+    if not command:
+        raise ValueError(f"coding session has no command: {session_id}")
+
+    workspace = Path(str(session.get("workspace_dir") or ".")).expanduser().resolve()
+    log_path = Path(str(session.get("log_path") or root / f"{session_id}.log")).expanduser().resolve()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    session.update(status="running", runner_pid=os.getpid(), started_at=session.get("started_at") or _now())
+    _write_session(root, session)
+    append_session_event(str(root), session_id, "session_started", {"runner_pid": os.getpid(), "command": command[:3]})
+
+    process = None
+    timed_out = False
+    try:
+        log_file = open(log_path, "ab")
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                cwd=str(workspace),
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+            )
+        finally:
+            log_file.close()
+        session = load_session(str(root), session_id) or session
+        session.update(pid=process.pid, child_pid=process.pid, status="running")
+        _write_session(root, session)
+        append_session_event(str(root), session_id, "child_started", {"pid": process.pid})
+
+        timeout = int(session.get("timeout_seconds") or 3600)
+        try:
+            returncode = await asyncio.wait_for(process.wait(), timeout=timeout)
+        except (asyncio.TimeoutError, TimeoutError):
+            timed_out = True
+            process.terminate()
+            try:
+                returncode = await asyncio.wait_for(process.wait(), timeout=10)
+            except (asyncio.TimeoutError, TimeoutError):
+                returncode = -1
+        return _finalize_session(root, session_id, int(returncode), timed_out=timed_out)
+    except Exception as exc:
+        session = load_session(str(root), session_id) or session
+        session.update(
+            status="failed",
+            returncode=-1,
+            ended_at=_now(),
+            summary=f"coding session runner failed: {exc}",
+        )
+        _write_session(root, session)
+        append_session_event(str(root), session_id, "failed", {"error": str(exc)})
+        return session
+
+
+async def scan_coding_sessions_once(session_root: str) -> list[dict]:
+    """Finalize stale running sessions and return terminal sessions needing notification."""
+    root = Path(session_root).expanduser().resolve()
+    completed: list[dict] = []
+    for session in load_sessions(str(root), limit=None):
+        status = str(session.get("status") or "")
+        session_id = str(session.get("session_id") or "")
+        if status in {"starting", "running"} and session_id and not session_process_alive(session):
+            session = _finalize_session(
+                root,
+                session_id,
+                int(session.get("returncode") if session.get("returncode") is not None else -1),
+                summary="coding session process ended without a runner final report",
+            )
+            status = str(session.get("status") or "")
+        if status in {"completed", "failed", "stopped"} and not session.get("notified_at"):
+            completed.append(session)
+    return completed
 
 
 def _write_session(session_root: Path, session: dict) -> None:

@@ -18,7 +18,7 @@ DEFAULT_BACKEND_URL = "http://127.0.0.1:8765"
 DEFAULT_TASK_LIMIT = 25
 DEFAULT_AUDIT_LIMIT = 50
 LIVE_REFRESH_SECONDS = 3
-ACTIVE_STATUSES = {"received", "interpreting", "planned", "running", "retrying", "awaiting_approval"}
+ACTIVE_STATUSES = {"received", "interpreting", "planned", "running", "retrying", "awaiting_approval", "awaiting_external"}
 TERMINAL_STATUSES = {"completed", "cancelled", "failed"}
 
 
@@ -618,7 +618,7 @@ def _render_computer_use_config(summary: dict[str, Any], state: dict[str, str]) 
             _wrapped_text(metadata["screenshot_path"])
         if metadata.get("computer_use_actions"):
             st.caption(f"Actions recorded: {len(metadata.get('computer_use_actions') or [])}")
-        if recent.get("status") in {"received", "planned", "awaiting_approval", "running", "retrying"}:
+        if recent.get("status") in {"received", "planned", "awaiting_approval", "awaiting_external", "running", "retrying"}:
             if st.button("Stop active computer-use task", key="stop-computer-use-task"):
                 _post_feedback(
                     state,
@@ -1266,6 +1266,7 @@ def _activity_label(status: str) -> str:
         "interpreting": "Interpreting",
         "planned": "Ready",
         "awaiting_approval": "Waiting approval",
+        "awaiting_external": "Waiting external",
         "running": "Running",
         "retrying": "Retrying",
         "paused": "Paused",

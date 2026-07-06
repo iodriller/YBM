@@ -12,7 +12,7 @@ def test_service_summary_marks_expected_supervised_services_ready(monkeypatch, t
     run_dir = tmp_path / ".agent_control" / "run"
     run_dir.mkdir(parents=True)
     now = datetime.now(timezone.utc).isoformat()
-    for name in ("backend", "worker", "scheduler", "telegram_polling", "admin_ui"):
+    for name in ("backend", "worker", "coding_session_watcher", "scheduler", "telegram_polling", "admin_ui"):
         (run_dir / f"{name}.status.json").write_text(
             json.dumps(
                 {

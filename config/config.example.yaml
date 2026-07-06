@@ -20,6 +20,7 @@ channels:
 llm:
   default_profile: "localdeploy_qwen3vl_8b"
   major_profile: "localdeploy_qwen3vl_8b"
+  fallback_profile: "openai_saved"
   profiles:
     localdeploy_qwen3vl_8b:
       provider: "openai_compatible"
@@ -200,6 +201,32 @@ adapters:
     usage_limit_patterns:
       - "usage limit"
       - "quota exceeded"
+  coding_agent:
+    enabled: true
+    workspace_root: ".agent_control/workspaces"
+    session_root: ".agent_control/coding_sessions"
+    codex_path: null
+    copilot_path: null
+    claude_path: null
+    use_runner: true
+    timeout_seconds: 3600
+    start_wait_seconds: 20
+    output_limit_chars: 20000
+    rate_limit_patterns:
+      - "rate limit"
+      - "too many requests"
+    usage_limit_patterns:
+      - "usage limit"
+      - "quota exceeded"
+      - "quota_exceeded"
+      - "no quota"
+      - "limit reached"
+      - "messages are exhausted"
+    codex_sandbox: "workspace-write"
+    codex_skip_git_repo_check: true
+    claude_permission_mode: "acceptEdits"
+    copilot_allow_all: true
+    copilot_no_ask_user: true
   code_interpreter:
     enabled: true
     workspace_root: ".agent_control/code_interpreter"
@@ -208,6 +235,35 @@ adapters:
     max_output_chars: 12000
     max_files_listed: 200
     python_executable: null
+    default_backend: "local_subprocess"
+    backends:
+      - "local_subprocess"
+    untrusted_default_backend: "docker_python"
+    fallback_to_local_when_backend_unavailable: true
+    require_approval_for_untrusted_run_python: true
+    network_policy: "disabled_by_default"
+    package_policy: "disabled"
+    allowed_packages: []
+    resource_limits:
+      memory: "512m"
+      cpus: 1.0
+      pids_limit: 128
+    docker:
+      enabled: false
+      image: "python:3.12-slim"
+      docker_path: "docker"
+      pull_policy: "missing"
+      network_enabled: false
+      read_only_rootfs: false
+      workspace_mount_target: "/workspace"
+      remove_container: true
+      run_as_user: null
+    jupyter:
+      enabled: false
+      image: "python:3.12-slim"
+      idle_timeout_seconds: 900
+    remote_backends: {}
+    session_ttl_seconds: 900
     allowed_imports:
       - "base64"
       - "collections"
@@ -280,3 +336,8 @@ adapters:
     speed: 1.0
     output_dir: ".agent_control/tts"
     timeout_seconds: 120
+
+mcp:
+  enabled: false
+  cache_ttl_seconds: 60
+  servers: {}

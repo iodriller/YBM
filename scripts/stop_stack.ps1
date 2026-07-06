@@ -25,6 +25,7 @@ function Stop-StackOrphans {
     if (
       $commandLine -like "*agent_control.cli poll-telegram*" -or
       $commandLine -like "*agent_control.cli run-worker*" -or
+      $commandLine -like "*agent_control.cli run-coding-session-watcher*" -or
       $commandLine -like "*agent_control.cli run-scheduler*" -or
       ($commandLine -like "*api_server.py*" -and $commandLine -like "*LocalDeploy*")
     ) {
@@ -37,6 +38,7 @@ function Stop-StackOrphans {
       $commandLine -like "*run_localdeploy.ps1*" -or
       $commandLine -like "*run_telegram_polling.ps1*" -or
       $commandLine -like "*run_worker.ps1*" -or
+      $commandLine -like "*run_coding_session_watcher.ps1*" -or
       $commandLine -like "*run_scheduler.ps1*" -or
       $commandLine -like "*uvicorn agent_control.main:app*"
     )

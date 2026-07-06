@@ -28,7 +28,7 @@ Safe defaults keep terminal execution, filesystem access, VS Code access, deskto
 .\scripts\start_stack.ps1
 ```
 
-This initializes the database and starts LocalDeploy, backend, Streamlit admin UI, Telegram polling, and worker. Generated task workspaces default to `.agent_control/workspaces/task_<id>`.
+This initializes the database and starts LocalDeploy, backend, Streamlit admin UI, Telegram polling, worker, scheduler, and the coding-session watcher. Generated task workspaces default to `.agent_control/workspaces/task_<id>`.
 
 Browser tasks use Chrome through the DevTools remote debugging port configured at `adapters.browser.remote_debugging_port` (default `9222`). If Chrome is not already available there, the adapter launches a separate Chrome profile under `.agent_control/browser/chrome-profile`. Screenshots are saved under `.agent_control/browser/screenshots`.
 
@@ -43,6 +43,12 @@ http://127.0.0.1:8501
 The legacy FastAPI admin page remains available at `http://127.0.0.1:8765/admin`.
 
 Launchable app requests use Copilot first when VS Code write access is enabled, then the workspace adapter serves the result locally. Generated adapter proposals, when requested, are cached under `.agent_control/adapters` and are not loaded into runtime automatically.
+
+Codex, Claude Code, and GitHub Copilot CLI sessions are stored under `.agent_control/coding_sessions`. Long runs put the task in `awaiting_external`; the watcher finalizes session files and sends the completion report after a worker restart.
+
+External MCP tools are configured under `mcp.servers` in `config/config.yaml`. MCP is disabled by default; when enabled, YBM exposes a single `mcp.client` tool for discovery, health checks, and configured tool calls.
+
+`code.interpreter` is local-first and writes under `.agent_control/code_interpreter`. The default backend is `local_subprocess`; enable `adapters.code_interpreter.docker.enabled` and add `docker_python` to `adapters.code_interpreter.backends` to run untrusted/generated Python in a short-lived Docker container. Docker runs with network off unless requested and allowed by policy, plus configured memory/CPU/pids limits. Use `code.interpreter` operation `health` to inspect Docker availability, configured remote backends, and recent backend failures.
 
 ## 4. Stop The Stack
 
@@ -90,6 +96,12 @@ Run task worker:
 
 ```powershell
 .\scripts\run_worker.ps1
+```
+
+Run coding-session watcher:
+
+```powershell
+.\scripts\run_coding_session_watcher.ps1
 ```
 
 ## 6. Run Tests

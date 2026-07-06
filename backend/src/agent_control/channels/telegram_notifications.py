@@ -107,6 +107,11 @@ def _user_facing_task_message(task: TaskRecord) -> str:
             "I need approval before I can continue. If full access is enabled for this capability, the worker will approve it automatically; otherwise approve it from the admin UI.",
             3900,
         )
+    if task.status == TaskStatus.AWAITING_EXTERNAL:
+        session = task.metadata.get("awaiting_external") if isinstance(task.metadata, dict) else None
+        if isinstance(session, dict) and session.get("provider"):
+            return f"{session['provider']} is working in the background. I will report back when it finishes."
+        return "An external tool is working in the background. I will report back when it finishes."
     if task.status == TaskStatus.CANCELLED:
         return "Cancelled."
     if task.status == TaskStatus.CLARIFYING:

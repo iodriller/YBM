@@ -170,6 +170,10 @@ class CodingAgentAdapterConfig(StrictBaseModel):
     codex_path: str | None = None
     copilot_path: str | None = None
     claude_path: str | None = None
+    # Production sessions are launched through a small runner process so a
+    # worker restart does not lose the final result. Unit tests may inject a
+    # spawner and keep the direct CLI command path.
+    use_runner: bool = True
     # Max wall-clock for a background session before it is terminated.
     timeout_seconds: int = Field(default=3600, ge=1)
     # How long `start` waits inline before handing the run to the background
@@ -187,6 +191,62 @@ class CodingAgentAdapterConfig(StrictBaseModel):
             "messages are exhausted",
         ]
     )
+    codex_sandbox: str = "workspace-write"
+    codex_skip_git_repo_check: bool = True
+    claude_permission_mode: str = "acceptEdits"
+    copilot_allow_all: bool = True
+    copilot_no_ask_user: bool = True
+
+
+class MCPServerConfig(StrictBaseModel):
+    enabled: bool = True
+    command: str = Field(min_length=1)
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    cwd: str | None = None
+    timeout_seconds: int = Field(default=30, ge=1, le=900)
+    capability: Capability = Capability.TERMINAL_RUN
+    risk_level: RiskLevel = RiskLevel.HIGH
+    disabled_tools: list[str] = Field(default_factory=list)
+    max_output_chars: int = Field(default=20000, ge=100, le=200000)
+
+
+class MCPConfig(StrictBaseModel):
+    enabled: bool = False
+    servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
+    cache_ttl_seconds: int = Field(default=60, ge=0, le=3600)
+
+
+class CodeInterpreterResourceLimitsConfig(StrictBaseModel):
+    memory: str = "512m"
+    cpus: float = Field(default=1.0, gt=0, le=32)
+    pids_limit: int = Field(default=128, ge=1, le=4096)
+
+
+class CodeInterpreterDockerConfig(StrictBaseModel):
+    enabled: bool = False
+    image: str = "python:3.12-slim"
+    docker_path: str = "docker"
+    pull_policy: Literal["never", "missing", "always"] = "missing"
+    network_enabled: bool = False
+    read_only_rootfs: bool = False
+    workspace_mount_target: str = "/workspace"
+    remove_container: bool = True
+    run_as_user: str | None = None
+
+
+class CodeInterpreterJupyterConfig(StrictBaseModel):
+    enabled: bool = False
+    image: str = "python:3.12-slim"
+    idle_timeout_seconds: int = Field(default=900, ge=30, le=86400)
+
+
+class CodeInterpreterRemoteBackendConfig(StrictBaseModel):
+    enabled: bool = False
+    api_key_env: str | None = None
+    timeout_seconds: int = Field(default=120, ge=1, le=3600)
+    risk_level: RiskLevel = RiskLevel.HIGH
+    max_output_chars: int = Field(default=20000, ge=100, le=200000)
 
 
 class CodeInterpreterAdapterConfig(StrictBaseModel):
@@ -198,7 +258,34 @@ class CodeInterpreterAdapterConfig(StrictBaseModel):
     max_files_listed: int = Field(default=200, ge=1, le=5000)
     python_executable: str | None = None
     allowed_imports: list[str] = Field(default_factory=list)
-    blocked_imports: list[str] = Field(default_factory=list)
+    blocked_imports: list[str] = Field(
+        default_factory=lambda: [
+            "ctypes",
+            "ftplib",
+            "httpx",
+            "os",
+            "pip",
+            "requests",
+            "shutil",
+            "socket",
+            "subprocess",
+            "sys",
+            "urllib",
+        ]
+    )
+    default_backend: str = "local_subprocess"
+    backends: list[str] = Field(default_factory=lambda: ["local_subprocess"])
+    untrusted_default_backend: str = "docker_python"
+    fallback_to_local_when_backend_unavailable: bool = True
+    require_approval_for_untrusted_run_python: bool = True
+    network_policy: Literal["always_disabled", "disabled_by_default", "allow_if_requested"] = "disabled_by_default"
+    package_policy: Literal["disabled", "allow_configured", "allow_request"] = "disabled"
+    allowed_packages: list[str] = Field(default_factory=list)
+    resource_limits: CodeInterpreterResourceLimitsConfig = Field(default_factory=CodeInterpreterResourceLimitsConfig)
+    docker: CodeInterpreterDockerConfig = Field(default_factory=CodeInterpreterDockerConfig)
+    jupyter: CodeInterpreterJupyterConfig = Field(default_factory=CodeInterpreterJupyterConfig)
+    remote_backends: dict[str, CodeInterpreterRemoteBackendConfig] = Field(default_factory=dict)
+    session_ttl_seconds: int = Field(default=900, ge=30, le=86400)
 
 
 class DesktopAdapterConfig(StrictBaseModel):
@@ -308,6 +395,7 @@ class AppSettings(BaseSettings):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     adapters: AdaptersConfig = Field(default_factory=AdaptersConfig)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
 
     @classmethod
     def settings_customise_sources(
@@ -372,6 +460,7 @@ class AppSettings(BaseSettings):
             "logging": self.logging.model_dump(),
             "limits": self.limits.model_dump(),
             "adapters": self.adapters.model_dump(),
+            "mcp": self.mcp.model_dump(mode="json"),
         }
 
 

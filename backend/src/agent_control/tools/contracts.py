@@ -90,6 +90,25 @@ class AdapterFactoryScaffoldInput(ToolInputModel):
     capability: str | None = None
 
 
+class AdapterFactorySandboxExecuteInput(ToolInputModel):
+    operation: Literal["sandbox_execute_once"] = "sandbox_execute_once"
+    adapter_dir: str | None = None
+    objective: str | None = None
+    code: str | None = None
+    dry_run: bool = True
+
+
+class AdapterFactoryTestConnectorInput(ToolInputModel):
+    operation: Literal["test_connector"] = "test_connector"
+    adapter_dir: str = Field(min_length=1)
+
+
+class AdapterFactoryPromoteInput(ToolInputModel):
+    operation: Literal["promote_after_approval"] = "promote_after_approval"
+    adapter_dir: str = Field(min_length=1)
+    approved: bool = False
+
+
 class VSCodeCopilotTerminalInput(ToolInputModel):
     prompt: str | None = None
     command: str | None = None
@@ -519,6 +538,15 @@ class CodeInterpreterRunPythonInput(ToolInputModel):
     objective: str | None = None
     workspace_dir: str | None = None
     script_name: str = "script.py"
+    backend: str | None = None
+    execution_profile: str | None = None
+    session_id: str | None = None
+    allow_network: bool | None = None
+    allowed_packages: list[str] = Field(default_factory=list)
+    requirements: list[str] = Field(default_factory=list)
+    files: list[str] = Field(default_factory=list)
+    persist_session: bool = False
+    approved: bool = False
 
 
 class CodeInterpreterGenerateAndRunInput(ToolInputModel):
@@ -527,6 +555,54 @@ class CodeInterpreterGenerateAndRunInput(ToolInputModel):
     context: str | None = None
     workspace_dir: str | None = None
     script_name: str = "script.py"
+    backend: str | None = None
+    execution_profile: str | None = None
+    session_id: str | None = None
+    allow_network: bool | None = None
+    allowed_packages: list[str] = Field(default_factory=list)
+    requirements: list[str] = Field(default_factory=list)
+    files: list[str] = Field(default_factory=list)
+    persist_session: bool = False
+
+
+class CodeInterpreterSolveOnceInput(CodeInterpreterGenerateAndRunInput):
+    operation: Literal["solve_once"] = "solve_once"
+
+
+class CodeInterpreterBuildTempHelperInput(CodeInterpreterGenerateAndRunInput):
+    operation: Literal["build_temp_helper"] = "build_temp_helper"
+
+
+class CodeInterpreterRepairScriptInput(CodeInterpreterGenerateAndRunInput):
+    operation: Literal["repair_script"] = "repair_script"
+    failing_code: str | None = None
+    error_text: str | None = None
+
+
+class CodeInterpreterInspectStateInput(ToolInputModel):
+    operation: Literal["inspect_state"] = "inspect_state"
+    workspace_dir: str | None = None
+    max_files: int = Field(default=200, ge=1, le=5000)
+
+
+class CodeInterpreterHealthInput(ToolInputModel):
+    operation: Literal["health"] = "health"
+
+
+class MCPClientInput(ToolInputModel):
+    operation: Literal["discover", "list_tools", "call_tool", "health"] = "list_tools"
+    server: str | None = None
+    tool: str | None = None
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _require_inputs_per_operation(self) -> "MCPClientInput":
+        if self.operation == "call_tool":
+            if not self.server:
+                raise ValueError("mcp.client call_tool requires 'server'")
+            if not self.tool:
+                raise ValueError("mcp.client call_tool requires 'tool'")
+        return self
 
 
 class CodeInterpreterOutput(ToolOutputModel):
@@ -536,11 +612,21 @@ class CodeInterpreterOutput(ToolOutputModel):
     files_before: list[str] = Field(default_factory=list)
     files_after: list[str] = Field(default_factory=list)
     files_created: list[str] = Field(default_factory=list)
+    files_modified: list[str] = Field(default_factory=list)
+    files_deleted: list[str] = Field(default_factory=list)
     stdout: str = ""
     stderr: str = ""
     returncode: int | None = None
     summary: str | None = None
     generated: bool = False
+    backend: str | None = None
+    execution_profile: str | None = None
+    sandboxed: bool = False
+    resource_usage: dict[str, Any] = Field(default_factory=dict)
+    resource_limits: dict[str, Any] = Field(default_factory=dict)
+    network_enabled: bool = False
+    session_id: str | None = None
+    rich_outputs: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class AdapterFactoryAssessOutput(ToolOutputModel):
@@ -556,6 +642,23 @@ class AdapterFactoryScaffoldOutput(ToolOutputModel):
     files: list[str] = Field(min_length=1)
     cacheable: bool = True
     execution_policy: str = Field(min_length=1)
+
+
+class AdapterFactorySandboxOutput(ToolOutputModel):
+    adapter_dir: str | None = None
+    result: str = Field(min_length=1)
+    execution_policy: str = Field(min_length=1)
+    returncode: int = 0
+    promoted: bool = False
+
+
+class MCPClientOutput(ToolOutputModel):
+    operation: str = Field(min_length=1)
+    servers: list[dict[str, Any]] = Field(default_factory=list)
+    tools: list[dict[str, Any]] = Field(default_factory=list)
+    result: dict[str, Any] | None = None
+    healthy: bool | None = None
+    summary: str | None = None
 
 
 class VSCodeTerminalToolOutput(ToolOutputModel):

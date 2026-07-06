@@ -60,6 +60,7 @@ function Stop-OrphanProcessesForName {
     "backend" { @("run_backend.ps1", "uvicorn agent_control.main:app") }
     "localdeploy" { @("run_localdeploy.ps1", "api_server.py") }
     "worker" { @("run_worker.ps1", "agent_control.cli run-worker") }
+    "coding_session_watcher" { @("run_coding_session_watcher.ps1", "agent_control.cli run-coding-session-watcher") }
     "scheduler" { @("run_scheduler.ps1", "agent_control.cli run-scheduler") }
     "telegram_polling" { @("run_telegram_polling.ps1", "agent_control.cli poll-telegram") }
     "admin_ui" { @("run_admin_ui.ps1", "admin_streamlit.py") }
@@ -172,6 +173,9 @@ if (-not $NoTelegram) {
 if (-not $NoWorker) {
   Stop-OrphanProcessesForName -Name "worker"
   Start-StackScript -Name "worker" -ScriptPath "$Root\scripts\run_worker.ps1" -Supervise
+
+  Stop-OrphanProcessesForName -Name "coding_session_watcher"
+  Start-StackScript -Name "coding_session_watcher" -ScriptPath "$Root\scripts\run_coding_session_watcher.ps1" -Supervise
 }
 
 if (-not $NoScheduler) {

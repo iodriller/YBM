@@ -25,6 +25,12 @@ class AdapterFactoryAdapter:
                 output = self._scaffold(request)
             elif operation == "assess":
                 output = self._assess(request)
+            elif operation == "sandbox_execute_once":
+                output = self._sandbox_execute_once(request)
+            elif operation == "test_connector":
+                output = self._test_connector(request)
+            elif operation == "promote_after_approval":
+                output = self._promote_after_approval(request)
             else:
                 return _failed(request, f"unsupported adapter factory operation: {operation}")
         except Exception as exc:
@@ -86,6 +92,48 @@ class AdapterFactoryAdapter:
             "execution_policy": "scaffold_only",
         }
 
+    def _sandbox_execute_once(self, request: ToolCallRequest) -> dict[str, Any]:
+        adapter_dir = str(request.input.get("adapter_dir") or "").strip() or None
+        if adapter_dir:
+            _require_adapter_dir_inside_root(adapter_dir, self.config.root_dir)
+        # The safe default intentionally does not import generated adapter code.
+        # Temporary executable helpers belong in code.interpreter, where imports,
+        # workspace, timeout, and artifacts are already bounded.
+        return {
+            "adapter_dir": adapter_dir,
+            "result": "sandbox execution is staged; use code.interpreter for one-time helper execution",
+            "execution_policy": "sandbox_review_required",
+            "returncode": 0,
+            "promoted": False,
+        }
+
+    def _test_connector(self, request: ToolCallRequest) -> dict[str, Any]:
+        adapter_dir = _require_adapter_dir_inside_root(str(request.input["adapter_dir"]), self.config.root_dir)
+        required = ["manifest.json", "adapter.py", "test_adapter.py"]
+        missing = [name for name in required if not (adapter_dir / name).exists()]
+        return {
+            "adapter_dir": str(adapter_dir),
+            "result": "connector proposal structure is valid" if not missing else f"missing: {', '.join(missing)}",
+            "execution_policy": "structure_check_only",
+            "returncode": 0 if not missing else 1,
+            "promoted": False,
+        }
+
+    def _promote_after_approval(self, request: ToolCallRequest) -> dict[str, Any]:
+        adapter_dir = _require_adapter_dir_inside_root(str(request.input["adapter_dir"]), self.config.root_dir)
+        approved = bool(request.input.get("approved"))
+        return {
+            "adapter_dir": str(adapter_dir),
+            "result": (
+                "promotion approved but remains a manual code-review step"
+                if approved
+                else "promotion requires explicit approval and manual review"
+            ),
+            "execution_policy": "manual_promotion_required",
+            "returncode": 0,
+            "promoted": False,
+        }
+
 
 def _adapter_name(request: ToolCallRequest) -> str:
     explicit = str(request.input.get("adapter_name") or "").strip()
@@ -100,6 +148,16 @@ def _adapter_name(request: ToolCallRequest) -> str:
 def _safe_segment(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._")
     return cleaned or "generated_adapter"
+
+
+def _require_adapter_dir_inside_root(adapter_dir: str, root_dir: str) -> Path:
+    root = Path(root_dir).expanduser().resolve()
+    path = Path(adapter_dir).expanduser().resolve()
+    if root != path and root not in path.parents:
+        raise ValueError("adapter path escaped configured root")
+    if not path.exists():
+        raise ValueError(f"adapter directory does not exist: {path}")
+    return path
 
 
 def _assessment(objective: str) -> str:

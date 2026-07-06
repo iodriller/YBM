@@ -59,8 +59,12 @@ def build_evaluator_recovery_plan(settings: AppSettings, task: TaskRecord, failu
         or "expected_artifact_delivered_missing" in reason
     ):
         return _build_file_lookup_delivery_plan(settings, task) or _build_artifact_delivery_plan(settings, task)
-    if "tool adapter not registered" in reason or "unregistered tool" in reason:
-        return _build_adapter_factory_plan(settings, task)
+    if "tool adapter not registered" in reason or "unregistered tool" in reason or "connector_missing" in reason:
+        return (
+            _build_mcp_missing_tool_plan(settings, task, failure_reason)
+            or _build_code_interpreter_recovery_plan(settings, task, failure_reason)
+            or _build_adapter_factory_plan(settings, task)
+        )
     if "unsupported operation" in reason or "validation" in reason:
         return _build_code_interpreter_recovery_plan(settings, task, failure_reason)
     return None
@@ -545,6 +549,41 @@ def _build_code_interpreter_recovery_plan(settings: AppSettings, task: TaskRecor
         ],
         success_criteria=["The evaluator repair script reports concrete output or a clear reason it cannot repair the task."],
         postconditions=_workspace_postconditions(),
+    )
+
+
+def _build_mcp_missing_tool_plan(settings: AppSettings, task: TaskRecord, failure_reason: str) -> PlanModel | None:
+    if not settings.mcp.enabled or not settings.mcp.servers:
+        return None
+    policy = settings.capabilities.get(Capability.TERMINAL_RUN)
+    if policy is None or not policy.enabled:
+        return None
+    return PlanModel(
+        objective=task.objective,
+        assumptions=[
+            "A native tool or connector was missing.",
+            "Configured MCP servers are checked before generating a permanent adapter proposal.",
+        ],
+        required_capabilities=[Capability.TERMINAL_RUN],
+        steps=[
+            PlanStep(
+                title="Discover MCP tools for missing capability",
+                description="List configured MCP server tools that might satisfy the missing capability.",
+                required_capabilities=[Capability.TERMINAL_RUN],
+                risk_level=RiskLevel.HIGH,
+                requires_approval=policy.requires_approval,
+                tool_name="mcp.client",
+                tool_input={
+                    "operation": "list_tools",
+                    "timeout_seconds": 60,
+                },
+                expected_output="Configured MCP servers and their available tools, or a clear MCP health error.",
+            )
+        ],
+        success_criteria=[
+            "MCP discovery reports whether an external tool can cover the missing capability.",
+            f"Original failure is preserved for follow-up planning: {failure_reason[:200]}",
+        ],
     )
 
 

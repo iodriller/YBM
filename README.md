@@ -1,6 +1,6 @@
 # Configurable Agentic Control System
 
-Local-first control plane for sending Telegram text or voice commands to an agentic orchestration layer that can safely coordinate VS Code, coding assistants, browser automation, scoped filesystem work, desktop observation/control, and future automation adapters.
+Local-first, Telegram-first task runner with a small orchestration core and a growing tool layer. YBM coordinates VS Code, external coding CLIs, browser automation, scoped filesystem work, desktop observation/control, code interpreter helpers, scheduled tasks, artifacts, and MCP-connected tools without turning the app into a Codex/Copilot-only cockpit.
 
 ## Current Status
 
@@ -40,11 +40,17 @@ Implemented:
 - Capability registry/vault plus generated adapter proposal cache under `.agent_control/adapters`
 - Registered `schedule.manage` tool plus supervised scheduler service for recurring tasks
 - Registered document and artifact delivery tools for PDF summaries, PowerPoint artifacts, and Telegram file delivery
+- Pluggable `code.interpreter` execution backends with normalized metadata, safer import defaults, health reporting, and an optional Docker Python sandbox
+- Session-backed `coding.agent` support for Codex, Claude Code, and GitHub Copilot CLI runs, with durable session files, event logs, and a watcher service for restart-safe completion handling
+- Structured attempt history and failure diagnosis metadata for bounded recovery instead of unbounded retries
+- YBM MCP server for external clients plus `mcp.client` for calling configured external MCP servers from YBM tasks
+- `task.status` includes active tasks, background coding sessions, waiting clarification/approval/external work, LocalDeploy fallback state, and MCP config state
 
 Not implemented yet:
 
 - Direct GitHub Copilot Chat panel response capture through VS Code APIs
 - Persistent editable configuration for every advanced capability and adapter field
+- Automatic promotion of generated adapter proposals into runtime code without human review
 
 ## Development
 
@@ -55,6 +61,7 @@ Start the whole local stack:
 ```
 
 This initializes SQLite, starts LocalDeploy if needed, starts the backend, starts Telegram polling, starts the worker, starts the scheduler, and launches the Streamlit admin UI. Open:
+It also starts the coding-session watcher, which finalizes background Codex/Claude/Copilot sessions after worker restarts and reports completion back to Telegram.
 
 ```text
 http://127.0.0.1:8501
@@ -77,11 +84,15 @@ Default local LLM and gateway behavior:
 - Plain `status` and `/status` return deterministic task state.
 - Requests like `create a hello world web app and launch it` materialize files under `.agent_control/workspaces/task_<id>`, start a localhost preview, and return the URL. Codex or GitHub Copilot are used only when the message explicitly says to use them.
 - Requests like `use Codex to build the first step of this app` or `use GitHub Copilot for this project` route through `coding.agent`, record workspace/output/limit state, and report failures or usage-limit text when the CLI exposes it.
+- Long-running Codex, Claude Code, and Copilot CLI sessions move the task to `awaiting_external` until the durable watcher sees a terminal result. A task no longer looks complete simply because a background CLI started.
 - Browser requests like `search the web for Python packaging docs and summarize the first result` use the `browser.open` tool. Chrome is launched with remote debugging when needed, screenshots are saved under `.agent_control/browser/screenshots`, and results are returned to Telegram.
 - Computer-use requests like `take a screenshot and tell me what is open` or `use the computer to open this folder` route to `computer.use` when desktop control is enabled. Screenshots are saved under `.agent_control/computer_use/screenshots`; action loops require the local multimodal LLM and are capped by `adapters.computer_use.max_steps`.
 - Folder organization/search requests use `filesystem.manage` when an explicit path is present. It creates a manifest first, then applies only approved moves/copies inside `adapters.computer_use.allowed_roots`.
 - Development tasks route to the VS Code/GitHub Copilot terminal handoff when VS Code write access is enabled, with a local Copilot CLI fallback when the bridge is not connected.
 - Missing-tool work can be routed to `adapter.factory`, which creates a reviewable cached adapter proposal under `.agent_control/adapters` without loading it into runtime automatically.
+- If a native tool is missing, recovery checks configured MCP tools first, then tries bounded `code.interpreter` helpers when appropriate, then scaffolds a reviewable adapter proposal.
+- `code.interpreter` supports `run_python`, `generate_and_run`, `solve_once`, `inspect_state`, helper-building/repair operations, and `health`. By default it uses local Python for trusted runs; Docker can be enabled as `docker_python` for untrusted/generated code with network off, memory/CPU/pids limits, and artifact extraction from the managed workspace.
+- External MCP servers are configured under `mcp.servers`; MCP is disabled by default in the example config.
 - Scheduled-job requests like `set up a scheduled job every day to check this site` create a `schedule.manage` record. The supervised scheduler creates normal tasks from due schedules.
 - Worker results are sent back to the source Telegram chat.
 
