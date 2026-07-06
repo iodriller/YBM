@@ -7,8 +7,12 @@ import pytest
 
 from agent_control.config import AppSettings, CapabilityPolicy, CodingAgentAdapterConfig
 from agent_control.orchestration.default_plans import build_default_task_plan
-from agent_control.schemas import Capability, RiskLevel, TaskRecord, ToolCallRequest, ToolResultStatus
-from agent_control.tools.coding_agent import CodingAgentAdapter, latest_session, load_session
+from agent_control.orchestration.worker import TaskWorker
+from agent_control.orchestration.executor import ToolExecutor
+from agent_control.policy import PolicyEngine
+from agent_control.schemas import Capability, PlanModel, PlanStep, RiskLevel, TaskRecord, TaskStatus, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.storage import AuditLogger, Database, Repositories
+from agent_control.tools.coding_agent import CodingAgentAdapter, latest_session, load_session, scan_coding_sessions_once, terminal_session_result
 from agent_control.tools.registry import build_tool_registry
 
 
@@ -274,3 +278,91 @@ def test_default_plan_combines_explicit_codex_with_web_research(tmp_path) -> Non
     plan = build_default_task_plan(settings, TaskRecord(objective="Use Codex and web search for ducks"))
 
     assert plan is None
+
+
+class BackgroundCodingAdapter:
+    async def execute(self, request: ToolCallRequest) -> ToolCallResult:
+        return ToolCallResult(
+            request_id=request.id,
+            status=ToolResultStatus.SUCCEEDED,
+            output={
+                "operation": "start",
+                "provider": "codex",
+                "status": "running",
+                "session_id": "codex_bg",
+                "workspace_dir": str(Path.cwd()),
+            },
+        )
+
+
+@pytest.mark.asyncio
+async def test_worker_moves_running_coding_agent_to_awaiting_external(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
+    database.initialize()
+    repos = Repositories.for_database(database)
+    audit = AuditLogger(repos.audit)
+    settings = AppSettings(
+        _env_file=None,
+        capabilities={Capability.TERMINAL_RUN: CapabilityPolicy(enabled=True, requires_approval=False, max_risk_level=RiskLevel.HIGH)},
+    )
+    task = repos.tasks.create("Use Codex to fix tests")
+    plan = repos.plans.create(
+        task.id,
+        PlanModel(
+            objective=task.objective,
+            steps=[
+                PlanStep(
+                    title="Run Codex",
+                    description="Run Codex in background.",
+                    required_capabilities=[Capability.TERMINAL_RUN],
+                    risk_level=RiskLevel.HIGH,
+                    tool_name="coding.agent",
+                    tool_input={"operation": "start", "provider": "codex", "prompt": "fix tests"},
+                )
+            ],
+            success_criteria=["Codex session finishes."],
+        ),
+    )
+    repos.tasks.attach_plan(task.id, plan.id, TaskStatus.PLANNED)
+    executor = ToolExecutor(PolicyEngine(settings, audit), repos, audit, adapters={"coding.agent": BackgroundCodingAdapter()})
+    worker = TaskWorker(repos, audit, executor=executor)
+
+    current = await worker.process_task(task.id)
+    assert current.status == TaskStatus.RUNNING
+    current = await worker.process_task(task.id)
+
+    assert current.status == TaskStatus.AWAITING_EXTERNAL
+    assert current.metadata["awaiting_external"]["session_id"] == "codex_bg"
+    assert current.metadata["attempt_history"][-1]["next_action"] == "await_external"
+
+
+@pytest.mark.asyncio
+async def test_scan_coding_sessions_returns_terminal_unnotified_sessions(tmp_path) -> None:
+    session_root = tmp_path / "sessions"
+    session_root.mkdir()
+    log_path = session_root / "codex_done.log"
+    log_path.write_text("done", encoding="utf-8")
+    (session_root / "codex_done.json").write_text(
+        """
+{
+  "session_id": "codex_done",
+  "request_id": "toolreq_1",
+  "provider": "codex",
+  "status": "completed",
+  "task_id": "task_1",
+  "workspace_dir": ".",
+  "log_path": "LOG_PATH",
+  "returncode": 0,
+  "changed_files": [],
+  "summary": "finished",
+  "limit_state": {"limited": false}
+}
+""".replace("LOG_PATH", str(log_path).replace("\\", "\\\\")),
+        encoding="utf-8",
+    )
+
+    sessions = await scan_coding_sessions_once(str(session_root))
+    result = terminal_session_result(sessions[0])
+
+    assert sessions[0]["session_id"] == "codex_done"
+    assert result.status == ToolResultStatus.SUCCEEDED

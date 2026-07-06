@@ -6,10 +6,17 @@ from typing import TypeVar
 import pytest
 from pydantic import BaseModel
 
-from agent_control.config import AppSettings, CapabilityPolicy
+from agent_control.config import AppSettings, CapabilityPolicy, CodeInterpreterAdapterConfig
 from agent_control.orchestration.default_plans import build_default_task_plan
 from agent_control.schemas import Capability, IntentRoute, OrchestrationIntent, RiskLevel, TaskRecord, ToolCallRequest
-from agent_control.tools.code_interpreter import CodeInterpreterAdapter
+from agent_control.tools import code_interpreter as code_interpreter_module
+from agent_control.tools.code_interpreter import (
+    CodeExecutionPlan,
+    CodeExecutionResult,
+    CodeInterpreterAdapter,
+    DockerPythonBackend,
+    ProcessExecutionResult,
+)
 from agent_control.tools.registry import build_tool_registry
 
 T = TypeVar("T", bound=BaseModel)
@@ -143,13 +150,27 @@ async def test_code_interpreter_falls_back_when_structured_generation_fails_for_
 
 
 @pytest.mark.asyncio
-async def test_code_interpreter_allows_imports_by_default(tmp_path) -> None:
-    adapter = CodeInterpreterAdapter(_settings(tmp_path).adapters.code_interpreter)
+async def test_code_interpreter_blocks_dangerous_imports_by_default(tmp_path) -> None:
+    adapter = CodeInterpreterAdapter(CodeInterpreterAdapterConfig(workspace_root=str(tmp_path / "code")))
 
     result = await adapter.execute(_request(tmp_path, "run_python", code="import subprocess\nprint('bad')\n"))
 
+    assert result.status.value == "failed"
+    assert "blocked import" in (result.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_code_interpreter_output_includes_backend_metadata(tmp_path) -> None:
+    adapter = CodeInterpreterAdapter(_settings(tmp_path).adapters.code_interpreter)
+
+    result = await adapter.execute(_request(tmp_path, "run_python", code="print('metadata ok')\n"))
+
     assert result.status.value == "succeeded"
-    assert "bad" in result.output["stdout"]
+    assert result.output["backend"] == "local_subprocess"
+    assert result.output["execution_profile"] == "trusted"
+    assert result.output["sandboxed"] is False
+    assert result.output["resource_limits"]["timeout_seconds"] == 60
+    assert "duration_seconds" in result.output["resource_usage"]
 
 
 @pytest.mark.asyncio
@@ -161,6 +182,123 @@ async def test_code_interpreter_can_block_configured_imports(tmp_path) -> None:
 
     assert result.status.value == "failed"
     assert "blocked import" in (result.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_code_interpreter_untrusted_run_python_needs_approval(tmp_path) -> None:
+    adapter = CodeInterpreterAdapter(_settings(tmp_path).adapters.code_interpreter)
+
+    result = await adapter.execute(
+        _request(tmp_path, "run_python", code="print('blocked until approved')\n", execution_profile="untrusted")
+    )
+
+    assert result.status.value == "needs_approval"
+    assert "requires approval" in (result.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_code_interpreter_health_reports_backends(tmp_path) -> None:
+    adapter = CodeInterpreterAdapter(_settings(tmp_path).adapters.code_interpreter)
+
+    result = await adapter.execute(_request(tmp_path, "health"))
+
+    assert result.status.value == "succeeded"
+    assert result.output["health"]["default_backend"] == "local_subprocess"
+    names = {item["name"] for item in result.output["health"]["backends"]}
+    assert "local_subprocess" in names
+    assert "docker_python" in names
+
+
+@pytest.mark.asyncio
+async def test_code_interpreter_can_select_docker_backend_when_configured(tmp_path, monkeypatch) -> None:
+    base_config = _settings(tmp_path).adapters.code_interpreter
+    config = base_config.model_copy(
+        update={
+            "backends": ["local_subprocess", "docker_python"],
+            "docker": base_config.docker.model_copy(update={"enabled": True, "image": "python:3.12-slim", "pull_policy": "never"}),
+        }
+    )
+    adapter = CodeInterpreterAdapter(config)
+
+    monkeypatch.setattr(DockerPythonBackend, "available", lambda self: True)
+
+    async def fake_execute(self, plan):
+        plan.script_path.write_text(plan.code + "\nprint('docker fake')\n", encoding="utf-8")
+        return CodeExecutionResult(
+            returncode=0,
+            stdout="docker fake\n",
+            stderr="",
+            backend="docker_python",
+            sandboxed=True,
+            resource_usage={"duration_seconds": 0.01},
+            resource_limits={"memory": "512m"},
+            network_enabled=plan.allow_network,
+        )
+
+    monkeypatch.setattr(DockerPythonBackend, "execute", fake_execute)
+
+    result = await adapter.execute(
+        _request(
+            tmp_path,
+            "run_python",
+            code="print('hello')\n",
+            backend="docker_python",
+            approved=True,
+            execution_profile="untrusted",
+        )
+    )
+
+    assert result.status.value == "succeeded"
+    assert result.output["backend"] == "docker_python"
+    assert result.output["sandboxed"] is True
+
+
+@pytest.mark.asyncio
+async def test_docker_backend_runs_with_network_disabled_and_security_flags(tmp_path, monkeypatch) -> None:
+    workspace = tmp_path / "code" / "task_code"
+    workspace.mkdir(parents=True)
+    script = workspace / "script.py"
+    script.write_text("print('hello')\n", encoding="utf-8")
+    base_config = CodeInterpreterAdapterConfig(workspace_root=str(tmp_path / "code"))
+    config = base_config.model_copy(
+        update={
+            "docker": base_config.docker.model_copy(update={"enabled": True, "pull_policy": "never"}),
+        }
+    )
+    backend = DockerPythonBackend(config)
+    captured: list[list[str]] = []
+
+    monkeypatch.setattr(code_interpreter_module.shutil, "which", lambda _name: "docker")
+
+    async def fake_run_command(args, *, cwd, timeout):
+        captured.append(args)
+        return ProcessExecutionResult(returncode=0, stdout="hello\n", stderr="", duration_seconds=0.01, pid=123)
+
+    monkeypatch.setattr(code_interpreter_module, "_run_command", fake_run_command)
+
+    result = await backend.execute(
+        CodeExecutionPlan(
+            request_id="req",
+            task_id="task_code",
+            code="print('hello')\n",
+            workspace=workspace,
+            script_path=script,
+            timeout_seconds=30,
+            generated=False,
+            backend="docker_python",
+            execution_profile="untrusted",
+            allow_network=False,
+        )
+    )
+
+    assert result.backend == "docker_python"
+    args = captured[0]
+    assert "--network" in args
+    assert "none" in args
+    assert "--security-opt" in args
+    assert "no-new-privileges" in args
+    assert "--mount" in args
+    assert any(str(workspace) in item for item in args)
 
 
 @pytest.mark.asyncio

@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import ast
 import asyncio
+from dataclasses import dataclass, field
 import logging
+import os
 from pathlib import Path
 import re
+import shlex
+import shutil
+import signal
 import subprocess
 import sys
+import time
 from typing import Any
 from uuid import uuid4
 
@@ -27,6 +33,265 @@ class GeneratedPythonScript(BaseModel):
     expected_files: list[str] = Field(default_factory=list)
 
 
+class ApprovalRequired(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class CodeExecutionPlan:
+    request_id: str
+    task_id: str
+    code: str
+    workspace: Path
+    script_path: Path
+    timeout_seconds: int
+    generated: bool
+    backend: str
+    execution_profile: str
+    allow_network: bool
+    requirements: list[str] = field(default_factory=list)
+    session_id: str | None = None
+    persist_session: bool = False
+
+
+@dataclass(frozen=True)
+class CodeExecutionResult:
+    returncode: int
+    stdout: str
+    stderr: str
+    backend: str
+    sandboxed: bool
+    resource_usage: dict[str, Any] = field(default_factory=dict)
+    resource_limits: dict[str, Any] = field(default_factory=dict)
+    network_enabled: bool = False
+    session_id: str | None = None
+    rich_outputs: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ProcessExecutionResult:
+    returncode: int
+    stdout: str
+    stderr: str
+    duration_seconds: float
+    pid: int | None = None
+
+
+class CodeExecutionBackend:
+    name = "backend"
+    sandboxed = False
+
+    async def execute(self, plan: CodeExecutionPlan) -> CodeExecutionResult:
+        raise NotImplementedError
+
+    async def health(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "enabled": True,
+            "available": False,
+            "sandboxed": self.sandboxed,
+            "summary": "backend does not implement health",
+        }
+
+    def available(self) -> bool:
+        return True
+
+
+class LocalSubprocessBackend(CodeExecutionBackend):
+    name = "local_subprocess"
+    sandboxed = False
+
+    def __init__(self, config: CodeInterpreterAdapterConfig) -> None:
+        self.config = config
+
+    async def execute(self, plan: CodeExecutionPlan) -> CodeExecutionResult:
+        executable = self.config.python_executable or sys.executable
+        result = await _run_python_script(executable, plan.script_path, plan.workspace, timeout=plan.timeout_seconds)
+        return CodeExecutionResult(
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            backend=self.name,
+            sandboxed=self.sandboxed,
+            resource_usage={"duration_seconds": result.duration_seconds, "pid": result.pid},
+            resource_limits=_resource_limits_dict(self.config),
+            network_enabled=True,
+            session_id=plan.session_id,
+        )
+
+    async def health(self) -> dict[str, Any]:
+        executable = self.config.python_executable or sys.executable
+        path = shutil.which(executable) if executable != sys.executable else executable
+        return {
+            "name": self.name,
+            "enabled": True,
+            "available": bool(path),
+            "sandboxed": self.sandboxed,
+            "python_executable": executable,
+            "summary": "local Python subprocess backend is available" if path else "python executable was not found",
+        }
+
+
+class DockerPythonBackend(CodeExecutionBackend):
+    name = "docker_python"
+    sandboxed = True
+
+    def __init__(self, config: CodeInterpreterAdapterConfig) -> None:
+        self.config = config
+
+    def available(self) -> bool:
+        if not self.config.docker.enabled:
+            return False
+        return shutil.which(self.config.docker.docker_path) is not None
+
+    async def execute(self, plan: CodeExecutionPlan) -> CodeExecutionResult:
+        if not self.config.docker.enabled:
+            raise RuntimeError("docker backend is disabled")
+        docker = self.config.docker.docker_path
+        if shutil.which(docker) is None:
+            raise RuntimeError("docker executable was not found")
+        await self._ensure_image()
+        container_name = f"ybm-code-{uuid4().hex[:12]}"
+        mount_target = self.config.docker.workspace_mount_target.rstrip("/") or "/workspace"
+        script_inside = f"{mount_target}/{plan.script_path.name}"
+        command = self._container_command(plan, script_inside)
+        args = [
+            docker,
+            "run",
+            "--rm" if self.config.docker.remove_container else "--name",
+        ]
+        if self.config.docker.remove_container:
+            args.extend(["--name", container_name])
+        else:
+            args.append(container_name)
+        args.extend(
+            [
+                "--workdir",
+                mount_target,
+                "--mount",
+                f"type=bind,source={plan.workspace},target={mount_target}",
+                "--memory",
+                self.config.resource_limits.memory,
+                "--cpus",
+                str(self.config.resource_limits.cpus),
+                "--pids-limit",
+                str(self.config.resource_limits.pids_limit),
+                "--security-opt",
+                "no-new-privileges",
+            ]
+        )
+        if not plan.allow_network:
+            args.extend(["--network", "none"])
+        if self.config.docker.read_only_rootfs:
+            args.extend(["--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m"])
+        if self.config.docker.run_as_user:
+            args.extend(["--user", self.config.docker.run_as_user])
+        args.append(self.config.docker.image)
+        args.extend(command)
+
+        try:
+            result = await _run_command(args, cwd=plan.workspace, timeout=plan.timeout_seconds)
+        except TimeoutError:
+            await _best_effort_docker_rm(docker, container_name)
+            raise
+
+        return CodeExecutionResult(
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            backend=self.name,
+            sandboxed=self.sandboxed,
+            resource_usage={
+                "duration_seconds": result.duration_seconds,
+                "pid": result.pid,
+                "container_name": container_name,
+            },
+            resource_limits=_resource_limits_dict(self.config),
+            network_enabled=plan.allow_network,
+            session_id=plan.session_id,
+        )
+
+    async def health(self) -> dict[str, Any]:
+        enabled = self.config.docker.enabled
+        docker = self.config.docker.docker_path
+        executable = shutil.which(docker)
+        result: dict[str, Any] = {
+            "name": self.name,
+            "enabled": enabled,
+            "available": False,
+            "sandboxed": self.sandboxed,
+            "docker_path": docker,
+            "image": self.config.docker.image,
+            "network_default": self.config.docker.network_enabled,
+            "resource_limits": _resource_limits_dict(self.config),
+        }
+        if not enabled:
+            result["summary"] = "docker backend is disabled"
+            return result
+        if executable is None:
+            result["summary"] = "docker executable was not found"
+            return result
+        try:
+            version = await _run_command(
+                [docker, "version", "--format", "{{.Server.Version}}"],
+                cwd=Path.cwd(),
+                timeout=5,
+            )
+            result["available"] = version.returncode == 0
+            result["server_version"] = version.stdout.strip()
+            result["summary"] = "docker backend is available" if version.returncode == 0 else version.stderr.strip()
+        except Exception as exc:
+            result["summary"] = str(exc)
+        return result
+
+    async def _ensure_image(self) -> None:
+        policy = self.config.docker.pull_policy
+        if policy == "never":
+            return
+        docker = self.config.docker.docker_path
+        image = self.config.docker.image
+        if policy == "missing":
+            inspect = await _run_command([docker, "image", "inspect", image], cwd=Path.cwd(), timeout=15)
+            if inspect.returncode == 0:
+                return
+        pull = await _run_command([docker, "pull", image], cwd=Path.cwd(), timeout=300)
+        if pull.returncode != 0:
+            raise RuntimeError(f"docker image pull failed: {pull.stderr.strip() or pull.stdout.strip()}")
+
+    def _container_command(self, plan: CodeExecutionPlan, script_inside: str) -> list[str]:
+        if not plan.requirements:
+            return ["python", script_inside]
+        if self.config.package_policy != "allow_request":
+            raise ValueError("package installation is disabled for code.interpreter")
+        _validate_requested_packages(plan.requirements, set(self.config.allowed_packages))
+        packages = " ".join(shlex.quote(item) for item in plan.requirements)
+        script_arg = shlex.quote(script_inside)
+        return ["sh", "-lc", f"python -m pip install --disable-pip-version-check {packages} && python {script_arg}"]
+
+
+class UnavailableExecutionBackend(CodeExecutionBackend):
+    sandboxed = True
+
+    def __init__(self, name: str, reason: str) -> None:
+        self.name = name
+        self.reason = reason
+
+    def available(self) -> bool:
+        return False
+
+    async def execute(self, plan: CodeExecutionPlan) -> CodeExecutionResult:
+        raise RuntimeError(self.reason)
+
+    async def health(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "enabled": False,
+            "available": False,
+            "sandboxed": self.sandboxed,
+            "summary": self.reason,
+        }
+
+
 class CodeInterpreterAdapter:
     """Bounded local Python execution in a managed task workspace."""
 
@@ -42,6 +307,8 @@ class CodeInterpreterAdapter:
         # are registered as task artifacts so later steps (e.g. artifact.deliver)
         # can find them by id without any path guessing.
         self.artifacts = artifacts
+        self._backends = self._build_backends()
+        self._last_backend_failures: dict[str, str] = {}
 
     async def execute(self, request: ToolCallRequest) -> ToolCallResult:
         if not self.config.enabled:
@@ -50,10 +317,21 @@ class CodeInterpreterAdapter:
         try:
             if operation == "run_python":
                 output = await self._run_python(request, generated=False)
-            elif operation == "generate_and_run":
-                output = await self._generate_and_run(request)
+            elif operation in {"generate_and_run", "solve_once", "build_temp_helper", "repair_script"}:
+                output = await self._generate_and_run(_normalize_generation_request(request, operation))
+            elif operation == "inspect_state":
+                output = self._inspect_state(request)
+            elif operation == "health":
+                output = await self._health(request)
             else:
                 return _failed(request, f"unsupported code interpreter operation: {operation}")
+        except ApprovalRequired as exc:
+            return ToolCallResult(
+                request_id=request.id,
+                status=ToolResultStatus.NEEDS_APPROVAL,
+                error_class=ErrorClass.POLICY_DENIED,
+                error_message=str(exc),
+            )
         except TimeoutError:
             return ToolCallResult(
                 request_id=request.id,
@@ -173,6 +451,80 @@ class CodeInterpreterAdapter:
             output["regenerated_from_failure"] = True
         return output
 
+    def _inspect_state(self, request: ToolCallRequest) -> dict[str, Any]:
+        workspace = self._workspace(request)
+        files = _relative_files(workspace, max_files=int(request.input.get("max_files") or self.config.max_files_listed))
+        return {
+            "workspace_dir": str(workspace),
+            "script_path": None,
+            "files_before": files,
+            "files_after": files,
+            "files_created": [],
+            "stdout": "\n".join(files),
+            "stderr": "",
+            "returncode": 0,
+            "summary": f"Inspected {len(files)} file(s) in {workspace}.",
+            "generated": False,
+            "backend": None,
+            "execution_profile": "inspect",
+            "sandboxed": False,
+            "resource_usage": {},
+            "resource_limits": _resource_limits_dict(self.config),
+            "network_enabled": False,
+            "session_id": request.input.get("session_id"),
+            "files_modified": [],
+            "files_deleted": [],
+            "rich_outputs": [],
+        }
+
+    async def _health(self, request: ToolCallRequest) -> dict[str, Any]:
+        backends = []
+        for name, backend in self._backends.items():
+            health = await backend.health()
+            if name in self._last_backend_failures:
+                health["last_failure"] = self._last_backend_failures[name]
+            backends.append(health)
+        configured_remote = sorted(self.config.remote_backends)
+        available = [item["name"] for item in backends if item.get("available")]
+        stdout = "\n".join(f"{item['name']}: {item.get('summary', '')}" for item in backends)
+        summary = (
+            f"Code interpreter health: {len(available)} available backend(s)."
+            if available
+            else "Code interpreter health: no execution backend is currently available."
+        )
+        return {
+            "workspace_dir": str(self._workspace(request)),
+            "script_path": None,
+            "files_before": [],
+            "files_after": [],
+            "files_created": [],
+            "files_modified": [],
+            "files_deleted": [],
+            "artifact_ids": [],
+            "stdout": stdout,
+            "stderr": "",
+            "returncode": 0 if available else 1,
+            "summary": summary,
+            "generated": False,
+            "backend": None,
+            "execution_profile": "health",
+            "sandboxed": False,
+            "resource_usage": {},
+            "resource_limits": _resource_limits_dict(self.config),
+            "network_enabled": False,
+            "session_id": None,
+            "rich_outputs": [],
+            "health": {
+                "default_backend": self.config.default_backend,
+                "untrusted_default_backend": self.config.untrusted_default_backend,
+                "configured_backends": list(self.config.backends),
+                "available_backends": available,
+                "backends": backends,
+                "configured_remote_backends": configured_remote,
+                "last_failures": dict(self._last_backend_failures),
+            },
+        }
+
     async def _run_python(self, request: ToolCallRequest, *, generated: bool) -> dict[str, Any]:
         code = str(request.input["code"])
         if len(code) > self.config.max_code_chars:
@@ -180,23 +532,50 @@ class CodeInterpreterAdapter:
         _validate_python(code, allowed_imports=set(self.config.allowed_imports), blocked_imports=set(self.config.blocked_imports))
         workspace = self._workspace(request)
         workspace.mkdir(parents=True, exist_ok=True)
-        before = _relative_files(workspace, max_files=self.config.max_files_listed)
+        execution_profile = _execution_profile(request, generated=generated)
+        if self._approval_required_for_run_python(request, generated=generated, execution_profile=execution_profile):
+            raise ApprovalRequired("untrusted run_python requires approval before execution")
+        before_snapshot = _file_snapshot(workspace, max_files=self.config.max_files_listed)
+        before = sorted(before_snapshot)
         script_path = _safe_child_path(workspace, str(request.input.get("script_name") or "script.py"))
         if script_path.suffix.lower() != ".py":
             script_path = script_path.with_suffix(".py")
         script_path.write_text(code, encoding="utf-8")
         timeout = int(request.input.get("timeout_seconds") or self.config.timeout_seconds)
-        returncode, stdout, stderr = await _run_python_script(
-            self.config.python_executable or sys.executable,
-            script_path,
-            workspace,
-            timeout=timeout,
+        backend = self._select_backend(request, generated=generated, execution_profile=execution_profile)
+        allow_network = self._network_enabled(request)
+        plan = CodeExecutionPlan(
+            request_id=request.id,
+            task_id=request.task_id,
+            code=code,
+            workspace=workspace,
+            script_path=script_path,
+            timeout_seconds=timeout,
+            generated=generated,
+            backend=backend.name,
+            execution_profile=execution_profile,
+            allow_network=allow_network,
+            requirements=[str(item).strip() for item in request.input.get("requirements", []) if str(item).strip()],
+            session_id=str(request.input.get("session_id") or "") or None,
+            persist_session=bool(request.input.get("persist_session") or False),
         )
-        stdout = stdout[: self.config.max_output_chars]
-        stderr = stderr[: self.config.max_output_chars]
-        after = _relative_files(workspace, max_files=self.config.max_files_listed)
-        created = sorted(set(after) - set(before))
-        summary = _summary(returncode, stdout, stderr, created)
+        try:
+            execution = await backend.execute(plan)
+        except Exception as exc:
+            self._last_backend_failures[backend.name] = str(exc)
+            raise
+        stdout = execution.stdout[: self.config.max_output_chars]
+        stderr = execution.stderr[: self.config.max_output_chars]
+        after_snapshot = _file_snapshot(workspace, max_files=self.config.max_files_listed)
+        after = sorted(after_snapshot)
+        created = sorted(set(after_snapshot) - set(before_snapshot))
+        modified = sorted(
+            name
+            for name, metadata in after_snapshot.items()
+            if name in before_snapshot and before_snapshot[name] != metadata
+        )
+        deleted = sorted(set(before_snapshot) - set(after_snapshot))
+        summary = _summary(execution.returncode, stdout, stderr, created)
         artifact_ids = self._register_created_artifacts(request.task_id, workspace, created)
         return {
             "workspace_dir": str(workspace),
@@ -204,13 +583,88 @@ class CodeInterpreterAdapter:
             "files_before": before,
             "files_after": after,
             "files_created": created,
+            "files_modified": modified,
+            "files_deleted": deleted,
             "artifact_ids": artifact_ids,
             "stdout": stdout,
             "stderr": stderr,
-            "returncode": returncode,
+            "returncode": execution.returncode,
             "summary": summary,
             "generated": generated,
+            "backend": execution.backend,
+            "execution_profile": execution_profile,
+            "sandboxed": execution.sandboxed,
+            "resource_usage": execution.resource_usage,
+            "resource_limits": execution.resource_limits,
+            "network_enabled": execution.network_enabled,
+            "session_id": execution.session_id,
+            "rich_outputs": execution.rich_outputs,
         }
+
+    def _build_backends(self) -> dict[str, CodeExecutionBackend]:
+        backends: dict[str, CodeExecutionBackend] = {
+            "local_subprocess": LocalSubprocessBackend(self.config),
+            "docker_python": DockerPythonBackend(self.config),
+            "jupyter_kernel": UnavailableExecutionBackend(
+                "jupyter_kernel",
+                "jupyter backend is configured for a future stateful session runner and is disabled in this build",
+            ),
+        }
+        for name, remote in self.config.remote_backends.items():
+            reason = (
+                f"remote backend {name!r} is disabled"
+                if not remote.enabled
+                else f"remote backend {name!r} is configured but no SDK adapter is installed in this build"
+            )
+            backends.setdefault(name, UnavailableExecutionBackend(name, reason))
+        for name in ("e2b", "daytona", "modal", "openai_code_interpreter"):
+            backends.setdefault(name, UnavailableExecutionBackend(name, f"remote backend {name!r} is not configured"))
+        return backends
+
+    def _select_backend(
+        self,
+        request: ToolCallRequest,
+        *,
+        generated: bool,
+        execution_profile: str,
+    ) -> CodeExecutionBackend:
+        explicit = str(request.input.get("backend") or "").strip()
+        requested = explicit
+        if not requested:
+            requested = self.config.untrusted_default_backend if _is_untrusted_profile(execution_profile) else self.config.default_backend
+        if requested not in self._backends:
+            raise ValueError(f"unsupported code interpreter backend: {requested}")
+        backend = self._backends[requested]
+        if requested == "docker_python" and not backend.available():
+            if explicit or not self.config.fallback_to_local_when_backend_unavailable:
+                raise RuntimeError("docker backend is not available")
+            return self._backends["local_subprocess"]
+        if requested not in self.config.backends and requested not in self.config.remote_backends:
+            if explicit:
+                raise ValueError(f"code interpreter backend is not enabled in config: {requested}")
+            return self._backends.get(self.config.default_backend, self._backends["local_subprocess"])
+        return backend
+
+    def _network_enabled(self, request: ToolCallRequest) -> bool:
+        requested = bool(request.input.get("allow_network") or False)
+        if self.config.network_policy == "always_disabled":
+            return False
+        if self.config.network_policy in {"allow_if_requested", "disabled_by_default"}:
+            return requested
+        return bool(self.config.docker.network_enabled)
+
+    def _approval_required_for_run_python(
+        self,
+        request: ToolCallRequest,
+        *,
+        generated: bool,
+        execution_profile: str,
+    ) -> bool:
+        if generated or not self.config.require_approval_for_untrusted_run_python:
+            return False
+        if not _is_untrusted_profile(execution_profile):
+            return False
+        return not bool(request.input.get("approved") or False)
 
     def _register_created_artifacts(self, task_id: str, workspace: Path, created: list[str]) -> list[str]:
         """Register each newly-created file as a task artifact.
@@ -289,6 +743,29 @@ def _call_name(value: ast.AST) -> str | None:
     if isinstance(value, ast.Attribute):
         return value.attr
     return None
+
+
+def _normalize_generation_request(request: ToolCallRequest, operation: str) -> ToolCallRequest:
+    payload = dict(request.input)
+    objective = str(payload.get("objective") or "").strip()
+    context = str(payload.get("context") or "").strip()
+    if operation == "solve_once":
+        context = f"{context}\nSolve this with one bounded Python helper run.".strip()
+    elif operation == "build_temp_helper":
+        context = f"{context}\nBuild a temporary helper script; do not promote it as a permanent connector.".strip()
+    elif operation == "repair_script":
+        failing_code = str(payload.get("failing_code") or "").strip()
+        error_text = str(payload.get("error_text") or "").strip()
+        repair_context = _previous_attempt_block(failing_code, error_text, kind="runtime_error") if failing_code or error_text else ""
+        context = f"{context}\n{repair_context}".strip()
+        if not objective:
+            objective = "Repair the failing Python helper script and run the corrected version."
+    payload["operation"] = "generate_and_run"
+    if objective:
+        payload["objective"] = objective
+    if context:
+        payload["context"] = context
+    return request.model_copy(update={"input": payload})
 
 
 def _previous_attempt_block(prev_code: str, error_text: str, *, kind: str) -> str:
@@ -446,26 +923,121 @@ def _notes_from_objective(objective: str) -> list[str]:
     return [item for item in notes if item][:20]
 
 
-async def _run_python_script(executable: str, script_path: Path, workspace: Path, *, timeout: int) -> tuple[int, str, str]:
+def _execution_profile(request: ToolCallRequest, *, generated: bool) -> str:
+    explicit = str(request.input.get("execution_profile") or "").strip().lower()
+    if explicit:
+        return explicit
+    return "generated" if generated else "trusted"
+
+
+def _is_untrusted_profile(value: str) -> bool:
+    return value.strip().lower() in {"generated", "telegram", "untrusted", "external", "user"}
+
+
+def _resource_limits_dict(config: CodeInterpreterAdapterConfig) -> dict[str, Any]:
+    return {
+        "timeout_seconds": config.timeout_seconds,
+        "memory": config.resource_limits.memory,
+        "cpus": config.resource_limits.cpus,
+        "pids_limit": config.resource_limits.pids_limit,
+        "max_code_chars": config.max_code_chars,
+        "max_output_chars": config.max_output_chars,
+    }
+
+
+def _validate_requested_packages(requirements: list[str], allowed_packages: set[str]) -> None:
+    if not requirements:
+        return
+    for requirement in requirements:
+        name = re.split(r"[<>=!~\[]", requirement, maxsplit=1)[0].strip().lower()
+        if not name:
+            raise ValueError(f"invalid package requirement: {requirement}")
+        if allowed_packages and name not in allowed_packages:
+            raise ValueError(f"package is not allowed for code.interpreter: {name}")
+
+
+async def _run_python_script(executable: str, script_path: Path, workspace: Path, *, timeout: int) -> ProcessExecutionResult:
+    return await _run_command([executable, str(script_path)], cwd=workspace, timeout=timeout)
+
+
+async def _run_command(args: list[str], *, cwd: Path, timeout: int) -> ProcessExecutionResult:
     creationflags = 0
+    start_new_session = False
     if sys.platform == "win32":
-        creationflags = subprocess.CREATE_NO_WINDOW
+        creationflags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        start_new_session = True
+    started = time.perf_counter()
     process = await asyncio.create_subprocess_exec(
-        executable,
-        str(script_path),
-        cwd=str(workspace),
+        *args,
+        cwd=str(cwd),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         stdin=asyncio.subprocess.DEVNULL,
         creationflags=creationflags,
+        start_new_session=start_new_session,
     )
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
     except asyncio.TimeoutError as exc:
-        process.kill()
+        await _terminate_process_tree(process)
         await process.communicate()
         raise TimeoutError from exc
-    return process.returncode or 0, stdout.decode(errors="replace"), stderr.decode(errors="replace")
+    duration = time.perf_counter() - started
+    return ProcessExecutionResult(
+        returncode=process.returncode or 0,
+        stdout=stdout.decode(errors="replace"),
+        stderr=stderr.decode(errors="replace"),
+        duration_seconds=round(duration, 3),
+        pid=process.pid,
+    )
+
+
+async def _terminate_process_tree(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
+    if sys.platform == "win32":
+        try:
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill",
+                "/PID",
+                str(process.pid),
+                "/T",
+                "/F",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            await asyncio.wait_for(killer.communicate(), timeout=10)
+            return
+        except Exception:
+            logger.debug("taskkill failed; falling back to process.kill", exc_info=True)
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+            return
+        except Exception:
+            logger.debug("process group kill failed; falling back to process.kill", exc_info=True)
+    try:
+        process.kill()
+    except ProcessLookupError:
+        pass
+
+
+async def _best_effort_docker_rm(docker: str, container_name: str) -> None:
+    try:
+        process = await asyncio.create_subprocess_exec(
+            docker,
+            "rm",
+            "-f",
+            container_name,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+        await asyncio.wait_for(process.communicate(), timeout=10)
+    except Exception:
+        logger.debug("docker cleanup failed for %s", container_name, exc_info=True)
 
 
 def _safe_child_path(workspace: Path, relative_path: str) -> Path:
@@ -499,6 +1071,21 @@ def _relative_files(workspace: Path, *, max_files: int) -> list[str]:
     return files
 
 
+def _file_snapshot(workspace: Path, *, max_files: int) -> dict[str, tuple[int, int]]:
+    if not workspace.exists():
+        return {}
+    snapshot: dict[str, tuple[int, int]] = {}
+    for path in sorted(item for item in workspace.rglob("*") if item.is_file()):
+        try:
+            stat = path.stat()
+            snapshot[str(path.resolve().relative_to(workspace))] = (stat.st_size, stat.st_mtime_ns)
+        except OSError:
+            continue
+        if len(snapshot) >= max_files:
+            break
+    return snapshot
+
+
 def _safe_segment(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._")
     return cleaned or "task"
@@ -516,12 +1103,21 @@ def _summary(returncode: int, stdout: str, stderr: str, created: list[str]) -> s
 def _terminal_output(operation: str, output: dict[str, Any]) -> dict[str, Any]:
     lines = [f"Code interpreter operation completed: {operation}"]
     lines.append(f"Workspace: {output.get('workspace_dir')}")
+    if output.get("backend"):
+        sandbox = "sandboxed" if output.get("sandboxed") else "not sandboxed"
+        lines.append(f"Backend: {output.get('backend')} ({sandbox})")
     if output.get("script_path"):
         lines.append(f"Script: {output['script_path']}")
     lines.append(f"Return code: {output.get('returncode')}")
     if output.get("files_created"):
         lines.append("Created files:")
         lines.extend(f"- {path}" for path in output["files_created"])
+    if output.get("files_modified"):
+        lines.append("Modified files:")
+        lines.extend(f"- {path}" for path in output["files_modified"])
+    if output.get("files_deleted"):
+        lines.append("Deleted files:")
+        lines.extend(f"- {path}" for path in output["files_deleted"])
     if output.get("stdout"):
         lines.append("Stdout:")
         lines.append(str(output["stdout"])[:2000])

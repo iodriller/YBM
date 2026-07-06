@@ -96,9 +96,9 @@ A following `artifact.deliver` step can reference them by basename
 - Status of running tasks → `task.status`.
 - Schedule something recurring → `schedule.manage`.
 
-If a browser action fails because Chrome isn't reachable, fall back to
-`code.interpreter generate_and_run` with stdlib `urllib.request` only — do
-not import non-standard packages for the fallback.
+Do not use `code.interpreter` as a hidden network/browser fallback. It is for
+bounded local calculations, file generation, and local data transforms; network
+access is disabled unless policy explicitly enables it.
 
 ## Approval and timeouts
 

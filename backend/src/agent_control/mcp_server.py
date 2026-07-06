@@ -71,9 +71,18 @@ def answer_task_question(task_id: str, answer: str) -> dict:
     if task.status != TaskStatus.CLARIFYING:
         return {"error": f"task is not waiting for an answer (status: {task.status.value})"}
     repositories.tasks.update_objective(task.id, f"{task.objective}\n[User clarification: {answer}]")
+    answers = list(task.metadata.get("clarification_answers") or [])
+    answers.append(
+        {
+            "question": task.metadata.get("clarifying_question"),
+            "answer": answer,
+            "source": "mcp",
+        }
+    )
     metadata = {
         **task.metadata,
         "clarification_answer": answer,
+        "clarification_answers": answers,
         "answered_clarifying_question": task.metadata.get("clarifying_question"),
         "retry_count": 0,
         "replan_count": 0,

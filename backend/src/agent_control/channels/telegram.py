@@ -611,9 +611,19 @@ class TelegramIntakeService:
         # the attempt counters — the user's input makes this a fresh attempt.
         objective = f"{task.objective}\n[User clarification: {text}]"
         self.repositories.tasks.update_objective(task.id, objective)
+        answers = list(task.metadata.get("clarification_answers") or [])
+        answers.append(
+            {
+                "question": task.metadata.get("clarifying_question"),
+                "answer": text,
+                "message_id": inbound.id,
+                "created_at": inbound.received_at.isoformat(),
+            }
+        )
         metadata = {
             **task.metadata,
             "clarification_answer": text,
+            "clarification_answers": answers,
             "answered_clarifying_question": task.metadata.get("clarifying_question"),
             "retry_count": 0,
             "replan_count": 0,

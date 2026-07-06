@@ -1390,9 +1390,10 @@ _ADMIN_HTML = """
     }
 
     function activityForStatus(status) {
-      const active = ["interpreting", "planned", "running", "retrying"];
+      const active = ["interpreting", "planned", "running", "retrying", "awaiting_external"];
       if (active.includes(status)) return {label: status === "planned" ? "Ready" : labelize(status), className: "active"};
       if (status === "awaiting_approval") return {label: "Waiting Approval", className: "waiting"};
+      if (status === "awaiting_external") return {label: "Waiting External", className: "waiting"};
       if (status === "received") return {label: "Queued", className: ""};
       if (status === "paused") return {label: "Paused", className: "paused"};
       if (status === "completed") return {label: "Done", className: "done"};
@@ -1429,7 +1430,7 @@ _ADMIN_HTML = """
       const services = Object.fromEntries(((data.services || {}).items || []).map(item => [item.name, item]));
       const worker = services.worker || {};
       const polling = services.telegram_polling || {};
-      const activeTasks = (data.tasks || []).filter(task => ["received", "interpreting", "planned", "running", "retrying", "awaiting_approval"].includes(task.status)).length;
+      const activeTasks = (data.tasks || []).filter(task => ["received", "interpreting", "planned", "running", "retrying", "awaiting_approval", "awaiting_external"].includes(task.status)).length;
       const llmOk = Boolean(llm.default_profile && (llm.profiles || {})[llm.default_profile]);
       const telegramOk = Boolean(telegram.enabled);
       const vscodeOk = Boolean(vscode.connected);
@@ -1895,7 +1896,7 @@ _ADMIN_HTML = """
         .filter(item => Number.isInteger(item));
     }
 
-    const ACTIVE_STATUSES = new Set(["received", "interpreting", "planned", "running", "retrying", "awaiting_approval"]);
+    const ACTIVE_STATUSES = new Set(["received", "interpreting", "planned", "running", "retrying", "awaiting_approval", "awaiting_external"]);
     let _pollTimer = null;
 
     function scheduleNextRefresh(activeTasks) {

@@ -48,6 +48,7 @@ class TaskStatus(StrEnum):
     CLARIFYING = "clarifying"
     PLANNED = "planned"
     AWAITING_APPROVAL = "awaiting_approval"
+    AWAITING_EXTERNAL = "awaiting_external"
     RUNNING = "running"
     PAUSED = "paused"
     RETRYING = "retrying"
@@ -459,6 +460,7 @@ _CAPABILITY_ALIASES: dict[str, str] = {
     "computer.use":           "desktop.control",
     "task.status":            "llm.generate",
     "coding.agent":           "terminal.run",
+    "mcp.client":             "terminal.run",
     "workspace.manage":       "filesystem.write",
     "adapter.factory":        "llm.generate",
     # IntentRoute sub-types → primary capability

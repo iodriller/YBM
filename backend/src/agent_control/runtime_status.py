@@ -31,6 +31,7 @@ def _expected_services(settings: AppSettings) -> dict[str, bool]:
         "localdeploy": _expects_localdeploy(settings),
         "backend": True,
         "worker": True,
+        "coding_session_watcher": True,
         "scheduler": bool(settings.scheduler.enabled),
         "telegram_polling": bool(settings.channels.telegram.enabled and settings.channels.telegram.polling),
         "admin_ui": bool(settings.server.admin_enabled),
