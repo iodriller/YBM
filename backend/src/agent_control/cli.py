@@ -132,6 +132,7 @@ async def run_worker() -> None:
             executor=executor,
             retry_policy=RetryPolicy(settings.limits),
             config_context=_worker_config_context(registry),
+            config_context_factory=lambda registry=registry: _worker_config_context(registry),
             default_plan_factory=lambda task: build_default_task_plan(settings, task),
             recovery_plan_factory=lambda task, reason: build_evaluator_recovery_plan(settings, task, reason),
             notification_sink=notifier,

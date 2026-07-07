@@ -659,6 +659,10 @@ class MCPClientOutput(ToolOutputModel):
     result: dict[str, Any] | None = None
     healthy: bool | None = None
     summary: str | None = None
+    catalog_path: str | None = None
+    catalog_updated_at: str | None = None
+    catalog_entries: list[dict[str, Any]] = Field(default_factory=list)
+    selected_tool: dict[str, Any] | None = None
 
 
 class VSCodeTerminalToolOutput(ToolOutputModel):

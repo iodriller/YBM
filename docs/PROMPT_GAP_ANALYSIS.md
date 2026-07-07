@@ -282,8 +282,9 @@ the available tools.
 3. URL detection → use browser.open with operation "open"
 4. Unknown task → use code.interpreter with generate_and_run
 5. Delivery → add artifact.deliver step
-6. Browser fallback → if Chrome unavailable, use code.interpreter +
-   urllib.request with browser User-Agent.
+6. Browser fallback → if Chrome is unavailable, recover through configured
+   recovery policy. Do not silently use code.interpreter as a network/browser
+   fallback unless policy explicitly allows network access.
 
 ## Example plans
 [3 worked examples: dizibox, find+read resume.pdf, code interpreter excel]
@@ -292,7 +293,8 @@ the available tools.
 - Only use capabilities listed as enabled in the configuration context
 - Set requires_approval: false for low-risk read operations
 - timeout_seconds: 60 for simple operations, 120-180 for browser/complex
-- All Python imports are allowed in code.interpreter
+- code.interpreter uses configured allowed/blocked import policy; dangerous
+  network, process, and OS-mutation imports are blocked by default.
 ```
 
 **User prompt** (`prompts/tasks/planner_user.md`):
@@ -411,14 +413,11 @@ Rules:
 - Print a concise final summary of what the script did.
 ```
 
-**Gap:** The rule says "stdlib only" but the planner system prompt says
-"All Python imports are allowed in code.interpreter — pandas, openpyxl,
-requests, pathlib, etc." These directly contradict each other. The planner
-generates a step assuming pandas, the inner LLM refuses to import it.
-
-**Fix:** Reconcile. If pandas/openpyxl are actually installed in the venv,
-update the inner prompt to say "stdlib + pandas, openpyxl, requests,
-pathlib, numpy are allowed."
+**Status:** Superseded by the configurable import policy. code.interpreter now
+uses explicit backend/config metadata, and the local defaults block dangerous
+network, process, package-install, and OS-mutation imports. Keep planner and
+inner interpreter prompts aligned with `adapters.code_interpreter.allowed_imports`
+and `blocked_imports`; do not describe imports as universally allowed.
 
 ### 5b. Computer-Use Decision
 `prompts/base/computer_use_system.md`:

@@ -395,7 +395,7 @@ def test_evaluator_recovery_can_use_code_interpreter_for_validation_failures(tmp
 
     assert plan is not None
     assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in plan.steps] == [
-        "code.interpreter:generate_and_run",
+        "code.interpreter:solve_once",
     ]
     assert plan.steps[0].tool_input["workspace_dir"].startswith(str(tmp_path / "code_interpreter"))
 

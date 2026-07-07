@@ -5,6 +5,7 @@ from urllib.parse import unquote, urlparse
 
 from agent_control.channels.telegram import TelegramBotApi
 from agent_control.schemas import TaskRecord, TaskStatus
+from agent_control.tools.mcp_client import mcp_output_text
 
 
 class TelegramTaskNotifier:
@@ -216,7 +217,16 @@ def _completed_answer(task: TaskRecord) -> str | None:
         return _artifact_answer(output)
     if tool_name == "task.status":
         return str(output.get("summary") or output.get("text") or _last_output(task) or "").strip() or None
+    if tool_name == "mcp.client":
+        return _mcp_answer(output)
     return None
+
+
+def _mcp_answer(output: dict) -> str:
+    text = mcp_output_text(output).strip()
+    if text:
+        return _trim(text, 3600)
+    return str(output.get("summary") or "MCP request completed.")
 
 
 def _filesystem_answer(operation: str, output: dict) -> str:

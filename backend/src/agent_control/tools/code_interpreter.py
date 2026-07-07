@@ -486,7 +486,12 @@ class CodeInterpreterAdapter:
             backends.append(health)
         configured_remote = sorted(self.config.remote_backends)
         available = [item["name"] for item in backends if item.get("available")]
+        safety_warnings = []
+        if not self.config.blocked_imports:
+            safety_warnings.append("dangerous import blocklist is empty; local subprocess execution is not sandboxed")
         stdout = "\n".join(f"{item['name']}: {item.get('summary', '')}" for item in backends)
+        if safety_warnings:
+            stdout = f"{stdout}\nSafety warnings:\n" + "\n".join(f"- {item}" for item in safety_warnings)
         summary = (
             f"Code interpreter health: {len(available)} available backend(s)."
             if available
@@ -522,6 +527,7 @@ class CodeInterpreterAdapter:
                 "backends": backends,
                 "configured_remote_backends": configured_remote,
                 "last_failures": dict(self._last_backend_failures),
+                "safety_warnings": safety_warnings,
             },
         }
 

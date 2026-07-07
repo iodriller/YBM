@@ -47,8 +47,12 @@ def build_default_task_plan(settings: AppSettings, task: TaskRecord) -> PlanMode
 
 def build_evaluator_recovery_plan(settings: AppSettings, task: TaskRecord, failure_reason: str) -> PlanModel | None:
     reason = failure_reason.lower()
-    if int(task.metadata.get("evaluator_repair_count", 0)) >= 2:
+    if int(task.metadata.get("evaluator_repair_count", 0)) >= 3:
         return None
+    if "use_code_interpreter" in reason or "mcp_unavailable" in reason or "mcp_failed" in reason:
+        if not _recovery_stage_used(task, "code_interpreter"):
+            return _build_code_interpreter_recovery_plan(settings, task, failure_reason) or _build_adapter_factory_plan(settings, task)
+        return _build_adapter_factory_plan(settings, task)
     if "expected_desktop_observation_missing" in reason:
         if _looks_like_desktop_file_listing(task.objective):
             return _build_filesystem_manage_plan(settings, task)
@@ -60,14 +64,30 @@ def build_evaluator_recovery_plan(settings: AppSettings, task: TaskRecord, failu
     ):
         return _build_file_lookup_delivery_plan(settings, task) or _build_artifact_delivery_plan(settings, task)
     if "tool adapter not registered" in reason or "unregistered tool" in reason or "connector_missing" in reason:
-        return (
-            _build_mcp_missing_tool_plan(settings, task, failure_reason)
-            or _build_code_interpreter_recovery_plan(settings, task, failure_reason)
-            or _build_adapter_factory_plan(settings, task)
-        )
+        if not _recovery_stage_used(task, "mcp_catalog_refresh"):
+            plan = _build_mcp_missing_tool_plan(settings, task, failure_reason)
+            if plan is not None:
+                return plan
+        if not _recovery_stage_used(task, "code_interpreter"):
+            plan = _build_code_interpreter_recovery_plan(settings, task, failure_reason)
+            if plan is not None:
+                return plan
+        return _build_adapter_factory_plan(settings, task)
     if "unsupported operation" in reason or "validation" in reason:
-        return _build_code_interpreter_recovery_plan(settings, task, failure_reason)
+        if not _recovery_stage_used(task, "code_interpreter"):
+            return _build_code_interpreter_recovery_plan(settings, task, failure_reason)
+        return None
     return None
+
+
+def _recovery_stage_used(task: TaskRecord, stage: str) -> bool:
+    counts = task.metadata.get("recovery_stage_counts")
+    if not isinstance(counts, dict):
+        return False
+    try:
+        return int(counts.get(stage) or 0) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _task_intent(task: TaskRecord) -> OrchestrationIntent | None:
@@ -539,7 +559,7 @@ def _build_code_interpreter_recovery_plan(settings: AppSettings, task: TaskRecor
                 requires_approval=policy.requires_approval,
                 tool_name="code.interpreter",
                 tool_input={
-                    "operation": "generate_and_run",
+                    "operation": "solve_once",
                     "objective": objective,
                     "workspace_dir": str(workspace_dir_for_task(settings.adapters.code_interpreter.workspace_root, task.id)),
                     "timeout_seconds": settings.adapters.code_interpreter.timeout_seconds,
@@ -562,13 +582,13 @@ def _build_mcp_missing_tool_plan(settings: AppSettings, task: TaskRecord, failur
         objective=task.objective,
         assumptions=[
             "A native tool or connector was missing.",
-            "Configured MCP servers are checked before generating a permanent adapter proposal.",
+            "Configured MCP servers are refreshed before replanning a concrete MCP call.",
         ],
         required_capabilities=[Capability.TERMINAL_RUN],
         steps=[
             PlanStep(
                 title="Discover MCP tools for missing capability",
-                description="List configured MCP server tools that might satisfy the missing capability.",
+                description="Refresh the MCP tool catalog so the planner can choose a concrete MCP call.",
                 required_capabilities=[Capability.TERMINAL_RUN],
                 risk_level=RiskLevel.HIGH,
                 requires_approval=policy.requires_approval,
@@ -581,7 +601,7 @@ def _build_mcp_missing_tool_plan(settings: AppSettings, task: TaskRecord, failur
             )
         ],
         success_criteria=[
-            "MCP discovery reports whether an external tool can cover the missing capability.",
+            "MCP discovery refreshes the catalog; the worker must replan a concrete mcp.client call or fall back.",
             f"Original failure is preserved for follow-up planning: {failure_reason[:200]}",
         ],
     )
