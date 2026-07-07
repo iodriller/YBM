@@ -3312,5 +3312,96 @@
         "artifact.deliver"
       ]
     }
+  },
+  {
+    "id": "mcp_discover_tools",
+    "source_file": "mcp_cases.json",
+    "requirement": "Discover configured external MCP tools and report what is available.",
+    "small_test": "Check what MCP tools are available.",
+    "larger_test": "Refresh the configured MCP catalog and summarize the available tools and server health.",
+    "message": "Check what MCP tools are available.",
+    "setup": [
+      "configured_mcp_servers"
+    ],
+    "tags": [
+      "mcp",
+      "external"
+    ],
+    "suites": [
+      "mcp",
+      "smoke"
+    ],
+    "tools_required": [
+      "mcp.client:list_tools"
+    ],
+    "expected_behavior": "The agent uses mcp.client to list configured tools and reports server health or a clear unavailable state.",
+    "pass_criteria": "The response includes discovered MCP tools or a clear message that no configured MCP tools are reachable.",
+    "failure_cases": [
+      "The planner invents an MCP pseudo-tool.",
+      "The task completes without running mcp.client.",
+      "A discovery-only recovery task is treated as solving an unrelated user goal."
+    ],
+    "size": "small",
+    "timeout_seconds": 240,
+    "assertions": {
+      "final_status_in": [
+        "completed",
+        "blocked",
+        "clarifying"
+      ],
+      "tools_all": [
+        "mcp.client:list_tools"
+      ],
+      "metadata_any": [
+        "mcp_catalog",
+        "mcp_catalog_path",
+        "last_tool_output_text"
+      ]
+    }
+  },
+  {
+    "id": "mcp_call_fake_echo",
+    "source_file": "mcp_cases.json",
+    "requirement": "Call a configured fake MCP echo tool and surface the actual tool result.",
+    "small_test": "Use the fake MCP echo tool to echo hello from E2E.",
+    "larger_test": "Use a configured test MCP server, call its echo tool, and return the echoed payload to Telegram.",
+    "message": "Use the fake MCP echo tool to echo hello from E2E.",
+    "setup": [
+      "fake_mcp_server"
+    ],
+    "tags": [
+      "mcp",
+      "external"
+    ],
+    "suites": [
+      "mcp"
+    ],
+    "tools_required": [
+      "mcp.client:call_tool"
+    ],
+    "expected_behavior": "The agent calls mcp.client call_tool with the configured fake server and echo tool.",
+    "pass_criteria": "Telegram reply contains the echoed text from the MCP tool result.",
+    "failure_cases": [
+      "Only the generic 'Called MCP tool' summary is returned.",
+      "The planner invents mcp.fake.echo as a direct tool name.",
+      "The result payload is hidden from synthesis."
+    ],
+    "size": "small",
+    "timeout_seconds": 240,
+    "assertions": {
+      "final_status_in": [
+        "completed"
+      ],
+      "tools_all": [
+        "mcp.client:call_tool"
+      ],
+      "bot_reply_contains_any": [
+        "hello from E2E"
+      ],
+      "metadata_any": [
+        "mcp_selected_tool",
+        "last_tool_output_text"
+      ]
+    }
   }
 ]

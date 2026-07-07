@@ -42,6 +42,7 @@ def test_is_content_tool_classifies_known_tools() -> None:
     assert ResponseSynthesizer.is_content_tool("browser.open") is True
     assert ResponseSynthesizer.is_content_tool("filesystem.manage") is True
     assert ResponseSynthesizer.is_content_tool("code.interpreter") is True
+    assert ResponseSynthesizer.is_content_tool("mcp.client") is True
     assert ResponseSynthesizer.is_content_tool("artifact.deliver") is False
     assert ResponseSynthesizer.is_content_tool("desktop.observe") is False
 

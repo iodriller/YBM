@@ -215,6 +215,7 @@ class MCPConfig(StrictBaseModel):
     enabled: bool = False
     servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
     cache_ttl_seconds: int = Field(default=60, ge=0, le=3600)
+    catalog_path: str = ".agent_control/mcp/tool_catalog.json"
 
 
 class CodeInterpreterResourceLimitsConfig(StrictBaseModel):

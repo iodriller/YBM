@@ -22,6 +22,7 @@ from agent_control.schemas import (
     PlanStep,
     PostconditionType,
     RiskLevel,
+    TaskRecord,
     TaskStatus,
     TaskType,
     ToolCallRequest,
@@ -521,11 +522,64 @@ async def test_worker_evaluator_attaches_recovery_plan_for_delivery_root_failure
     assert repaired.status == TaskStatus.PLANNED
     assert repaired.metadata["evaluator_repair_count"] == 1
     assert repaired.metadata["evaluator_repair_reason"] == "path is outside configured delivery roots"
+    assert repaired.metadata["recovery_stage"] == "filesystem_recovery"
+    assert repaired.metadata["recovery_stage_counts"] == {"filesystem_recovery": 1}
     assert repair_plan is not None
     assert [f"{step.tool_name}:{step.tool_input.get('operation')}" for step in repair_plan.steps] == [
         "filesystem.manage:search",
         "artifact.deliver:send_file",
     ]
+
+
+@pytest.mark.asyncio
+async def test_worker_does_not_repeat_same_evaluator_recovery_stage(tmp_path) -> None:
+    repos, audit = _repos(tmp_path)
+    task = repos.tasks.create(
+        "Send missing file",
+        metadata={"evaluator_repair_count": 1, "recovery_stage_counts": {"filesystem_recovery": 1}},
+    )
+    plan = repos.plans.create(
+        task.id,
+        PlanModel(
+            objective=task.objective,
+            steps=[
+                PlanStep(
+                    title="Deliver file",
+                    description="Try to send a file.",
+                    required_capabilities=[Capability.TELEGRAM_SEND],
+                    tool_name="artifact.deliver",
+                    tool_input={"operation": "send_file", "path": "missing.pdf"},
+                )
+            ],
+        ),
+    )
+    repos.tasks.attach_plan(task.id, plan.id)
+    settings = AppSettings(
+        _env_file=None,
+        capabilities={
+            Capability.TELEGRAM_SEND: CapabilityPolicy(enabled=True, requires_approval=False, max_risk_level=RiskLevel.LOW),
+            Capability.FILESYSTEM_WRITE: CapabilityPolicy(enabled=True, requires_approval=False, max_risk_level=RiskLevel.HIGH),
+        },
+    )
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"artifact.deliver": FailingAdapter("path is outside configured delivery roots")},
+    )
+    worker = TaskWorker(
+        repos,
+        audit,
+        executor=executor,
+        recovery_plan_factory=lambda item, reason: build_evaluator_recovery_plan(settings, item, reason),
+    )
+
+    await worker.process_task(task.id)
+    updated = await worker.process_task(task.id)
+
+    assert updated.status == TaskStatus.CLARIFYING
+    assert updated.metadata["evaluator_repair_count"] == 1
+    assert updated.metadata["recovery_stage_counts"] == {"filesystem_recovery": 1}
 
 
 @pytest.mark.asyncio
@@ -577,6 +631,116 @@ async def test_worker_uses_explicit_plan_postconditions(tmp_path) -> None:
     assert requeued.status == TaskStatus.RECEIVED
     assert requeued.metadata["fulfillment_gap"] == "expected_preview_url_missing"
     assert requeued.metadata["fulfillment_expected"][0]["type"] == "preview_url"
+
+
+@pytest.mark.asyncio
+async def test_worker_replans_after_mcp_catalog_refresh_instead_of_completing(tmp_path) -> None:
+    repos, audit = _repos(tmp_path)
+    task = repos.tasks.create(
+        "Create an issue with the missing GitHub connector",
+        metadata={"evaluator_repair_reason": "connector_missing", "recovery_stage": "mcp_catalog_refresh"},
+    )
+    plan = repos.plans.create(
+        task.id,
+        PlanModel(
+            objective=task.objective,
+            steps=[
+                PlanStep(
+                    title="Refresh MCP catalog",
+                    description="Discover MCP tools.",
+                    required_capabilities=[Capability.TERMINAL_RUN],
+                    tool_name="mcp.client",
+                    tool_input={"operation": "list_tools"},
+                )
+            ],
+        ),
+    )
+    repos.tasks.attach_plan(task.id, plan.id)
+    planner = PlannerService(
+        StaticPlanProvider(
+            PlanModel(
+                objective=task.objective,
+                steps=[
+                    PlanStep(
+                        title="Call MCP GitHub tool",
+                        description="Call the configured MCP tool.",
+                        required_capabilities=[Capability.TERMINAL_RUN],
+                        tool_name="mcp.client",
+                        tool_input={
+                            "operation": "call_tool",
+                            "server": "fake_github",
+                            "tool": "create_issue",
+                            "arguments": {"title": "Test"},
+                        },
+                    )
+                ],
+            )
+        ),
+        repos,
+        audit,
+    )
+    settings = AppSettings(
+        _env_file=None,
+        capabilities={Capability.TERMINAL_RUN: CapabilityPolicy(enabled=True, requires_approval=False, max_risk_level=RiskLevel.HIGH)},
+    )
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={
+            "mcp.client": StaticToolAdapter(
+                {
+                    "operation": "list_tools",
+                    "summary": "Discovered 1 MCP tool(s).",
+                    "servers": [{"name": "fake_github", "healthy": True}],
+                    "tools": [{"server": "fake_github", "name": "create_issue", "description": "Create issue"}],
+                    "catalog_path": str(tmp_path / "tool_catalog.json"),
+                    "catalog_updated_at": "2026-01-01T00:00:00+00:00",
+                    "healthy": True,
+                }
+            )
+        },
+    )
+    worker = TaskWorker(repos, audit, planner=planner, executor=executor, config_context="base context")
+
+    await worker.process_task(task.id)
+    updated = await worker.process_task(task.id)
+    new_plan = repos.plans.get(updated.plan_id or "")
+
+    assert updated.status == TaskStatus.PLANNED
+    assert updated.metadata["recovery_stage"] == "mcp_catalog_replan"
+    assert updated.metadata["mcp_catalog"]["tool_count"] == 1
+    assert new_plan is not None
+    assert new_plan.steps[0].tool_input["operation"] == "call_tool"
+
+
+def test_evaluator_recovery_plan_skips_already_used_stages(tmp_path) -> None:
+    settings = AppSettings(
+        _env_file=None,
+        mcp={"enabled": True, "servers": {"fake": {"command": "python"}}},
+        adapters={"adapter_factory": {"enabled": True}, "code_interpreter": {"enabled": True}},
+        capabilities={
+            Capability.TERMINAL_RUN: CapabilityPolicy(enabled=True, requires_approval=False, max_risk_level=RiskLevel.HIGH),
+            Capability.FILESYSTEM_WRITE: CapabilityPolicy(enabled=True, requires_approval=False, max_risk_level=RiskLevel.HIGH),
+        },
+    )
+    objective = "Create a connector tool for GitHub issues"
+    after_mcp = TaskRecord(
+        objective=objective,
+        metadata={"recovery_stage_counts": {"mcp_catalog_refresh": 1}},
+    )
+    after_code = TaskRecord(
+        objective=objective,
+        metadata={"recovery_stage_counts": {"mcp_catalog_refresh": 1, "code_interpreter": 1}},
+    )
+
+    code_plan = build_evaluator_recovery_plan(settings, after_mcp, "connector_missing: github.issue")
+    adapter_plan = build_evaluator_recovery_plan(settings, after_code, "connector_missing: github.issue")
+
+    assert code_plan is not None
+    assert code_plan.steps[0].tool_name == "code.interpreter"
+    assert adapter_plan is not None
+    assert adapter_plan.steps[0].tool_name == "adapter.factory"
 
 
 @pytest.mark.asyncio

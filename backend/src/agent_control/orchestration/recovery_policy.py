@@ -42,11 +42,15 @@ def choose_recovery(
 
     failure_type = diagnosis.failure_type
     if failure_type in {FailureType.TIMEOUT, FailureType.BROWSER_UNREACHABLE, FailureType.LOCAL_MODEL_UNAVAILABLE}:
+        if tool_name == "mcp.client":
+            return RecoveryDecision(action=RecoveryAction.USE_CODE_INTERPRETER, reason="mcp_unavailable_try_code_interpreter")
         return RecoveryDecision(action=RecoveryAction.RETRY, reason=failure_type.value)
     if failure_type == FailureType.RATE_LIMITED:
         return RecoveryDecision(action=RecoveryAction.ASK_USER, reason="usage_or_rate_limit")
     if failure_type == FailureType.CONNECTOR_MISSING:
         return RecoveryDecision(action=RecoveryAction.USE_MCP, reason="missing_connector_try_mcp")
+    if tool_name == "mcp.client":
+        return RecoveryDecision(action=RecoveryAction.USE_CODE_INTERPRETER, reason="mcp_failed_try_code_interpreter")
     if failure_type in {FailureType.BAD_TOOL_ARGS, FailureType.BAD_PLAN, FailureType.CODING_AGENT_FAILED}:
         return RecoveryDecision(action=RecoveryAction.REPLAN, reason=failure_type.value)
     if failure_type in {FailureType.FILE_NOT_FOUND, FailureType.AUTH_REQUIRED, FailureType.MISSING_INPUT, FailureType.UNSAFE_ACTION}:

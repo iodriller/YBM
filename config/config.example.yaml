@@ -340,4 +340,5 @@ adapters:
 mcp:
   enabled: false
   cache_ttl_seconds: 60
+  catalog_path: ".agent_control/mcp/tool_catalog.json"
   servers: {}

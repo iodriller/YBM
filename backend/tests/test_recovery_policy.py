@@ -57,3 +57,13 @@ def test_connector_missing_prefers_mcp_path() -> None:
 
     assert diagnosis.failure_type == FailureType.CONNECTOR_MISSING
     assert decision.action == RecoveryAction.USE_MCP
+
+
+def test_mcp_failure_prefers_code_interpreter_fallback() -> None:
+    result = _failed("MCP operation failed: server crashed")
+    diagnosis = diagnose_failure(result, tool_name="mcp.client", operation="call_tool")
+    task = TaskRecord(objective="use MCP or script it")
+
+    decision = choose_recovery(task, result, diagnosis, tool_name="mcp.client", operation="call_tool")
+
+    assert decision.action == RecoveryAction.USE_CODE_INTERPRETER

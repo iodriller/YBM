@@ -35,6 +35,7 @@ from agent_control.schemas import (
 )
 from agent_control.storage.audit import AuditLogger
 from agent_control.storage.repositories import Repositories
+from agent_control.tools.mcp_client import mcp_output_text
 
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,7 @@ class TaskWorker:
         executor: ToolExecutor | None = None,
         retry_policy: RetryPolicy | None = None,
         config_context: str = "No extra capability context provided.",
+        config_context_factory: Callable[[], str] | None = None,
         default_plan_factory: DefaultPlanFactory | None = None,
         recovery_plan_factory: RecoveryPlanFactory | None = None,
         notification_sink: TaskNotificationSink | None = None,
@@ -97,6 +99,7 @@ class TaskWorker:
         self.executor = executor
         self.retry_policy = retry_policy
         self.config_context = config_context
+        self.config_context_factory = config_context_factory
         self.default_plan_factory = default_plan_factory
         self.recovery_plan_factory = recovery_plan_factory
         self.notification_sink = notification_sink
@@ -190,7 +193,7 @@ class TaskWorker:
             _planner_error: str | None = None
             if self.planner is not None:
                 try:
-                    await self.planner.plan_task(task_id, self.config_context)
+                    await self.planner.plan_task(task_id, self._planner_context())
                 except Exception as exc:
                     _planner_error = str(exc)
                     self.audit.append(
@@ -222,7 +225,7 @@ class TaskWorker:
                             ],
                             "source": "hardcoded_fallback_plan",
                             "route_decision": _route_decision(task, default_plan),
-                            "config_context": self.config_context,
+                            "config_context": self._planner_context(),
                             "plan": default_plan.model_dump(mode="json"),
                         },
                     )
@@ -397,7 +400,23 @@ class TaskWorker:
                 result.error_message or recovery_decision.reason,
                 extra_metadata=extra_metadata or None,
             )
+        if recovery_decision is not None and recovery_decision.action == RecoveryAction.USE_MCP:
+            recovery_reason = result.error_message or f"connector_missing:{recovery_decision.reason}"
+            recovery = self._attach_recovery_plan(latest, recovery_reason)
+            if recovery is not None:
+                return recovery
+            return await self._replan_with_error(
+                latest,
+                "Connector missing. Refresh or use the MCP catalog, then call mcp.client call_tool if a configured MCP tool fits.",
+            ) or self._ask_user(latest, recovery_reason)
+        if recovery_decision is not None and recovery_decision.action == RecoveryAction.USE_CODE_INTERPRETER:
+            recovery = self._attach_recovery_plan(latest, f"use_code_interpreter:{result.error_message or recovery_decision.reason}")
+            if recovery is not None:
+                return recovery
+            return self._ask_user(latest, result.error_message or recovery_decision.reason)
         if result.status == ToolResultStatus.SUCCEEDED:
+            if _is_mcp_recovery_discovery(latest, step, operation):
+                return await self._replan_after_mcp_catalog(latest, result)
             next_step = self._next_runnable_step(plan.steps, step.id)
             if next_step is None:
                 self.repositories.tasks.set_current_step(task.id, None)
@@ -457,6 +476,38 @@ class TaskWorker:
             payload={"reason": "awaiting_external_session", "session_id": session_id, "tool": step.tool_name},
         )
         return updated
+
+    async def _replan_after_mcp_catalog(self, task: TaskRecord, result: ToolCallResult) -> TaskRecord:
+        output = result.output if isinstance(result.output, dict) else {}
+        catalog_text = mcp_output_text(output)
+        latest = self.repositories.tasks.get(task.id) or task
+        metadata = {
+            **latest.metadata,
+            "recovery_stage": "mcp_catalog_replan",
+            "mcp_catalog": {
+                "catalog_path": output.get("catalog_path"),
+                "catalog_updated_at": output.get("catalog_updated_at"),
+                "tool_count": len(output.get("tools") or []),
+                "healthy": output.get("healthy"),
+            },
+        }
+        latest = self.repositories.tasks.update_metadata(latest.id, metadata, TaskStatus.RECEIVED)
+        replan = await self._replan_with_error(
+            latest,
+            (
+                "MCP catalog refresh completed during connector-missing recovery. "
+                "If one configured MCP tool fits the original objective, create a plan that calls "
+                "mcp.client with operation=call_tool, server, tool, and arguments. Do not stop after list_tools. "
+                "If no MCP tool fits or MCP is unavailable, use code.interpreter solve_once for a bounded local helper."
+            ),
+            extra_config_context=f"\n\n{catalog_text[:2400]}",
+        )
+        if replan is not None:
+            return replan
+        recovery = self._attach_recovery_plan(latest, "mcp_unavailable_or_no_matching_tool")
+        if recovery is not None:
+            return recovery
+        return self._ask_user(latest, "No configured MCP tool could satisfy the missing connector.")
 
     def _process_retrying(self, task: TaskRecord) -> TaskRecord:
         next_retry_at = task.metadata.get("next_retry_at")
@@ -540,17 +591,24 @@ class TaskWorker:
             return None
         latest = self.repositories.tasks.get(task.id) or task
         repair_count = int(latest.metadata.get("evaluator_repair_count", 0))
-        if repair_count >= 2:
+        if repair_count >= 3:
             return None
         plan = self.recovery_plan_factory(latest, reason)
         if plan is None:
             return None
+        stage = _recovery_stage_for_plan(plan)
+        stage_counts = _recovery_stage_counts(latest.metadata.get("recovery_stage_counts"))
+        if int(stage_counts.get(stage, 0)) >= 1:
+            return None
+        stage_counts[stage] = int(stage_counts.get(stage, 0)) + 1
         self.repositories.plans.create(latest.id, plan)
         metadata = {
             **latest.metadata,
             "evaluator_repair_count": repair_count + 1,
             "evaluator_repair_reason": reason,
             "evaluator_repair_plan_id": plan.id,
+            "recovery_stage": stage,
+            "recovery_stage_counts": stage_counts,
         }
         updated = self.repositories.tasks.update_metadata(latest.id, metadata)
         updated = self.repositories.tasks.attach_plan(updated.id, plan.id, TaskStatus.PLANNED)
@@ -696,7 +754,13 @@ class TaskWorker:
         )
         return None
 
-    async def _replan_with_error(self, task: TaskRecord, error_context: str) -> TaskRecord | None:
+    async def _replan_with_error(
+        self,
+        task: TaskRecord,
+        error_context: str,
+        *,
+        extra_config_context: str = "",
+    ) -> TaskRecord | None:
         """Ask the LLM planner to produce a new plan given the error context (up to 2 replan attempts)."""
         if self.planner is None:
             return None
@@ -723,11 +787,24 @@ class TaskWorker:
             payload={"reason": "replan_after_failure", "replan_count": replan_count + 1, "error": error_context[:400]},
         )
         try:
-            await self.planner.plan_task(task.id, self.config_context + f"\n\nError context: {error_context[:400]}")
+            await self.planner.plan_task(
+                task.id,
+                self._planner_context(extra_config_context + f"\n\nError context: {error_context[:400]}"),
+            )
         except Exception:
             logger.warning("replanning planner call failed for task %s", task.id, exc_info=True)
             return None
         return self.repositories.tasks.get(task.id)
+
+    def _planner_context(self, extra: str = "") -> str:
+        if self.config_context_factory is None:
+            return self.config_context + extra
+        try:
+            base = self.config_context_factory()
+        except Exception:
+            logger.warning("config context factory failed; falling back to startup context", exc_info=True)
+            base = self.config_context
+        return base + extra
 
     async def _notify_if_needed(self, task: TaskRecord) -> None:
         if task.status not in NOTIFIABLE_STATUSES:
@@ -809,9 +886,19 @@ class TaskWorker:
             ("schedule_id", "schedule_id"),
             ("scheduled_task_id", "task_id"),
             ("schedule_next_run_at", "next_run_at"),
+            ("mcp_catalog_path", "catalog_path"),
+            ("mcp_catalog_updated_at", "catalog_updated_at"),
+            ("mcp_selected_tool", "selected_tool"),
         ):
             if output.get(output_key):
                 metadata[metadata_key] = output[output_key]
+        if tool_name == "mcp.client":
+            metadata["mcp_catalog"] = {
+                "catalog_path": output.get("catalog_path"),
+                "catalog_updated_at": output.get("catalog_updated_at"),
+                "tool_count": len(output.get("tools") or []),
+                "healthy": output.get("healthy"),
+            }
         if result.artifact_ids:
             metadata["last_artifact_ids"] = result.artifact_ids
         elif output.get("artifact_ids"):
@@ -1001,6 +1088,8 @@ def _tool_output_text(result: ToolCallResult) -> str:
     output = result.output
     if not isinstance(output, dict):
         return ""
+    if _looks_like_mcp_output(output):
+        return mcp_output_text(output)
     terminal_output = output.get("terminal_output")
     if isinstance(terminal_output, list):
         chunks = []
@@ -1013,6 +1102,62 @@ def _tool_output_text(result: ToolCallResult) -> str:
         if output.get(key):
             return str(output[key])
     return ""
+
+
+def _looks_like_mcp_output(output: dict[str, Any]) -> bool:
+    if output.get("operation") in {"discover", "list_tools", "call_tool", "health"} and (
+        "servers" in output or "tools" in output or "result" in output
+    ):
+        return True
+    return bool(output.get("catalog_path") and ("servers" in output or "tools" in output))
+
+
+def _is_mcp_recovery_discovery(task: TaskRecord, step: PlanStep, operation: str) -> bool:
+    if step.tool_name != "mcp.client" or operation not in {"discover", "list_tools", "health"}:
+        return False
+    reason = str(task.metadata.get("evaluator_repair_reason") or task.metadata.get("last_failure_type") or "").lower()
+    stage = str(task.metadata.get("recovery_stage") or "").lower()
+    return (
+        "connector_missing" in reason
+        or "tool adapter not registered" in reason
+        or "unregistered tool" in reason
+        or stage == "mcp_catalog_refresh"
+    )
+
+
+def _recovery_stage_for_plan(plan: PlanModel) -> str:
+    tool_ops = {(step.tool_name or "", str(step.tool_input.get("operation") or "")) for step in plan.steps}
+    if any(tool == "mcp.client" and operation in {"discover", "list_tools", "health"} for tool, operation in tool_ops):
+        return "mcp_catalog_refresh"
+    if any(tool == "mcp.client" and operation == "call_tool" for tool, operation in tool_ops):
+        return "mcp_call_tool"
+    if any(tool == "code.interpreter" for tool, _operation in tool_ops):
+        return "code_interpreter"
+    if any(tool == "adapter.factory" for tool, _operation in tool_ops):
+        return "adapter_factory"
+    if any(tool == "filesystem.manage" for tool, _operation in tool_ops):
+        return "filesystem_recovery"
+    if any(tool == "artifact.deliver" for tool, _operation in tool_ops):
+        return "artifact_delivery"
+    if any(tool == "computer.use" for tool, _operation in tool_ops):
+        return "computer_use_recovery"
+    return "evaluator_recovery"
+
+
+def _recovery_stage_counts(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    counts: dict[str, int] = {}
+    for key, raw in value.items():
+        if not isinstance(key, str):
+            continue
+        try:
+            count = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if count > 0:
+            counts[key] = count
+    return counts
 
 
 def _trim_result(result: ToolCallResult) -> dict:

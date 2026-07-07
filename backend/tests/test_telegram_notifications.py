@@ -197,6 +197,29 @@ def test_code_interpreter_response_shows_stdout_as_primary_content() -> None:
     assert "Command:" not in message
 
 
+def test_mcp_response_shows_tool_result_content() -> None:
+    task = TaskRecord(
+        objective="Echo hello",
+        status=TaskStatus.COMPLETED,
+        metadata={
+            "last_tool_name": "mcp.client",
+            "last_tool_result": {
+                "output": {
+                    "operation": "call_tool",
+                    "summary": "Called MCP tool fake.echo.",
+                    "result": {"content": [{"type": "text", "text": "hello from E2E"}]},
+                    "selected_tool": {"server": "fake", "tool": "echo"},
+                }
+            },
+        },
+    )
+
+    message = _task_message_without_screenshot(task)
+
+    assert "hello from E2E" in message
+    assert "Task:" not in message
+
+
 def test_completed_task_messages_do_not_leak_internal_ids() -> None:
     for tool_name, output in [
         ("filesystem.manage", {"operation": "inspect_folder", "root": "C:/Desktop", "entries": []}),

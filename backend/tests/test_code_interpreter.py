@@ -55,6 +55,15 @@ class BrokenStructuredProvider(FakeScriptProvider):
         raise ValueError("LLM structured output failed validation")
 
 
+class FakeArtifactRepository:
+    def __init__(self) -> None:
+        self.created = []
+
+    def create(self, artifact):
+        self.created.append(artifact)
+        return artifact
+
+
 def _settings(tmp_path: Path) -> AppSettings:
     return AppSettings(
         _env_file=None,
@@ -207,6 +216,73 @@ async def test_code_interpreter_health_reports_backends(tmp_path) -> None:
     names = {item["name"] for item in result.output["health"]["backends"]}
     assert "local_subprocess" in names
     assert "docker_python" in names
+
+
+@pytest.mark.asyncio
+async def test_code_interpreter_health_warns_when_import_blocklist_empty(tmp_path) -> None:
+    config = _settings(tmp_path).adapters.code_interpreter.model_copy(update={"blocked_imports": []})
+    adapter = CodeInterpreterAdapter(config)
+
+    result = await adapter.execute(_request(tmp_path, "health"))
+
+    assert result.status.value == "succeeded"
+    assert result.output["health"]["safety_warnings"]
+    assert "blocklist is empty" in result.output["stdout"]
+
+
+@pytest.mark.asyncio
+async def test_code_interpreter_inspect_state_lists_workspace_files(tmp_path) -> None:
+    workspace = tmp_path / "code" / "task_code"
+    workspace.mkdir(parents=True)
+    (workspace / "existing.txt").write_text("ok", encoding="utf-8")
+    adapter = CodeInterpreterAdapter(_settings(tmp_path).adapters.code_interpreter)
+
+    result = await adapter.execute(_request(tmp_path, "inspect_state"))
+
+    assert result.status.value == "succeeded"
+    assert "existing.txt" in result.output["files_after"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["solve_once", "build_temp_helper", "repair_script"])
+async def test_code_interpreter_advertised_generation_operations_execute(tmp_path, operation) -> None:
+    adapter = CodeInterpreterAdapter(_settings(tmp_path).adapters.code_interpreter, provider=FakeScriptProvider())
+    payload = {"objective": "Create a result file."}
+    if operation == "repair_script":
+        payload.update({"failing_code": "print(unknown)", "error_text": "NameError"})
+
+    result = await adapter.execute(_request(tmp_path, operation, **payload))
+
+    assert result.status.value == "succeeded"
+    assert result.output["operation"] == operation
+    assert result.output["generated"] is True
+    assert "result.txt" in result.output["files_created"]
+
+
+@pytest.mark.asyncio
+async def test_code_interpreter_registers_generated_artifacts_but_not_script(tmp_path) -> None:
+    artifacts = FakeArtifactRepository()
+    adapter = CodeInterpreterAdapter(_settings(tmp_path).adapters.code_interpreter, artifacts=artifacts)
+
+    result = await adapter.execute(
+        _request(
+            tmp_path,
+            "run_python",
+            code=(
+                "from pathlib import Path\n"
+                "Path('report.md').write_text('# Report', encoding='utf-8')\n"
+                "Path('data.csv').write_text('a,b\\n1,2\\n', encoding='utf-8')\n"
+                "Path('workbook.xlsx').write_bytes(b'PK\\x03\\x04')\n"
+                "print('created artifacts')\n"
+            ),
+        )
+    )
+
+    assert result.status.value == "succeeded"
+    registered = {Path(item.uri).name for item in artifacts.created}
+    assert registered == {"report.md", "data.csv", "workbook.xlsx"}
+    assert "script.py" not in registered
+    assert len(result.output["artifact_ids"]) == 3
 
 
 @pytest.mark.asyncio

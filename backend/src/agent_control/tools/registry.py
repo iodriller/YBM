@@ -97,7 +97,7 @@ from agent_control.tools.code_interpreter import CodeInterpreterAdapter
 from agent_control.tools.document_manage import DocumentManageAdapter
 from agent_control.tools.filesystem_manage import FilesystemManageAdapter
 from agent_control.tools.local_workspace import LocalWorkspaceAdapter
-from agent_control.tools.mcp_client import MCPClientAdapter
+from agent_control.tools.mcp_client import MCPClientAdapter, mcp_catalog_summary
 from agent_control.tools.schedule_manage import ScheduleManageAdapter
 from agent_control.tools.task_status import TaskStatusAdapter
 from agent_control.tools.tts import build_tts_adapter
@@ -159,6 +159,8 @@ class ToolDefinition:
 class ToolRegistry:
     adapters: dict[str, object]
     definitions: tuple[ToolDefinition, ...]
+    mcp_summary: str = ""
+    mcp_summary_factory: Callable[[], str] | None = None
 
     def context(self) -> str:
         lines = ["Available worker tools:"]
@@ -174,6 +176,10 @@ class ToolRegistry:
                 # better than abstract descriptions of input shape.
                 for ex in definition.examples:
                     lines.append(f"    example tool_input: {json.dumps(ex, ensure_ascii=False)}")
+        mcp_summary = self.mcp_summary_factory() if self.mcp_summary_factory is not None else self.mcp_summary
+        if mcp_summary:
+            lines.append("")
+            lines.append(mcp_summary)
         return "\n".join(lines)
 
     def vault_summary(self) -> str:
@@ -267,7 +273,11 @@ def build_tool_registry(
     definitions: _Definitions = []
     for register in _REGISTRARS:
         register(deps, definitions, adapters)
-    return ToolRegistry(adapters=adapters, definitions=tuple(definitions))
+    return ToolRegistry(
+        adapters=adapters,
+        definitions=tuple(definitions),
+        mcp_summary_factory=lambda: mcp_catalog_summary(settings.mcp),
+    )
 
 
 def _register_workspace(deps: _RegistryDeps, definitions: _Definitions, adapters: _Adapters) -> None:

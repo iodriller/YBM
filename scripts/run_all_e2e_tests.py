@@ -29,6 +29,7 @@ Usage:
     python scripts/run_all_e2e_tests.py --only browser_dizibox_5_episodes,fibonacci
     python scripts/run_all_e2e_tests.py --include-guarded
     python scripts/run_all_e2e_tests.py --sizes small,medium
+    python scripts/run_all_e2e_tests.py --suite smoke
 """
 from __future__ import annotations
 
@@ -275,6 +276,7 @@ def select_cases(
     only: set[str],
     skip: set[str],
     sizes: set[str],
+    suites: set[str],
     include_guarded: bool,
 ) -> list[dict]:
     selected: list[dict] = []
@@ -286,10 +288,38 @@ def select_cases(
             continue
         if sizes and (c.get("size") or "small") not in sizes:
             continue
+        if suites and "full" not in suites and not (_case_suites(c) & suites):
+            continue
         if not include_guarded and is_guarded(c):
             continue
         selected.append(c)
     return selected
+
+
+def _case_suites(case: dict) -> set[str]:
+    declared = case.get("suites", case.get("suite", []))
+    if isinstance(declared, str):
+        suites = {declared}
+    elif isinstance(declared, list):
+        suites = {str(item) for item in declared if str(item).strip()}
+    else:
+        suites = set()
+    tags = {str(item) for item in case.get("tags") or []}
+    tools = {str(item) for item in case.get("tools_required") or []}
+    if case.get("size") == "small":
+        suites.add("smoke")
+    if tools or tags:
+        suites.add("tools")
+    if any(item.startswith("code.interpreter:") for item in tools) or "code_interpreter" in tags:
+        suites.add("code_interpreter")
+    if any(item.startswith("mcp.client:") for item in tools) or "mcp" in tags:
+        suites.add("mcp")
+    if "recovery" in tags or "fallback" in tags:
+        suites.add("recovery")
+    if any(tag in tags for tag in ("codex", "copilot", "external", "quota", "limit")):
+        suites.add("external_agent")
+    suites.add("full")
+    return suites
 
 
 # ---------- Test execution ----------
@@ -311,6 +341,14 @@ class TurnResult:
     last_replan_reason: str | None = None
     fulfillment_gap: str | None = None
     plan_steps: list[dict] = field(default_factory=list)
+    tool_invocations: list[dict] = field(default_factory=list)
+    tools_seen: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    artifacts: list[dict] = field(default_factory=list)
+    artifact_count: int = 0
+    telegram_media_count: int = 0
+    bot_reply_text: str | None = None
+    changed_paths_count: int = 0
     status_transitions: list[dict] = field(default_factory=list)
     audit_event_count: int = 0
     error: str | None = None              # exception in the runner itself
@@ -398,7 +436,145 @@ def _diagnose_turn(case: dict, turn: TurnResult, *, is_followup: bool) -> tuple[
     if status not in {"completed", "blocked"}:
         return False, f"unexpected terminal status: {status or '(timed out)'}"
 
+    missing_tools = [
+        requirement
+        for requirement in assertions.get("tools_all") or []
+        if not _tool_requirement_satisfied(str(requirement), turn)
+    ]
+    if missing_tools:
+        return False, f"missing required tool invocation(s): {missing_tools}; saw={turn.tools_seen}"
+
+    metadata_any = [str(item) for item in assertions.get("metadata_any") or []]
+    if metadata_any and not any(_metadata_key_present(turn.metadata, key) for key in metadata_any):
+        return False, f"none of metadata_any present: {metadata_any}"
+
+    artifacts_min = assertions.get("artifacts_min")
+    if artifacts_min is not None and turn.artifact_count < int(artifacts_min):
+        return False, f"artifact_count={turn.artifact_count} below artifacts_min={artifacts_min}"
+
+    telegram_media_min = assertions.get("telegram_media_min")
+    if telegram_media_min is not None and turn.telegram_media_count < int(telegram_media_min):
+        return False, f"telegram_media_count={turn.telegram_media_count} below telegram_media_min={telegram_media_min}"
+
+    changed_paths_min = assertions.get("changed_paths_min")
+    if changed_paths_min is not None and turn.changed_paths_count < int(changed_paths_min):
+        return False, f"changed_paths_count={turn.changed_paths_count} below changed_paths_min={changed_paths_min}"
+
+    reply_needles = [str(item).lower() for item in assertions.get("bot_reply_contains_any") or [] if str(item).strip()]
+    if reply_needles:
+        reply = _turn_reply_text(turn).lower()
+        if not any(needle in reply for needle in reply_needles):
+            return False, f"bot reply did not contain any of {reply_needles}; reply={reply[:240]!r}"
+
     return True, None
+
+
+def _tool_requirement_satisfied(requirement: str, turn: TurnResult) -> bool:
+    required_tool, _, required_operation = requirement.partition(":")
+    required_tool = required_tool.strip()
+    required_operation = required_operation.strip()
+    if not required_tool:
+        return True
+    for seen in turn.tools_seen:
+        tool, _, operation = seen.partition(":")
+        if tool == required_tool and (not required_operation or operation == required_operation):
+            return True
+    return False
+
+
+def _metadata_key_present(value: Any, key: str) -> bool:
+    if isinstance(value, dict):
+        if key in value and value.get(key) not in (None, "", [], {}):
+            return True
+        return any(_metadata_key_present(item, key) for item in value.values())
+    if isinstance(value, list):
+        return any(_metadata_key_present(item, key) for item in value)
+    return False
+
+
+def _count_changed_paths(metadata: dict[str, Any]) -> int:
+    value = metadata.get("changed_paths") or metadata.get("organized_paths")
+    if isinstance(value, list):
+        return len(value)
+    if isinstance(value, dict):
+        for key in ("changed_paths", "paths", "files", "entries"):
+            nested = value.get(key)
+            if isinstance(nested, list):
+                return len(nested)
+    return 1 if value else 0
+
+
+def _turn_reply_text(turn: TurnResult) -> str:
+    parts = [
+        turn.bot_reply_text,
+        turn.synth_answer,
+        turn.last_tool_output,
+        turn.metadata.get("last_tool_output_text") if isinstance(turn.metadata, dict) else None,
+        turn.metadata.get("fulfillment_gap") if isinstance(turn.metadata, dict) else None,
+        turn.metadata.get("last_worker_error") if isinstance(turn.metadata, dict) else None,
+    ]
+    return "\n".join(str(item) for item in parts if item)
+
+
+def _compact_tool_invocations(invocations: list[dict]) -> list[dict]:
+    compact: list[dict] = []
+    for item in invocations:
+        if not isinstance(item, dict):
+            continue
+        request_payload = item.get("request") if isinstance(item.get("request"), dict) else {}
+        request_input = request_payload.get("input") if isinstance(request_payload.get("input"), dict) else {}
+        result_payload = item.get("result") if isinstance(item.get("result"), dict) else {}
+        result_output = result_payload.get("output") if isinstance(result_payload.get("output"), dict) else {}
+        compact.append(
+            {
+                "tool_name": item.get("tool_name") or request_payload.get("tool_name"),
+                "operation": request_input.get("operation") or result_output.get("operation"),
+                "status": item.get("status") or result_payload.get("status"),
+                "summary": result_output.get("summary") or result_output.get("text") or result_payload.get("error_message"),
+            }
+        )
+    return compact
+
+
+def _tools_seen(invocations: list[dict], plan_steps: list[dict]) -> list[str]:
+    seen: list[str] = []
+    for item in invocations:
+        tool = str(item.get("tool_name") or "").strip()
+        operation = str(item.get("operation") or "").strip()
+        if tool:
+            seen.append(f"{tool}:{operation}" if operation else tool)
+    return seen
+
+
+def _telegram_media_count(metadata: dict[str, Any], invocations: list[dict]) -> int:
+    count = 0
+    for item in invocations:
+        if item.get("tool_name") != "artifact.deliver":
+            continue
+        request_result = item.get("result") if isinstance(item.get("result"), dict) else {}
+        output = request_result.get("output") if isinstance(request_result.get("output"), dict) else {}
+        if output.get("delivered") and str(output.get("delivery_method") or "").startswith("telegram."):
+            count += 1
+    delivery = metadata.get("artifact_delivery")
+    if isinstance(delivery, dict) and delivery.get("delivered") and count == 0:
+        count = 1
+    return count
+
+
+def _bot_reply_text(task: dict[str, Any], metadata: dict[str, Any], last_tool_output: str | None) -> str:
+    status = str(task.get("status") or "")
+    if metadata.get("synthesized_answer"):
+        return str(metadata["synthesized_answer"])
+    delivery = metadata.get("artifact_delivery")
+    if isinstance(delivery, dict) and delivery.get("summary"):
+        return str(delivery["summary"])
+    if last_tool_output:
+        return last_tool_output
+    if status == "completed":
+        return "Done."
+    if status:
+        return f"Status: {status}."
+    return ""
 
 
 async def _run_turn(label: str, message: str, max_seconds: int) -> TurnResult:
@@ -506,10 +682,13 @@ async def _run_turn(label: str, message: str, max_seconds: int) -> TurnResult:
         task = trace.get("task") or {}
         meta = task.get("metadata") or {}
         plan = trace.get("plan") or {}
+        raw_invocations = trace.get("tool_invocations") or []
+        artifacts = trace.get("artifacts") or []
         last_tool_result = meta.get("last_tool_result") or {}
         out = last_tool_result.get("output") or {}
 
         turn.final_status = task.get("status")
+        turn.metadata = meta if isinstance(meta, dict) else {}
         turn.synth_answer = meta.get("synthesized_answer")
         turn.replan_count = int(meta.get("replan_count") or 0)
         turn.last_worker_error = meta.get("last_worker_error") or None
@@ -532,6 +711,13 @@ async def _run_turn(label: str, message: str, max_seconds: int) -> TurnResult:
             }
             for s in (plan.get("steps") or [])
         ]
+        turn.tool_invocations = _compact_tool_invocations(raw_invocations)
+        turn.tools_seen = _tools_seen(turn.tool_invocations, turn.plan_steps)
+        turn.artifacts = artifacts if isinstance(artifacts, list) else []
+        turn.artifact_count = len(turn.artifacts)
+        turn.telegram_media_count = _telegram_media_count(turn.metadata, raw_invocations if isinstance(raw_invocations, list) else [])
+        turn.bot_reply_text = _bot_reply_text(task, turn.metadata, turn.last_tool_output)
+        turn.changed_paths_count = _count_changed_paths(turn.metadata)
         turn.duration_s = round(time.monotonic() - start_mono, 1)
         turn.audit_event_count = len(fetch_task_audit(task_id))
     except Exception as exc:
@@ -576,7 +762,8 @@ async def _run_one(case: dict, fixtures: dict[str, str]) -> StageResult:
             print(f"    [follow-up] {fu.get('id')}: {fu_msg[:120]}")
             fu_turn = await _run_turn(f"followup:{fu.get('id')}", fu_msg, max_seconds=fu_to)
             stage.turns.append(fu_turn)
-            fu_ok, fu_reason = _diagnose_turn(case, fu_turn, is_followup=True)
+            fu_case = {**case, "assertions": fu.get("assertions", case.get("assertions") or {})}
+            fu_ok, fu_reason = _diagnose_turn(fu_case, fu_turn, is_followup=True)
             if passed and not fu_ok:
                 passed, reason = False, f"follow-up `{fu.get('id')}` failed: {fu_reason}"
 
@@ -623,6 +810,9 @@ def _write_stage_artifacts(stage_dir: Path, case: dict, stage: StageResult) -> N
                 f"  Duration:    {turn.duration_s}s",
                 f"  Audit ev:    {turn.audit_event_count}",
                 f"  Force-failed by runner: {turn.forced_failed_by_runner}",
+                f"  Tools seen:  {', '.join(turn.tools_seen) or '(none)'}",
+                f"  Artifacts:   {turn.artifact_count}",
+                f"  TG media:    {turn.telegram_media_count}",
             ])
             if turn.classifier_verdict:
                 v = turn.classifier_verdict
@@ -646,6 +836,8 @@ def _write_stage_artifacts(stage_dir: Path, case: dict, stage: StageResult) -> N
             timeline.extend([
                 "  Synthesized answer:",
                 "    " + (turn.synth_answer or "(none)")[:1200].replace("\n", "\n    "),
+                "  Bot reply text:",
+                "    " + (turn.bot_reply_text or "(none)")[:1200].replace("\n", "\n    "),
                 "  Last tool output:",
                 "    " + (turn.last_tool_output or "(none)")[:800].replace("\n", "\n    "),
             ])
@@ -679,6 +871,9 @@ def _write_stage_artifacts(stage_dir: Path, case: dict, stage: StageResult) -> N
                     f"- duration: {turn.duration_s}s",
                     f"- replan_count: {turn.replan_count}",
                     f"- force_failed_by_runner: `{turn.forced_failed_by_runner}`",
+                    f"- tools_seen: `{turn.tools_seen}`",
+                    f"- artifacts: `{turn.artifact_count}`",
+                    f"- telegram_media_count: `{turn.telegram_media_count}`",
                 ])
                 if turn.classifier_verdict:
                     v = turn.classifier_verdict
@@ -833,6 +1028,11 @@ async def main() -> int:
     parser.add_argument("--only", default="", help="comma-separated case ids")
     parser.add_argument("--skip", default="", help="comma-separated case ids to skip")
     parser.add_argument("--sizes", default="", help="comma-separated sizes: small,medium,long-running")
+    parser.add_argument(
+        "--suite",
+        default="",
+        help="comma-separated suites: smoke,tools,code_interpreter,mcp,recovery,external_agent,full",
+    )
     parser.add_argument("--include-guarded", action="store_true",
                         help="include codex/copilot/quota/limit cases (usually need external creds)")
     parser.add_argument("--no-web-fixture", action="store_true",
@@ -853,6 +1053,7 @@ async def main() -> int:
         only={s.strip() for s in args.only.split(",") if s.strip()},
         skip={s.strip() for s in args.skip.split(",") if s.strip()},
         sizes={s.strip() for s in args.sizes.split(",") if s.strip()},
+        suites={s.strip() for s in args.suite.split(",") if s.strip()},
         include_guarded=args.include_guarded,
     )
 
@@ -861,9 +1062,12 @@ async def main() -> int:
     # walking away from the machine.
     from collections import Counter
     size_count = Counter(c.get("size") or "small" for c in selected)
+    suite_count = Counter(suite for c in selected for suite in _case_suites(c) if suite != "full")
     declared_total_s = sum(int(c.get("timeout_seconds") or 360) for c in selected)
     print(f"Loaded {len(cases_all)} cases. Selected {len(selected)} (guarded={'included' if args.include_guarded else 'skipped'}).")
     print(f"  By size: " + ", ".join(f"{size}={n}" for size, n in size_count.items()))
+    if suite_count:
+        print(f"  By suite: " + ", ".join(f"{suite}={n}" for suite, n in sorted(suite_count.items())))
     print(f"  Sum of declared timeouts: {declared_total_s}s "
           f"(~{declared_total_s // 60}m; actual will differ from this upper bound)")
     skipped = [c for c in cases_all if c not in selected]
