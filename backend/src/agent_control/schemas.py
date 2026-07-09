@@ -95,6 +95,7 @@ class Capability(StrEnum):
     DESKTOP_CONTROL = "desktop.control"
     BROWSER_OPEN = "browser.open"
     BROWSER_CONTROL = "browser.control"
+    NETWORK_HTTP = "network.http"
     SCHEDULE_MANAGE = "schedule.manage"
     GITHUB_READ = "github.read"
     GITHUB_PUSH = "github.push"
@@ -471,10 +472,14 @@ _CAPABILITY_ALIASES: dict[str, str] = {
     "browser.navigate":       "browser.control",
     "browser.fill_form":      "browser.control",
     "browser.form":           "browser.control",
+    "http.request":           "network.http",
+    "http":                   "network.http",
+    "rest":                   "network.http",
     # Common informal names
     "telegram":               "telegram.send",
     "filesystem":             "filesystem.read",
     "browser":                "browser.open",
+    "network":                "network.http",
     "desktop":                "desktop.control",
     "code":                   "terminal.run",
     "python":                 "terminal.run",

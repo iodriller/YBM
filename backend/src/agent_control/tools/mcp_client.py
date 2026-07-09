@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -9,7 +10,8 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from agent_control.config import MCPConfig, MCPServerConfig
-from agent_control.schemas import ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus, utc_now
+from agent_control.config_sync import ConfigManager
+from agent_control.schemas import Capability, ErrorClass, RiskLevel, ToolCallRequest, ToolCallResult, ToolResultStatus, utc_now
 
 
 class MCPClientAdapter:
@@ -20,13 +22,14 @@ class MCPClientAdapter:
     servers as worker tools.
     """
 
-    def __init__(self, config: MCPConfig) -> None:
+    def __init__(self, config: MCPConfig, config_manager: ConfigManager | None = None) -> None:
         self.config = config
+        self.config_manager = config_manager or ConfigManager()
 
     async def execute(self, request: ToolCallRequest) -> ToolCallResult:
-        if not self.config.enabled:
-            return _failed(request, "MCP client is disabled")
         operation = str(request.input.get("operation") or "list_tools")
+        if not self.config.enabled and operation != "install_server":
+            return _failed(request, "MCP client is disabled")
         try:
             if operation in {"discover", "list_tools"}:
                 output = await self._list_tools(request)
@@ -34,6 +37,8 @@ class MCPClientAdapter:
                 output = await self._health(request)
             elif operation == "call_tool":
                 output = await self._call_tool(request)
+            elif operation == "install_server":
+                output = self._install_server(request)
             else:
                 return _failed(request, f"unsupported MCP operation: {operation}")
         except Exception as exc:
@@ -98,6 +103,54 @@ class MCPClientAdapter:
             "selected_tool": {"server": server_name, "tool": tool_name},
             "catalog_path": str(_catalog_path(self.config)),
             "catalog_updated_at": catalog.get("updated_at"),
+        }
+
+    def _install_server(self, request: ToolCallRequest) -> dict[str, Any]:
+        name = str(request.input["name"]).strip()
+        if not re.match(r"^[A-Za-z0-9_.-]{1,80}$", name):
+            raise ValueError("MCP server name must contain only letters, numbers, underscore, dot, or dash")
+        command = str(request.input["command"]).strip()
+        if not command:
+            raise ValueError("MCP server command is required")
+        args = [str(item) for item in request.input.get("args") or []]
+        env = {str(key): str(value) for key, value in dict(request.input.get("env") or {}).items()}
+        capability = Capability(str(request.input.get("capability") or Capability.TERMINAL_RUN.value))
+        risk_level = RiskLevel(str(request.input.get("risk_level") or RiskLevel.HIGH.value))
+        server = MCPServerConfig(
+            enabled=True,
+            command=command,
+            args=args,
+            env=env,
+            cwd=request.input.get("cwd"),
+            timeout_seconds=int(request.input.get("timeout_seconds") or 30),
+            capability=capability,
+            risk_level=risk_level,
+            disabled_tools=[str(item) for item in request.input.get("disabled_tools") or []],
+            max_output_chars=int(request.input.get("max_output_chars") or 20000),
+        )
+
+        config = self.config_manager.read_config()
+        mcp_config = config.setdefault("mcp", {})
+        if not isinstance(mcp_config, dict):
+            raise ValueError("config mcp section must be an object")
+        mcp_config["enabled"] = True
+        mcp_config.setdefault("cache_ttl_seconds", self.config.cache_ttl_seconds)
+        mcp_config.setdefault("catalog_path", self.config.catalog_path)
+        servers = mcp_config.setdefault("servers", {})
+        if not isinstance(servers, dict):
+            raise ValueError("config mcp.servers section must be an object")
+        servers[name] = server.model_dump(mode="json")
+        self.config_manager.write_config(config)
+
+        self.config.enabled = True
+        self.config.servers[name] = server
+        return {
+            "installed": True,
+            "servers": [{"name": name, **server.model_dump(mode="json")}],
+            "tools": [],
+            "healthy": None,
+            "summary": f"Installed MCP server configuration: {name}. Run mcp.client list_tools to refresh the catalog.",
+            "catalog_path": str(_catalog_path(self.config)),
         }
 
     def _servers(self, selected: str = "") -> dict[str, MCPServerConfig]:

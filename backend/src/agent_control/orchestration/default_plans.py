@@ -813,18 +813,18 @@ def _build_adapter_factory_plan(settings: AppSettings, task: TaskRecord) -> Plan
     required_capabilities = [Capability.FILESYSTEM_WRITE]
     assumptions = [
         "The request asks for a new or missing adapter/tool capability.",
-        "Generated adapter work is cached as a proposal and is not auto-imported or executed.",
+        "Generated adapter work is cached first, then can be promoted only after tests pass and approval is granted.",
     ]
     success_criteria = ["A reviewable adapter proposal exists in the generated adapter cache."]
     postconditions = _adapter_postconditions()
     if vscode_enabled and _explicitly_requests_copilot(task.objective):
         required_capabilities.append(Capability.VSCODE_WRITE_FILES)
         assumptions.append("Copilot may refine the generated proposal inside the adapter cache.")
-        success_criteria.append("Copilot has been asked to improve the adapter proposal without registering it automatically.")
+        success_criteria.append("Copilot has been asked to improve the adapter proposal before any promotion step.")
         steps.append(
             PlanStep(
                 title="Ask Copilot to implement the adapter proposal",
-                description="Use Copilot to fill in the cached adapter proposal while keeping it isolated from runtime registration.",
+                description="Use Copilot to fill in the cached adapter proposal before sandbox testing and promotion.",
                 required_capabilities=[Capability.VSCODE_WRITE_FILES],
                 risk_level=RiskLevel.HIGH,
                 requires_approval=bool(vscode_policy and vscode_policy.requires_approval),

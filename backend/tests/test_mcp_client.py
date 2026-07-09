@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from agent_control.config import AppSettings, CapabilityPolicy, MCPConfig, MCPServerConfig
+from agent_control.config_sync import ConfigManager
 from agent_control.schemas import Capability, RiskLevel, ToolCallRequest, ToolResultStatus
 from agent_control.tools.mcp_client import MCPClientAdapter, load_mcp_catalog, mcp_catalog_summary, write_mcp_catalog
 from agent_control.tools.registry import build_tool_registry
@@ -292,6 +293,38 @@ def test_mcp_client_rejects_disabled_tool() -> None:
 
     assert result.status == ToolResultStatus.FAILED
     assert "disabled" in (result.error_message or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_mcp_client_installs_server_into_config(tmp_path) -> None:
+    config_path = tmp_path / "config.yaml"
+    adapter = MCPClientAdapter(
+        MCPConfig(enabled=False, catalog_path=str(tmp_path / "tool_catalog.json")),
+        config_manager=ConfigManager(config_path=config_path, env_path=tmp_path / ".env"),
+    )
+
+    result = await adapter.execute(
+        ToolCallRequest(
+            task_id="task_mcp",
+            tool_name="mcp.client",
+            capability=Capability.TERMINAL_RUN,
+            input={
+                "operation": "install_server",
+                "name": "fake",
+                "command": sys.executable,
+                "args": ["server.py"],
+                "risk_level": "low",
+            },
+        )
+    )
+
+    assert result.status == ToolResultStatus.SUCCEEDED
+    assert result.output["installed"] is True
+    assert adapter.config.enabled is True
+    assert "fake" in adapter.config.servers
+    saved = config_path.read_text(encoding="utf-8")
+    assert "fake:" in saved
+    assert "server.py" in saved
 
 
 def _fake_mcp_server(tmp_path: Path) -> Path:

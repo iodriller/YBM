@@ -73,6 +73,8 @@ from agent_control.tools.contracts import (
     FilesystemOrganizePlanInput,
     FilesystemRenamePlanInput,
     FilesystemSearchInput,
+    HttpRequestInput,
+    HttpRequestOutput,
     ScheduleManageInput,
     ScheduleManageOutput,
     TaskStatusInput,
@@ -96,6 +98,7 @@ from agent_control.tools.contracts import (
 from agent_control.tools.code_interpreter import CodeInterpreterAdapter
 from agent_control.tools.document_manage import DocumentManageAdapter
 from agent_control.tools.filesystem_manage import FilesystemManageAdapter
+from agent_control.tools.http_request import HttpRequestAdapter
 from agent_control.tools.local_workspace import LocalWorkspaceAdapter
 from agent_control.tools.mcp_client import MCPClientAdapter, mcp_catalog_summary
 from agent_control.tools.schedule_manage import ScheduleManageAdapter
@@ -150,17 +153,30 @@ class ToolDefinition:
         if schema is None:
             return payload
         try:
-            return schema.model_validate(payload).model_dump(mode="json", exclude_none=True)
+            return schema.model_validate(payload).model_dump(mode="json", exclude_none=True, by_alias=True)
         except ValidationError as exc:
             raise ValueError(f"invalid {kind} for {self.name}: {exc}") from exc
 
 
-@dataclass(frozen=True)
+@dataclass
 class ToolRegistry:
     adapters: dict[str, object]
     definitions: tuple[ToolDefinition, ...]
+    definition_index: dict[str, ToolDefinition] | None = None
     mcp_summary: str = ""
     mcp_summary_factory: Callable[[], str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.definition_index is None:
+            self.definition_index = {definition.name: definition for definition in self.definitions}
+
+    def register_dynamic_tool(self, definition: ToolDefinition, adapter: object) -> None:
+        assert self.definition_index is not None
+        if definition.name in self.definition_index:
+            raise ValueError(f"tool already registered: {definition.name}")
+        self.adapters[definition.name] = adapter
+        self.definition_index[definition.name] = definition
+        self.definitions = (*self.definitions, definition)
 
     def context(self) -> str:
         lines = ["Available worker tools:"]
@@ -190,7 +206,7 @@ class ToolRegistry:
         return "\n".join(lines)
 
     def validate_plan(self, plan: PlanModel) -> PlanModel:
-        definitions = {definition.name: definition for definition in self.definitions}
+        definitions = self.definition_index or {definition.name: definition for definition in self.definitions}
         errors: list[str] = []
         steps = []
         required_capabilities = list(plan.required_capabilities)
@@ -273,11 +289,16 @@ def build_tool_registry(
     definitions: _Definitions = []
     for register in _REGISTRARS:
         register(deps, definitions, adapters)
-    return ToolRegistry(
+    registry = ToolRegistry(
         adapters=adapters,
         definitions=tuple(definitions),
+        definition_index={definition.name: definition for definition in definitions},
         mcp_summary_factory=lambda: mcp_catalog_summary(settings.mcp),
     )
+    adapter_factory = adapters.get("adapter.factory")
+    if isinstance(adapter_factory, AdapterFactoryAdapter):
+        adapter_factory.set_promotion_callback(registry.register_dynamic_tool)
+    return registry
 
 
 def _register_workspace(deps: _RegistryDeps, definitions: _Definitions, adapters: _Adapters) -> None:
@@ -397,7 +418,10 @@ def _register_adapter_factory(deps: _RegistryDeps, definitions: _Definitions, ad
             name="adapter.factory",
             capability=Capability.FILESYSTEM_WRITE,
             enabled=enabled,
-            description=f"scaffold generated adapter proposals under {settings.adapters.adapter_factory.root_dir}",
+            description=(
+                "scaffold, sandbox-test, and approval-promote generated adapter proposals under "
+                f"{settings.adapters.adapter_factory.root_dir}"
+            ),
             operations=("assess", "scaffold", "sandbox_execute_once", "test_connector", "promote_after_approval"),
             lifecycle="scaffold",
             operation_schemas={
@@ -477,11 +501,47 @@ def _register_code_interpreter(deps: _RegistryDeps, definitions: _Definitions, a
         )
 
 
+def _register_http_request(deps: _RegistryDeps, definitions: _Definitions, adapters: _Adapters) -> None:
+    settings = deps.settings
+    allowlist = [*settings.adapters.http_request.allowed_hosts, *settings.adapters.http_request.allowed_url_prefixes]
+    enabled = (
+        _capability_enabled(settings, Capability.NETWORK_HTTP)
+        and settings.adapters.http_request.enabled
+        and bool(allowlist)
+    )
+    definitions.append(
+        ToolDefinition(
+            name="http.request",
+            capability=Capability.NETWORK_HTTP,
+            enabled=enabled,
+            description=(
+                "call allowlisted HTTP/REST APIs with optional secret injection; "
+                f"allowed targets: {', '.join(allowlist) or '<none configured>'}"
+            ),
+            operations=("request",),
+            input_schema=HttpRequestInput,
+            output_schema=HttpRequestOutput,
+            operation_output_schemas=_same_output_schema(("request",), HttpRequestOutput),
+            default_operation="request",
+            examples=(
+                {"operation": "request", "method": "GET", "url": "https://api.example.com/status"},
+                {
+                    "operation": "request",
+                    "method": "GET",
+                    "url": "https://api.example.com/user",
+                    "secret_refs": {"headers.Authorization": {"ref": "example.token", "template": "Bearer {secret}"}},
+                },
+            ),
+        )
+    )
+    if settings.adapters.http_request.enabled:
+        adapters["http.request"] = HttpRequestAdapter(settings.adapters.http_request, settings.secrets)
+
+
 def _register_mcp_client(deps: _RegistryDeps, definitions: _Definitions, adapters: _Adapters) -> None:
     settings = deps.settings
     enabled = (
         settings.mcp.enabled
-        and bool(settings.mcp.servers)
         and _capability_enabled(settings, Capability.TERMINAL_RUN)
     )
     definitions.append(
@@ -490,17 +550,23 @@ def _register_mcp_client(deps: _RegistryDeps, definitions: _Definitions, adapter
             capability=Capability.TERMINAL_RUN,
             enabled=enabled,
             description="discover and call configured external MCP server tools through stdio",
-            operations=("discover", "list_tools", "call_tool", "health"),
+            operations=("discover", "list_tools", "call_tool", "health", "install_server"),
             input_schema=MCPClientInput,
             output_schema=MCPClientOutput,
             operation_output_schemas=_same_output_schema(
-                ("discover", "list_tools", "call_tool", "health"),
+                ("discover", "list_tools", "call_tool", "health", "install_server"),
                 MCPClientOutput,
             ),
             default_operation="list_tools",
             examples=(
                 {"operation": "list_tools"},
                 {"operation": "call_tool", "server": "example", "tool": "search", "arguments": {"query": "docs"}},
+                {
+                    "operation": "install_server",
+                    "name": "filesystem",
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\\\Users\\\\oneye"],
+                },
             ),
         )
     )
@@ -886,6 +952,7 @@ _REGISTRARS: tuple[Callable[[_RegistryDeps, _Definitions, _Adapters], None], ...
     _register_filesystem,
     _register_adapter_factory,
     _register_code_interpreter,
+    _register_http_request,
     _register_mcp_client,
     _register_vscode,
     _register_coding_assistant,

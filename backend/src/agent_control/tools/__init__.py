@@ -1,6 +1,7 @@
 from agent_control.tools.adapter_factory import AdapterFactoryAdapter
 from agent_control.tools.code_interpreter import CodeInterpreterAdapter
 from agent_control.tools.coding_assistant import GenericTerminalAgentAdapter
+from agent_control.tools.http_request import HttpRequestAdapter
 from agent_control.tools.local_workspace import LocalWorkspaceAdapter, LocalWorkspaceWebAppAdapter
 from agent_control.tools.stt import DisabledSTTAdapter, STTAdapter, StaticSTTAdapter
 from agent_control.tools.tts import DisabledTTSAdapter, KokoroOnnxTTSAdapter, TTSAdapter
@@ -19,6 +20,7 @@ __all__ = [
     "DisabledSTTAdapter",
     "DisabledTTSAdapter",
     "GenericTerminalAgentAdapter",
+    "HttpRequestAdapter",
     "LocalWorkspaceAdapter",
     "LocalWorkspaceWebAppAdapter",
     "STTAdapter",

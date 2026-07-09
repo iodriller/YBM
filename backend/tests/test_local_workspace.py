@@ -222,7 +222,7 @@ async def test_adapter_factory_scaffolds_cached_adapter(tmp_path) -> None:
 
     adapter_dir = tmp_path / "adapters" / "browser_bookmarks"
     assert result.status == ToolResultStatus.SUCCEEDED
-    assert result.output["execution_policy"] == "scaffold_only"
+    assert result.output["execution_policy"] == "sandbox_then_hot_register"
     assert (adapter_dir / "manifest.json").exists()
     assert (adapter_dir / "adapter.py").exists()
 

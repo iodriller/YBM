@@ -87,6 +87,11 @@ class StorageConfig(StrictBaseModel):
     artifact_dir: str = ".agent_control/artifacts"
 
 
+class SecretVaultConfig(StrictBaseModel):
+    path: str = ".agent_control/secrets/vault.json"
+    key_env: str = "AGENT_SECRET_VAULT_KEY"
+
+
 class SchedulerConfig(StrictBaseModel):
     enabled: bool = True
     poll_interval_seconds: int = Field(default=30, ge=1, le=3600)
@@ -143,6 +148,17 @@ class BrowserAdapterConfig(StrictBaseModel):
 class AdapterFactoryConfig(StrictBaseModel):
     enabled: bool = True
     root_dir: str = ".agent_control/adapters"
+
+
+class HttpRequestAdapterConfig(StrictBaseModel):
+    enabled: bool = True
+    allowed_hosts: list[str] = Field(default_factory=list)
+    allowed_url_prefixes: list[str] = Field(default_factory=list)
+    blocked_hosts: list[str] = Field(default_factory=list)
+    timeout_seconds: int = Field(default=30, ge=1, le=300)
+    max_response_chars: int = Field(default=100000, ge=100, le=1000000)
+    max_body_chars: int = Field(default=100000, ge=0, le=1000000)
+    user_agent: str = "YBM-http-request/1.0"
 
 
 class TerminalAdapterConfig(StrictBaseModel):
@@ -343,6 +359,7 @@ class AdaptersConfig(StrictBaseModel):
     workspace: WorkspaceAdapterConfig = Field(default_factory=WorkspaceAdapterConfig)
     browser: BrowserAdapterConfig = Field(default_factory=BrowserAdapterConfig)
     adapter_factory: AdapterFactoryConfig = Field(default_factory=AdapterFactoryConfig)
+    http_request: HttpRequestAdapterConfig = Field(default_factory=HttpRequestAdapterConfig)
     terminal: TerminalAdapterConfig = Field(default_factory=TerminalAdapterConfig)
     coding_assistant: CodingAssistantAdapterConfig = Field(default_factory=CodingAssistantAdapterConfig)
     coding_agent: CodingAgentAdapterConfig = Field(default_factory=CodingAgentAdapterConfig)
@@ -392,6 +409,7 @@ class AppSettings(BaseSettings):
     capabilities: dict[Capability, CapabilityPolicy] = Field(default_factory=default_capability_policies)
     approval_policy: ApprovalPolicyConfig = Field(default_factory=ApprovalPolicyConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
+    secrets: SecretVaultConfig = Field(default_factory=SecretVaultConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
@@ -457,6 +475,11 @@ class AppSettings(BaseSettings):
             },
             "approval_policy": self.approval_policy.model_dump(mode="json"),
             "storage": self.storage.model_dump(),
+            "secrets": {
+                "path": self.secrets.path,
+                "key_env": self.secrets.key_env,
+                "key_present": bool(read_env_value(self.secrets.key_env)),
+            },
             "scheduler": self.scheduler.model_dump(),
             "logging": self.logging.model_dump(),
             "limits": self.limits.model_dump(),

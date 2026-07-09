@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ToolInputModel(BaseModel):
@@ -590,10 +590,19 @@ class CodeInterpreterHealthInput(ToolInputModel):
 
 
 class MCPClientInput(ToolInputModel):
-    operation: Literal["discover", "list_tools", "call_tool", "health"] = "list_tools"
+    operation: Literal["discover", "list_tools", "call_tool", "health", "install_server"] = "list_tools"
     server: str | None = None
     tool: str | None = None
     arguments: dict[str, Any] = Field(default_factory=dict)
+    name: str | None = None
+    command: str | None = None
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    cwd: str | None = None
+    disabled_tools: list[str] = Field(default_factory=list)
+    capability: str | None = None
+    risk_level: str | None = None
+    max_output_chars: int | None = Field(default=None, ge=100, le=200000)
 
     @model_validator(mode="after")
     def _require_inputs_per_operation(self) -> "MCPClientInput":
@@ -602,6 +611,35 @@ class MCPClientInput(ToolInputModel):
                 raise ValueError("mcp.client call_tool requires 'server'")
             if not self.tool:
                 raise ValueError("mcp.client call_tool requires 'tool'")
+        if self.operation == "install_server":
+            if not self.name:
+                raise ValueError("mcp.client install_server requires 'name'")
+            if not self.command:
+                raise ValueError("mcp.client install_server requires 'command'")
+        return self
+
+
+class HttpRequestInput(ToolInputModel):
+    operation: Literal["request"] = "request"
+    method: Literal["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"] = "GET"
+    url: str = Field(min_length=1)
+    headers: dict[str, str] = Field(default_factory=dict)
+    query: dict[str, Any] = Field(default_factory=dict)
+    json_body: Any | None = None
+    body: str | None = None
+    secret_refs: dict[str, Any] = Field(default_factory=dict)
+    parse_json: bool = True
+    max_response_chars: int | None = Field(default=None, ge=100, le=1000000)
+
+    @field_validator("method", mode="before")
+    @classmethod
+    def _normalize_method(cls, value: Any) -> Any:
+        return str(value).upper() if value is not None else value
+
+    @model_validator(mode="after")
+    def _body_is_bounded_to_one_field(self) -> "HttpRequestInput":
+        if self.json_body is not None and self.body is not None:
+            raise ValueError("http.request accepts only one of 'json_body' or 'body'")
         return self
 
 
@@ -658,11 +696,26 @@ class MCPClientOutput(ToolOutputModel):
     tools: list[dict[str, Any]] = Field(default_factory=list)
     result: dict[str, Any] | None = None
     healthy: bool | None = None
+    installed: bool = False
     summary: str | None = None
     catalog_path: str | None = None
     catalog_updated_at: str | None = None
     catalog_entries: list[dict[str, Any]] = Field(default_factory=list)
     selected_tool: dict[str, Any] | None = None
+
+
+class HttpRequestOutput(ToolOutputModel):
+    operation: Literal["request"] = "request"
+    url: str = Field(min_length=1)
+    method: str = Field(min_length=1)
+    status_code: int = Field(ge=100, le=599)
+    ok: bool
+    headers: dict[str, str] = Field(default_factory=dict)
+    response_json: Any | None = Field(default=None, alias="json")
+    text: str = ""
+    truncated: bool = False
+    elapsed_ms: int | None = Field(default=None, ge=0)
+    summary: str | None = None
 
 
 class VSCodeTerminalToolOutput(ToolOutputModel):

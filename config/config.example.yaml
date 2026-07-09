@@ -114,6 +114,11 @@ capabilities:
     scopes: []
     requires_approval: true
     max_risk_level: "critical"
+  network.http:
+    enabled: false
+    scopes: []
+    requires_approval: true
+    max_risk_level: "high"
   schedule.manage:
     enabled: false
     scopes: []
@@ -139,6 +144,10 @@ storage:
   database_url: "sqlite:///./agent_control.db"
   artifact_dir: ".agent_control/artifacts"
 
+secrets:
+  path: ".agent_control/secrets/vault.json"
+  key_env: "AGENT_SECRET_VAULT_KEY"
+
 logging:
   level: "INFO"
   json_logs: true
@@ -147,6 +156,8 @@ logging:
     - "api_key"
     - "secret"
     - "password"
+    - "authorization"
+    - "cookie"
 
 limits:
   max_parallel_tasks: 1
@@ -182,6 +193,15 @@ adapters:
   adapter_factory:
     enabled: true
     root_dir: ".agent_control/adapters"
+  http_request:
+    enabled: true
+    allowed_hosts: []
+    allowed_url_prefixes: []
+    blocked_hosts: []
+    timeout_seconds: 30
+    max_response_chars: 100000
+    max_body_chars: 100000
+    user_agent: "YBM-http-request/1.0"
   terminal:
     enabled: false
     allowed_working_dirs: []

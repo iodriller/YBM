@@ -1,20 +1,38 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
+import importlib.util
+import inspect
 import json
+import os
 from pathlib import Path
 import re
-from typing import Any
+import subprocess
+import sys
+from typing import Any, Callable
 
 from agent_control.config import AdapterFactoryConfig
-from agent_control.schemas import ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.schemas import Capability, ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+
+
+@dataclass(frozen=True)
+class _SandboxResult:
+    returncode: int
+    summary: str
+    stdout: str = ""
+    stderr: str = ""
 
 
 class AdapterFactoryAdapter:
-    """Scaffold generated adapter proposals without importing or executing them."""
+    """Scaffold, test, and promote generated adapter proposals."""
 
     def __init__(self, config: AdapterFactoryConfig) -> None:
         self.config = config
+        self._promotion_callback: Callable[[Any, object], None] | None = None
+
+    def set_promotion_callback(self, callback: Callable[[Any, object], None]) -> None:
+        self._promotion_callback = callback
 
     async def execute(self, request: ToolCallRequest) -> ToolCallResult:
         if not self.config.enabled:
@@ -47,7 +65,7 @@ class AdapterFactoryAdapter:
             "adapter_name": name,
             "assessment": _assessment(objective),
             "cacheable": True,
-            "execution_policy": "scaffold_only",
+            "execution_policy": "sandbox_then_hot_register",
         }
 
     def _scaffold(self, request: ToolCallRequest) -> dict[str, Any]:
@@ -60,24 +78,29 @@ class AdapterFactoryAdapter:
             raise ValueError("adapter path escaped configured root")
         adapter_dir.mkdir(parents=True, exist_ok=True)
 
+        class_name = _class_name(tool_name)
         manifest = {
             "name": tool_name,
             "capability": capability,
             "status": "proposal",
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "objective": objective,
-            "execution_policy": "scaffold_only",
+            "adapter_class": class_name,
+            "operations": [],
+            "default_operation": None,
+            "execution_policy": "sandbox_then_hot_register",
             "promotion_steps": [
-                "Review adapter.py and add tests.",
-                "Move reviewed code into backend/src/agent_control/tools.",
-                "Register the tool in backend/src/agent_control/tools/registry.py.",
+                "Implement adapter.py.",
+                "Make test_adapter.py pass.",
+                "Run adapter.factory test_connector.",
+                "Run adapter.factory promote_after_approval with approved=true.",
             ],
         }
         files = {
             "manifest.json": json.dumps(manifest, indent=2) + "\n",
             "README.md": _readme(tool_name, objective, capability),
-            "adapter.py": _adapter_py(tool_name),
-            "test_adapter.py": _test_py(tool_name),
+            "adapter.py": _adapter_py(tool_name, class_name),
+            "test_adapter.py": _test_py(tool_name, class_name),
         }
         written: list[str] = []
         for relative_path, content in files.items():
@@ -89,49 +112,81 @@ class AdapterFactoryAdapter:
             "adapter_name": tool_name,
             "files": written,
             "cacheable": True,
-            "execution_policy": "scaffold_only",
+            "execution_policy": "sandbox_then_hot_register",
         }
 
     def _sandbox_execute_once(self, request: ToolCallRequest) -> dict[str, Any]:
         adapter_dir = str(request.input.get("adapter_dir") or "").strip() or None
-        if adapter_dir:
-            _require_adapter_dir_inside_root(adapter_dir, self.config.root_dir)
-        # The safe default intentionally does not import generated adapter code.
-        # Temporary executable helpers belong in code.interpreter, where imports,
-        # workspace, timeout, and artifacts are already bounded.
+        if not adapter_dir:
+            raise ValueError("adapter_dir is required for sandbox_execute_once")
+        path = _require_adapter_dir_inside_root(adapter_dir, self.config.root_dir)
+        result = _sandbox_import(path)
         return {
-            "adapter_dir": adapter_dir,
-            "result": "sandbox execution is staged; use code.interpreter for one-time helper execution",
-            "execution_policy": "sandbox_review_required",
-            "returncode": 0,
+            "adapter_dir": str(path),
+            "result": "adapter import sandbox passed" if result.returncode == 0 else "adapter import sandbox failed",
+            "execution_policy": "sandbox_import_only",
+            "returncode": result.returncode,
             "promoted": False,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
         }
 
     def _test_connector(self, request: ToolCallRequest) -> dict[str, Any]:
         adapter_dir = _require_adapter_dir_inside_root(str(request.input["adapter_dir"]), self.config.root_dir)
-        required = ["manifest.json", "adapter.py", "test_adapter.py"]
-        missing = [name for name in required if not (adapter_dir / name).exists()]
+        result = _test_connector(adapter_dir)
         return {
             "adapter_dir": str(adapter_dir),
-            "result": "connector proposal structure is valid" if not missing else f"missing: {', '.join(missing)}",
-            "execution_policy": "structure_check_only",
-            "returncode": 0 if not missing else 1,
+            "result": "connector proposal tests passed" if result.returncode == 0 else result.summary,
+            "execution_policy": "sandbox_test_only",
+            "returncode": result.returncode,
             "promoted": False,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
         }
 
     def _promote_after_approval(self, request: ToolCallRequest) -> dict[str, Any]:
         adapter_dir = _require_adapter_dir_inside_root(str(request.input["adapter_dir"]), self.config.root_dir)
         approved = bool(request.input.get("approved"))
+        if not approved:
+            return {
+                "adapter_dir": str(adapter_dir),
+                "result": "promotion requires explicit approval",
+                "execution_policy": "approval_required",
+                "returncode": 1,
+                "promoted": False,
+            }
+        if self._promotion_callback is None:
+            return {
+                "adapter_dir": str(adapter_dir),
+                "result": "runtime promotion callback is not configured",
+                "execution_policy": "promotion_unavailable",
+                "returncode": 1,
+                "promoted": False,
+            }
+        test_result = _test_connector(adapter_dir)
+        if test_result.returncode != 0:
+            return {
+                "adapter_dir": str(adapter_dir),
+                "result": f"promotion blocked because sandbox tests failed: {test_result.summary}",
+                "execution_policy": "sandbox_tests_required",
+                "returncode": test_result.returncode,
+                "promoted": False,
+                "stdout": test_result.stdout,
+                "stderr": test_result.stderr,
+            }
+        definition, adapter = _load_promotable_adapter(adapter_dir)
+        self._promotion_callback(definition, adapter)
+        _mark_promoted(adapter_dir, definition.name)
         return {
             "adapter_dir": str(adapter_dir),
-            "result": (
-                "promotion approved but remains a manual code-review step"
-                if approved
-                else "promotion requires explicit approval and manual review"
-            ),
-            "execution_policy": "manual_promotion_required",
+            "adapter_name": definition.name,
+            "result": f"adapter promoted and hot-registered as {definition.name}",
+            "execution_policy": "hot_registered",
             "returncode": 0,
-            "promoted": False,
+            "promoted": True,
+            "registered_tool": definition.name,
+            "stdout": test_result.stdout,
+            "stderr": test_result.stderr,
         }
 
 
@@ -150,6 +205,11 @@ def _safe_segment(value: str) -> str:
     return cleaned or "generated_adapter"
 
 
+def _safe_identifier_segment(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_]+", "_", value).strip("_")
+    return cleaned or "generated_adapter"
+
+
 def _require_adapter_dir_inside_root(adapter_dir: str, root_dir: str) -> Path:
     root = Path(root_dir).expanduser().resolve()
     path = Path(adapter_dir).expanduser().resolve()
@@ -158,6 +218,146 @@ def _require_adapter_dir_inside_root(adapter_dir: str, root_dir: str) -> Path:
     if not path.exists():
         raise ValueError(f"adapter directory does not exist: {path}")
     return path
+
+
+def _sandbox_import(adapter_dir: Path) -> _SandboxResult:
+    missing = _missing_required_files(adapter_dir)
+    if missing:
+        return _SandboxResult(1, f"missing: {', '.join(missing)}")
+    script = r"""
+from __future__ import annotations
+import importlib.util
+import inspect
+import json
+from pathlib import Path
+import sys
+
+adapter_path = Path(sys.argv[1])
+manifest = json.loads((adapter_path.parent / "manifest.json").read_text(encoding="utf-8"))
+class_name = manifest.get("adapter_class")
+spec = importlib.util.spec_from_file_location("_ybm_adapter_sandbox", adapter_path)
+if spec is None or spec.loader is None:
+    raise SystemExit("could not load adapter spec")
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+candidate = getattr(module, str(class_name), None) if class_name else None
+if candidate is None:
+    for value in vars(module).values():
+        if inspect.isclass(value) and value.__name__.endswith("Adapter") and hasattr(value, "execute"):
+            candidate = value
+            break
+if candidate is None:
+    raise SystemExit("no adapter class with execute() found")
+adapter = candidate()
+if not inspect.iscoroutinefunction(getattr(adapter, "execute", None)):
+    raise SystemExit("adapter execute() must be async")
+print(candidate.__name__)
+"""
+    return _run_python(["-c", script, str(adapter_dir / "adapter.py")], cwd=adapter_dir, timeout_seconds=15)
+
+
+def _test_connector(adapter_dir: Path) -> _SandboxResult:
+    missing = _missing_required_files(adapter_dir)
+    if missing:
+        return _SandboxResult(1, f"missing: {', '.join(missing)}")
+    import_result = _sandbox_import(adapter_dir)
+    if import_result.returncode != 0:
+        return import_result
+    return _run_python(["-m", "pytest", "-q", "test_adapter.py"], cwd=adapter_dir, timeout_seconds=60)
+
+
+def _missing_required_files(adapter_dir: Path) -> list[str]:
+    required = ["manifest.json", "adapter.py", "test_adapter.py"]
+    return [name for name in required if not (adapter_dir / name).exists()]
+
+
+def _run_python(args: list[str], *, cwd: Path, timeout_seconds: int) -> _SandboxResult:
+    env = os.environ.copy()
+    src_root = str(Path(__file__).resolve().parents[2])
+    env["PYTHONPATH"] = src_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    try:
+        completed = subprocess.run(
+            [sys.executable, *args],
+            cwd=str(cwd),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return _SandboxResult(124, f"sandbox command timed out after {timeout_seconds}s", exc.stdout or "", exc.stderr or "")
+    summary = "sandbox command passed" if completed.returncode == 0 else "sandbox command failed"
+    return _SandboxResult(completed.returncode, summary, completed.stdout[-8000:], completed.stderr[-8000:])
+
+
+def _load_promotable_adapter(adapter_dir: Path) -> tuple[Any, object]:
+    manifest = _load_manifest(adapter_dir)
+    module_name = f"_ybm_dynamic_{_safe_segment(str(manifest.get('name') or adapter_dir.name))}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+    adapter_path = adapter_dir / "adapter.py"
+    spec = importlib.util.spec_from_file_location(module_name, adapter_path)
+    if spec is None or spec.loader is None:
+        raise ValueError("could not load adapter module")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    class_name = manifest.get("adapter_class")
+    adapter_cls = getattr(module, str(class_name), None) if class_name else None
+    if adapter_cls is None:
+        adapter_cls = _find_adapter_class(module)
+    if adapter_cls is None:
+        raise ValueError("no adapter class with async execute() found")
+    adapter = adapter_cls()
+    if not inspect.iscoroutinefunction(getattr(adapter, "execute", None)):
+        raise ValueError("promoted adapter execute() must be async")
+    return _definition_from_manifest(manifest, adapter_dir), adapter
+
+
+def _find_adapter_class(module: object) -> type | None:
+    for value in vars(module).values():
+        if inspect.isclass(value) and value.__name__.endswith("Adapter") and hasattr(value, "execute"):
+            return value
+    return None
+
+
+def _definition_from_manifest(manifest: dict[str, Any], adapter_dir: Path) -> Any:
+    from agent_control.tools.registry import ToolDefinition
+
+    name = _safe_segment(str(manifest.get("name") or adapter_dir.name))
+    capability = Capability(str(manifest.get("capability") or Capability.FILESYSTEM_WRITE.value))
+    operations = tuple(str(item) for item in manifest.get("operations") or [] if str(item).strip())
+    examples = tuple(item for item in manifest.get("examples") or [] if isinstance(item, dict))
+    description = str(
+        manifest.get("description")
+        or manifest.get("objective")
+        or f"generated adapter loaded from {adapter_dir}"
+    ).strip()
+    return ToolDefinition(
+        name=name,
+        capability=capability,
+        enabled=True,
+        description=description[:500] or f"generated adapter loaded from {adapter_dir}",
+        operations=operations,
+        lifecycle="dynamic",
+        default_operation=str(manifest.get("default_operation") or "") or None,
+        examples=examples,
+    )
+
+
+def _load_manifest(adapter_dir: Path) -> dict[str, Any]:
+    payload = json.loads((adapter_dir / "manifest.json").read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("manifest.json must contain an object")
+    return payload
+
+
+def _mark_promoted(adapter_dir: Path, tool_name: str) -> None:
+    manifest = _load_manifest(adapter_dir)
+    manifest["name"] = tool_name
+    manifest["status"] = "promoted"
+    manifest["promoted_at"] = datetime.now().isoformat(timespec="seconds")
+    (adapter_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
 def _assessment(objective: str) -> str:
@@ -182,22 +382,26 @@ Objective:
 {objective or "No objective supplied."}
 ```
 
-This directory is a cache for generated adapter work. The orchestrator does not import
-or execute this code automatically. Promote it into `backend/src/agent_control/tools`
-and `backend/tests` after review.
+This directory is a cache for generated adapter work. The worker can hot-register
+the adapter only after `test_adapter.py` passes and `adapter.factory` receives an
+approved `promote_after_approval` request for this directory.
 """
 
 
-def _adapter_py(name: str) -> str:
+def _class_name(name: str) -> str:
     class_name = "".join(part.capitalize() for part in re.findall(r"[A-Za-z0-9]+", name)) or "Generated"
     if class_name[0].isdigit():
         class_name = f"Generated{class_name}"
+    return f"{class_name}Adapter"
+
+
+def _adapter_py(name: str, class_name: str) -> str:
     return f'''from __future__ import annotations
 
 from agent_control.schemas import ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
 
 
-class {class_name}Adapter:
+class {class_name}:
     """Generated adapter proposal. Review before registering."""
 
     async def execute(self, request: ToolCallRequest) -> ToolCallResult:
@@ -210,12 +414,28 @@ class {class_name}Adapter:
 '''
 
 
-def _test_py(name: str) -> str:
+def _test_py(name: str, class_name: str) -> str:
     return f'''from __future__ import annotations
 
+import asyncio
 
-def test_{_safe_segment(name).lower()}_adapter_needs_review() -> None:
-    assert True
+from agent_control.schemas import Capability, ToolCallRequest, ToolResultStatus
+from adapter import {class_name}
+
+
+def test_{_safe_identifier_segment(name).lower()}_adapter_succeeds() -> None:
+    adapter = {class_name}()
+    result = asyncio.run(
+        adapter.execute(
+            ToolCallRequest(
+                task_id="test_task",
+                tool_name="{_safe_segment(name)}",
+                capability=Capability.FILESYSTEM_WRITE,
+                input={{"operation": "test"}},
+            )
+        )
+    )
+    assert result.status == ToolResultStatus.SUCCEEDED, result.error_message
 '''
 
 
@@ -227,13 +447,17 @@ def _terminal_output(operation: str, output: dict[str, Any]) -> dict[str, Any]:
         lines.append(f"Adapter: {output['adapter_name']}")
     if output.get("assessment"):
         lines.append(f"Assessment: {output['assessment']}")
+    if output.get("result"):
+        lines.append(str(output["result"]))
+    if output.get("promoted"):
+        lines.append("Promoted: true")
     return {
         "instance_id": "local-worker",
         "terminal_id": "adapter-factory",
         "content": "\n".join(lines),
         "command_id": None,
         "is_final": True,
-        "exit_code": 0,
+        "exit_code": int(output.get("returncode") or 0),
         "source": "adapter_factory",
     }
 

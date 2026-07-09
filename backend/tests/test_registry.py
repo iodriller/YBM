@@ -14,7 +14,8 @@ import pytest
 from pydantic import BaseModel, Field
 
 from agent_control.schemas import Capability, PlanModel, PlanStep
-from agent_control.tools.registry import ToolDefinition, ToolRegistry
+from agent_control.config import AppSettings, CapabilityPolicy
+from agent_control.tools.registry import ToolDefinition, ToolRegistry, build_tool_registry
 
 
 class _ToyInput(BaseModel):
@@ -202,3 +203,18 @@ def test_validate_plan_passes_through_steps_without_tool() -> None:
     # Plan-only steps don't get registry-validated and don't raise.
     validated = registry.validate_plan(plan)
     assert validated.steps[0].tool_name is None
+
+
+def test_build_registry_exposes_http_request_only_with_allowlist() -> None:
+    settings = AppSettings(
+        _env_file=None,
+        capabilities={Capability.NETWORK_HTTP: CapabilityPolicy(enabled=True, requires_approval=False)},
+        adapters={"http_request": {"enabled": True, "allowed_hosts": ["api.example.com"]}},
+    )
+
+    registry = build_tool_registry(settings, "http://127.0.0.1:8765")
+    definitions = {definition.name: definition for definition in registry.definitions}
+
+    assert definitions["http.request"].enabled is True
+    assert "http.request" in registry.adapters
+    assert "api.example.com" in registry.context()

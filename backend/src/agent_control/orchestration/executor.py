@@ -47,7 +47,10 @@ class ToolExecutor:
         self.repositories = repositories
         self.audit = audit
         self.adapters = adapters or {}
-        self.tool_definitions = {definition.name: definition for definition in (tool_definitions or [])}
+        if isinstance(tool_definitions, dict):
+            self.tool_definitions = tool_definitions
+        else:
+            self.tool_definitions = {definition.name: definition for definition in (tool_definitions or [])}
 
     async def execute(self, request: ToolCallRequest, approved: bool = False) -> ToolCallResult:
         request, validation_error = self._validated_request(request)
