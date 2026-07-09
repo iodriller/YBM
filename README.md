@@ -38,6 +38,7 @@ Implemented:
 - LLM-backed per-Telegram-chat rolling memory with a concise summary and recent-turn window
 - Launchable web-app flow with workspace materialization and localhost preview URLs; Codex/Copilot are only used when explicitly requested
 - Capability registry/vault plus generated adapter proposal cache under `.agent_control/adapters`
+- Sandbox-tested, approval-gated hot promotion for generated adapter proposals into the live tool registry
 - Registered `schedule.manage` tool plus supervised scheduler service for recurring tasks
 - Registered document and artifact delivery tools for PDF summaries, PowerPoint artifacts, and Telegram file delivery
 - Pluggable `code.interpreter` execution backends with normalized metadata, safer import defaults, health reporting, and an optional Docker Python sandbox
@@ -50,7 +51,6 @@ Not implemented yet:
 
 - Direct GitHub Copilot Chat panel response capture through VS Code APIs
 - Persistent editable configuration for every advanced capability and adapter field
-- Automatic promotion of generated adapter proposals into runtime code without human review
 
 ## Development
 
@@ -89,10 +89,11 @@ Default local LLM and gateway behavior:
 - Computer-use requests like `take a screenshot and tell me what is open` or `use the computer to open this folder` route to `computer.use` when desktop control is enabled. Screenshots are saved under `.agent_control/computer_use/screenshots`; action loops require the local multimodal LLM and are capped by `adapters.computer_use.max_steps`.
 - Folder organization/search requests use `filesystem.manage` when an explicit path is present. It creates a manifest first, then applies only approved moves/copies inside `adapters.computer_use.allowed_roots`.
 - Development tasks route to the VS Code/GitHub Copilot terminal handoff when VS Code write access is enabled, with a local Copilot CLI fallback when the bridge is not connected.
-- Missing-tool work can be routed to `adapter.factory`, which creates a reviewable cached adapter proposal under `.agent_control/adapters` without loading it into runtime automatically.
-- If a native tool is missing, recovery checks configured MCP tools first, then tries bounded `code.interpreter` helpers when appropriate, then scaffolds a reviewable adapter proposal.
+- Direct API work can use `http.request` when `network.http` is enabled and the target host or URL prefix is allowlisted. It can inject secrets from the encrypted vault at call time without logging the values.
+- Missing-tool work can be routed to `adapter.factory`, which creates a cached adapter proposal under `.agent_control/adapters`; proposals can be hot-registered after their sandbox import and tests pass and approval is granted.
+- If a native tool is missing, recovery checks configured MCP tools first, then tries bounded `code.interpreter` helpers when appropriate, then scaffolds a reviewable adapter proposal. `mcp.client install_server` can persist a new stdio MCP server config when an installable server is known.
 - `code.interpreter` supports `run_python`, `generate_and_run`, `solve_once`, `inspect_state`, helper-building/repair operations, and `health`. By default it uses local Python for trusted runs; Docker can be enabled as `docker_python` for untrusted/generated code with network off, memory/CPU/pids limits, and artifact extraction from the managed workspace.
-- External MCP servers are configured under `mcp.servers`; MCP is disabled by default in the example config.
+- External MCP servers are configured under `mcp.servers`; MCP is disabled by default in the example config, while local runtime configs can enable specific stdio servers.
 - Scheduled-job requests like `set up a scheduled job every day to check this site` create a `schedule.manage` record. The supervised scheduler creates normal tasks from due schedules.
 - Worker results are sent back to the source Telegram chat.
 

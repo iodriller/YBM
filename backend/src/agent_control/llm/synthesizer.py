@@ -15,6 +15,7 @@ _CONTENT_TOOLS = frozenset({
     "filesystem.manage",
     "document.manage",
     "computer.use",
+    "http.request",
     "mcp.client",
 })
 

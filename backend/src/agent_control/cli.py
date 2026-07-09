@@ -118,7 +118,7 @@ async def run_worker() -> None:
         repositories,
         audit,
         adapters=registry.adapters,
-        tool_definitions=registry.definitions,
+        tool_definitions=registry.definition_index,
     )
     notifier = _telegram_notifier(settings)
     # Run max_parallel_tasks worker loops in one process. claim_next() claims
@@ -264,7 +264,7 @@ def _worker_config_context(registry) -> str:
 
 {registry.vault_summary()}
 
-Prefer conservative plans. Use registered tool names exactly and include explicit operations when a tool supports them. If a needed adapter is missing, use adapter.factory to scaffold a reviewed proposal instead of inventing unregistered tool names."""
+Prefer conservative plans. Use registered tool names exactly and include explicit operations when a tool supports them. For exact JSON/REST APIs, prefer http.request when the target is allowlisted. If a needed connector is missing, refresh or install MCP when a matching server is known; otherwise use adapter.factory to scaffold and test a proposal instead of inventing unregistered tool names."""
 
 
 def main() -> None:

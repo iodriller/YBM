@@ -11,6 +11,7 @@ from agent_control.storage.repositories import (
     TaskSignalRepository,
     ToolInvocationRepository,
 )
+from agent_control.storage.secrets import SecretVault, SecretVaultError
 
 __all__ = [
     "ApprovalRepository",
@@ -21,6 +22,8 @@ __all__ = [
     "MessageRepository",
     "PlanRepository",
     "Repositories",
+    "SecretVault",
+    "SecretVaultError",
     "TaskRepository",
     "TaskSignalRepository",
     "ToolInvocationRepository",

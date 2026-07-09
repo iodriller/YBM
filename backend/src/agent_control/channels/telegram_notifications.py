@@ -100,8 +100,14 @@ def _user_facing_task_message(task: TaskRecord) -> str:
     if task.status == TaskStatus.RECEIVED:
         return "Got your message, working on it now…"
     if task.status == TaskStatus.RUNNING:
+        attempt = _latest_attempt_summary(task)
+        if attempt:
+            return f"Working on another step.\n{attempt}"
         return "On it."
     if task.status == TaskStatus.RETRYING:
+        attempt = _latest_attempt_summary(task)
+        if attempt:
+            return f"That attempt did not work, so I am trying a different approach now.\n{attempt}"
         return "That attempt did not work, so I am trying a different approach now."
     if task.status == TaskStatus.AWAITING_APPROVAL:
         return _trim(
@@ -215,6 +221,8 @@ def _completed_answer(task: TaskRecord) -> str | None:
         return _workspace_answer(output)
     if tool_name == "artifact.deliver":
         return _artifact_answer(output)
+    if tool_name == "http.request":
+        return _http_answer(output)
     if tool_name == "task.status":
         return str(output.get("summary") or output.get("text") or _last_output(task) or "").strip() or None
     if tool_name == "mcp.client":
@@ -388,6 +396,23 @@ def _artifact_answer(output: dict) -> str:
     return str(output.get("summary") or "Artifact delivery completed.")
 
 
+def _http_answer(output: dict) -> str:
+    status_code = output.get("status_code")
+    url = output.get("url")
+    body = output.get("json")
+    if body is None:
+        body = str(output.get("text") or "").strip()
+    lines = [f"HTTP {status_code} from {url}"]
+    if body:
+        if isinstance(body, str):
+            lines.append(body[:3400])
+        else:
+            import json
+
+            lines.append(json.dumps(body, ensure_ascii=False, indent=2, default=str)[:3400])
+    return "\n\n".join(lines)
+
+
 def _result_lines(task: TaskRecord) -> list[str]:
     lines = []
     pull_request = (
@@ -499,6 +524,23 @@ def _failure_lines(task: TaskRecord) -> list[str]:
     if error:
         lines.append(f"Error: {_trim(error, 900)}")
     return lines
+
+
+def _latest_attempt_summary(task: TaskRecord) -> str | None:
+    history = task.metadata.get("attempt_history")
+    if not isinstance(history, list) or not history:
+        return None
+    latest = next((item for item in reversed(history) if isinstance(item, dict)), None)
+    if not latest:
+        return None
+    tool = latest.get("tool") or "tool"
+    status = latest.get("status") or "unknown"
+    action = latest.get("next_action") or "continue"
+    message = str(latest.get("message") or "").strip()
+    line = f"Latest attempt: {tool} ended with {status}; next action: {action}."
+    if message and status != "succeeded":
+        line += f"\nReason: {_trim(message, 500)}"
+    return _trim(line, 900)
 
 
 def _last_command_id(task: TaskRecord) -> str | None:

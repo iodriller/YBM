@@ -26,6 +26,7 @@ from agent_control.tools.contracts import (
     DocumentManageInput,
     FilesystemReadFileInput,
     FilesystemSearchInput,
+    HttpRequestInput,
     ScheduleManageInput,
     VSCodeCopilotTerminalInput,
     VSCodeTerminalCommandInput,
@@ -158,6 +159,15 @@ def test_browser_research_pages_page_limit_bounded() -> None:
     with pytest.raises(ValidationError):
         BrowserResearchPagesInput(query="x", page_limit=51)
     BrowserResearchPagesInput(query="x", page_limit=10)
+
+
+# ----- http.request ---------------------------------------------------------
+
+
+def test_http_request_requires_one_body_shape() -> None:
+    HttpRequestInput(url="https://api.example.com/status")
+    with pytest.raises(ValidationError):
+        HttpRequestInput(url="https://api.example.com/status", json_body={}, body="x")
 
 
 # ----- computer.use ---------------------------------------------------------

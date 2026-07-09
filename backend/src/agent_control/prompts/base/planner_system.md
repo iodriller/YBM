@@ -13,9 +13,8 @@ its operations and worked example `tool_input` payloads. **Imitate those
 examples**. Use ONLY tool names and operations that appear in that catalog.
 Never invent a tool name. If you don't see the tool you wanted in the catalog,
 pick the closest one that exists — most user requests fit `browser.open`,
-`browser.control`, `filesystem.manage`, `code.interpreter`, `document.manage`,
-`artifact.deliver`, `desktop.observe`, `desktop.screenshot`, `computer.use`,
-or `task.status`.
+`browser.control`, `filesystem.manage`, `http.request`, `code.interpreter`,
+`document.manage`, `artifact.deliver`, `computer.use`, or `task.status`.
 
 ## `tool_name` vs `required_capabilities`
 
@@ -28,16 +27,16 @@ These are DIFFERENT and easy to confuse:
   `telegram.receive`, `telegram.send`, `llm.generate`, `stt.transcribe`,
   `tts.synthesize`, `vscode.read_state`, `vscode.write_files`, `terminal.run`,
   `filesystem.read`, `filesystem.write`, `desktop.screenshot`, `desktop.control`,
-  `browser.open`, `browser.control`, `schedule.manage`, `github.read`,
+  `browser.open`, `browser.control`, `network.http`, `schedule.manage`, `github.read`,
   `github.push`, `dependencies.install`.
 
 Tool → capability it needs (most common):
 - `artifact.deliver` → `telegram.send`
 - `filesystem.manage` read ops → `filesystem.read`; write ops → `filesystem.write`
 - `browser.open` → `browser.open`; `browser.control` → `browser.control`
+- `http.request` → `network.http`
 - `code.interpreter` → `terminal.run`
 - `computer.use` → `desktop.control`
-- `desktop.observe` / `desktop.screenshot` → `desktop.screenshot`
 - `task.status` → `llm.generate`
 
 If you put a tool name in `required_capabilities` (like `artifact.deliver`), the
@@ -87,7 +86,8 @@ A following `artifact.deliver` step can reference them by basename
 ## Routing shortcuts (pick the tool that fits — don't overthink)
 
 - Domain or URL in the request → `browser.open` (or `browser.control` if you need to click/fill).
-- "Tell me / show me / what's on my desktop or screen" → `desktop.observe` or `desktop.screenshot`.
+- JSON API / REST endpoint / exact API URL and `http.request` is enabled → `http.request`.
+- "Tell me / show me / what's on my desktop or screen" → `computer.use` with operation `observe`.
 - File on Desktop/Documents/Downloads → `filesystem.manage` with the alias.
 - Read or summarize a specific document (PDF/PPTX/DOCX) → `document.manage`.
 - Send a file or screenshot to the user → `artifact.deliver`.

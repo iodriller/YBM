@@ -814,6 +814,10 @@ class TaskWorker:
         status_key = task.status.value
         if task.status == TaskStatus.CLARIFYING:
             status_key = f"clarifying:{task.metadata.get('clarify_count', 0)}"
+        elif task.status in {TaskStatus.RETRYING, TaskStatus.RUNNING}:
+            attempts = task.metadata.get("attempt_history")
+            if isinstance(attempts, list) and attempts:
+                status_key = f"{task.status.value}:attempts:{len(attempts)}:{task.current_step_id or ''}"
         notified = set(task.metadata.get("notified_statuses", []))
         if self.notification_sink is not None and status_key not in notified:
             await self.notification_sink.notify(task)
@@ -1090,6 +1094,11 @@ def _tool_output_text(result: ToolCallResult) -> str:
         return ""
     if _looks_like_mcp_output(output):
         return mcp_output_text(output)
+    if _looks_like_http_output(output):
+        if output.get("json") is not None:
+            return json.dumps(output["json"], ensure_ascii=False, indent=2, default=str)
+        if output.get("text"):
+            return str(output["text"])
     terminal_output = output.get("terminal_output")
     if isinstance(terminal_output, list):
         chunks = []
@@ -1110,6 +1119,12 @@ def _looks_like_mcp_output(output: dict[str, Any]) -> bool:
     ):
         return True
     return bool(output.get("catalog_path") and ("servers" in output or "tools" in output))
+
+
+def _looks_like_http_output(output: dict[str, Any]) -> bool:
+    return output.get("operation") == "request" and "status_code" in output and (
+        "json" in output or "text" in output
+    )
 
 
 def _is_mcp_recovery_discovery(task: TaskRecord, step: PlanStep, operation: str) -> bool:
