@@ -489,6 +489,18 @@ class CodeInterpreterAdapter:
         safety_warnings = []
         if not self.config.blocked_imports:
             safety_warnings.append("dangerous import blocklist is empty; local subprocess execution is not sandboxed")
+        if self.config.untrusted_default_backend == "docker_python" and "docker_python" not in available:
+            safety_warnings.append(
+                "untrusted_default_backend is docker_python but the Docker backend is unavailable "
+                "(disabled or not running); "
+                + (
+                    "local fallback is enabled, so untrusted/generated code currently runs UNSANDBOXED "
+                    "on the host. Enable adapters.code_interpreter.docker or set "
+                    "fallback_to_local_when_backend_unavailable: false to require Docker."
+                    if self.config.fallback_to_local_when_backend_unavailable
+                    else "untrusted/generated runs will be refused until Docker is available."
+                )
+            )
         stdout = "\n".join(f"{item['name']}: {item.get('summary', '')}" for item in backends)
         if safety_warnings:
             stdout = f"{stdout}\nSafety warnings:\n" + "\n".join(f"- {item}" for item in safety_warnings)
@@ -548,7 +560,7 @@ class CodeInterpreterAdapter:
             script_path = script_path.with_suffix(".py")
         script_path.write_text(code, encoding="utf-8")
         timeout = int(request.input.get("timeout_seconds") or self.config.timeout_seconds)
-        backend = self._select_backend(request, generated=generated, execution_profile=execution_profile)
+        backend, backend_fallback_warning = self._select_backend(request, generated=generated, execution_profile=execution_profile)
         allow_network = self._network_enabled(request)
         plan = CodeExecutionPlan(
             request_id=request.id,
@@ -582,6 +594,8 @@ class CodeInterpreterAdapter:
         )
         deleted = sorted(set(before_snapshot) - set(after_snapshot))
         summary = _summary(execution.returncode, stdout, stderr, created)
+        if backend_fallback_warning:
+            summary = f"{summary}\nWarning: {backend_fallback_warning}"
         artifact_ids = self._register_created_artifacts(request.task_id, workspace, created)
         return {
             "workspace_dir": str(workspace),
@@ -605,6 +619,7 @@ class CodeInterpreterAdapter:
             "network_enabled": execution.network_enabled,
             "session_id": execution.session_id,
             "rich_outputs": execution.rich_outputs,
+            "backend_fallback_warning": backend_fallback_warning,
         }
 
     def _build_backends(self) -> dict[str, CodeExecutionBackend]:
@@ -633,7 +648,7 @@ class CodeInterpreterAdapter:
         *,
         generated: bool,
         execution_profile: str,
-    ) -> CodeExecutionBackend:
+    ) -> tuple[CodeExecutionBackend, str | None]:
         explicit = str(request.input.get("backend") or "").strip()
         requested = explicit
         if not requested:
@@ -644,12 +659,18 @@ class CodeInterpreterAdapter:
         if requested == "docker_python" and not backend.available():
             if explicit or not self.config.fallback_to_local_when_backend_unavailable:
                 raise RuntimeError("docker backend is not available")
-            return self._backends["local_subprocess"]
+            warning = (
+                "docker_python backend is unavailable (Docker disabled or not running); fell back to "
+                f"local_subprocess, which does NOT sandbox this {execution_profile} code. Enable "
+                "adapters.code_interpreter.docker or set fallback_to_local_when_backend_unavailable: false "
+                "to refuse untrusted runs instead."
+            )
+            return self._backends["local_subprocess"], warning
         if requested not in self.config.backends and requested not in self.config.remote_backends:
             if explicit:
                 raise ValueError(f"code interpreter backend is not enabled in config: {requested}")
-            return self._backends.get(self.config.default_backend, self._backends["local_subprocess"])
-        return backend
+            return self._backends.get(self.config.default_backend, self._backends["local_subprocess"]), None
+        return backend, None
 
     def _network_enabled(self, request: ToolCallRequest) -> bool:
         requested = bool(request.input.get("allow_network") or False)

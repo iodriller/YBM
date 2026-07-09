@@ -42,7 +42,7 @@ import sys
 import time
 import traceback
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib import request as urlrequest
@@ -226,6 +226,32 @@ def fetch_task_audit(task_id: str) -> list[dict]:
         return []
 
 
+def fetch_message_sent_events(since_iso: str) -> list[dict]:
+    """Durable truth source for outbound Telegram sends: what YBM actually
+    called sendMessage/sendPhoto/sendDocument with, independent of whatever
+    the task's own metadata claims happened. Used to corroborate (not just
+    trust) the internal task-state-derived reply text/media count."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute(
+            "SELECT actor, payload_json, created_at "
+            "FROM audit_events WHERE event_type=? AND created_at >= ? ORDER BY created_at ASC",
+            ("message_sent", since_iso),
+        )
+        out: list[dict] = []
+        for actor, payload_json, created_at in c.fetchall():
+            try:
+                payload = json.loads(payload_json)
+            except Exception:
+                payload = {"raw": payload_json}
+            out.append({"time": created_at, "actor": actor, "payload": payload})
+        conn.close()
+        return out
+    except Exception:
+        return []
+
+
 # ---------- Fixtures ----------
 
 
@@ -348,6 +374,12 @@ class TurnResult:
     artifact_count: int = 0
     telegram_media_count: int = 0
     bot_reply_text: str | None = None
+    # Ground truth from the audit log (agent_control.storage.audit MESSAGE_SENT
+    # events), not from task metadata — corroborates that a send actually
+    # happened rather than trusting the adapter's/task's self-report.
+    telegram_sent_events: list[dict] = field(default_factory=list)
+    telegram_confirmed_text: str = ""
+    telegram_confirmed_media_count: int = 0
     changed_paths_count: int = 0
     status_transitions: list[dict] = field(default_factory=list)
     audit_event_count: int = 0
@@ -453,8 +485,18 @@ def _diagnose_turn(case: dict, turn: TurnResult, *, is_followup: bool) -> tuple[
         return False, f"artifact_count={turn.artifact_count} below artifacts_min={artifacts_min}"
 
     telegram_media_min = assertions.get("telegram_media_min")
-    if telegram_media_min is not None and turn.telegram_media_count < int(telegram_media_min):
-        return False, f"telegram_media_count={turn.telegram_media_count} below telegram_media_min={telegram_media_min}"
+    if telegram_media_min is not None:
+        # Cross-check the adapter's self-reported "delivered" claim against the
+        # audit log's independent record of actual sendPhoto/sendDocument calls
+        # — the higher of the two is the effective count; either alone can be
+        # under-counted, but this catches a claim with zero confirmed sends.
+        effective_media_count = max(turn.telegram_media_count, turn.telegram_confirmed_media_count)
+        if effective_media_count < int(telegram_media_min):
+            return False, (
+                f"telegram_media_count={turn.telegram_media_count} "
+                f"(audit-confirmed={turn.telegram_confirmed_media_count}) "
+                f"below telegram_media_min={telegram_media_min}"
+            )
 
     changed_paths_min = assertions.get("changed_paths_min")
     if changed_paths_min is not None and turn.changed_paths_count < int(changed_paths_min):
@@ -462,9 +504,22 @@ def _diagnose_turn(case: dict, turn: TurnResult, *, is_followup: bool) -> tuple[
 
     reply_needles = [str(item).lower() for item in assertions.get("bot_reply_contains_any") or [] if str(item).strip()]
     if reply_needles:
+        # Truth source is the union of the task-metadata-derived reply AND the
+        # audit log's record of what was actually sent to Telegram — a task
+        # that "completed" internally but never confirmed a send is a bug the
+        # metadata-only check could not see.
+        if not turn.telegram_sent_events:
+            return False, (
+                "bot reply expected but no message_sent audit record exists for this turn "
+                "— task metadata may claim completion without a confirmed Telegram send"
+            )
         reply = _turn_reply_text(turn).lower()
-        if not any(needle in reply for needle in reply_needles):
-            return False, f"bot reply did not contain any of {reply_needles}; reply={reply[:240]!r}"
+        confirmed = turn.telegram_confirmed_text.lower()
+        if not any(needle in reply or needle in confirmed for needle in reply_needles):
+            return False, (
+                f"bot reply did not contain any of {reply_needles}; "
+                f"reply={reply[:240]!r}; audit_confirmed={confirmed[:240]!r}"
+            )
 
     return True, None
 
@@ -589,6 +644,10 @@ async def _run_turn(label: str, message: str, max_seconds: int) -> TurnResult:
             turn.error = f"admin API unreachable before send: {exc}"
             turn.duration_s = round(time.monotonic() - start_mono, 1)
             return turn
+
+        # Anchor for the audit-log truth source: only MESSAGE_SENT events
+        # recorded after this point belong to this turn.
+        turn_start_iso = datetime.now(timezone.utc).isoformat()
 
         try:
             await _send_message(message)
@@ -720,6 +779,14 @@ async def _run_turn(label: str, message: str, max_seconds: int) -> TurnResult:
         turn.changed_paths_count = _count_changed_paths(turn.metadata)
         turn.duration_s = round(time.monotonic() - start_mono, 1)
         turn.audit_event_count = len(fetch_task_audit(task_id))
+        turn.telegram_sent_events = fetch_message_sent_events(turn_start_iso)
+        turn.telegram_confirmed_text = "\n".join(
+            str((event.get("payload") or {}).get("text") or (event.get("payload") or {}).get("caption") or "")
+            for event in turn.telegram_sent_events
+        ).strip()
+        turn.telegram_confirmed_media_count = sum(
+            1 for event in turn.telegram_sent_events if (event.get("payload") or {}).get("kind") in {"photo", "document"}
+        )
     except Exception as exc:
         turn.error = f"runner exception: {exc}\n{traceback.format_exc()[-1500:]}"
         turn.duration_s = round(time.monotonic() - start_mono, 1)

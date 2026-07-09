@@ -12,7 +12,7 @@ from fastapi import Header, HTTPException
 import httpx
 from pydantic import Field
 
-from agent_control.config import VSCodeAdapterConfig
+from agent_control.config import VSCodeAdapterConfig, is_loopback_host
 from agent_control.config_sync import read_env_value
 
 
@@ -109,9 +109,23 @@ class VSCodeBridgeStore:
         return ready
 
 
-def require_vscode_bridge_token(config: VSCodeAdapterConfig, token: str | None = Header(default=None, alias="X-Agent-Control-Token")) -> None:
+def require_vscode_bridge_token(
+    config: VSCodeAdapterConfig,
+    server_host: str = "127.0.0.1",
+    token: str | None = Header(default=None, alias="X-Agent-Control-Token"),
+) -> None:
     expected = read_env_value(config.auth_token_env)
-    if expected and token != expected:
+    if not expected:
+        if not is_loopback_host(config.bridge_host) or not is_loopback_host(server_host):
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "VS Code bridge refused: host is not loopback-only and no bridge token "
+                    f"is configured. Set {config.auth_token_env} before binding beyond 127.0.0.1."
+                ),
+            )
+        return
+    if token != expected:
         raise HTTPException(status_code=401, detail="invalid VS Code bridge token")
 
 

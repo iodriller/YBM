@@ -4,7 +4,7 @@ from datetime import timedelta
 
 import pytest
 
-from agent_control.channels.telegram import TelegramAdapter, TelegramIntakeService, TelegramPollingRunner
+from agent_control.channels.telegram import TelegramAdapter, TelegramBotApi, TelegramIntakeService, TelegramPollingRunner
 from agent_control.channels.memory import ConversationMemoryService
 from agent_control.channels.responder import StaticTelegramResponder
 from agent_control.config import AppSettings, CapabilityPolicy, DesktopAdapterConfig, StorageConfig, TelegramConfig
@@ -724,3 +724,57 @@ async def test_polling_runner_sends_screenshot_artifact(tmp_path) -> None:
     assert results[0].outbound_message.artifact_ids
     assert client.sent[0] == ("100", "Screenshot captured.")
     assert client.sent[1][1].startswith("photo:desktop screenshot:")
+
+
+class _FakeTelegramHttpResponse:
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class _FakeTelegramHttpClient:
+    def __init__(self, timeout: int) -> None:
+        self.timeout = timeout
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    async def post(self, url: str, *, json: dict | None = None, data: dict | None = None, files=None):
+        return _FakeTelegramHttpResponse({"ok": True, "result": {"message_id": 555}})
+
+
+@pytest.mark.asyncio
+async def test_telegram_bot_api_persists_outbound_message_audit_record(tmp_path, monkeypatch) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
+    database.initialize()
+    repos = Repositories.for_database(database)
+    audit = AuditLogger(repos.audit)
+    monkeypatch.setattr("agent_control.channels.telegram.httpx.AsyncClient", _FakeTelegramHttpClient)
+    client = TelegramBotApi("token123", audit=audit)
+
+    await client.send_message("100", "hello from ybm")
+
+    events = repos.audit.list_by_type(AuditEventType.MESSAGE_SENT)
+    assert len(events) == 1
+    assert events[0].payload["chat_id"] == "100"
+    assert events[0].payload["kind"] == "text"
+    assert events[0].payload["text"] == "hello from ybm"
+    assert events[0].payload["telegram_message_id"] == 555
+
+
+@pytest.mark.asyncio
+async def test_telegram_bot_api_without_audit_still_sends(monkeypatch) -> None:
+    monkeypatch.setattr("agent_control.channels.telegram.httpx.AsyncClient", _FakeTelegramHttpClient)
+    client = TelegramBotApi("token123")
+
+    data = await client.send_message("100", "hello from ybm")
+
+    assert data["ok"] is True

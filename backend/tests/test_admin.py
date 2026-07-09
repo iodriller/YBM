@@ -61,6 +61,17 @@ def test_admin_page_and_summary(monkeypatch, tmp_path) -> None:
     assert 'data-access-mode-group="' in page.text
 
 
+def test_admin_fails_closed_on_non_loopback_host_without_token(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    monkeypatch.setenv("AGENT_SERVER__HOST", "0.0.0.0")
+    monkeypatch.setenv("AGENT_STORAGE__DATABASE_URL", f"sqlite:///{tmp_path / 'admin.db'}")
+    client = TestClient(app)
+
+    summary = client.get("/admin/api/summary")
+
+    assert summary.status_code == 503
+
+
 def test_admin_lists_tasks_and_audit(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
     database_url = f"sqlite:///{tmp_path / 'admin.db'}"

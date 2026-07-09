@@ -18,7 +18,7 @@ class TaskStatusAdapter:
     async def execute(self, request: ToolCallRequest) -> ToolCallResult:
         limit = int(request.input.get("limit") or 10)
         recent = self.repositories.tasks.list_recent(limit=limit)
-        active_statuses = {
+        active_statuses = [
             TaskStatus.RECEIVED,
             TaskStatus.INTERPRETING,
             TaskStatus.PLANNED,
@@ -26,14 +26,21 @@ class TaskStatusAdapter:
             TaskStatus.AWAITING_EXTERNAL,
             TaskStatus.AWAITING_APPROVAL,
             TaskStatus.RETRYING,
-        }
-        active = [task for task in recent if task.status in active_statuses]
-        awaiting_external = [task for task in recent if task.status == TaskStatus.AWAITING_EXTERNAL]
-        waiting_clarification = [task for task in recent if task.status == TaskStatus.CLARIFYING]
-        waiting_approval = [task for task in recent if task.status == TaskStatus.AWAITING_APPROVAL]
+        ]
+        # Query active/awaiting/clarification/approval tasks by status directly
+        # rather than filtering `recent` (which is capped at `limit` by created_at).
+        # A task stuck waiting for approval/clarification for a while must not
+        # silently drop out of status visibility once enough newer tasks exist.
+        active = self.repositories.tasks.list_by_statuses(active_statuses, limit=50)
+        awaiting_external = [task for task in active if task.status == TaskStatus.AWAITING_EXTERNAL]
+        waiting_clarification = self.repositories.tasks.list_by_statuses([TaskStatus.CLARIFYING], limit=50)
+        waiting_approval = [task for task in active if task.status == TaskStatus.AWAITING_APPROVAL]
         active_sessions = self._active_coding_sessions()
+        combined_tasks: dict[str, Any] = {task.id: task for task in recent}
+        for task in (*active, *waiting_clarification):
+            combined_tasks.setdefault(task.id, task)
         task_rows = []
-        for task in recent:
+        for task in combined_tasks.values():
             plan_summary: dict[str, Any] | None = None
             if task.plan_id:
                 plan = self.repositories.plans.get(task.plan_id)

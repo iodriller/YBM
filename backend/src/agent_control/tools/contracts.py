@@ -665,6 +665,7 @@ class CodeInterpreterOutput(ToolOutputModel):
     network_enabled: bool = False
     session_id: str | None = None
     rich_outputs: list[dict[str, Any]] = Field(default_factory=list)
+    backend_fallback_warning: str | None = None
 
 
 class AdapterFactoryAssessOutput(ToolOutputModel):

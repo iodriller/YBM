@@ -66,7 +66,7 @@ async def poll_telegram() -> None:
     classifier = LLMMessageClassifier(provider) if provider else None
     responder = LLMTelegramResponder(provider, settings, repositories) if provider else None
     memory_service = ConversationMemoryService(repositories, provider=provider)
-    client = TelegramBotApi(load_telegram_token(settings.channels.telegram))
+    client = TelegramBotApi(load_telegram_token(settings.channels.telegram), audit=audit)
     service = TelegramIntakeService(
         adapter,
         repositories,
@@ -107,7 +107,7 @@ async def run_worker() -> None:
         task_repository=repositories.tasks,
         repositories=repositories,
         audit_logger=audit,
-        telegram_client=_telegram_client(settings),
+        telegram_client=_telegram_client(settings, audit),
     )
     major_provider = build_major_llm_provider(settings)
     planner = PlannerService(provider, repositories, audit, plan_validator=registry.validate_plan, major_provider=major_provider) if provider else None
@@ -120,7 +120,7 @@ async def run_worker() -> None:
         adapters=registry.adapters,
         tool_definitions=registry.definition_index,
     )
-    notifier = _telegram_notifier(settings)
+    notifier = _telegram_notifier(settings, audit)
     # Run max_parallel_tasks worker loops in one process. claim_next() claims
     # atomically per worker_id, so quick tasks (status, delivery) are not
     # starved behind a long-running coding or browser task.
@@ -162,7 +162,7 @@ async def run_coding_agent_session(session_root: str, session_id: str) -> None:
 async def run_coding_session_watcher(poll_interval_seconds: float = 5.0) -> None:
     settings = load_settings()
     repositories, audit = build_repositories()
-    telegram = _telegram_client(settings)
+    telegram = _telegram_client(settings, audit)
     while True:
         try:
             sessions = await scan_coding_sessions_once(settings.adapters.coding_agent.session_root)
@@ -217,21 +217,21 @@ def _coding_session_brief(session: dict) -> dict:
     }
 
 
-def _telegram_notifier(settings) -> TelegramTaskNotifier | None:
+def _telegram_notifier(settings, audit: AuditLogger | None = None) -> TelegramTaskNotifier | None:
     if not settings.channels.telegram.enabled:
         return None
     try:
-        client = _telegram_client(settings)
+        client = _telegram_client(settings, audit)
         return TelegramTaskNotifier(client) if client else None
     except RuntimeError:
         return None
 
 
-def _telegram_client(settings) -> TelegramBotApi | None:
+def _telegram_client(settings, audit: AuditLogger | None = None) -> TelegramBotApi | None:
     if not settings.channels.telegram.enabled:
         return None
     try:
-        return TelegramBotApi(load_telegram_token(settings.channels.telegram))
+        return TelegramBotApi(load_telegram_token(settings.channels.telegram), audit=audit)
     except RuntimeError:
         return None
 
