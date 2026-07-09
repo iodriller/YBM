@@ -79,6 +79,42 @@ async def test_task_status_reports_awaiting_external_and_coding_sessions(tmp_pat
     assert result.output["task_status"]["mcp"]["enabled"] is True
 
 
+@pytest.mark.asyncio
+async def test_task_status_finds_stale_waiting_task_beyond_recency_limit(tmp_path) -> None:
+    """A task waiting for approval/clarification must stay visible even after
+    more than `limit` newer tasks have been created since it started waiting."""
+    database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
+    database.initialize()
+    repos = Repositories.for_database(database)
+    conversation_id = repos.conversations.get_or_create(ChannelType.TELEGRAM, "100")
+
+    stuck_approval = repos.tasks.create("Old task needing approval", conversation_id=conversation_id)
+    repos.tasks.update_status(stuck_approval.id, TaskStatus.AWAITING_APPROVAL)
+    stuck_clarify = repos.tasks.create("Old task needing clarification", conversation_id=conversation_id)
+    repos.tasks.update_status(stuck_clarify.id, TaskStatus.CLARIFYING)
+
+    # Bury both behind more tasks than the status query's `limit` window.
+    for index in range(5):
+        newer = repos.tasks.create(f"Newer completed task {index}", conversation_id=conversation_id)
+        repos.tasks.update_status(newer.id, TaskStatus.COMPLETED)
+
+    result = await TaskStatusAdapter(repos).execute(
+        ToolCallRequest(
+            task_id="task_status",
+            tool_name="task.status",
+            capability=Capability.TELEGRAM_RECEIVE,
+            input={"operation": "status", "limit": 3},
+        )
+    )
+
+    output = result.output["task_status"]
+    assert output["waiting_approval_count"] == 1
+    assert output["waiting_clarification_count"] == 1
+    row_ids = {row["id"] for row in output["recent_tasks"]}
+    assert stuck_approval.id in row_ids
+    assert stuck_clarify.id in row_ids
+
+
 def test_registry_exposes_task_status_when_repositories_are_available(tmp_path) -> None:
     database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
     database.initialize()

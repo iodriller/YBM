@@ -73,9 +73,15 @@ def load_telegram_token(config: TelegramConfig) -> str:
 
 
 class TelegramBotApi:
-    def __init__(self, token: str, base_url: str = "https://api.telegram.org") -> None:
+    def __init__(
+        self,
+        token: str,
+        base_url: str = "https://api.telegram.org",
+        audit: AuditLogger | None = None,
+    ) -> None:
         self.token = token
         self.base_url = base_url.rstrip("/")
+        self.audit = audit
 
     async def get_updates(self, offset: int | None = None, timeout: int = 30) -> list[dict[str, Any]]:
         payload: dict[str, Any] = {"timeout": timeout}
@@ -85,7 +91,9 @@ class TelegramBotApi:
         return list(data.get("result", []))
 
     async def send_message(self, chat_id: str | int, text: str) -> dict[str, Any]:
-        return await self._post("sendMessage", {"chat_id": chat_id, "text": text})
+        data = await self._post("sendMessage", {"chat_id": chat_id, "text": text})
+        self._log_sent(chat_id, kind="text", text=text, response=data)
+        return data
 
     async def send_photo_file(self, chat_id: str | int, path: str, caption: str | None = None) -> dict[str, Any]:
         payload = {"chat_id": str(chat_id)}
@@ -99,6 +107,7 @@ class TelegramBotApi:
                 data = response.json()
         if not data.get("ok"):
             raise RuntimeError("Telegram Bot API call failed: sendPhoto")
+        self._log_sent(chat_id, kind="photo", caption=caption, path=path, response=data)
         return data
 
     async def send_document_file(self, chat_id: str | int, path: str, caption: str | None = None) -> dict[str, Any]:
@@ -113,7 +122,39 @@ class TelegramBotApi:
                 data = response.json()
         if not data.get("ok"):
             raise RuntimeError("Telegram Bot API call failed: sendDocument")
+        self._log_sent(chat_id, kind="document", caption=caption, path=path, response=data)
         return data
+
+    def _log_sent(
+        self,
+        chat_id: str | int,
+        *,
+        kind: str,
+        response: dict[str, Any],
+        text: str | None = None,
+        caption: str | None = None,
+        path: str | None = None,
+    ) -> None:
+        # Durable local record of what YBM actually sent — the E2E runner's
+        # truth source, independent of re-reading Telegram's live chat state.
+        if self.audit is None:
+            return
+        result = response.get("result") if isinstance(response.get("result"), dict) else {}
+        payload: dict[str, Any] = {
+            "chat_id": str(chat_id),
+            "kind": kind,
+            "telegram_message_id": result.get("message_id"),
+        }
+        if text is not None:
+            payload["text"] = text
+        if caption is not None:
+            payload["caption"] = caption
+        if path is not None:
+            payload["path"] = path
+        try:
+            self.audit.append(AuditEventType.MESSAGE_SENT, actor="telegram_bot_api", payload=payload)
+        except Exception:
+            pass
 
     async def get_file(self, file_id: str) -> dict[str, Any]:
         data = await self._post("getFile", {"file_id": file_id})

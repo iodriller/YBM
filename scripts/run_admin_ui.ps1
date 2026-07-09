@@ -1,6 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $Root = Resolve-Path "$PSScriptRoot\.."
+Set-Location $Root
 $env:PYTHONPATH = "$Root\backend\src"
 
 python -m streamlit run "$Root\backend\src\agent_control\admin_streamlit.py" `

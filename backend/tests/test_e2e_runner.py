@@ -45,6 +45,8 @@ def test_diagnose_turn_enforces_structured_assertions() -> None:
         telegram_media_count=1,
         changed_paths_count=2,
         bot_reply_text="The folder has files and notes.",
+        telegram_sent_events=[{"payload": {"kind": "text", "text": "The folder has files and notes."}}],
+        telegram_confirmed_text="The folder has files and notes.",
     )
     case = {
         "assertions": {
@@ -66,6 +68,39 @@ def test_diagnose_turn_enforces_structured_assertions() -> None:
     passed, reason = runner._diagnose_turn(missing_tool_case, turn, is_followup=False)
     assert passed is False
     assert "missing required tool" in reason
+
+
+def test_diagnose_turn_fails_bot_reply_without_confirmed_telegram_send() -> None:
+    """Task metadata can claim a completed answer even if nothing was ever
+    actually sent to Telegram — the audit log (message_sent events) is the
+    only independent confirmation, so its absence must fail the assertion."""
+    runner = _runner_module()
+    turn = runner.TurnResult(
+        final_status="completed",
+        bot_reply_text="The folder has files and notes.",
+        # No telegram_sent_events populated: nothing confirms a real send happened.
+    )
+    case = {"assertions": {"final_status_in": ["completed"], "bot_reply_contains_any": ["notes"]}}
+
+    passed, reason = runner._diagnose_turn(case, turn, is_followup=False)
+
+    assert passed is False
+    assert "no message_sent audit record" in reason
+
+
+def test_diagnose_turn_uses_confirmed_media_count_when_metadata_undercounts() -> None:
+    runner = _runner_module()
+    turn = runner.TurnResult(
+        final_status="completed",
+        telegram_media_count=0,
+        telegram_confirmed_media_count=1,
+    )
+    case = {"assertions": {"final_status_in": ["completed"], "telegram_media_min": 1}}
+
+    passed, reason = runner._diagnose_turn(case, turn, is_followup=False)
+
+    assert passed is True
+    assert reason is None
 
 
 def test_diagnose_turn_fails_on_missing_artifact_media_and_reply() -> None:

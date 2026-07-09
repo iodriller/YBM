@@ -10,7 +10,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import Field
 
 from agent_control.config_sync import CONFIG_FILE_PATH, ConfigManager, read_env_value
-from agent_control.config import AppSettings
+from agent_control.config import AppSettings, is_loopback_host
 from agent_control.llm.providers import OpenAICompatibleProvider
 from agent_control.orchestration.signals import apply_task_signal
 from agent_control.policy import apply_access_modes_to_config, summarize_access_modes
@@ -166,7 +166,17 @@ def create_admin_router(
         loaded = settings()
         expected = read_env_value(loaded.server.admin_token_env)
         provided = request.headers.get("X-Agent-Control-Admin-Token") or request.query_params.get("token")
-        if expected and provided != expected:
+        if not expected:
+            if not is_loopback_host(loaded.server.host):
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "admin API refused: server.host is not loopback-only and no admin token "
+                        f"is configured. Set {loaded.server.admin_token_env} before binding beyond 127.0.0.1."
+                    ),
+                )
+            return loaded
+        if provided != expected:
             raise HTTPException(status_code=401, detail="invalid admin token")
         return loaded
 

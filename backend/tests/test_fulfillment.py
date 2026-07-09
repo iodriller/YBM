@@ -104,6 +104,59 @@ def test_desktop_run_goal_postcondition_requires_completed_output() -> None:
     assert validation.first_gap == "expected_desktop_observation_missing"
 
 
+def test_computer_use_step_infers_desktop_observation_postcondition_even_in_mixed_plan() -> None:
+    """A plan with computer.use plus another postcondition-producing step must still
+    check the computer.use outcome, not just the other step's postcondition."""
+    task = TaskRecord(
+        objective="Open notepad and type hello, then send me a screenshot",
+        metadata={
+            "last_tool_result": {
+                "output": {
+                    "operation": "run_goal",
+                    "completed": False,
+                    "final_summary": "Stopped after max steps.",
+                }
+            },
+            "artifact_delivery": {"delivered": True},
+        },
+    )
+    plan = PlanModel(
+        objective=task.objective,
+        steps=[
+            PlanStep(title="Open notepad", description="Run computer-use.", tool_name="computer.use"),
+            PlanStep(title="Send screenshot", description="Deliver artifact.", tool_name="artifact.deliver"),
+        ],
+    )
+
+    validation = validate_fulfillment(task, plan)
+
+    assert not validation.ok
+    assert validation.first_gap == "expected_desktop_observation_missing"
+
+
+def test_run_goal_missing_completed_field_is_not_satisfied() -> None:
+    task = TaskRecord(
+        objective="Use computer to open a folder",
+        metadata={
+            "last_tool_result": {
+                "output": {
+                    "operation": "run_goal",
+                    "screenshot_path": "C:/tmp/screen.png",
+                }
+            }
+        },
+    )
+    plan = PlanModel(
+        objective=task.objective,
+        steps=[PlanStep(title="Use computer", description="Run computer-use.", tool_name="computer.use")],
+    )
+
+    validation = validate_fulfillment(task, plan)
+
+    assert not validation.ok
+    assert validation.first_gap == "expected_desktop_observation_missing"
+
+
 def test_running_coding_agent_session_does_not_satisfy_postcondition() -> None:
     task = TaskRecord(
         objective="Use Codex to fix tests",

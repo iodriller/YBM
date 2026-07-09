@@ -8,6 +8,7 @@ from agent_control.schemas import AuditEvent, AuditEventType, FormattedAuditEven
 
 CATEGORY_BY_TYPE = {
     AuditEventType.MESSAGE_RECEIVED: "raw_telegram",
+    AuditEventType.MESSAGE_SENT: "raw_telegram",
     AuditEventType.TELEGRAM_ACCESS_DECISION: "telegram_access",
     AuditEventType.MESSAGE_CLASSIFIED: "classification",
     AuditEventType.TASK_SPAWN_FAILED: "failed_classification",
@@ -51,6 +52,7 @@ def format_audit_event(event: AuditEvent) -> FormattedAuditEvent:
 def _title(event_type: AuditEventType) -> str:
     return {
         AuditEventType.MESSAGE_RECEIVED: "Telegram message received",
+        AuditEventType.MESSAGE_SENT: "Telegram message sent",
         AuditEventType.TELEGRAM_ACCESS_DECISION: "Telegram access decision",
         AuditEventType.MESSAGE_CLASSIFIED: "Message classified",
         AuditEventType.TASK_SPAWN_FAILED: "Task not spawned",
@@ -68,6 +70,8 @@ def _title(event_type: AuditEventType) -> str:
 def _summary(event_type: AuditEventType, payload: dict[str, Any]) -> str:
     if event_type == AuditEventType.MESSAGE_RECEIVED:
         return _preview(payload.get("text") or payload.get("text_preview") or "Message received")
+    if event_type == AuditEventType.MESSAGE_SENT:
+        return _preview(payload.get("text") or payload.get("caption") or payload.get("kind") or "Message sent")
     if event_type == AuditEventType.TELEGRAM_ACCESS_DECISION:
         return f"{'Allowed' if payload.get('allowed') else 'Denied'} Telegram message"
     if event_type == AuditEventType.MESSAGE_CLASSIFIED:

@@ -193,6 +193,7 @@ class PostconditionType(StrEnum):
 
 class AuditEventType(StrEnum):
     MESSAGE_RECEIVED = "message_received"
+    MESSAGE_SENT = "message_sent"
     CONFIG_UPDATED = "config_updated"
     TELEGRAM_ACCESS_DECISION = "telegram_access_decision"
     MESSAGE_CLASSIFIED = "message_classified"

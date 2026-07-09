@@ -167,11 +167,11 @@ def _postconditions_from_plan(plan: PlanModel) -> list[PlanPostcondition]:
                     description="Browser state or an opened page URL is reported.",
                 )
             )
-        if step.tool_name == "desktop.screenshot":
+        if step.tool_name in {"desktop.screenshot", "computer.use"}:
             expected.append(
                 PlanPostcondition(
                     type=PostconditionType.DESKTOP_OBSERVATION,
-                    description="A desktop observation or screenshot is reported.",
+                    description="A desktop observation, action result, or completed goal is reported.",
                 )
             )
         if step.tool_name and step.tool_name.startswith("github.") and operation in {"create_pr", "open_pr", "pull_request"}:
@@ -320,8 +320,11 @@ def _postcondition_satisfied(task: TaskRecord, expected: PostconditionType) -> b
         )
     if expected == PostconditionType.DESKTOP_OBSERVATION:
         output = _last_output_dict(task)
-        if output.get("operation") == "run_goal" and output.get("completed") is False:
-            return False
+        if output.get("operation") == "run_goal":
+            # A run_goal step is a multi-step action loop with an actual objective;
+            # a screenshot existing is not evidence the goal was reached. Only an
+            # explicit completed=True counts (max_steps exhaustion reports False).
+            return output.get("completed") is True
         return bool(
             _any_value(
                 task,

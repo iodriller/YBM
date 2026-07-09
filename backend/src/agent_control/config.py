@@ -19,6 +19,18 @@ class ServerConfig(StrictBaseModel):
     admin_token_env: str = "AGENT_ADMIN_TOKEN"
 
 
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"}
+
+
+def is_loopback_host(host: str) -> bool:
+    """True when ``host`` only accepts connections from the local machine.
+
+    Used to gate fail-closed auth checks: an unset admin/bridge token is only
+    safe while nothing beyond loopback can reach the port.
+    """
+    return (host or "").strip().lower() in _LOOPBACK_HOSTS
+
+
 class IdentityConfig(StrictBaseModel):
     instance_name: str = "local-agent-control"
     owner_label: str = "local-user"

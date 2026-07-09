@@ -33,7 +33,8 @@ def health() -> dict[str, str]:
 
 
 def _vscode_auth(token: str | None = Header(default=None, alias="X-Agent-Control-Token")) -> None:
-    require_vscode_bridge_token(load_settings().adapters.vscode, token)
+    settings = load_settings()
+    require_vscode_bridge_token(settings.adapters.vscode, settings.server.host, token)
 
 
 @app.post("/vscode/heartbeat", dependencies=[Depends(_vscode_auth)])

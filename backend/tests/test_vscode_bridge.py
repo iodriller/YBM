@@ -37,6 +37,16 @@ def test_vscode_bridge_rejects_missing_token(monkeypatch) -> None:
     assert response.status_code == 401
 
 
+def test_vscode_bridge_fails_closed_on_non_loopback_host_without_token(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_ADAPTERS__VSCODE__AUTH_TOKEN_ENV", "__TEST_NO_VSCODE_TOKEN__")
+    monkeypatch.setenv("AGENT_SERVER__HOST", "0.0.0.0")
+    client = TestClient(app)
+
+    response = client.post("/vscode/heartbeat", json={"instance_id": "machine"})
+
+    assert response.status_code == 503
+
+
 def test_vscode_terminal_command_queue(monkeypatch) -> None:
     monkeypatch.setenv("AGENT_ADAPTERS__VSCODE__AUTH_TOKEN_ENV", "__TEST_NO_VSCODE_TOKEN__")
     vscode_store.terminal_commands = []

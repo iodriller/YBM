@@ -231,6 +231,31 @@ async def test_code_interpreter_health_warns_when_import_blocklist_empty(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_code_interpreter_health_warns_when_untrusted_default_is_unavailable_docker(tmp_path) -> None:
+    adapter = CodeInterpreterAdapter(_settings(tmp_path).adapters.code_interpreter)
+
+    result = await adapter.execute(_request(tmp_path, "health"))
+
+    assert result.status.value == "succeeded"
+    warnings = result.output["health"]["safety_warnings"]
+    assert any("untrusted_default_backend is docker_python" in item for item in warnings)
+    assert "runs UNSANDBOXED on the host" in result.output["stdout"]
+
+
+@pytest.mark.asyncio
+async def test_code_interpreter_generated_run_warns_on_silent_docker_fallback(tmp_path) -> None:
+    adapter = CodeInterpreterAdapter(_settings(tmp_path).adapters.code_interpreter, provider=FakeScriptProvider())
+
+    result = await adapter.execute(_request(tmp_path, "generate_and_run", objective="Create a result file."))
+
+    assert result.status.value == "succeeded"
+    assert result.output["backend"] == "local_subprocess"
+    assert result.output["backend_fallback_warning"] is not None
+    assert "docker_python backend is unavailable" in result.output["backend_fallback_warning"]
+    assert "Warning: docker_python backend is unavailable" in result.output["summary"]
+
+
+@pytest.mark.asyncio
 async def test_code_interpreter_inspect_state_lists_workspace_files(tmp_path) -> None:
     workspace = tmp_path / "code" / "task_code"
     workspace.mkdir(parents=True)
