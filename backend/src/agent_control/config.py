@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict, YamlConfigSettingsSource
 
-from agent_control.config_sync import read_env_file, read_env_value
+from agent_control.config_sync import read_env_value
 from agent_control.schemas import Capability, RiskLevel, StrictBaseModel
 
 
@@ -409,6 +408,7 @@ class AppSettings(BaseSettings):
         env_nested_delimiter="__",
         env_file=".env",
         env_file_encoding="utf-8",
+        dotenv_filtering="only_existing",
         yaml_file="config/config.yaml",
         yaml_file_encoding="utf-8",
         extra="forbid",
@@ -437,10 +437,10 @@ class AppSettings(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
-        _load_env_file_into_process()
         return (
             init_settings,
             env_settings,
+            dotenv_settings,
             YamlConfigSettingsSource(settings_cls),
             file_secret_settings,
         )
@@ -514,8 +514,3 @@ def load_settings(config_path: str | Path | None = None, **overrides: Any) -> Ap
 
         return RuntimePathSettings(**overrides)
     return AppSettings(**overrides)
-
-
-def _load_env_file_into_process() -> None:
-    for key, value in read_env_file().items():
-        os.environ.setdefault(key, value)

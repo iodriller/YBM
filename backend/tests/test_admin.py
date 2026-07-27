@@ -32,6 +32,9 @@ def _repositories(database_url: str) -> Repositories:
 
 
 def test_admin_page_and_summary(monkeypatch, tmp_path) -> None:
+    # chdir, not just delenv: read_env_value() reads .env from the current
+    # working directory, so a bare delenv here is not real isolation.
+    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
     monkeypatch.setenv("AGENT_STORAGE__DATABASE_URL", f"sqlite:///{tmp_path / 'admin.db'}")
     client = TestClient(app)
@@ -62,6 +65,7 @@ def test_admin_page_and_summary(monkeypatch, tmp_path) -> None:
 
 
 def test_admin_fails_closed_on_non_loopback_host_without_token(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)  # see test_admin_page_and_summary for why chdir, not just delenv
     monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
     monkeypatch.setenv("AGENT_SERVER__HOST", "0.0.0.0")
     monkeypatch.setenv("AGENT_STORAGE__DATABASE_URL", f"sqlite:///{tmp_path / 'admin.db'}")
@@ -73,6 +77,7 @@ def test_admin_fails_closed_on_non_loopback_host_without_token(monkeypatch, tmp_
 
 
 def test_admin_lists_tasks_and_audit(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)  # see test_admin_page_and_summary for why chdir, not just delenv
     monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
     database_url = f"sqlite:///{tmp_path / 'admin.db'}"
     monkeypatch.setenv("AGENT_STORAGE__DATABASE_URL", database_url)
@@ -92,7 +97,8 @@ def test_admin_lists_tasks_and_audit(monkeypatch, tmp_path) -> None:
     assert filtered[0]["category"] == "spawned_task"
 
 
-def test_admin_task_signal_updates_task(tmp_path) -> None:
+def test_admin_task_signal_updates_task(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)  # see test_admin_page_and_summary for why chdir, not just delenv
     database_url = f"sqlite:///{tmp_path / 'admin.db'}"
     repositories = _repositories(database_url)
     task = repositories.tasks.create("pause me")
@@ -114,7 +120,8 @@ def test_admin_task_signal_updates_task(tmp_path) -> None:
     assert updated.status == TaskStatus.PAUSED
 
 
-def test_admin_task_trace_includes_plan_tool_calls_and_audit(tmp_path) -> None:
+def test_admin_task_trace_includes_plan_tool_calls_and_audit(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)  # see test_admin_page_and_summary for why chdir, not just delenv
     database_url = f"sqlite:///{tmp_path / 'admin.db'}"
     repositories = _repositories(database_url)
     audit = AuditLogger(repositories.audit)
@@ -179,7 +186,8 @@ def test_admin_task_trace_includes_plan_tool_calls_and_audit(tmp_path) -> None:
     assert body["audit"][0]["details"]["llm"]["user_prompt"] == "user"
 
 
-def test_admin_clears_task_history_and_audit(tmp_path) -> None:
+def test_admin_clears_task_history_and_audit(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)  # see test_admin_page_and_summary for why chdir, not just delenv
     database_url = f"sqlite:///{tmp_path / 'admin.db'}"
     repositories = _repositories(database_url)
     completed = repositories.tasks.create("old task")
@@ -208,7 +216,8 @@ def test_admin_clears_task_history_and_audit(tmp_path) -> None:
     assert repositories.audit.list_recent(10) == []
 
 
-def test_admin_tasks_are_paginated(tmp_path) -> None:
+def test_admin_tasks_are_paginated(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)  # see test_admin_page_and_summary for why chdir, not just delenv
     database_url = f"sqlite:///{tmp_path / 'admin.db'}"
     repositories = _repositories(database_url)
     for index in range(7):
@@ -232,7 +241,8 @@ def test_admin_tasks_are_paginated(tmp_path) -> None:
     assert summary["task_pagination"]["has_more"] is True
 
 
-def test_admin_task_resume_restores_paused_status(tmp_path) -> None:
+def test_admin_task_resume_restores_paused_status(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)  # see test_admin_page_and_summary for why chdir, not just delenv
     database_url = f"sqlite:///{tmp_path / 'admin.db'}"
     repositories = _repositories(database_url)
     task = repositories.tasks.create("resume me")
@@ -258,6 +268,7 @@ def test_admin_task_resume_restores_paused_status(tmp_path) -> None:
 
 
 def test_admin_rejects_vscode_terminal_command_by_default(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)  # see test_admin_page_and_summary for why chdir, not just delenv
     monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
     repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
     store = VSCodeBridgeStore()
@@ -272,7 +283,10 @@ def test_admin_rejects_vscode_terminal_command_by_default(monkeypatch, tmp_path)
     assert store.terminal_commands == []
 
 
-def test_admin_can_queue_vscode_terminal_command_when_enabled(tmp_path) -> None:
+def test_admin_can_queue_vscode_terminal_command_when_enabled(monkeypatch, tmp_path) -> None:
+    # chdir before constructing AppSettings so the temp repo owns config.yaml
+    # and any local .env file it reads.
+    monkeypatch.chdir(tmp_path)
     database_url = f"sqlite:///{tmp_path / 'admin.db'}"
     repositories = _repositories(database_url)
     settings = AppSettings(
@@ -380,7 +394,8 @@ def test_admin_writes_telegram_runtime_config(monkeypatch, tmp_path) -> None:
     assert not (tmp_path / ".env").exists()
 
 
-def test_admin_llm_test_requires_configured_profile(tmp_path) -> None:
+def test_admin_llm_test_requires_configured_profile(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)  # see test_admin_page_and_summary for why chdir, not just delenv
     repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
     local_app = FastAPI()
     local_app.include_router(
@@ -609,7 +624,8 @@ def test_admin_access_modes_sync_browser_adapter(monkeypatch, tmp_path) -> None:
     assert saved["adapters"]["browser"]["enabled"] is True
 
 
-def test_admin_database_summary(tmp_path) -> None:
+def test_admin_database_summary(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)  # see test_admin_page_and_summary for why chdir, not just delenv
     database_url = f"sqlite:///{tmp_path / 'admin.db'}"
     repositories = _repositories(database_url)
     repositories.tasks.create("inspect db")
@@ -630,7 +646,8 @@ def test_admin_database_summary(tmp_path) -> None:
     assert "schedules" in response.json()["table_counts"]
 
 
-def test_admin_lists_schedules(tmp_path) -> None:
+def test_admin_lists_schedules(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)  # see test_admin_page_and_summary for why chdir, not just delenv
     database_url = f"sqlite:///{tmp_path / 'admin.db'}"
     repositories = _repositories(database_url)
     repositories.schedules.create(

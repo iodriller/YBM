@@ -10,10 +10,11 @@ This proves Telegram auth, polling, local LLM classification, persistence, audit
 
 ## Prerequisites
 
-- Backend dependencies installed.
+- `.\scripts\ybm.ps1 setup` has been run once (installs dependencies, bootstraps config/.env).
 - A Telegram bot token from `BotFather`.
 - Your Telegram user ID and chat ID.
-- LocalDeploy running or startable from `C:\for fun\LocalDeploy`.
+- If you use a local LocalDeploy checkout, `YBM_LOCALDEPLOY_ROOT` is set in `.env`; otherwise
+  `llm.profiles` in `config/config.yaml` points at a reachable OpenAI-compatible endpoint.
 
 ## 1. Add The Telegram Token
 
@@ -26,7 +27,7 @@ TELEGRAM_BOT_TOKEN=your_bot_token_here
 ## 2. Start Backend And Admin UI
 
 ```powershell
-.\scripts\start_stack.ps1
+.\scripts\ybm.ps1 start
 ```
 
 Open:
@@ -39,7 +40,7 @@ The legacy FastAPI admin page remains available at `http://127.0.0.1:8765/admin`
 
 ## 3. Confirm The Local Orchestrator LLM
 
-The default profile is `localdeploy_gemma3_12b`, pointing at `http://127.0.0.1:8000/v1`. In the Orchestrator LLM panel, click `Test`.
+Check `llm.default_profile` in `config/config.yaml` for the active profile and its `base_url`. In the Orchestrator LLM panel, click `Test`.
 
 The test must pass before Telegram text can spawn tasks, because text messages are classified by the local orchestrator LLM.
 
@@ -98,5 +99,5 @@ integrations.telegram.token_present
 ## 7. Stop The Test
 
 ```powershell
-.\scripts\stop_stack.ps1
+.\scripts\ybm.ps1 stop
 ```

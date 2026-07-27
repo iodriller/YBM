@@ -11,16 +11,10 @@ Telethon for that and still uses the backend admin API for trace evidence.
 
 ## Setup
 
-Start the stack first:
+`ybm setup` already installs the `e2e` extra (Telethon). Start the stack first:
 
 ```powershell
-.\scripts\start_stack.ps1
-```
-
-Install the optional E2E dependency:
-
-```powershell
-pip install -e .\backend[e2e]
+.\scripts\ybm.ps1 start
 ```
 
 Set these environment variables (or put them in `.env` at the repo root):
@@ -53,26 +47,26 @@ After the session file exists, the runner can run unattended.
 Run all non-guarded cases from the consolidated catalogue:
 
 ```powershell
-python scripts/run_all_e2e_tests.py
+.\scripts\ybm.ps1 e2e
 ```
 
 Filter by case id:
 
 ```powershell
-python scripts/run_all_e2e_tests.py --only browser_dizibox_new_shows,desktop_inspection
+.\scripts\ybm.ps1 e2e --only browser_dizibox_new_shows,desktop_inspection
 ```
 
 Filter by size (`small`, `medium`, `long-running`):
 
 ```powershell
-python scripts/run_all_e2e_tests.py --sizes small,medium
+.\scripts\ybm.ps1 e2e --sizes small,medium
 ```
 
 Include guarded cases (codex / copilot / external quota — usually need
 credentials we don't have locally):
 
 ```powershell
-python scripts/run_all_e2e_tests.py --include-guarded
+.\scripts\ybm.ps1 e2e --include-guarded
 ```
 
 ## Case catalogue

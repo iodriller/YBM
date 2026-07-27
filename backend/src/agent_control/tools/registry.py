@@ -852,7 +852,7 @@ def _register_computer_use(deps: _RegistryDeps, definitions: _Definitions, adapt
     # returns the image) and `artifact.deliver send_screenshot` (delivers it).
     # The legacy `/screenshot` command in telegram.py is a separate code path
     # that uses Capability.DESKTOP_SCREENSHOT directly, unaffected by removing
-    # this tool advertisement. See docs/FIX_PLAN.md Priority 1 for details.
+    # this tool advertisement.
 
 
 def _register_browser(deps: _RegistryDeps, definitions: _Definitions, adapters: _Adapters) -> None:

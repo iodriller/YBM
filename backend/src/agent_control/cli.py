@@ -4,6 +4,9 @@ import argparse
 import asyncio
 import json
 
+from agent_control.bootstrap import run_doctor, run_setup
+from agent_control.config_sync import set_config_path
+from agent_control.db_tools import db_clean, db_inspect, db_reset
 from agent_control.channels.telegram import (
     TelegramAdapter,
     TelegramBotApi,
@@ -272,8 +275,14 @@ def main() -> None:
     parser.add_argument(
         "command",
         choices=[
+            "doctor",
+            "setup",
             "init-db",
             "config-summary",
+            "config-set",
+            "db-inspect",
+            "db-clean",
+            "db-reset",
             "poll-telegram",
             "run-worker",
             "run-scheduler",
@@ -284,12 +293,33 @@ def main() -> None:
     parser.add_argument("--session-root", default=None)
     parser.add_argument("--session-id", default=None)
     parser.add_argument("--poll-interval-seconds", type=float, default=5.0)
+    parser.add_argument("--telegram-token", default=None, help="used by `setup` to save TELEGRAM_BOT_TOKEN")
+    parser.add_argument("path", nargs="?", default=None, help="dotted config path, for `config-set`")
+    parser.add_argument("value", nargs="?", default=None, help="new value, for `config-set`")
+    parser.add_argument("--days", type=int, default=30, help="retention window for `db-clean`")
+    parser.add_argument("--yes", action="store_true", help="required to confirm `db-reset`")
     args = parser.parse_args()
 
-    if args.command == "init-db":
+    if args.command == "doctor":
+        raise SystemExit(run_doctor())
+    elif args.command == "setup":
+        raise SystemExit(run_setup(telegram_token=args.telegram_token))
+    elif args.command == "init-db":
         init_db()
     elif args.command == "config-summary":
         config_summary()
+    elif args.command == "config-set":
+        if not args.path or args.value is None:
+            raise SystemExit("usage: agent-control config-set <dotted.path> <value>")
+        ok, message = set_config_path(args.path, args.value)
+        print(message)
+        raise SystemExit(0 if ok else 1)
+    elif args.command == "db-inspect":
+        raise SystemExit(db_inspect())
+    elif args.command == "db-clean":
+        raise SystemExit(db_clean(args.days))
+    elif args.command == "db-reset":
+        raise SystemExit(db_reset(yes=args.yes))
     elif args.command == "poll-telegram":
         asyncio.run(poll_telegram())
     elif args.command == "run-worker":
