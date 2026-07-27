@@ -1,16 +1,26 @@
 # Local Setup
 
-## 1. Configure Environment
-
-Copy `.env.example` to `.env` and fill only the secrets you need.
-
-Required for Telegram:
+## 1. Run Setup
 
 ```powershell
-TELEGRAM_BOT_TOKEN=...
+.\scripts\ybm.ps1 setup
 ```
 
-Optional for VS Code bridge auth:
+This creates `backend\.venv` via `uv`, installs dependencies, copies `config/config.example.yaml`
+to `config/config.yaml` if missing (every capability starts disabled), and generates
+`AGENT_ADMIN_TOKEN` / `AGENT_SECRET_VAULT_KEY` into `.env`. Pass `--telegram-token <token>` to
+save `TELEGRAM_BOT_TOKEN` at the same time, or add it to `.env` yourself.
+
+If you run a local LocalDeploy checkout, add its path to `.env`:
+
+```powershell
+YBM_LOCALDEPLOY_ROOT=C:\path\to\LocalDeploy
+```
+
+Otherwise point `llm.profiles` in `config/config.yaml` at whatever OpenAI-compatible endpoint
+you use.
+
+Optional, for the VS Code bridge:
 
 ```powershell
 VSCODE_BRIDGE_TOKEN=...
@@ -18,17 +28,34 @@ VSCODE_BRIDGE_TOKEN=...
 
 ## 2. Configure The App
 
-Start from `config/config.example.yaml`.
+`config/config.yaml` was created from `config/config.example.yaml` in step 1. Safe defaults keep
+terminal execution, filesystem access, VS Code access, desktop screenshots, desktop control/computer
+use, browser automation, dependency installation, and Git pushes disabled. The workspace adapter
+itself is available by default, but it only executes when `filesystem.write` is enabled for task
+workspaces and generated files. Toggle capabilities from the admin UI's Access panel, or with
+`.\scripts\ybm.ps1 config set <dotted.path> <value>`.
 
-Safe defaults keep terminal execution, filesystem access, VS Code access, desktop screenshots, desktop control/computer use, browser automation, dependency installation, and Git pushes disabled. The workspace adapter itself is available by default, but it only executes when `filesystem.write` is enabled for task workspaces and generated files.
-
-## 3. Start The Stack
+## 3. Check The Environment
 
 ```powershell
-.\scripts\start_stack.ps1
+.\scripts\ybm.ps1 doctor
 ```
 
-This initializes the database and starts LocalDeploy, backend, Streamlit admin UI, Telegram polling, worker, scheduler, and the coding-session watcher. Generated task workspaces default to `.agent_control/workspaces/task_<id>`.
+Reports one line per check - Python version, dependencies, config validity, database, LocalDeploy
+reachability, Telegram token, admin token, secret vault key, and port availability - so a missing
+piece surfaces before you try to start the stack, not as a silent crash loop after.
+
+## 4. Start The Stack
+
+```powershell
+.\scripts\ybm.ps1 start
+```
+
+This runs `doctor` first (skip with `-SkipDoctor`), then initializes the database and starts
+LocalDeploy, backend, Streamlit admin UI, Telegram polling, worker, scheduler, and the
+coding-session watcher. Skip individual services with `-NoTelegram`, `-NoWorker`,
+`-NoScheduler`, `-NoAdminUi`, or `-NoLocalDeploy`. Generated task workspaces default to
+`.agent_control/workspaces/task_<id>`.
 
 Browser tasks use Chrome through the DevTools remote debugging port configured at `adapters.browser.remote_debugging_port` (default `9222`). If Chrome is not already available there, the adapter launches a separate Chrome profile under `.agent_control/browser/chrome-profile`. Screenshots are saved under `.agent_control/browser/screenshots`.
 
@@ -50,29 +77,13 @@ External MCP tools are configured under `mcp.servers` in `config/config.yaml`. M
 
 `code.interpreter` is local-first and writes under `.agent_control/code_interpreter`. The default backend is `local_subprocess`; enable `adapters.code_interpreter.docker.enabled` and add `docker_python` to `adapters.code_interpreter.backends` to run untrusted/generated Python in a short-lived Docker container. Docker runs with network off unless requested and allowed by policy, plus configured memory/CPU/pids limits. Use `code.interpreter` operation `health` to inspect Docker availability, configured remote backends, and recent backend failures.
 
-## 4. Stop The Stack
+## 5. Check Status, Logs, And Stop The Stack
 
 ```powershell
-.\scripts\stop_stack.ps1
+.\scripts\ybm.ps1 status
+.\scripts\ybm.ps1 logs worker -Follow
+.\scripts\ybm.ps1 stop
 ```
-
-## 5. Lower-Level Commands
-
-Use these only when debugging individual processes.
-
-Initialize local database:
-
-```powershell
-.\scripts\init_db.ps1
-```
-
-Run backend:
-
-```powershell
-.\scripts\run_backend.ps1
-```
-
-This also starts LocalDeploy from `C:\for fun\LocalDeploy` when the local LLM API is not already running.
 
 Backend health check:
 
@@ -80,37 +91,21 @@ Backend health check:
 Invoke-RestMethod http://127.0.0.1:8765/health
 ```
 
-Run Streamlit admin UI:
+## 6. Lower-Level Commands
+
+The per-service launchers under `scripts/services/` are what `ybm start` actually runs; use
+them directly only when debugging a single process in isolation (they read `YBM_LOCALDEPLOY_ROOT`
+and other `.env` values the same way `ybm start` does): `run_backend.ps1`, `run_admin_ui.ps1`,
+`run_telegram_polling.ps1`, `run_worker.ps1`, `run_coding_session_watcher.ps1`,
+`run_localdeploy.ps1`.
+
+## 7. Run Tests
 
 ```powershell
-.\scripts\run_admin_ui.ps1
+.\scripts\ybm.ps1 test
 ```
 
-Run Telegram polling:
-
-```powershell
-.\scripts\run_telegram_polling.ps1
-```
-
-Run task worker:
-
-```powershell
-.\scripts\run_worker.ps1
-```
-
-Run coding-session watcher:
-
-```powershell
-.\scripts\run_coding_session_watcher.ps1
-```
-
-## 6. Run Tests
-
-```powershell
-.\scripts\run_tests.ps1
-```
-
-## 7. Package VS Code Extension
+## 8. Package VS Code Extension
 
 ```powershell
 .\scripts\package_vscode_extension.ps1
@@ -118,7 +113,7 @@ Run coding-session watcher:
 
 The extension sends workspace state to the local backend and polls for queued terminal commands.
 
-## 8. Current Limits
+## 9. Current Limits
 
 - Desktop screenshot/control and computer use are disabled by default and should be enabled per task/access mode from the admin UI.
 - `computer.use run_goal` needs the configured local model endpoint to accept OpenAI-compatible image payloads. If LocalDeploy/Gemma vision is unavailable, observation still returns screenshot/UI metadata but action planning fails clearly.

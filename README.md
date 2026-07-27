@@ -54,14 +54,33 @@ Not implemented yet:
 
 ## Development
 
-Start the whole local stack:
+`scripts/ybm.ps1` is the single entry point for everything below - setup, health checks,
+starting/stopping the stack, tests, and database maintenance. See
+[docs/ROADMAP.md](docs/ROADMAP.md) for the rationale.
+
+First-time setup (creates `backend/.venv` via `uv`, installs dependencies, bootstraps
+`config/config.yaml` and the `.env` secrets used for the admin token and secret vault):
 
 ```powershell
-.\scripts\start_stack.ps1
+.\scripts\ybm.ps1 setup
+```
+
+Check the environment before starting anything - missing dependencies, missing config,
+unreachable LocalDeploy, and similar problems are reported as one line each instead of
+surfacing as a silent crash loop:
+
+```powershell
+.\scripts\ybm.ps1 doctor
+```
+
+Start the whole local stack (this runs `doctor` first and refuses to start if it fails):
+
+```powershell
+.\scripts\ybm.ps1 start
 ```
 
 This initializes SQLite, starts LocalDeploy if needed, starts the backend, starts Telegram polling, starts the worker, starts the scheduler, and launches the Streamlit admin UI. Open:
-It also starts the coding-session watcher, which finalizes background Codex/Claude/Copilot sessions after worker restarts and reports completion back to Telegram.
+It also starts the coding-session watcher, which finalizes background Codex/Claude/Copilot sessions after worker restarts and reports completion back to Telegram. Selectively skip services with `-NoTelegram`, `-NoWorker`, `-NoScheduler`, `-NoAdminUi`, `-NoLocalDeploy`, or skip the preflight with `-SkipDoctor`.
 
 ```text
 http://127.0.0.1:8501
@@ -69,11 +88,16 @@ http://127.0.0.1:8501
 
 The legacy FastAPI admin page remains available at `http://127.0.0.1:8765/admin`.
 
-Stop the YBM background processes started by the stack script:
+Check what's running, tail a service's logs, or stop everything:
 
 ```powershell
-.\scripts\stop_stack.ps1
+.\scripts\ybm.ps1 status
+.\scripts\ybm.ps1 logs worker -Follow
+.\scripts\ybm.ps1 stop
 ```
+
+`.\scripts\start_stack.ps1` and `.\scripts\stop_stack.ps1` still work as thin aliases for
+`ybm start` / `ybm stop`.
 
 Default local LLM and gateway behavior:
 
@@ -97,17 +121,10 @@ Default local LLM and gateway behavior:
 - Scheduled-job requests like `set up a scheduled job every day to check this site` create a `schedule.manage` record. The supervised scheduler creates normal tasks from due schedules.
 - Worker results are sent back to the source Telegram chat.
 
-Compile backend source:
+Run unit tests:
 
 ```powershell
-python -m compileall backend/src
-```
-
-Run tests:
-
-```powershell
-$env:PYTHONPATH='backend/src'
-pytest backend/tests
+.\scripts\ybm.ps1 test
 ```
 
 Browser-drive the Streamlit admin UI (port 8501) for diagnosis:
@@ -119,11 +136,19 @@ python -m playwright install chromium   # one-time browser download
 Run live Telegram E2E checks:
 
 ```powershell
-python scripts/run_all_e2e_tests.py --only desktop_inspection
-python scripts/run_all_e2e_tests.py                              # full suite
+.\scripts\ybm.ps1 e2e --only desktop_inspection
+.\scripts\ybm.ps1 e2e                              # full suite
 ```
 
 See [e2e/README.md](e2e/README.md) for the required Telethon user-session setup and log format. Live results are written under `.agent_control/e2e_results/run_<timestamp>/`.
+
+Inspect, prune, or wipe the local database:
+
+```powershell
+.\scripts\ybm.ps1 db inspect
+.\scripts\ybm.ps1 db clean --days 30
+.\scripts\ybm.ps1 db reset --yes
+```
 
 If `AGENT_ADMIN_TOKEN` is set, open:
 
@@ -133,17 +158,15 @@ http://127.0.0.1:8501
 
 The Streamlit UI reads `AGENT_ADMIN_TOKEN` from `.env` and also has a sidebar token field.
 
-Getting started docs:
+Docs:
 
-- [Admin, Telegram, and LLM setup](docs/GETTING_STARTED_ADMIN_TELEGRAM_LLM.md)
+- [Roadmap](docs/ROADMAP.md) — the improvement plan this session is executing, with rationale
+- [Architecture and message flow](docs/ARCHITECTURE.md)
+- [Local setup](docs/LOCAL_SETUP.md)
 - [Minimal end-to-end test](docs/MINIMAL_END_TO_END_TEST.md)
 - [Database inspection](docs/DATABASE_INSPECTION.md)
 
-Lower-level scripts still exist for debugging: `init_db.ps1`, `run_backend.ps1`, `run_admin_ui.ps1`, `run_telegram_polling.ps1`, and `run_worker.ps1`.
-
-Flow docs:
-
-- [Telegram to task worker flow](docs/TASK_FLOW.md)
+Per-service launchers used internally by `ybm.ps1` live under `scripts/services/` if you need to run one directly for debugging. Everything else is available through `ybm` too: `ybm clean` wipes generated caches/workspaces/adapter proposals, `ybm e2e-login` bootstraps the Telethon user session needed for live E2E checks, `ybm send "<message>"` traces one ad-hoc message through the full pipeline, `ybm benchmark` / `ybm benchmark-status` run and monitor local-LLM benchmarks, and `ybm package-extension` builds the VS Code bridge `.vsix`. Run `.\scripts\ybm.ps1 help` for the full list.
 
 ## Safety Defaults
 

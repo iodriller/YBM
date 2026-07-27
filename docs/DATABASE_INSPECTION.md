@@ -2,6 +2,15 @@
 
 The MVP uses SQLite. That is the right storage choice for the local-first version because it is durable, simple, easy to back up, and easy to inspect without running another service.
 
+## Quick Inspection
+
+```powershell
+.\scripts\ybm.ps1 db inspect
+```
+
+Prints row counts per table and the task status breakdown. `ybm db clean --days N` prunes
+tasks (and their child records) older than N days; `ybm db reset --yes` wipes everything.
+
 ## VS Code Viewer
 
 Recommended extension:

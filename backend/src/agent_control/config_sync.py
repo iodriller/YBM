@@ -28,7 +28,9 @@ class ConfigManager:
 
     def write_config(self, config: dict[str, Any]) -> None:
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
-        self.config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+        # newline="" keeps output LF-only; the default None lets Windows text
+        # mode translate to CRLF, mixing line endings across repeated edits.
+        self.config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8", newline="")
 
     def upsert_env(self, values: dict[str, str | None]) -> None:
         current_lines = self.env_path.read_text(encoding="utf-8").splitlines() if self.env_path.exists() else []
@@ -51,7 +53,6 @@ class ConfigManager:
         for key, value in replacements.items():
             if key not in seen:
                 next_lines.append(f"{key}={_env_value(value)}")
-            os.environ[key] = value
 
         self.env_path.write_text("\n".join(next_lines).rstrip() + "\n", encoding="utf-8")
 
@@ -68,7 +69,6 @@ class ConfigManager:
                 continue
             key = line.split("=", 1)[0].strip()
             if key in targets:
-                os.environ.pop(key, None)
                 continue
             next_lines.append(line)
         self.env_path.write_text("\n".join(next_lines).rstrip() + "\n", encoding="utf-8")
@@ -110,3 +110,50 @@ def env_bool(value: bool) -> str:
 
 def env_json(value: Any) -> str:
     return json.dumps(value)
+
+
+def parse_scalar(value: str) -> Any:
+    if value.lower() in ("true", "false"):
+        return value.lower() == "true"
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    return value
+
+
+def set_config_path(path: str, value: str, manager: ConfigManager | None = None) -> tuple[bool, str]:
+    """Set a dotted config path (e.g. ``capabilities.filesystem.write.enabled``).
+
+    Writes, then validates by loading ``AppSettings`` from the result; reverts
+    and reports failure rather than leaving an unloadable config.yaml behind.
+    Returns ``(ok, message)``.
+    """
+    from agent_control.config import load_settings  # local import: avoids a config<->config_sync cycle
+
+    manager = manager or ConfigManager()
+    original = manager.read_config()
+    config = json.loads(json.dumps(original)) if original else {}
+    keys = [key for key in path.split(".") if key]
+    if not keys:
+        return False, "config path must be non-empty, e.g. server.port"
+
+    node = config
+    for key in keys[:-1]:
+        if not isinstance(node.get(key), dict):
+            node[key] = {}
+        node = node[key]
+    parsed = parse_scalar(value)
+    node[keys[-1]] = parsed
+
+    manager.write_config(config)
+    try:
+        load_settings()
+    except Exception as exc:  # noqa: BLE001 - reporting, not handling
+        manager.write_config(original)
+        return False, f"{path}={value!r} produced an invalid config; reverted. {exc}"
+    return True, f"set {path} = {parsed!r} in config/config.yaml"

@@ -33,7 +33,7 @@ def test_default_invasive_capabilities_are_disabled(monkeypatch, tmp_path) -> No
 
 def test_unknown_top_level_config_key_fails() -> None:
     with pytest.raises(ValidationError):
-        AppSettings(_env_file=None, _yaml_file=None, unknown_section={})
+        AppSettings(_env_file=None, unknown_section={})
 
 
 def test_invalid_capability_name_fails() -> None:

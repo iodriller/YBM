@@ -1,7 +1,15 @@
 param(
   [Parameter(Mandatory = $true)][string]$Name,
   [Parameter(Mandatory = $true)][string]$ScriptPath,
-  [int]$RestartDelaySeconds = 5
+  [int]$RestartDelaySeconds = 5,
+  # Crash-loop breaker: if the child exits within $MinHealthySeconds more than
+  # $CrashLoopMaxRestarts times inside a $CrashLoopWindowSeconds window, stop
+  # restarting and mark the service "failed" instead of looping forever.
+  # Without this a missing package produces a silent infinite restart loop
+  # behind a green `ybm start` (see docs/ROADMAP.md P0).
+  [int]$CrashLoopWindowSeconds = 60,
+  [int]$CrashLoopMaxRestarts = 3,
+  [int]$MinHealthySeconds = 20
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,6 +22,7 @@ New-Item -ItemType Directory -Force -Path $RunDir, $LogDir | Out-Null
 $StatusFile = Join-Path $RunDir "$Name.status.json"
 $StopFile = Join-Path $RunDir "$Name.stop"
 $RestartCount = 0
+$RecentCrashTimes = New-Object System.Collections.Generic.List[datetime]
 
 function Write-ServiceStatus {
   param(
@@ -35,6 +44,14 @@ function Write-ServiceStatus {
   $payload | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $StatusFile -Encoding UTF8
 }
 
+function Get-LastLogLines {
+  param([string]$Path, [int]$Count = 20)
+  if (-not (Test-Path -LiteralPath $Path)) {
+    return @()
+  }
+  return Get-Content -LiteralPath $Path -Tail $Count -ErrorAction SilentlyContinue
+}
+
 if (Test-Path -LiteralPath $StopFile) {
   Remove-Item -LiteralPath $StopFile -Force
 }
@@ -47,6 +64,7 @@ while (-not (Test-Path -LiteralPath $StopFile)) {
   $childErr = Join-Path $LogDir "$Name.child.err.log"
   $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`""
   Write-ServiceStatus -Status "starting" -ChildPid $null -LastExitCode $null -Message "starting child process"
+  $startedAt = Get-Date
   $child = Start-Process `
     -FilePath "powershell.exe" `
     -ArgumentList $arguments `
@@ -69,7 +87,34 @@ while (-not (Test-Path -LiteralPath $StopFile)) {
     break
   }
 
-  Write-ServiceStatus -Status "exited" -ChildPid $child.Id -LastExitCode $child.ExitCode -Message "child exited; restarting"
+  $ranSeconds = ((Get-Date) - $startedAt).TotalSeconds
+  if ($ranSeconds -lt $MinHealthySeconds) {
+    $RecentCrashTimes.Add((Get-Date)) | Out-Null
+    $cutoff = (Get-Date).AddSeconds(-$CrashLoopWindowSeconds)
+    $kept = @($RecentCrashTimes | Where-Object { $_ -ge $cutoff })
+    $RecentCrashTimes = New-Object System.Collections.Generic.List[datetime]
+    foreach ($t in $kept) { $RecentCrashTimes.Add($t) | Out-Null }
+  } else {
+    $RecentCrashTimes.Clear()
+  }
+
+  if ($RecentCrashTimes.Count -gt $CrashLoopMaxRestarts) {
+    $tail = Get-LastLogLines -Path $childErr -Count 20
+    if (-not $tail) {
+      $tail = Get-LastLogLines -Path $childOut -Count 20
+    }
+    $message = "crash-loop detected: $($RecentCrashTimes.Count) restarts within ${CrashLoopWindowSeconds}s - giving up"
+    Write-ServiceStatus -Status "failed" -ChildPid $child.Id -LastExitCode $child.ExitCode -Message $message
+    Write-Host ""
+    Write-Host "[$Name] $message" -ForegroundColor Red
+    foreach ($line in $tail) {
+      Write-Host "[$Name]   $line" -ForegroundColor DarkRed
+    }
+    Write-Host "[$Name] full output: $childOut / $childErr" -ForegroundColor Red
+    exit 1
+  }
+
+  Write-ServiceStatus -Status "exited" -ChildPid $child.Id -LastExitCode $child.ExitCode -Message "child exited after $([int]$ranSeconds)s; restarting"
   Start-Sleep -Seconds $RestartDelaySeconds
 }
 
