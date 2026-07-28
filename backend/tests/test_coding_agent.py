@@ -6,15 +6,12 @@ from pathlib import Path
 import pytest
 
 from agent_control.config import AppSettings, CapabilityPolicy, CodingAgentAdapterConfig
-from agent_control.orchestration.default_plans import build_default_task_plan
-from agent_control.orchestration.worker import TaskWorker
 from agent_control.orchestration.executor import ToolExecutor
 from agent_control.policy import PolicyEngine
-from agent_control.schemas import Capability, PlanModel, PlanStep, RiskLevel, TaskRecord, TaskStatus, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.schemas import Capability, RiskLevel, TaskRecord, TaskStatus, ToolCallRequest, ToolCallResult, ToolResultStatus
 from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.tools.coding_agent import CodingAgentAdapter, latest_session, load_session, scan_coding_sessions_once, terminal_session_result
 from agent_control.tools.registry import build_tool_registry
-
 
 class FakeProcess:
     def __init__(self, returncode: int = 0, finish_event: asyncio.Event | None = None) -> None:
@@ -33,7 +30,6 @@ class FakeProcess:
         if self._finish_event is not None:
             self._finish_event.set()
 
-
 class FakeSpawner:
     def __init__(self, log_content: str = "done", returncode: int = 0, finish_event: asyncio.Event | None = None) -> None:
         self.log_content = log_content
@@ -46,7 +42,6 @@ class FakeSpawner:
         Path(log_path).write_text(self.log_content, encoding="utf-8")
         return FakeProcess(returncode=self.returncode, finish_event=self.finish_event)
 
-
 def _config(tmp_path, **overrides) -> CodingAgentAdapterConfig:
     defaults = dict(
         enabled=True,
@@ -56,7 +51,6 @@ def _config(tmp_path, **overrides) -> CodingAgentAdapterConfig:
     )
     defaults.update(overrides)
     return CodingAgentAdapterConfig(**defaults)
-
 
 def _request(operation: str, provider: str | None = "codex", **extra) -> ToolCallRequest:
     payload: dict = {"operation": operation, **extra}
@@ -69,7 +63,6 @@ def _request(operation: str, provider: str | None = "codex", **extra) -> ToolCal
         risk_level=RiskLevel.HIGH,
         input=payload,
     )
-
 
 def test_registry_exposes_coding_agent_when_terminal_run_is_enabled(tmp_path) -> None:
     codex = tmp_path / "codex.exe"
@@ -94,7 +87,6 @@ def test_registry_exposes_coding_agent_when_terminal_run_is_enabled(tmp_path) ->
     assert "get_latest_output" in definitions["coding.agent"].operations
     assert "coding.agent" in registry.adapters
 
-
 @pytest.mark.asyncio
 async def test_quick_codex_run_completes_inline(tmp_path) -> None:
     codex = tmp_path / "codex.exe"
@@ -114,7 +106,6 @@ async def test_quick_codex_run_completes_inline(tmp_path) -> None:
     session = latest_session(str(tmp_path / "sessions"), provider="codex")
     assert session is not None and session["status"] == "completed"
 
-
 @pytest.mark.asyncio
 async def test_claude_code_command_shape(tmp_path) -> None:
     claude = tmp_path / "claude.exe"
@@ -130,7 +121,6 @@ async def test_claude_code_command_shape(tmp_path) -> None:
     assert "-p" in command
     assert "--permission-mode" in command
 
-
 @pytest.mark.asyncio
 async def test_copilot_command_keeps_autonomy_flags(tmp_path) -> None:
     copilot = tmp_path / "copilot.exe"
@@ -145,7 +135,6 @@ async def test_copilot_command_keeps_autonomy_flags(tmp_path) -> None:
     assert command[:2] == [str(copilot), "-p"]
     assert "--allow-all" in command
     assert "--no-ask-user" in command
-
 
 @pytest.mark.asyncio
 async def test_long_run_goes_to_background_and_notifies_on_completion(tmp_path) -> None:
@@ -180,7 +169,6 @@ async def test_long_run_goes_to_background_and_notifies_on_completion(tmp_path) 
     stored = load_session(str(tmp_path / "sessions"), session_id)
     assert stored["status"] == "completed"
 
-
 @pytest.mark.asyncio
 async def test_nonzero_exit_reports_failed(tmp_path) -> None:
     codex = tmp_path / "codex.exe"
@@ -196,7 +184,6 @@ async def test_nonzero_exit_reports_failed(tmp_path) -> None:
     assert result.error_class.value == "adapter_failed"
     assert "exit" in (result.error_message or "").lower()
 
-
 @pytest.mark.asyncio
 async def test_usage_limit_in_log_reports_rate_limited(tmp_path) -> None:
     codex = tmp_path / "codex.exe"
@@ -211,7 +198,6 @@ async def test_usage_limit_in_log_reports_rate_limited(tmp_path) -> None:
     assert result.status == ToolResultStatus.RATE_LIMITED
     assert result.output["limit_state"]["limited"] is True
     assert result.error_class.value == "usage_limited"
-
 
 @pytest.mark.asyncio
 async def test_stop_terminates_running_session(tmp_path) -> None:
@@ -233,7 +219,6 @@ async def test_stop_terminates_running_session(tmp_path) -> None:
     stored = load_session(str(tmp_path / "sessions"), session_id)
     assert stored["status"] in {"completed", "failed", "stopped"}
 
-
 @pytest.mark.asyncio
 async def test_status_without_sessions_probes_clis(tmp_path) -> None:
     adapter = CodingAgentAdapter(_config(tmp_path), spawner=FakeSpawner())
@@ -242,99 +227,6 @@ async def test_status_without_sessions_probes_clis(tmp_path) -> None:
 
     assert result.status == ToolResultStatus.SUCCEEDED
     assert "No coding sessions found yet." in (result.output["summary"] or "")
-
-
-def test_default_plan_routes_explicit_codex_to_coding_agent(tmp_path) -> None:
-    settings = AppSettings(
-        _env_file=None,
-        adapters={"coding_agent": {"enabled": True, "workspace_root": str(tmp_path)}},
-        capabilities={
-            Capability.TERMINAL_RUN: CapabilityPolicy(
-                enabled=True,
-                requires_approval=False,
-                max_risk_level=RiskLevel.HIGH,
-            )
-        },
-    )
-
-    plan = build_default_task_plan(
-        settings,
-        TaskRecord(objective="Use Codex and start creating an app for mobile deployment of an LLM"),
-    )
-
-    assert plan is None
-
-
-def test_default_plan_combines_explicit_codex_with_web_research(tmp_path) -> None:
-    settings = AppSettings(
-        _env_file=None,
-        adapters={"browser": {"enabled": True}, "coding_agent": {"enabled": True, "workspace_root": str(tmp_path)}},
-        capabilities={
-            Capability.BROWSER_OPEN: CapabilityPolicy(enabled=True, requires_approval=False, max_risk_level=RiskLevel.LOW),
-            Capability.TERMINAL_RUN: CapabilityPolicy(enabled=True, requires_approval=False, max_risk_level=RiskLevel.HIGH),
-        },
-    )
-
-    plan = build_default_task_plan(settings, TaskRecord(objective="Use Codex and web search for ducks"))
-
-    assert plan is None
-
-
-class BackgroundCodingAdapter:
-    async def execute(self, request: ToolCallRequest) -> ToolCallResult:
-        return ToolCallResult(
-            request_id=request.id,
-            status=ToolResultStatus.SUCCEEDED,
-            output={
-                "operation": "start",
-                "provider": "codex",
-                "status": "running",
-                "session_id": "codex_bg",
-                "workspace_dir": str(Path.cwd()),
-            },
-        )
-
-
-@pytest.mark.asyncio
-async def test_worker_moves_running_coding_agent_to_awaiting_external(tmp_path) -> None:
-    database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
-    database.initialize()
-    repos = Repositories.for_database(database)
-    audit = AuditLogger(repos.audit)
-    settings = AppSettings(
-        _env_file=None,
-        capabilities={Capability.TERMINAL_RUN: CapabilityPolicy(enabled=True, requires_approval=False, max_risk_level=RiskLevel.HIGH)},
-    )
-    task = repos.tasks.create("Use Codex to fix tests")
-    plan = repos.plans.create(
-        task.id,
-        PlanModel(
-            objective=task.objective,
-            steps=[
-                PlanStep(
-                    title="Run Codex",
-                    description="Run Codex in background.",
-                    required_capabilities=[Capability.TERMINAL_RUN],
-                    risk_level=RiskLevel.HIGH,
-                    tool_name="coding.agent",
-                    tool_input={"operation": "start", "provider": "codex", "prompt": "fix tests"},
-                )
-            ],
-            success_criteria=["Codex session finishes."],
-        ),
-    )
-    repos.tasks.attach_plan(task.id, plan.id, TaskStatus.PLANNED)
-    executor = ToolExecutor(PolicyEngine(settings, audit), repos, audit, adapters={"coding.agent": BackgroundCodingAdapter()})
-    worker = TaskWorker(repos, audit, executor=executor)
-
-    current = await worker.process_task(task.id)
-    assert current.status == TaskStatus.RUNNING
-    current = await worker.process_task(task.id)
-
-    assert current.status == TaskStatus.AWAITING_EXTERNAL
-    assert current.metadata["awaiting_external"]["session_id"] == "codex_bg"
-    assert current.metadata["attempt_history"][-1]["next_action"] == "await_external"
-
 
 @pytest.mark.asyncio
 async def test_scan_coding_sessions_returns_terminal_unnotified_sessions(tmp_path) -> None:

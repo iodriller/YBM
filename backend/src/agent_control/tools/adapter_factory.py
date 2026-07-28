@@ -14,6 +14,17 @@ from typing import Any, Callable
 
 from agent_control.config import AdapterFactoryConfig
 from agent_control.schemas import Capability, ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.tools.contracts import (
+    AdapterFactoryAssessInput,
+    AdapterFactoryAssessOutput,
+    AdapterFactoryPromoteInput,
+    AdapterFactorySandboxExecuteInput,
+    AdapterFactorySandboxOutput,
+    AdapterFactoryScaffoldInput,
+    AdapterFactoryScaffoldOutput,
+    AdapterFactoryTestConnectorInput,
+)
+from agent_control.tools.spec import Adapters, Definitions, RegistryDeps, ToolDefinition, capability_enabled
 
 
 @dataclass(frozen=True)
@@ -322,8 +333,6 @@ def _find_adapter_class(module: object) -> type | None:
 
 
 def _definition_from_manifest(manifest: dict[str, Any], adapter_dir: Path) -> Any:
-    from agent_control.tools.registry import ToolDefinition
-
     name = _safe_segment(str(manifest.get("name") or adapter_dir.name))
     capability = Capability(str(manifest.get("capability") or Capability.FILESYSTEM_WRITE.value))
     operations = tuple(str(item) for item in manifest.get("operations") or [] if str(item).strip())
@@ -469,3 +478,38 @@ def _failed(request: ToolCallRequest, message: str) -> ToolCallResult:
         error_class=ErrorClass.ADAPTER_FAILED,
         error_message=message,
     )
+
+
+def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -> None:
+    settings = deps.settings
+    enabled = capability_enabled(settings, Capability.FILESYSTEM_WRITE) and settings.adapters.adapter_factory.enabled
+    definitions.append(
+        ToolDefinition(
+            name="adapter.factory",
+            capability=Capability.FILESYSTEM_WRITE,
+            enabled=enabled,
+            description=(
+                "scaffold, sandbox-test, and approval-promote generated adapter proposals under "
+                f"{settings.adapters.adapter_factory.root_dir}"
+            ),
+            operations=("assess", "scaffold", "sandbox_execute_once", "test_connector", "promote_after_approval"),
+            lifecycle="scaffold",
+            operation_schemas={
+                "assess": AdapterFactoryAssessInput,
+                "scaffold": AdapterFactoryScaffoldInput,
+                "sandbox_execute_once": AdapterFactorySandboxExecuteInput,
+                "test_connector": AdapterFactoryTestConnectorInput,
+                "promote_after_approval": AdapterFactoryPromoteInput,
+            },
+            operation_output_schemas={
+                "assess": AdapterFactoryAssessOutput,
+                "scaffold": AdapterFactoryScaffoldOutput,
+                "sandbox_execute_once": AdapterFactorySandboxOutput,
+                "test_connector": AdapterFactorySandboxOutput,
+                "promote_after_approval": AdapterFactorySandboxOutput,
+            },
+            default_operation="scaffold",
+        )
+    )
+    if settings.adapters.adapter_factory.enabled:
+        adapters["adapter.factory"] = AdapterFactoryAdapter(settings.adapters.adapter_factory)

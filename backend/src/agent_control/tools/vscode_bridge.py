@@ -18,7 +18,22 @@ from agent_control.config_sync import read_env_value
 
 logger = logging.getLogger(__name__)
 from agent_control.prompts import render_prompt
-from agent_control.schemas import ErrorClass, StrictBaseModel, ToolCallRequest, ToolCallResult, ToolResultStatus, new_id, utc_now
+from agent_control.schemas import (
+    Capability,
+    ErrorClass,
+    StrictBaseModel,
+    ToolCallRequest,
+    ToolCallResult,
+    ToolResultStatus,
+    new_id,
+    utc_now,
+)
+from agent_control.tools.contracts import (
+    VSCodeCopilotTerminalInput,
+    VSCodeTerminalCommandInput,
+    VSCodeTerminalToolOutput,
+)
+from agent_control.tools.spec import Adapters, Definitions, RegistryDeps, ToolDefinition, capability_enabled
 
 
 class VSCodeHeartbeat(StrictBaseModel):
@@ -401,3 +416,32 @@ def _error_class(content: str) -> ErrorClass:
     if "rate limit" in lowered or "too many requests" in lowered:
         return ErrorClass.RATE_LIMITED
     return ErrorClass.ADAPTER_FAILED
+
+
+def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -> None:
+    settings = deps.settings
+    enabled = capability_enabled(settings, Capability.VSCODE_WRITE_FILES) and settings.adapters.vscode.enabled
+    definitions.append(
+        ToolDefinition(
+            name="vscode.copilot_terminal",
+            capability=Capability.VSCODE_WRITE_FILES,
+            enabled=enabled,
+            description="send a prompt to VS Code/Copilot terminal or local Copilot CLI fallback",
+            input_schema=VSCodeCopilotTerminalInput,
+            output_schema=VSCodeTerminalToolOutput,
+        )
+    )
+    definitions.append(
+        ToolDefinition(
+            name="vscode.terminal_command",
+            capability=Capability.VSCODE_WRITE_FILES,
+            enabled=enabled,
+            description="queue an explicit terminal command through the VS Code bridge",
+            input_schema=VSCodeTerminalCommandInput,
+            output_schema=VSCodeTerminalToolOutput,
+        )
+    )
+    if settings.adapters.vscode.enabled:
+        vscode = VSCodeBridgeTerminalAdapter(settings.adapters.vscode, deps.backend_base_url)
+        adapters["vscode.terminal_command"] = vscode
+        adapters["vscode.copilot_terminal"] = vscode

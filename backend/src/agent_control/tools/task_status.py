@@ -3,9 +3,11 @@ from __future__ import annotations
 from typing import Any
 
 from agent_control.config import AppSettings
-from agent_control.schemas import TaskStatus, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.schemas import Capability, TaskStatus, ToolCallRequest, ToolCallResult, ToolResultStatus
 from agent_control.storage.repositories import Repositories
 from agent_control.tools.coding_agent import load_sessions
+from agent_control.tools.contracts import TaskStatusInput, TaskStatusOutput
+from agent_control.tools.spec import Adapters, Definitions, RegistryDeps, ToolDefinition, capability_enabled
 
 
 class TaskStatusAdapter:
@@ -144,3 +146,25 @@ class TaskStatusAdapter:
             "server_count": len(self.settings.mcp.servers),
             "enabled_servers": [name for name, server in self.settings.mcp.servers.items() if server.enabled],
         }
+
+
+def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -> None:
+    settings = deps.settings
+    enabled = deps.repositories is not None and capability_enabled(settings, Capability.TELEGRAM_RECEIVE)
+    definitions.append(
+        ToolDefinition(
+            name="task.status",
+            capability=Capability.TELEGRAM_RECEIVE,
+            enabled=enabled,
+            description="report current task, plan, active, completed, and blocked state for status questions",
+            operations=("status",),
+            input_schema=TaskStatusInput,
+            output_schema=TaskStatusOutput,
+            default_operation="status",
+            examples=(
+                {"operation": "status", "limit": 10},
+            ),
+        )
+    )
+    if deps.repositories is not None:
+        adapters["task.status"] = TaskStatusAdapter(deps.repositories, settings)  # type: ignore[arg-type]

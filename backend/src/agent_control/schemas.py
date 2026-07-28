@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def utc_now() -> datetime:
@@ -354,6 +354,12 @@ class MessageClassification(StrictBaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     reason: str
     intent: OrchestrationIntent | None = None
+    # Populated only when is_task=False (see prompts/base/concierge_system.md) -
+    # the Concierge composes the chat reply in the same call it classifies, so
+    # a non-task message doesn't need a second LLM round trip. None/empty falls
+    # back to TelegramIntakeService's separate `responder` if one is configured
+    # (see channels/responder.py) - kept for classifiers that don't populate this.
+    reply: str | None = None
 
     @field_validator("task_type", mode="before")
     @classmethod
@@ -593,6 +599,40 @@ class PlanModel(StrictBaseModel):
         if not value:
             raise ValueError("plan must contain at least one step")
         return value
+
+
+class OperatorAction(StrEnum):
+    """What the Operator loop's decide() call chose to do next.
+
+    See docs/ROADMAP.md P3 / orchestration/operator.py - the additive
+    observe/decide/act alternative to plan-once-then-replan.
+    """
+    CALL_TOOL = "call_tool"
+    DONE = "done"
+    ASK_USER = "ask_user"
+    BLOCKED = "blocked"
+
+
+class OperatorDecision(StrictBaseModel):
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True, validate_assignment=True, use_enum_values=False)
+    action: OperatorAction
+    reasoning: str = ""
+    tool_name: str | None = None
+    tool_input: dict[str, Any] = Field(default_factory=dict)
+    # ToolDefinition carries no static risk level - like PlanStep, the model
+    # declares it per call (low for reads, high for writes/browser control,
+    # critical for desktop UI control) and PolicyEngine.evaluate() gates on
+    # it against the capability's max_risk_level.
+    risk_level: RiskLevel = RiskLevel.LOW
+    final_answer: str | None = None
+    question: str | None = None
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def call_tool_requires_tool_name(self) -> "OperatorDecision":
+        if self.action == OperatorAction.CALL_TOOL and not self.tool_name:
+            raise ValueError("action=call_tool requires tool_name")
+        return self
 
 
 class TaskRecord(StrictBaseModel):

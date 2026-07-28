@@ -29,11 +29,10 @@ def main() -> None:
     state = _connection_state()
     st.title("Agent Control")
     st.caption("Local operator console for Telegram intake, task orchestration, tools, config, and audit.")
-    header_actions = st.columns([1, 1, 1, 5])
+    header_actions = st.columns([1, 1, 6])
     if header_actions[0].button("Refresh", use_container_width=True):
         st.rerun()
-    header_actions[1].link_button("Legacy admin", _legacy_admin_url(state["backend_url"], state["token"]), use_container_width=True)
-    live_updates = header_actions[2].toggle("Live", value=True, key="live-updates")
+    live_updates = header_actions[1].toggle("Live", value=True, key="live-updates")
     _show_flash()
 
     if live_updates and hasattr(st, "fragment"):
@@ -167,7 +166,6 @@ def _render_operations(summary: dict[str, Any], state: dict[str, str]) -> None:
     with right:
         st.subheader("Connections")
         st.link_button("Backend health", f"{state['backend_url']}/health", use_container_width=True)
-        st.link_button("Legacy FastAPI admin", _legacy_admin_url(state["backend_url"], state["token"]), use_container_width=True)
         st.markdown(f"**VS Code bridge:** {_vscode_status_label(vscode)}")
         if vscode.get("last_seen_at"):
             st.caption(f"Last seen: {vscode.get('last_seen_at')} ({vscode.get('last_seen_age_seconds')}s ago)")
@@ -1229,13 +1227,6 @@ def _task_option_label(task: dict[str, Any] | None) -> str:
     objective = str(task.get("objective") or "Untitled task")
     trimmed = objective if len(objective) <= 90 else f"{objective[:87]}..."
     return f"{_activity_label(str(task.get('status') or ''))} | {trimmed}"
-
-
-def _legacy_admin_url(backend_url: str, token: str | None = None) -> str:
-    base = f"{backend_url.rstrip('/')}/admin"
-    if token:
-        return f"{base}?{parse.urlencode({'token': token})}"
-    return base
 
 
 def _task_links(task: dict[str, Any]) -> list[tuple[str, str]]:

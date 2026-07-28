@@ -5,8 +5,27 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import unquote, urlparse
 
-from agent_control.schemas import Artifact, ArtifactType, ErrorClass, TaskRecord, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.config import AppSettings
+from agent_control.schemas import (
+    Artifact,
+    ArtifactType,
+    Capability,
+    ErrorClass,
+    TaskRecord,
+    ToolCallRequest,
+    ToolCallResult,
+    ToolResultStatus,
+)
 from agent_control.storage.repositories import ArtifactRepository, TaskRepository
+from agent_control.tools.contracts import ArtifactDeliverInput, ArtifactDeliveryOutput
+from agent_control.tools.spec import (
+    Adapters,
+    Definitions,
+    RegistryDeps,
+    ToolDefinition,
+    capability_enabled,
+    same_output_schema,
+)
 
 
 class TelegramFileClient(Protocol):
@@ -410,3 +429,52 @@ def _failed(request: ToolCallRequest, message: str) -> ToolCallResult:
         error_class=ErrorClass.ADAPTER_FAILED,
         error_message=message,
     )
+
+
+def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -> None:
+    settings = deps.settings
+    enabled = capability_enabled(settings, Capability.TELEGRAM_SEND)
+    definitions.append(
+        ToolDefinition(
+            name="artifact.deliver",
+            capability=Capability.TELEGRAM_SEND,
+            enabled=enabled,
+            description="list task artifacts and deliver screenshots or files to the source Telegram chat",
+            operations=("send_file", "send_latest", "send_screenshot", "list_artifacts"),
+            input_schema=ArtifactDeliverInput,
+            output_schema=ArtifactDeliveryOutput,
+            operation_output_schemas=same_output_schema(
+                ("send_file", "send_latest", "send_screenshot", "list_artifacts"),
+                ArtifactDeliveryOutput,
+            ),
+            default_operation="send_latest",
+            examples=(
+                # Deliver a file by basename — finds files produced by a prior
+                # code.interpreter step automatically (registered as artifacts).
+                {"operation": "send_file", "path": "sales_data.xlsx"},
+                {"operation": "send_screenshot"},
+                {"operation": "send_latest"},
+            ),
+        )
+    )
+    if deps.artifact_repository is not None and deps.task_repository is not None:
+        adapters["artifact.deliver"] = ArtifactDeliveryAdapter(
+            deps.artifact_repository,  # type: ignore[arg-type]
+            deps.task_repository,  # type: ignore[arg-type]
+            telegram_client=deps.telegram_client,  # type: ignore[arg-type]
+            allowed_roots=_artifact_delivery_roots(settings),
+            recent_fallback_enabled=settings.adapters.artifact_delivery.recent_artifact_fallback_enabled,
+        )
+
+
+def _artifact_delivery_roots(settings: AppSettings) -> list[str]:
+    return [
+        settings.storage.artifact_dir,
+        settings.adapters.workspace.root_dir,
+        settings.adapters.browser.screenshot_dir,
+        settings.adapters.computer_use.screenshot_dir,
+        # Files produced by code.interpreter live here — without this entry,
+        # "generate a file and send it" requests can't deliver the result.
+        settings.adapters.code_interpreter.workspace_root,
+        *settings.adapters.computer_use.allowed_roots,
+    ]

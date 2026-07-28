@@ -6,13 +6,11 @@ import pytest
 
 from agent_control.config import AppSettings, CapabilityPolicy
 from agent_control.orchestration import ToolExecutor
-from agent_control.orchestration.default_plans import build_default_task_plan
 from agent_control.policy import PolicyEngine
 from agent_control.schemas import Artifact, ArtifactType, Capability, RiskLevel, TaskRecord, ToolCallRequest, ToolResultStatus
 from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.tools.artifact_delivery import ArtifactDeliveryAdapter
 from agent_control.tools.registry import build_tool_registry
-
 
 class FakeTelegramClient:
     def __init__(self) -> None:
@@ -27,13 +25,11 @@ class FakeTelegramClient:
         self.documents.append((chat_id, path, caption))
         return {"ok": True, "method": "sendDocument"}
 
-
 def _repos(tmp_path) -> tuple[Repositories, AuditLogger]:
     database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
     database.initialize()
     repos = Repositories.for_database(database)
     return repos, AuditLogger(repos.audit)
-
 
 def test_registry_exposes_artifact_delivery_when_telegram_send_is_enabled(tmp_path) -> None:
     repos, _audit = _repos(tmp_path)
@@ -61,64 +57,6 @@ def test_registry_exposes_artifact_delivery_when_telegram_send_is_enabled(tmp_pa
     assert definitions["artifact.deliver"].operations == ("send_file", "send_latest", "send_screenshot", "list_artifacts")
     assert "artifact.deliver" in registry.adapters
 
-
-def test_default_artifact_delivery_plan_sends_latest_document() -> None:
-    settings = AppSettings(
-        _env_file=None,
-        capabilities={
-            Capability.TELEGRAM_SEND: CapabilityPolicy(
-                enabled=True,
-                requires_approval=False,
-                max_risk_level=RiskLevel.LOW,
-            )
-        },
-    )
-
-    plan = build_default_task_plan(settings, TaskRecord(objective="Send me the PDF file you found"))
-
-    assert plan is None
-def test_default_artifact_delivery_plan_sends_explicit_file_path(tmp_path) -> None:
-    document_dir = tmp_path / "docs folder"
-    document_dir.mkdir()
-    document = document_dir / "report.pdf"
-    document.write_bytes(b"%PDF-1.4")
-    settings = AppSettings(
-        _env_file=None,
-        capabilities={
-            Capability.TELEGRAM_SEND: CapabilityPolicy(
-                enabled=True,
-                requires_approval=False,
-                max_risk_level=RiskLevel.LOW,
-            )
-        },
-    )
-
-    plan = build_default_task_plan(settings, TaskRecord(objective=f"Send me the PDF file at {document}."))
-
-    assert plan is None
-def test_default_artifact_delivery_plan_handles_latest_output_request() -> None:
-    settings = AppSettings(
-        _env_file=None,
-        capabilities={
-            Capability.TELEGRAM_SEND: CapabilityPolicy(
-                enabled=True,
-                requires_approval=False,
-                max_risk_level=RiskLevel.LOW,
-            ),
-            Capability.FILESYSTEM_WRITE: CapabilityPolicy(
-                enabled=True,
-                requires_approval=False,
-                max_risk_level=RiskLevel.HIGH,
-            ),
-        },
-    )
-
-    plan = build_default_task_plan(
-        settings,
-        TaskRecord(objective="Send me the latest output from the current task, including any screenshot or PowerPoint artifact you have."),
-    )
-
-    assert plan is None
 @pytest.mark.asyncio
 async def test_artifact_delivery_sends_screenshot_from_task_metadata(tmp_path) -> None:
     repos, audit = _repos(tmp_path)
@@ -154,7 +92,6 @@ async def test_artifact_delivery_sends_screenshot_from_task_metadata(tmp_path) -
     assert artifacts[0].type == ArtifactType.SCREENSHOT
     assert artifacts[0].uri == str(screenshot.resolve())
 
-
 @pytest.mark.asyncio
 async def test_artifact_delivery_does_not_send_recent_artifact_by_default(tmp_path) -> None:
     repos, _audit = _repos(tmp_path)
@@ -184,7 +121,6 @@ async def test_artifact_delivery_does_not_send_recent_artifact_by_default(tmp_pa
     assert result.status == ToolResultStatus.FAILED
     assert "no deliverable artifact" in (result.error_message or "")
     assert client.documents == []
-
 
 @pytest.mark.asyncio
 async def test_artifact_delivery_sends_recent_artifact_when_cache_fallback_enabled(tmp_path) -> None:
@@ -217,7 +153,6 @@ async def test_artifact_delivery_sends_recent_artifact_when_cache_fallback_enabl
     assert result.output["delivered"] is True
     assert client.documents == [("100", str(document.resolve()), "latest")]
 
-
 @pytest.mark.asyncio
 async def test_artifact_delivery_materializes_latest_tool_text_when_no_file_exists(tmp_path) -> None:
     repos, _audit = _repos(tmp_path)
@@ -249,7 +184,6 @@ async def test_artifact_delivery_materializes_latest_tool_text_when_no_file_exis
     assert result.status == ToolResultStatus.SUCCEEDED
     assert Path(result.output["path"]).read_text(encoding="utf-8") == "Browser page summary"
     assert client.documents == [("100", result.output["path"], "latest")]
-
 
 @pytest.mark.asyncio
 async def test_artifact_delivery_sends_latest_document_artifact(tmp_path) -> None:
@@ -288,7 +222,6 @@ async def test_artifact_delivery_sends_latest_document_artifact(tmp_path) -> Non
     assert result.output["delivery_method"] == "telegram.sendDocument"
     assert client.documents == [("100", str(document.resolve()), "report.pdf")]
 
-
 @pytest.mark.asyncio
 async def test_artifact_delivery_direct_path_rejects_root_escape(tmp_path) -> None:
     repos, _audit = _repos(tmp_path)
@@ -314,7 +247,6 @@ async def test_artifact_delivery_direct_path_rejects_root_escape(tmp_path) -> No
 
     assert result.status == ToolResultStatus.FAILED
     assert "outside configured delivery roots" in (result.error_message or "")
-
 
 @pytest.mark.asyncio
 async def test_artifact_delivery_resolves_desktop_alias_under_allowed_home(monkeypatch, tmp_path) -> None:
@@ -346,7 +278,6 @@ async def test_artifact_delivery_resolves_desktop_alias_under_allowed_home(monke
 
     assert result.status == ToolResultStatus.SUCCEEDED
     assert client.documents == [("100", str(document.resolve()), "report.txt")]
-
 
 @pytest.mark.asyncio
 async def test_executor_records_artifact_delivery_output(tmp_path) -> None:

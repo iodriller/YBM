@@ -7,14 +7,12 @@ from typing import Any
 import pytest
 
 from agent_control.config import AppSettings, CapabilityPolicy, ComputerUseAdapterConfig
-from agent_control.orchestration.default_plans import build_default_task_plan
 from agent_control.policy import PolicyEngine
 from agent_control.schemas import Capability, RiskLevel, TaskRecord, ToolCallRequest
 from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.tools.computer_use import ComputerUseAdapter
 from agent_control.tools.computer_use import _clean_summary_text
 from agent_control.tools.registry import build_tool_registry
-
 
 class FakeComputerBackend:
     def __init__(self) -> None:
@@ -40,7 +38,6 @@ class FakeComputerBackend:
         self.actions.append(action)
         return {"ok": True, "summary": f"executed {action.get('type')}"}
 
-
 class QueueVisionProvider:
     def __init__(self, responses: list[dict[str, Any] | str]) -> None:
         self.responses = list(responses)
@@ -50,7 +47,6 @@ class QueueVisionProvider:
         self.calls.append((system_prompt, user_prompt, image_paths))
         response = self.responses.pop(0)
         return response if isinstance(response, str) else json.dumps(response)
-
 
 @pytest.mark.asyncio
 async def test_computer_use_observe_uses_fake_backend_and_vision_summary(tmp_path) -> None:
@@ -78,7 +74,6 @@ async def test_computer_use_observe_uses_fake_backend_and_vision_summary(tmp_pat
     assert Path(result.output["screenshot_path"]).exists()
     assert backend.observations == 1
     assert provider.calls[0][2] == [result.output["screenshot_path"]]
-
 
 @pytest.mark.asyncio
 async def test_computer_use_run_goal_executes_bounded_actions(tmp_path) -> None:
@@ -110,7 +105,6 @@ async def test_computer_use_run_goal_executes_bounded_actions(tmp_path) -> None:
     assert result.output["final_summary"] == "Goal is visible."
     assert [action["type"] for action in result.output["actions_taken"]] == ["wait"]
     assert len(result.output["screenshots"]) == 2
-
 
 @pytest.mark.asyncio
 async def test_computer_use_run_goal_stops_before_next_action_when_cancelled(tmp_path) -> None:
@@ -149,7 +143,6 @@ async def test_computer_use_run_goal_stops_before_next_action_when_cancelled(tmp
     assert result.output["final_summary"] == "Stopped before the next computer-use action."
     assert backend.actions == []
 
-
 def test_registry_exposes_computer_use_and_filesystem_manage_when_enabled(tmp_path) -> None:
     settings = AppSettings(
         _env_file=None,
@@ -184,7 +177,6 @@ def test_registry_exposes_computer_use_and_filesystem_manage_when_enabled(tmp_pa
     assert definitions["filesystem.manage"].enabled is True
     assert "computer.use" in registry.adapters
     assert "filesystem.manage" in registry.adapters
-
 
 def test_policy_blocks_disabled_desktop_control_and_requires_approval(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
@@ -221,66 +213,6 @@ def test_policy_blocks_disabled_desktop_control_and_requires_approval(monkeypatc
     assert needs_approval.needs_approval is True
     assert approved.allowed is True
 
-
-def test_default_plans_route_desktop_and_folder_requests(tmp_path) -> None:
-    settings = AppSettings(
-        _env_file=None,
-        adapters={
-            "computer_use": {"enabled": True, "allowed_roots": [str(tmp_path)]},
-            "desktop": {"control_enabled": True},
-        },
-        capabilities={
-            Capability.DESKTOP_CONTROL: CapabilityPolicy(
-                enabled=True,
-                requires_approval=True,
-                max_risk_level=RiskLevel.CRITICAL,
-            ),
-            Capability.FILESYSTEM_WRITE: CapabilityPolicy(
-                enabled=True,
-                requires_approval=True,
-                max_risk_level=RiskLevel.HIGH,
-            ),
-        },
-    )
-
-    # LLM planner is now primary; factory returns None for all non-status tasks
-    # without a pre-classified orchestration_intent.
-    screenshot_plan = build_default_task_plan(settings, TaskRecord(objective="Take a screenshot and tell me what you see"))
-    send_screenshot_plan = build_default_task_plan(settings, TaskRecord(objective="Take a screenshot of my desktop and send it to me"))
-    desktop_inspect_plan = build_default_task_plan(settings, TaskRecord(objective="What is on my desktop right now? Inspect the desktop and tell me what you see."))
-    wait_plan = build_default_task_plan(settings, TaskRecord(objective="Use computer to wait 1 second"))
-    organize_plan = build_default_task_plan(settings, TaskRecord(objective=f'Organize folder "{tmp_path}" by type'))
-
-    assert screenshot_plan is None
-    assert send_screenshot_plan is None
-    assert desktop_inspect_plan is None
-    assert wait_plan is None
-    assert organize_plan is None
-
-
-def test_default_computer_use_plan_honors_full_access_policy_over_adapter_session_flag(tmp_path) -> None:
-    settings = AppSettings(
-        _env_file=None,
-        adapters={
-            "computer_use": {
-                "enabled": True,
-                "allowed_roots": [str(tmp_path)],
-                "require_session_approval": True,
-            },
-            "desktop": {"control_enabled": True},
-        },
-        capabilities={
-            Capability.DESKTOP_CONTROL: CapabilityPolicy(
-                enabled=True,
-                requires_approval=False,
-                max_risk_level=RiskLevel.CRITICAL,
-            ),
-        },
-    )
-
-    plan = build_default_task_plan(settings, TaskRecord(objective="Take a screenshot of my desktop"))
-
-    assert plan is None
 def test_computer_use_summary_cleanup_handles_fenced_json() -> None:
     assert (
         _clean_summary_text('```json\n{"status":"complete","description":"Desktop is visible."}\n```')

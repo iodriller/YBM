@@ -46,9 +46,22 @@ class _LiveProvider(Protocol):
 # regardless of which random id they happened to embed.
 _HEX_RUN = re.compile(r"[0-9a-f]{6,}", re.IGNORECASE)
 
+# Python's tempfile.TemporaryDirectory()/mkdtemp() default naming scheme -
+# "tmp" + 8 chars from [a-z0-9], not restricted to hex digits, so _HEX_RUN
+# alone doesn't catch it. pytest's own tmp_path fixture uses this scheme too,
+# and isolated_settings() chdir's the process into it. When a plan step's
+# relative path resolves against that CWD and gets rejected by policy, the
+# resulting error text embeds the random dir name - and that text feeds the
+# next retry prompt on a replan, producing a fresh, unmatchable fixture key
+# every run (real failure hit recording output_delivery.json: the planner's
+# first attempt guessed a relative path, the policy-denial error embedded
+# the run's random tmp dir, and replay could never match the replan prompt
+# recorded under a different random name). Collapse it the same way.
+_TEMPDIR_RUN = re.compile(r"\btmp[a-z0-9]{6,}\b", re.IGNORECASE)
+
 
 def _normalize(text: str) -> str:
-    return _HEX_RUN.sub("<id>", text)
+    return _HEX_RUN.sub("<id>", _TEMPDIR_RUN.sub("<tmpdir>", text))
 
 
 def fixture_key(method: str, system_prompt: str, user_prompt: str) -> str:

@@ -94,7 +94,13 @@ class ApprovalPolicyConfig(StrictBaseModel):
 
 
 class StorageConfig(StrictBaseModel):
-    database_url: str = "sqlite:///./agent_control.db"
+    # Runtime state otherwise lives entirely under .agent_control/ (artifacts,
+    # the secret vault, workspaces, code_interpreter output) - the database
+    # used to be the one exception, sitting in the repo root. storage/database.py's
+    # Database.__init__ auto-migrates an existing repo-root file into this
+    # location the first time it's constructed with this exact default
+    # (docs/ROADMAP.md P6); it never touches a path a caller customized.
+    database_url: str = "sqlite:///.agent_control/agent_control.db"
     artifact_dir: str = ".agent_control/artifacts"
 
 
@@ -107,6 +113,11 @@ class SchedulerConfig(StrictBaseModel):
     enabled: bool = True
     poll_interval_seconds: int = Field(default=30, ge=1, le=3600)
     default_timezone: str = "America/Chicago"
+    # A schedule whose spawned task fails this many times in a row is
+    # auto-paused rather than left to keep failing silently and unnoticed
+    # (docs/ROADMAP.md P6 - the motivating case was 7 real schedules whose
+    # target had gone away, still firing and failing every day for weeks).
+    max_consecutive_failures: int = Field(default=5, ge=1, le=100)
 
 
 class LoggingConfig(StrictBaseModel):
@@ -125,6 +136,13 @@ class LimitsConfig(StrictBaseModel):
     # task is forcibly transitioned to FAILED so the queue keeps moving.
     # Individual tasks can override via metadata["task_budget_seconds"].
     task_budget_seconds: int = Field(default=600, ge=30)
+
+
+class OperatorConfig(StrictBaseModel):
+    # The observe/decide/act agent loop (docs/ROADMAP.md P3 §2.2) - the sole
+    # execution path as of 2026-07-28 (the old plan-once-then-replan path and
+    # its keyword-driven recovery were deleted, not just defaulted off).
+    max_steps: int = Field(default=8, ge=1, le=50)
 
 
 class VSCodeAdapterConfig(StrictBaseModel):
@@ -291,6 +309,13 @@ class CodeInterpreterAdapterConfig(StrictBaseModel):
             "ctypes",
             "ftplib",
             "httpx",
+            # importlib.import_module("os")/("subprocess") dynamically
+            # imports a module without a static Import/ImportFrom AST node -
+            # the other entries in this list wouldn't catch it on their own.
+            "importlib",
+            # multiprocessing can spawn new OS processes, the same risk
+            # class as subprocess, just a different stdlib door to it.
+            "multiprocessing",
             "os",
             "pip",
             "requests",
@@ -299,6 +324,8 @@ class CodeInterpreterAdapterConfig(StrictBaseModel):
             "subprocess",
             "sys",
             "urllib",
+            # Windows registry read/write - high-impact, Windows-specific.
+            "winreg",
         ]
     )
     default_backend: str = "local_subprocess"
@@ -427,6 +454,7 @@ class AppSettings(BaseSettings):
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     adapters: AdaptersConfig = Field(default_factory=AdaptersConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
+    operator: OperatorConfig = Field(default_factory=OperatorConfig)
 
     @classmethod
     def settings_customise_sources(
@@ -497,6 +525,7 @@ class AppSettings(BaseSettings):
             "limits": self.limits.model_dump(),
             "adapters": self.adapters.model_dump(),
             "mcp": self.mcp.model_dump(mode="json"),
+            "operator": self.operator.model_dump(),
         }
 
 

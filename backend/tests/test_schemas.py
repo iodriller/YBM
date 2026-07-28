@@ -13,6 +13,8 @@ from agent_control.schemas import (
     ChannelType,
     InboundMessage,
     MessageKind,
+    OperatorAction,
+    OperatorDecision,
     OrchestrationIntent,
     PlanModel,
     PlanPostcondition,
@@ -114,3 +116,31 @@ def test_pending_approval_decision_is_invalid() -> None:
             status=ApprovalStatus.PENDING,
             actor="user",
         )
+
+
+def test_operator_decision_call_tool_requires_tool_name() -> None:
+    with pytest.raises(ValidationError):
+        OperatorDecision(action=OperatorAction.CALL_TOOL)
+
+
+def test_operator_decision_call_tool_accepts_tool_name() -> None:
+    decision = OperatorDecision(
+        action=OperatorAction.CALL_TOOL,
+        tool_name="filesystem.manage",
+        tool_input={"operation": "search", "query": "resume"},
+    )
+
+    assert decision.tool_name == "filesystem.manage"
+    assert decision.tool_input["query"] == "resume"
+
+
+def test_operator_decision_done_does_not_require_tool_name() -> None:
+    decision = OperatorDecision(action=OperatorAction.DONE, final_answer="The answer is 42.")
+
+    assert decision.tool_name is None
+    assert decision.final_answer == "The answer is 42."
+
+
+def test_operator_decision_rejects_unknown_action() -> None:
+    with pytest.raises(ValidationError):
+        OperatorDecision(action="not_a_real_action")

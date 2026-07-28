@@ -14,7 +14,6 @@ from pydantic import BaseModel, ValidationError
 from agent_control.config import AppSettings, LLMProfileConfig
 from agent_control.config_sync import read_env_value
 from agent_control.prompts import render_prompt
-from agent_control.schemas import PlanModel
 
 
 logger = logging.getLogger(__name__)
@@ -225,27 +224,6 @@ def build_major_llm_provider(settings: AppSettings) -> LLMProvider | None:
     """Build the LLM provider for complex/major tasks, if a major_profile is configured."""
     provider = _build_profile_provider(settings, settings.llm.major_profile, "major")
     return _with_fallback(settings, provider, settings.llm.major_profile)
-
-
-class StaticPlanProvider:
-    def __init__(self, plan: PlanModel) -> None:
-        self.plan = plan
-        self.prompts: list[tuple[str, str]] = []
-
-    async def generate_text(self, system_prompt: str, user_prompt: str) -> str:
-        self.prompts.append((system_prompt, user_prompt))
-        return self.plan.model_dump_json()
-
-    async def generate_multimodal_text(self, system_prompt: str, user_prompt: str, image_paths: list[str]) -> str:
-        self.prompts.append((system_prompt, user_prompt))
-        return self.plan.model_dump_json()
-
-    async def generate_structured(
-        self, system_prompt: str, user_prompt: str, output_model: type[T],
-        *, temperature: float | None = None,
-    ) -> T:
-        self.prompts.append((system_prompt, user_prompt))
-        return output_model.model_validate(self.plan.model_dump(mode="json"))
 
 
 def _data_url(path: str) -> str:

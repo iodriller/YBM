@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
 
 from agent_control import admin_streamlit
+
+
+def test_streamlit_admin_has_no_legacy_admin_link() -> None:
+    # admin.py's ~1,300-line embedded HTML admin was deleted (docs/ROADMAP.md
+    # P4) - Streamlit is the one real admin UI now, so a button pointing back
+    # to it would be circular. st.link_button isn't inspectable through
+    # AppTest's structured widget API, so check the source directly.
+    source = inspect.getsource(admin_streamlit)
+    assert "Legacy admin" not in source
+    assert "Legacy FastAPI admin" not in source
+    assert not hasattr(admin_streamlit, "_legacy_admin_url")
 
 
 def test_streamlit_admin_helpers_parse_ids_and_status_labels() -> None:
@@ -14,7 +26,6 @@ def test_streamlit_admin_helpers_parse_ids_and_status_labels() -> None:
     assert admin_streamlit._summary_path(15) == "/admin/api/summary?task_limit=15"
     assert admin_streamlit._tasks_path(20, 5) == "/admin/api/tasks?limit=20&offset=5"
     assert admin_streamlit._audit_path(25, "tool", "copilot") == "/admin/api/audit?limit=25&category=tool&q=copilot"
-    assert admin_streamlit._legacy_admin_url("http://127.0.0.1:8765", "secret token") == "http://127.0.0.1:8765/admin?token=secret+token"
     assert admin_streamlit._access_mode_class("full_access") == "mode-full"
     assert admin_streamlit._access_mode_class("write_access") == "mode-write"
     assert admin_streamlit._access_mode_class("read_only") == "mode-read"

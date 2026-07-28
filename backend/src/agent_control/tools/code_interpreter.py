@@ -21,7 +21,26 @@ from pydantic import BaseModel, Field
 from agent_control.config import CodeInterpreterAdapterConfig
 from agent_control.llm.providers import LLMProvider
 from agent_control.prompts import prompt_text, render_prompt
-from agent_control.schemas import Artifact, ArtifactType, ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.schemas import (
+    Artifact,
+    ArtifactType,
+    Capability,
+    ErrorClass,
+    ToolCallRequest,
+    ToolCallResult,
+    ToolResultStatus,
+)
+from agent_control.tools.contracts import (
+    CodeInterpreterBuildTempHelperInput,
+    CodeInterpreterGenerateAndRunInput,
+    CodeInterpreterHealthInput,
+    CodeInterpreterInspectStateInput,
+    CodeInterpreterOutput,
+    CodeInterpreterRepairScriptInput,
+    CodeInterpreterRunPythonInput,
+    CodeInterpreterSolveOnceInput,
+)
+from agent_control.tools.spec import Adapters, Definitions, RegistryDeps, ToolDefinition, capability_enabled
 
 
 logger = logging.getLogger(__name__)
@@ -551,8 +570,23 @@ class CodeInterpreterAdapter:
         workspace = self._workspace(request)
         workspace.mkdir(parents=True, exist_ok=True)
         execution_profile = _execution_profile(request, generated=generated)
-        if self._approval_required_for_run_python(request, generated=generated, execution_profile=execution_profile):
-            raise ApprovalRequired("untrusted run_python requires approval before execution")
+        # Backend selection has no side effects (it doesn't touch the
+        # filesystem or execute anything) - resolving it before the approval
+        # check lets that check see whether this run silently fell back to
+        # an unsandboxed backend, not just whether the code is "generated".
+        backend, backend_fallback_warning = self._select_backend(request, generated=generated, execution_profile=execution_profile)
+        if self._approval_required_for_run_python(
+            request,
+            generated=generated,
+            execution_profile=execution_profile,
+            backend_fallback_warning=backend_fallback_warning,
+        ):
+            reason = (
+                f"generated code would run unsandboxed: {backend_fallback_warning}"
+                if generated and backend_fallback_warning
+                else "untrusted run_python requires approval before execution"
+            )
+            raise ApprovalRequired(reason)
         before_snapshot = _file_snapshot(workspace, max_files=self.config.max_files_listed)
         before = sorted(before_snapshot)
         script_path = _safe_child_path(workspace, str(request.input.get("script_name") or "script.py"))
@@ -560,7 +594,6 @@ class CodeInterpreterAdapter:
             script_path = script_path.with_suffix(".py")
         script_path.write_text(code, encoding="utf-8")
         timeout = int(request.input.get("timeout_seconds") or self.config.timeout_seconds)
-        backend, backend_fallback_warning = self._select_backend(request, generated=generated, execution_profile=execution_profile)
         allow_network = self._network_enabled(request)
         plan = CodeExecutionPlan(
             request_id=request.id,
@@ -686,12 +719,26 @@ class CodeInterpreterAdapter:
         *,
         generated: bool,
         execution_profile: str,
+        backend_fallback_warning: str | None,
     ) -> bool:
-        if generated or not self.config.require_approval_for_untrusted_run_python:
+        if not self.config.require_approval_for_untrusted_run_python:
             return False
+        if bool(request.input.get("approved") or False):
+            return False
+        if generated:
+            # generate_and_run is meant to be a self-contained, automatic
+            # operation, so generated code is normally exempt from approval -
+            # but not when it silently fell back from the configured
+            # sandboxed backend to unsandboxed local_subprocess (Docker
+            # unavailable): that's full process-privilege execution of
+            # LLM-authored code with no human review at all (docs/ROADMAP.md
+            # P5). An admin who explicitly configured local_subprocess as
+            # untrusted_default_backend (no fallback occurred, this is None)
+            # has already made that call and isn't re-prompted per call.
+            return backend_fallback_warning is not None
         if not _is_untrusted_profile(execution_profile):
             return False
-        return not bool(request.input.get("approved") or False)
+        return True
 
     def _register_created_artifacts(self, task_id: str, workspace: Path, created: list[str]) -> list[str]:
         """Register each newly-created file as a task artifact.
@@ -1168,3 +1215,59 @@ def _failed(request: ToolCallRequest, message: str) -> ToolCallResult:
         error_class=ErrorClass.ADAPTER_FAILED,
         error_message=message,
     )
+
+
+def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -> None:
+    settings = deps.settings
+    enabled = capability_enabled(settings, Capability.TERMINAL_RUN) and settings.adapters.code_interpreter.enabled
+    definitions.append(
+        ToolDefinition(
+            name="code.interpreter",
+            capability=Capability.TERMINAL_RUN,
+            enabled=enabled,
+            description=(
+                "generate and run bounded Python scripts through configured local/container backends under "
+                f"{settings.adapters.code_interpreter.workspace_root}"
+            ),
+            operations=(
+                "run_python",
+                "generate_and_run",
+                "solve_once",
+                "inspect_state",
+                "build_temp_helper",
+                "repair_script",
+                "health",
+            ),
+            operation_schemas={
+                "run_python": CodeInterpreterRunPythonInput,
+                "generate_and_run": CodeInterpreterGenerateAndRunInput,
+                "solve_once": CodeInterpreterSolveOnceInput,
+                "inspect_state": CodeInterpreterInspectStateInput,
+                "build_temp_helper": CodeInterpreterBuildTempHelperInput,
+                "repair_script": CodeInterpreterRepairScriptInput,
+                "health": CodeInterpreterHealthInput,
+            },
+            operation_output_schemas={
+                "run_python": CodeInterpreterOutput,
+                "generate_and_run": CodeInterpreterOutput,
+                "solve_once": CodeInterpreterOutput,
+                "inspect_state": CodeInterpreterOutput,
+                "build_temp_helper": CodeInterpreterOutput,
+                "repair_script": CodeInterpreterOutput,
+                "health": CodeInterpreterOutput,
+            },
+            default_operation="run_python",
+            examples=(
+                {"operation": "generate_and_run",
+                 "objective": "compute the 20th Fibonacci number and print it"},
+                {"operation": "generate_and_run",
+                 "objective": "write a Python script using openpyxl that creates sales_data.xlsx with sample sales rows"},
+            ),
+        )
+    )
+    if settings.adapters.code_interpreter.enabled:
+        adapters["code.interpreter"] = CodeInterpreterAdapter(
+            settings.adapters.code_interpreter,
+            provider=deps.provider,  # type: ignore[arg-type]
+            artifacts=deps.artifact_repository,
+        )

@@ -9,23 +9,19 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from agent_control.channels.memory import ConversationMemoryService
-from agent_control.llm import PlannerService
-from agent_control.llm.synthesizer import ResponseSynthesizer
-from agent_control.llm.validator import AnswerValidator
-from agent_control.orchestration.attempt_history import append_attempt_history
-from agent_control.orchestration.clarify import build_clarifying_question
+from agent_control.orchestration.auditor import AuditorService
 from agent_control.orchestration.executor import ToolExecutor
-from agent_control.orchestration.failure_diagnosis import diagnose_failure
 from agent_control.orchestration.fulfillment import validate_fulfillment
-from agent_control.orchestration.recovery_policy import RecoveryAction, choose_recovery
+from agent_control.orchestration.operator import OperatorLoopService
 from agent_control.recovery import RetryPolicy
 from agent_control.schemas import (
     ApprovalRequest,
     ApprovalStatus,
     AuditEventType,
     ErrorClass,
-    PlanModel,
-    PlanStep,
+    OperatorAction,
+    OperatorDecision,
+    RiskLevel,
     TaskRecord,
     TaskStatus,
     ToolCallRequest,
@@ -37,12 +33,7 @@ from agent_control.storage.audit import AuditLogger
 from agent_control.storage.repositories import Repositories
 from agent_control.tools.mcp_client import mcp_output_text
 
-
 logger = logging.getLogger(__name__)
-
-DefaultPlanFactory = Callable[[TaskRecord], PlanModel | None]
-RecoveryPlanFactory = Callable[[TaskRecord, str], PlanModel | None]
-
 
 class TaskNotificationSink(Protocol):
     async def notify(self, task: TaskRecord) -> None:
@@ -69,6 +60,44 @@ NOTIFIABLE_STATUSES = {
     TaskStatus.RUNNING,
 }
 
+# Statuses that only make sense while a specific worker process is actively
+# holding them. If a task is still RUNNING or INTERPRETING when a *new*
+# worker starts up, the process that was supposed to finish it is gone
+# (crashed, killed, restarted before its claim naturally expired via
+# claim_next()'s claim_expiry_seconds). Left alone, the task would either
+# sit stuck until that stale claim eventually times out, or get silently
+# re-claimed and re-run from a status that assumes in-flight state which no
+# longer exists - re-running from the top could duplicate side effects (a
+# second Telegram send, a second file write), and there's no checkpoint to
+# resume from mid-flight. See docs/ROADMAP.md P6.
+ORPHANABLE_STATUSES = (TaskStatus.RUNNING, TaskStatus.INTERPRETING)
+
+def reconcile_orphaned_tasks(repositories: Repositories, audit: AuditLogger) -> int:
+    """Explicitly fail any task left RUNNING/INTERPRETING by a worker that
+    never got to finish it. Call once, before a worker starts polling -
+    never silently resumed. Returns the number of tasks reconciled."""
+    total = 0
+    while True:
+        orphaned = repositories.tasks.list_by_statuses(list(ORPHANABLE_STATUSES), limit=100)
+        if not orphaned:
+            break
+        for task in orphaned:
+            reason = (
+                f"worker restarted while task was {task.status.value}; "
+                "failed explicitly rather than silently resumed"
+            )
+            metadata = {**task.metadata, "last_worker_error": reason}
+            failed = repositories.tasks.update_metadata(task.id, metadata, TaskStatus.FAILED)
+            repositories.tasks.release_claim(failed.id)
+            audit.task_state_changed("worker", task.id, task.status, failed.status)
+            audit.append(
+                AuditEventType.ERROR,
+                actor="worker",
+                task_id=task.id,
+                payload={"error": reason, "status": failed.status.value},
+            )
+            total += 1
+    return total
 
 class TaskWorker:
     # Default per-task wall-clock budget. A single task that exceeds this is
@@ -81,35 +110,37 @@ class TaskWorker:
         self,
         repositories: Repositories,
         audit: AuditLogger,
-        planner: PlannerService | None = None,
         executor: ToolExecutor | None = None,
         retry_policy: RetryPolicy | None = None,
         config_context: str = "No extra capability context provided.",
         config_context_factory: Callable[[], str] | None = None,
-        default_plan_factory: DefaultPlanFactory | None = None,
-        recovery_plan_factory: RecoveryPlanFactory | None = None,
         notification_sink: TaskNotificationSink | None = None,
-        synthesizer: ResponseSynthesizer | None = None,
-        validator: AnswerValidator | None = None,
         task_budget_seconds: float | None = None,
+        operator: OperatorLoopService | None = None,
+        operator_max_steps: int = 8,
+        auditor: AuditorService | None = None,
     ) -> None:
         self.repositories = repositories
         self.audit = audit
-        self.planner = planner
         self.executor = executor
         self.retry_policy = retry_policy
         self.config_context = config_context
         self.config_context_factory = config_context_factory
-        self.default_plan_factory = default_plan_factory
-        self.recovery_plan_factory = recovery_plan_factory
         self.notification_sink = notification_sink
-        self.synthesizer = synthesizer
-        self.validator = validator
         self.task_budget_seconds = (
             float(task_budget_seconds)
             if task_budget_seconds is not None
             else self.DEFAULT_TASK_BUDGET_SECONDS
         )
+        # The observe/decide/act loop (docs/ROADMAP.md P3 §2.2) - the sole
+        # execution path. See orchestration/operator.py.
+        self.operator = operator
+        self.operator_max_steps = operator_max_steps
+        # The Auditor (docs/ROADMAP.md P3 §2.1) - grounds a `done` decision
+        # against raw tool output before letting it complete. Optional: a
+        # worker with no auditor configured skips straight to the
+        # fulfillment-gap check, same as before this existed.
+        self.auditor = auditor
         # Stable id per worker process; written into tasks.claimed_by so
         # concurrent workers can't race on the same task.
         self.worker_id = f"worker-{uuid4().hex[:12]}"
@@ -187,280 +218,252 @@ class TaskWorker:
         task = self.repositories.tasks.get(task_id)
         if task is None:
             raise KeyError(f"task not found: {task_id}")
+        return await self._process_operator_loop(task)
 
-        if task.status in {TaskStatus.RECEIVED, TaskStatus.INTERPRETING}:
-            # LLM planner is the primary planning path
-            _planner_error: str | None = None
-            if self.planner is not None:
-                try:
-                    await self.planner.plan_task(task_id, self._planner_context())
-                except Exception as exc:
-                    _planner_error = str(exc)
-                    self.audit.append(
-                        AuditEventType.ERROR,
-                        actor="planner",
-                        task_id=task_id,
-                        payload={"error": "planning_failed", "reason": str(exc)},
-                    )
-            task = self.repositories.tasks.get(task_id)
-            if task is None:
-                raise KeyError(f"task not found after planning: {task_id}")
+    async def _process_operator_loop(self, task: TaskRecord) -> TaskRecord:
+        """One observe/decide/act tick - the sole execution path (P3 §2.2).
+        See orchestration/operator.py.
 
-            # Hardcoded factory is a fallback for system commands (status, etc.)
-            # only when LLM planning did not produce a plan
-            if task.status in {TaskStatus.RECEIVED, TaskStatus.INTERPRETING}:
-                default_plan = self.default_plan_factory(task) if self.default_plan_factory else None
-                if default_plan is not None:
-                    self.repositories.plans.create(task_id, default_plan)
-                    updated = self.repositories.tasks.attach_plan(task_id, default_plan.id, TaskStatus.PLANNED)
-                    self.audit.append(
-                        AuditEventType.PLAN_CREATED,
-                        actor="worker",
-                        task_id=task_id,
-                        payload={
-                            "plan_id": default_plan.id,
-                            "step_count": len(default_plan.steps),
-                            "required_capabilities": [
-                                capability.value for capability in default_plan.required_capabilities
-                            ],
-                            "source": "hardcoded_fallback_plan",
-                            "route_decision": _route_decision(task, default_plan),
-                            "config_context": self._planner_context(),
-                            "plan": default_plan.model_dump(mode="json"),
-                        },
-                    )
-                    self.audit.task_state_changed("worker", task_id, task.status, updated.status)
-                else:
-                    # No plan was produced. Treat as a planning failure and try to recover
-                    # by triggering the same replan loop used for execution failures so the
-                    # planner gets another shot with the error context.
-                    reason = _planner_error or "no plan could be produced for this objective"
-                    meta = {**task.metadata, "planning_error": reason[:800], "last_worker_error": reason[:800]}
-                    self.repositories.tasks.update_metadata(task.id, meta)
-                    replan_count = int(task.metadata.get("replan_count", 0))
-                    if replan_count < 2 and self.planner is not None:
-                        replanned = await self._replan_with_error(
-                            self.repositories.tasks.get(task.id) or task,
-                            f"Planning failed: {reason[:400]}",
-                        )
-                        if replanned is not None:
-                            return replanned
-                    failed = self.repositories.tasks.update_metadata(task.id, meta, TaskStatus.FAILED)
-                    self.audit.task_state_changed("worker", task_id, task.status, TaskStatus.FAILED)
-                    return failed
-            task = self.repositories.tasks.get(task_id)
-            if task is None:
-                raise KeyError(f"task not found after planning: {task_id}")
+        Approval flow: a tool call that comes back NEEDS_APPROVAL creates a
+        real ApprovalRequest (same repository/audit path the plan-based flow
+        used) and transitions to AWAITING_APPROVAL with the pending call
+        stashed in metadata["operator_pending_call"]; resuming is handled by
+        _process_operator_awaiting_approval below, which replays that exact
+        call with approved=True once every approval on the task clears.
 
-        if task.status == TaskStatus.PLANNED:
-            return await self._process_planned(task)
+        Fulfillment: a `done` decision is checked against
+        `validate_fulfillment` (objective-inferred postconditions - there is
+        no PlanModel here, so `plan=None`) before it is allowed to complete.
+        A gap is appended to `history` as an observation and the loop
+        continues - "the next decide() call sees the error in context" - capped
+        at 2 gap cycles the same way clarify/replan attempts are capped
+        elsewhere in this file, so a model that can't close the gap doesn't
+        loop forever.
 
-        if task.status == TaskStatus.RUNNING:
-            return await self._process_running(task)
+        Rate limits: RATE_LIMITED/USAGE_LIMITED results back off through
+        _operator_retry_or_ask instead of retrying on the next ~3s poll tick.
 
-        if task.status == TaskStatus.AWAITING_APPROVAL:
-            return await self._process_awaiting_approval(task)
+        Background sessions: a tool that reports status=running with a
+        session_id (coding.agent) transitions to AWAITING_EXTERNAL via
+        _await_operator_external and is picked back up by
+        _resume_operator_pending_external once metadata["pending_tool_result"]
+        appears - written by the same completion callback the plan-based path
+        used (cli.py), which is status-based, not plan-shaped.
+        """
+        if self.operator is None or self.executor is None:
+            return self._transition_operator(task, task.metadata, TaskStatus.BLOCKED, "operator_loop_not_configured")
 
-        if task.status == TaskStatus.RETRYING:
-            return self._process_retrying(task)
+        latest = self.repositories.tasks.get(task.id) or task
+        if latest.status in {TaskStatus.PAUSED, TaskStatus.CANCELLED}:
+            return latest
 
-        if task.status == TaskStatus.AWAITING_EXTERNAL:
-            return task
+        if latest.status == TaskStatus.AWAITING_APPROVAL:
+            return await self._process_operator_awaiting_approval(latest)
 
-        return task
+        if latest.status == TaskStatus.RETRYING:
+            return self._process_operator_retrying(latest)
 
-    async def _process_planned(self, task: TaskRecord) -> TaskRecord:
-        if not task.plan_id:
-            return self._transition(task, TaskStatus.BLOCKED, "planned_task_missing_plan")
-        plan = self.repositories.plans.get(task.plan_id)
-        if plan is None:
-            return self._transition(task, TaskStatus.BLOCKED, "plan_not_found")
+        if isinstance(latest.metadata.get("pending_tool_result"), dict):
+            return self._resume_operator_pending_external(latest)
 
-        approval_steps = [step for step in plan.steps if step.requires_approval]
-        if approval_steps:
-            self.repositories.tasks.set_current_step(task.id, approval_steps[0].id)
-            for step in approval_steps:
-                self._create_step_approval(task, step)
-            return self._transition(task, TaskStatus.AWAITING_APPROVAL, "approval_required")
+        if latest.status == TaskStatus.AWAITING_EXTERNAL:
+            return latest
 
-        runnable_steps = [step for step in plan.steps if step.tool_name]
-        if not runnable_steps:
-            return self._transition(task, TaskStatus.COMPLETED, "plan_only_task_completed")
+        history: list[dict[str, Any]] = list(latest.metadata.get("operator_history") or [])
+        if not latest.metadata.get("operator_loop"):
+            latest = self.repositories.tasks.update_metadata(
+                latest.id, {**latest.metadata, "operator_loop": True}, TaskStatus.RUNNING
+            )
+            self.audit.task_state_changed("worker", task.id, task.status, TaskStatus.RUNNING)
 
-        self.repositories.tasks.set_current_step(task.id, runnable_steps[0].id)
-        return self._transition(task, TaskStatus.RUNNING, "ready_to_execute")
+        if len(history) >= self.operator_max_steps:
+            return self._transition_operator(
+                latest, {**latest.metadata, "operator_history": history},
+                TaskStatus.FAILED, "operator_step_budget_exhausted",
+            )
 
-    async def _process_running(self, task: TaskRecord) -> TaskRecord:
-        if self.executor is None:
-            return self._transition(task, TaskStatus.BLOCKED, "executor_not_configured")
-        if not task.plan_id:
-            return self._transition(task, TaskStatus.BLOCKED, "running_task_missing_plan")
-        plan = self.repositories.plans.get(task.plan_id)
-        if plan is None:
-            return self._transition(task, TaskStatus.BLOCKED, "plan_not_found")
+        memory_context = str(latest.metadata.get("memory_context") or "")
+        try:
+            decision = await self.operator.decide(
+                latest.objective, self._planner_context(), history, memory_context=memory_context
+            )
+        except Exception as exc:
+            self.audit.append(
+                AuditEventType.ERROR, actor="operator", task_id=latest.id,
+                payload={"error": "operator_decide_failed", "reason": str(exc)},
+            )
+            return self._transition_operator(
+                latest, {**latest.metadata, "operator_history": history},
+                TaskStatus.FAILED, f"operator_decide_failed: {exc}"[:400],
+            )
 
-        step = next((item for item in plan.steps if item.id == task.current_step_id), None)
-        if step is None:
-            return self._transition(task, TaskStatus.COMPLETED, "no_current_step")
-        if not step.tool_name:
-            return self._transition(task, TaskStatus.BLOCKED, "current_step_missing_tool")
-        if not step.required_capabilities:
-            return self._transition(task, TaskStatus.BLOCKED, "current_step_missing_capability")
+        self.audit.append(
+            AuditEventType.TASK_STATE_CHANGED, actor="operator", task_id=latest.id,
+            payload={"action": "operator_decision", "decision": decision.model_dump(mode="json"), "step_index": len(history)},
+        )
 
-        latest = self.repositories.tasks.get(task.id)
-        if latest is None or latest.status in {TaskStatus.PAUSED, TaskStatus.CANCELLED}:
-            return latest or task
+        if decision.action == OperatorAction.DONE:
+            final_answer = decision.final_answer
+            content_entry = _last_content_tool_history_entry(history) if self.auditor is not None else None
+            if content_entry is not None:
+                audit_gap_count = int(latest.metadata.get("operator_audit_gap_count", 0))
+                if audit_gap_count < 2:
+                    audit_result = await self.auditor.audit(latest.objective, content_entry.get("output_summary") or "")
+                    if not audit_result.sufficient:
+                        history.append({
+                            "tool_name": "_audit_check",
+                            "input": None,
+                            "status": "audit_gap",
+                            "error": (
+                                f"Declared done, but the auditor found the raw output insufficient: "
+                                f"{audit_result.reason}. Keep working toward the objective - call "
+                                "another tool, or explain to the user why it can't be met - before "
+                                "declaring done again."
+                            ),
+                        })
+                        metadata = {
+                            **latest.metadata,
+                            "operator_history": history,
+                            "operator_audit_gap_count": audit_gap_count + 1,
+                        }
+                        return self.repositories.tasks.update_metadata(latest.id, metadata, TaskStatus.RUNNING)
+                    if audit_result.answer:
+                        final_answer = audit_result.answer
 
-        pending_result = _pending_tool_result(latest, step)
-        if pending_result is not None:
-            metadata = {**latest.metadata}
-            metadata.pop("pending_tool_result", None)
-            metadata.pop("awaiting_external", None)
-            latest = self.repositories.tasks.update_metadata(latest.id, metadata, TaskStatus.RUNNING)
-            task = self._record_tool_result(latest.id, step.tool_name, pending_result)
-            return await self._handle_step_result(task, plan, step, pending_result)
+            metadata = {**latest.metadata, "operator_history": history, "synthesized_answer": final_answer}
+            gap = validate_fulfillment(latest.model_copy(update={"metadata": metadata})).first_gap
+            if gap:
+                gap_count = int(latest.metadata.get("operator_fulfillment_gap_count", 0))
+                if gap_count < 2:
+                    history.append({
+                        "tool_name": "_fulfillment_check",
+                        "input": None,
+                        "status": "fulfillment_gap",
+                        "error": (
+                            f"Declared done, but the objective still expects: {gap}. Keep working "
+                            "toward the objective - call another tool, or explain to the user why "
+                            "it can't be met - before declaring done again."
+                        ),
+                    })
+                    metadata = {
+                        **latest.metadata,
+                        "operator_history": history,
+                        "operator_fulfillment_gap_count": gap_count + 1,
+                    }
+                    return self.repositories.tasks.update_metadata(latest.id, metadata, TaskStatus.RUNNING)
+                metadata["fulfillment_gap"] = gap
+            return self._transition_operator(latest, metadata, TaskStatus.COMPLETED, "operator_done")
 
-        resolved_input = _resolve_step_input(latest, step.tool_input)
+        if decision.action == OperatorAction.ASK_USER:
+            latest = self.repositories.tasks.update_metadata(latest.id, {**latest.metadata, "operator_history": history})
+            return self._operator_ask_user(latest, decision.question or "Need more information to continue.")
+
+        if decision.action == OperatorAction.BLOCKED:
+            metadata = {**latest.metadata, "operator_history": history}
+            return self._transition_operator(latest, metadata, TaskStatus.BLOCKED, decision.reason or "operator_blocked")
+
+        # CALL_TOOL
+        tool_def = self.executor.tool_definitions.get(decision.tool_name)
+        if tool_def is None:
+            history.append({
+                "tool_name": decision.tool_name, "input": decision.tool_input,
+                "status": "failed", "error": f"unregistered tool: {decision.tool_name}",
+            })
+            return self.repositories.tasks.update_metadata(latest.id, {**latest.metadata, "operator_history": history})
+
         request = ToolCallRequest(
-            task_id=task.id,
-            tool_name=step.tool_name,
-            capability=step.required_capabilities[0],
-            risk_level=step.risk_level,
-            scope_target=resolved_input.get("scope_target"),
-            input=resolved_input,
-            timeout_seconds=int(resolved_input.get("timeout_seconds", 60)),
-            requires_approval=step.requires_approval,
+            task_id=latest.id,
+            tool_name=decision.tool_name,
+            capability=tool_def.capability,
+            risk_level=decision.risk_level,
+            input=decision.tool_input,
         )
-        step_approved = self._step_is_approved(task.id, step.id)
-        result = await self.executor.execute(request, approved=step_approved)
-        task = self._record_tool_result(task.id, step.tool_name, result)
-        return await self._handle_step_result(task, plan, step, result)
+        result = await self.executor.execute(request, approved=False)
 
-    async def _handle_step_result(
-        self,
-        task: TaskRecord,
-        plan: PlanModel,
-        step: PlanStep,
-        result: ToolCallResult,
-    ) -> TaskRecord:
-        latest = self.repositories.tasks.get(task.id)
-        if latest is None or latest.status in {TaskStatus.PAUSED, TaskStatus.CANCELLED}:
-            return latest or task
-        operation = _operation_from_step_result(step, result)
-        diagnosis = None if result.status == ToolResultStatus.SUCCEEDED else diagnose_failure(
-            result,
-            tool_name=step.tool_name or "",
-            operation=operation,
-        )
-        recovery_decision = None
-        next_action = "continue"
-        if diagnosis is not None:
-            tentative_metadata = append_attempt_history(
-                latest.metadata,
-                step_id=step.id,
-                tool_name=step.tool_name or "",
-                operation=operation,
-                result=result,
-                diagnosis=diagnosis,
-                next_action="pending",
-            )
-            recovery_decision = choose_recovery(
-                latest.model_copy(update={"metadata": tentative_metadata}),
-                result,
-                diagnosis,
-                tool_name=step.tool_name or "",
-                operation=operation,
-            )
-            next_action = recovery_decision.action
-        elif _is_background_external_result(step, result):
-            next_action = "await_external"
-        metadata = append_attempt_history(
-            latest.metadata,
-            step_id=step.id,
-            tool_name=step.tool_name or "",
-            operation=operation,
-            result=result,
-            diagnosis=diagnosis,
-            next_action=next_action,
-        )
-        if recovery_decision is not None:
-            metadata["recovery_decision"] = recovery_decision.model_dump(mode="json")
-        latest = self.repositories.tasks.update_metadata(latest.id, metadata)
-        if _is_background_external_result(step, result):
-            return self._await_external(latest, step, result)
-        if recovery_decision is not None and recovery_decision.action == RecoveryAction.ASK_USER:
-            extra_metadata: dict[str, Any] = {}
-            if (
-                self.retry_policy is not None
-                and (result.status == ToolResultStatus.RATE_LIMITED or result.error_class == ErrorClass.USAGE_LIMITED)
-            ):
-                extra_metadata["intervention_summary"] = self.retry_policy.intervention_summary(result)
-            return self._ask_user(
-                latest,
-                result.error_message or recovery_decision.reason,
-                extra_metadata=extra_metadata or None,
-            )
-        if recovery_decision is not None and recovery_decision.action == RecoveryAction.USE_MCP:
-            recovery_reason = result.error_message or f"connector_missing:{recovery_decision.reason}"
-            recovery = self._attach_recovery_plan(latest, recovery_reason)
-            if recovery is not None:
-                return recovery
-            return await self._replan_with_error(
-                latest,
-                "Connector missing. Refresh or use the MCP catalog, then call mcp.client call_tool if a configured MCP tool fits.",
-            ) or self._ask_user(latest, recovery_reason)
-        if recovery_decision is not None and recovery_decision.action == RecoveryAction.USE_CODE_INTERPRETER:
-            recovery = self._attach_recovery_plan(latest, f"use_code_interpreter:{result.error_message or recovery_decision.reason}")
-            if recovery is not None:
-                return recovery
-            return self._ask_user(latest, result.error_message or recovery_decision.reason)
-        if result.status == ToolResultStatus.SUCCEEDED:
-            if _is_mcp_recovery_discovery(latest, step, operation):
-                return await self._replan_after_mcp_catalog(latest, result)
-            next_step = self._next_runnable_step(plan.steps, step.id)
-            if next_step is None:
-                self.repositories.tasks.set_current_step(task.id, None)
-                replan = await self._validate_and_synthesize(task, step.tool_name or "", result)
-                if replan is not None:
-                    return replan
-                return self._transition(task, TaskStatus.COMPLETED, "all_steps_completed")
-            self.repositories.tasks.set_current_step(task.id, next_step.id)
-            return self.repositories.tasks.get(task.id) or task
         if result.status == ToolResultStatus.NEEDS_APPROVAL:
-            return self._transition(task, TaskStatus.AWAITING_APPROVAL, "tool_approval_required")
-        if result.status == ToolResultStatus.DENIED:
-            return self._transition(task, TaskStatus.BLOCKED, "tool_policy_denied")
-        if result.error_class in {ErrorClass.ADAPTER_FAILED, ErrorClass.VALIDATION_FAILED}:
-            recovery = self._attach_recovery_plan(task, result.error_message or result.status.value)
-            if recovery is not None:
-                return recovery
-        retry = self._retry_decision(task, result)
-        if retry:
-            if retry.status == TaskStatus.BLOCKED and result.error_class != ErrorClass.USAGE_LIMITED:
-                recovery = self._attach_recovery_plan(retry, result.error_message or result.status.value)
-                if recovery is not None:
-                    return recovery
-            return retry
-        recovery = self._attach_recovery_plan(task, result.error_message or result.status.value)
-        if recovery is not None:
-            return recovery
-        # Intelligent re-planning: ask the LLM to create a new plan using the error context
-        replan = await self._replan_with_error(task, result.error_message or result.status.value)
-        if replan is not None:
-            return replan
-        # Every safe strategy is exhausted — ask the user a targeted question
-        # instead of dying silently.
-        return self._ask_user(task, result.error_message or result.status.value)
+            return self._await_operator_approval(latest, decision, history)
 
-    def _await_external(self, task: TaskRecord, step: PlanStep, result: ToolCallResult) -> TaskRecord:
-        output = result.output if isinstance(result.output, dict) else {}
-        session_id = str(output.get("session_id") or "")
+        recorded = self._record_tool_result(latest.id, decision.tool_name, result)
+        if _is_background_external_tool_result(decision.tool_name, result):
+            return self._await_operator_external(recorded, decision, result, history)
+        if result.status != ToolResultStatus.SUCCEEDED:
+            retry_outcome = self._operator_retry_or_ask(recorded, decision, result, history)
+            if retry_outcome is not None:
+                return retry_outcome
+        output_text = _tool_output_text(result) if result.status == ToolResultStatus.SUCCEEDED else None
+        history.append({
+            "tool_name": decision.tool_name,
+            "input": decision.tool_input,
+            "status": result.status.value,
+            "output_summary": output_text[:2000] if output_text else None,
+            "error": result.error_message,
+        })
+        return self.repositories.tasks.update_metadata(recorded.id, {**recorded.metadata, "operator_history": history})
+
+    def _operator_retry_or_ask(
+        self, task: TaskRecord, decision: OperatorDecision, result: ToolCallResult, history: list[dict[str, Any]]
+    ) -> TaskRecord | None:
+        """Rate-limit/usage-limit backoff, ported from the plan-based path's
+        _retry_decision so the loop doesn't hot-loop a rate-limited API on
+        every ~3s poll tick. Returns None to fall through to the normal "log
+        it and let the next decide() call see it in context" handling for
+        every other kind of failure - that in-context recovery is deliberate
+        (docs/ROADMAP.md P3 §2.2); this is narrowly about pacing, not
+        diagnosis, the same split the plan-based path draws.
+        """
+        if self.retry_policy is None:
+            return None
+        if result.error_class == ErrorClass.USAGE_LIMITED:
+            history.append({
+                "tool_name": decision.tool_name, "input": decision.tool_input,
+                "status": result.status.value, "output_summary": None, "error": result.error_message,
+            })
+            latest = self.repositories.tasks.update_metadata(task.id, {**task.metadata, "operator_history": history})
+            return self._operator_ask_user(
+                latest, result.error_message or "This tool hit a usage limit and needs your input to continue."
+            )
+        retry_count = int(task.metadata.get("operator_retry_count", 0))
+        retry_decision = self.retry_policy.evaluate(result, retry_count)
+        if not retry_decision.retry:
+            return None
+        history.append({
+            "tool_name": decision.tool_name, "input": decision.tool_input,
+            "status": result.status.value, "output_summary": None, "error": result.error_message,
+        })
         metadata = {
             **task.metadata,
+            "operator_history": history,
+            "operator_retry_count": retry_decision.retry_count,
+            "next_retry_at": retry_decision.next_retry_at,
+        }
+        return self._transition_operator(task, metadata, TaskStatus.RETRYING, retry_decision.reason)
+
+    def _await_operator_external(
+        self, task: TaskRecord, decision: OperatorDecision, result: ToolCallResult, history: list[dict[str, Any]]
+    ) -> TaskRecord:
+        """A tool (coding.agent today) reported a session still running in the
+        background rather than a finished result. cli.py's
+        _coding_session_completion_callback writes metadata["pending_tool_result"]
+        and flips AWAITING_EXTERNAL back to RUNNING once the session actually
+        finishes - it isn't plan-shaped (only checks task.status), so it works
+        for the operator loop unchanged. _resume_operator_pending_external
+        below is the other half: picking that result back up.
+        """
+        output = result.output if isinstance(result.output, dict) else {}
+        history.append({
+            "tool_name": decision.tool_name,
+            "input": decision.tool_input,
+            "status": "running",
+            "output_summary": f"session {output.get('session_id')} started, running in background",
+            "error": None,
+        })
+        metadata = {
+            **task.metadata,
+            "operator_history": history,
+            "operator_pending_call": {"tool_name": decision.tool_name, "tool_input": decision.tool_input},
             "awaiting_external": {
-                "tool_name": step.tool_name,
-                "step_id": step.id,
-                "session_id": session_id,
+                "tool_name": decision.tool_name,
+                "session_id": str(output.get("session_id") or ""),
                 "provider": output.get("provider"),
                 "status": output.get("status"),
                 "request_id": result.request_id,
@@ -468,60 +471,94 @@ class TaskWorker:
             },
         }
         updated = self.repositories.tasks.update_metadata(task.id, metadata, TaskStatus.AWAITING_EXTERNAL)
-        self.audit.task_state_changed("orchestrator", task.id, task.status, updated.status)
+        self.audit.task_state_changed("worker", task.id, task.status, TaskStatus.AWAITING_EXTERNAL)
         self.audit.append(
             AuditEventType.TASK_STATE_CHANGED,
-            actor="orchestrator",
+            actor="worker",
             task_id=task.id,
-            payload={"reason": "awaiting_external_session", "session_id": session_id, "tool": step.tool_name},
+            payload={"reason": "awaiting_external_session", "session_id": output.get("session_id"), "tool": decision.tool_name},
         )
         return updated
 
-    async def _replan_after_mcp_catalog(self, task: TaskRecord, result: ToolCallResult) -> TaskRecord:
-        output = result.output if isinstance(result.output, dict) else {}
-        catalog_text = mcp_output_text(output)
-        latest = self.repositories.tasks.get(task.id) or task
-        metadata = {
-            **latest.metadata,
-            "recovery_stage": "mcp_catalog_replan",
-            "mcp_catalog": {
-                "catalog_path": output.get("catalog_path"),
-                "catalog_updated_at": output.get("catalog_updated_at"),
-                "tool_count": len(output.get("tools") or []),
-                "healthy": output.get("healthy"),
-            },
-        }
-        latest = self.repositories.tasks.update_metadata(latest.id, metadata, TaskStatus.RECEIVED)
-        replan = await self._replan_with_error(
-            latest,
-            (
-                "MCP catalog refresh completed during connector-missing recovery. "
-                "If one configured MCP tool fits the original objective, create a plan that calls "
-                "mcp.client with operation=call_tool, server, tool, and arguments. Do not stop after list_tools. "
-                "If no MCP tool fits or MCP is unavailable, use code.interpreter solve_once for a bounded local helper."
-            ),
-            extra_config_context=f"\n\n{catalog_text[:2400]}",
-        )
-        if replan is not None:
-            return replan
-        recovery = self._attach_recovery_plan(latest, "mcp_unavailable_or_no_matching_tool")
-        if recovery is not None:
-            return recovery
-        return self._ask_user(latest, "No configured MCP tool could satisfy the missing connector.")
+    def _resume_operator_pending_external(self, task: TaskRecord) -> TaskRecord:
+        history: list[dict[str, Any]] = list(task.metadata.get("operator_history") or [])
+        pending = task.metadata.get("pending_tool_result") or {}
+        pending_call = task.metadata.get("operator_pending_call")
+        tool_input = pending_call.get("tool_input") if isinstance(pending_call, dict) else None
+        tool_name = str(pending.get("tool_name") or (pending_call or {}).get("tool_name") or "coding.agent")
+        metadata = {**task.metadata}
+        for key in ("pending_tool_result", "awaiting_external", "operator_pending_call"):
+            metadata.pop(key, None)
+        try:
+            result = ToolCallResult.model_validate(pending.get("result"))
+        except Exception:
+            history.append({
+                "tool_name": tool_name, "input": tool_input,
+                "status": "failed", "error": "malformed pending_tool_result from external session callback",
+            })
+            return self.repositories.tasks.update_metadata(
+                task.id, {**metadata, "operator_history": history}, TaskStatus.RUNNING
+            )
+        recorded = self._record_tool_result(task.id, tool_name, result)
+        output_text = _tool_output_text(result) if result.status == ToolResultStatus.SUCCEEDED else None
+        history.append({
+            "tool_name": tool_name,
+            "input": tool_input,
+            "status": result.status.value,
+            "output_summary": output_text[:2000] if output_text else None,
+            "error": result.error_message,
+        })
+        final_metadata = {**metadata, **recorded.metadata, "operator_history": history}
+        for key in ("pending_tool_result", "awaiting_external", "operator_pending_call"):
+            final_metadata.pop(key, None)
+        return self.repositories.tasks.update_metadata(task.id, final_metadata, TaskStatus.RUNNING)
 
-    def _process_retrying(self, task: TaskRecord) -> TaskRecord:
+    def _process_operator_retrying(self, task: TaskRecord) -> TaskRecord:
         next_retry_at = task.metadata.get("next_retry_at")
         if next_retry_at and datetime.fromisoformat(next_retry_at) > utc_now():
             return task
-        return self._transition(task, TaskStatus.RUNNING, "retry_due")
+        return self._transition_operator(task, task.metadata, TaskStatus.RUNNING, "retry_due")
 
-    async def _process_awaiting_approval(self, task: TaskRecord) -> TaskRecord:
+    def _await_operator_approval(
+        self, task: TaskRecord, decision: OperatorDecision, history: list[dict[str, Any]]
+    ) -> TaskRecord:
+        """self.executor.execute() above already created the ApprovalRequest
+        (and its audit event) via the policy engine, same as the plan-based
+        path - this only stashes what's needed to replay the exact call once
+        every approval on the task clears, and surfaces a preview the same
+        way _process_planned does.
+        """
+        preview = f"- {decision.tool_name} (risk: {decision.risk_level.value}): {json.dumps(decision.tool_input, ensure_ascii=False)}"
+        metadata = {
+            **task.metadata,
+            "operator_history": history,
+            "operator_pending_call": {
+                "tool_name": decision.tool_name,
+                "tool_input": decision.tool_input,
+                "risk_level": decision.risk_level.value,
+            },
+            "pending_approval_preview": preview,
+        }
+        return self._transition_operator(task, metadata, TaskStatus.AWAITING_APPROVAL, "operator_approval_required")
+
+    async def _process_operator_awaiting_approval(self, task: TaskRecord) -> TaskRecord:
+        """Resume path for _request_operator_approval above: mirrors
+        _process_awaiting_approval's status handling, but replays the exact
+        pending tool call (stashed in metadata["operator_pending_call"])
+        instead of assuming a plan_id/current_step_id to advance to.
+        """
+        history: list[dict[str, Any]] = list(task.metadata.get("operator_history") or [])
         approvals = self.repositories.approvals.list_for_task(task.id)
         if not approvals:
-            return self._transition(task, TaskStatus.BLOCKED, "awaiting_approval_without_request")
+            return self._transition_operator(
+                task, {**task.metadata, "operator_history": history}, TaskStatus.BLOCKED,
+                "awaiting_approval_without_request",
+            )
         terminal_denials = {ApprovalStatus.REJECTED, ApprovalStatus.CANCELLED, ApprovalStatus.EXPIRED}
         if any(approval.status in terminal_denials for approval in approvals):
-            return self._transition(task, TaskStatus.BLOCKED, "approval_not_granted")
+            return self._transition_operator(
+                task, {**task.metadata, "operator_history": history}, TaskStatus.BLOCKED, "approval_not_granted",
+            )
         pending = [approval for approval in approvals if approval.status == ApprovalStatus.PENDING]
         if pending:
             if not self._pending_approvals_auto_grantable(pending):
@@ -532,49 +569,98 @@ class TaskWorker:
                     AuditEventType.APPROVAL_DECIDED,
                     actor="policy",
                     task_id=task.id,
-                    payload={
-                        "approval_id": approval.id,
-                        "status": ApprovalStatus.APPROVED.value,
-                        "reason": "full_access_policy",
-                    },
+                    payload={"approval_id": approval.id, "status": ApprovalStatus.APPROVED.value, "reason": "full_access_policy"},
                 )
-        if not task.plan_id:
-            return self._transition(task, TaskStatus.BLOCKED, "approved_task_missing_plan")
-        plan = self.repositories.plans.get(task.plan_id)
-        if plan is None:
-            return self._transition(task, TaskStatus.BLOCKED, "approved_plan_not_found")
-        if task.current_step_id is None:
-            next_step = next((step for step in plan.steps if step.tool_name), None)
-            if next_step is None:
-                return self._transition(task, TaskStatus.COMPLETED, "approved_plan_only_task_completed")
-            self.repositories.tasks.set_current_step(task.id, next_step.id)
-        return self._transition(task, TaskStatus.RUNNING, "approval_granted")
 
-    def _create_step_approval(self, task: TaskRecord, step: PlanStep) -> None:
-        if not step.required_capabilities:
-            return
-
-        approval = ApprovalRequest(
+        pending_call = task.metadata.get("operator_pending_call")
+        if not isinstance(pending_call, dict) or not pending_call.get("tool_name"):
+            return self._transition_operator(
+                task, {**task.metadata, "operator_history": history}, TaskStatus.BLOCKED,
+                "operator_pending_call_missing",
+            )
+        tool_name = str(pending_call["tool_name"])
+        tool_input = pending_call.get("tool_input") or {}
+        assert self.executor is not None
+        tool_def = self.executor.tool_definitions.get(tool_name)
+        metadata = {**task.metadata}
+        metadata.pop("operator_pending_call", None)
+        metadata.pop("pending_approval_preview", None)
+        if tool_def is None:
+            history.append({
+                "tool_name": tool_name, "input": tool_input,
+                "status": "failed", "error": f"unregistered tool: {tool_name}",
+            })
+            return self.repositories.tasks.update_metadata(
+                task.id, {**metadata, "operator_history": history}, TaskStatus.RUNNING
+            )
+        request = ToolCallRequest(
             task_id=task.id,
-            capability=step.required_capabilities[0],
-            risk_level=step.risk_level,
-            summary=step.title,
-            action_payload=step.model_dump(mode="json"),
-            expires_at=utc_now() + timedelta(minutes=15),
+            tool_name=tool_name,
+            capability=tool_def.capability,
+            risk_level=RiskLevel(pending_call["risk_level"]) if pending_call.get("risk_level") else RiskLevel.LOW,
+            input=tool_input,
         )
-        self.repositories.approvals.create(approval)
+        result = await self.executor.execute(request, approved=True)
+        recorded = self._record_tool_result(task.id, tool_name, result)
+        output_text = _tool_output_text(result) if result.status == ToolResultStatus.SUCCEEDED else None
+        history.append({
+            "tool_name": tool_name,
+            "input": tool_input,
+            "status": result.status.value,
+            "output_summary": output_text[:2000] if output_text else None,
+            "error": result.error_message,
+        })
+        final_metadata = {**metadata, **recorded.metadata, "operator_history": history}
+        final_metadata.pop("operator_pending_call", None)
+        final_metadata.pop("pending_approval_preview", None)
+        return self.repositories.tasks.update_metadata(task.id, final_metadata, TaskStatus.RUNNING)
+
+    def _transition_operator(
+        self, task: TaskRecord, metadata: dict[str, Any], status: TaskStatus, reason: str
+    ) -> TaskRecord:
+        """Terminal-state transition for the operator loop only.
+
+        Deliberately does NOT call _transition(): that method's COMPLETED path
+        runs fulfillment-gap recovery which can attach a plan-based recovery
+        plan, crossing back into the plan-once path from inside this one.
+        """
+        updated = self.repositories.tasks.update_metadata(task.id, metadata, status)
+        self.audit.task_state_changed("worker", task.id, task.status, status)
+        if status in {TaskStatus.FAILED, TaskStatus.BLOCKED}:
+            self.audit.append(
+                AuditEventType.ERROR, actor="worker", task_id=task.id,
+                payload={"error": reason, "status": status.value},
+            )
+        return updated
+
+    def _operator_ask_user(self, task: TaskRecord, question: str) -> TaskRecord:
+        """The question is used verbatim - the operator already composed a
+        specific question because it decided it needs one, so there's nothing
+        to template from a failure reason. Two-question exhaustion limit,
+        same as everywhere else in this file that can pause a task on the
+        user (see clarify_count usage throughout).
+        """
+        latest = self.repositories.tasks.get(task.id) or task
+        ask_count = int(latest.metadata.get("clarify_count", 0))
+        if ask_count >= 2:
+            return self._transition_operator(
+                latest, latest.metadata, TaskStatus.FAILED, "clarification_attempts_exhausted"
+            )
+        metadata = {
+            **latest.metadata,
+            "clarify_count": ask_count + 1,
+            "clarifying_question": question,
+            "clarifying_reason": question[:400],
+        }
+        updated = self.repositories.tasks.update_metadata(latest.id, metadata, TaskStatus.CLARIFYING)
+        self.audit.task_state_changed("worker", latest.id, latest.status, updated.status)
         self.audit.append(
-            AuditEventType.APPROVAL_REQUESTED,
-            actor="orchestrator",
-            task_id=task.id,
-            payload={"approval_id": approval.id, "step_id": step.id},
+            AuditEventType.TASK_STATE_CHANGED,
+            actor="operator",
+            task_id=latest.id,
+            payload={"reason": "clarification_requested", "question": question, "clarify_count": ask_count + 1},
         )
-
-    def _step_is_approved(self, task_id: str, step_id: str) -> bool:
-        return any(
-            approval.status == ApprovalStatus.APPROVED and approval.action_payload.get("id") == step_id
-            for approval in self.repositories.approvals.list_for_task(task_id)
-        )
+        return updated
 
     def _pending_approvals_auto_grantable(self, approvals: list[ApprovalRequest]) -> bool:
         if self.executor is None:
@@ -585,216 +671,6 @@ class TaskWorker:
             if policy is None or not policy.enabled or policy.requires_approval:
                 return False
         return True
-
-    def _attach_recovery_plan(self, task: TaskRecord, reason: str) -> TaskRecord | None:
-        if self.recovery_plan_factory is None:
-            return None
-        latest = self.repositories.tasks.get(task.id) or task
-        repair_count = int(latest.metadata.get("evaluator_repair_count", 0))
-        if repair_count >= 3:
-            return None
-        plan = self.recovery_plan_factory(latest, reason)
-        if plan is None:
-            return None
-        stage = _recovery_stage_for_plan(plan)
-        stage_counts = _recovery_stage_counts(latest.metadata.get("recovery_stage_counts"))
-        if int(stage_counts.get(stage, 0)) >= 1:
-            return None
-        stage_counts[stage] = int(stage_counts.get(stage, 0)) + 1
-        self.repositories.plans.create(latest.id, plan)
-        metadata = {
-            **latest.metadata,
-            "evaluator_repair_count": repair_count + 1,
-            "evaluator_repair_reason": reason,
-            "evaluator_repair_plan_id": plan.id,
-            "recovery_stage": stage,
-            "recovery_stage_counts": stage_counts,
-        }
-        updated = self.repositories.tasks.update_metadata(latest.id, metadata)
-        updated = self.repositories.tasks.attach_plan(updated.id, plan.id, TaskStatus.PLANNED)
-        self.repositories.tasks.set_current_step(updated.id, None)
-        self.audit.append(
-            AuditEventType.PLAN_CREATED,
-            actor="evaluator",
-            task_id=latest.id,
-            payload={
-                "plan_id": plan.id,
-                "step_count": len(plan.steps),
-                "reason": reason,
-                "plan": plan.model_dump(mode="json"),
-            },
-        )
-        self.audit.task_state_changed("evaluator", latest.id, latest.status, updated.status)
-        return self.repositories.tasks.get(latest.id) or updated
-
-    def _retry_decision(self, task: TaskRecord, result: ToolCallResult) -> TaskRecord | None:
-        if self.retry_policy is None:
-            return None
-        if result.error_class == ErrorClass.USAGE_LIMITED:
-            return self._ask_user(
-                task,
-                result.error_message or "usage limit reached",
-                extra_metadata={"intervention_summary": self.retry_policy.intervention_summary(result)},
-            )
-        current_retry_count = int(task.metadata.get("retry_count", 0))
-        decision = self.retry_policy.evaluate(result, current_retry_count)
-        if not decision.retry:
-            if decision.reason == "retry_limit_reached":
-                return self._ask_user(
-                    task,
-                    result.error_message or result.status.value,
-                    extra_metadata={
-                        "retry_count": decision.retry_count,
-                        "intervention_summary": self.retry_policy.intervention_summary(result),
-                    },
-                )
-            return None
-        metadata = {
-            **task.metadata,
-            "retry_count": decision.retry_count,
-            "last_retry_reason": decision.reason,
-            "next_retry_at": decision.next_retry_at,
-        }
-        updated = self.repositories.tasks.update_metadata(task.id, metadata, TaskStatus.RETRYING)
-        self.audit.task_state_changed("orchestrator", task.id, task.status, updated.status)
-        return updated
-
-    def _ask_user(self, task: TaskRecord, reason: str, *, extra_metadata: dict[str, Any] | None = None) -> TaskRecord:
-        """Pause the task with one targeted question instead of a dead BLOCKED/FAILED end.
-
-        The user's next message in the source chat resumes the task with the
-        answer attached (see TelegramIntakeService). At most two questions per
-        task — after that it fails with the accumulated context.
-        """
-        latest = self.repositories.tasks.get(task.id) or task
-        ask_count = int(latest.metadata.get("clarify_count", 0))
-        if ask_count >= 2:
-            return self._transition(latest, TaskStatus.FAILED, "clarification_attempts_exhausted")
-        question = build_clarifying_question(latest, reason)
-        metadata = {
-            **latest.metadata,
-            **(extra_metadata or {}),
-            "clarify_count": ask_count + 1,
-            "clarifying_question": question,
-            "clarifying_reason": reason[:400],
-        }
-        updated = self.repositories.tasks.update_metadata(latest.id, metadata, TaskStatus.CLARIFYING)
-        self.audit.task_state_changed("orchestrator", latest.id, latest.status, updated.status)
-        self.audit.append(
-            AuditEventType.TASK_STATE_CHANGED,
-            actor="orchestrator",
-            task_id=latest.id,
-            payload={"reason": "clarification_requested", "question": question, "clarify_count": ask_count + 1},
-        )
-        return updated
-
-    async def _validate_and_synthesize(
-        self, task: TaskRecord, tool_name: str, result: ToolCallResult
-    ) -> TaskRecord | None:
-        """Validate raw tool output first; if sufficient, synthesize the final answer.
-
-        Order matters: the validator checks the RAW tool output before the synthesizer
-        runs. If the raw output doesn't contain what was asked (wrong count, missing
-        section, login wall, etc.), we replan immediately with a specific reason — no
-        synthesizer call is wasted on insufficient content, and we avoid the risk of
-        the synthesizer hallucinating a plausible answer from incomplete data.
-
-        Returns a replanned TaskRecord if content is insufficient, or None to proceed to COMPLETED.
-        """
-        if self.synthesizer is None or not ResponseSynthesizer.is_content_tool(tool_name):
-            return None
-        raw = _tool_output_text(result)
-        if not raw:
-            return None
-        original_message = str(task.metadata.get("original_message_text") or "").strip() or None
-
-        # Step 1: validate raw output BEFORE synthesis.
-        if self.validator is not None:
-            valid, reason = await self.validator.validate(
-                task.objective,
-                raw,
-                original_message=original_message,
-            )
-            if not valid:
-                self.audit.append(
-                    AuditEventType.TASK_STATE_CHANGED,
-                    actor="validator",
-                    task_id=task.id,
-                    payload={
-                        "action": "raw_output_rejected",
-                        "tool": tool_name,
-                        "reason": reason,
-                    },
-                )
-                return await self._replan_with_error(
-                    task,
-                    f"Tool output insufficient: {reason}. Use a different tool/operation "
-                    f"or extract more of the page content (e.g. summarize_page instead of "
-                    f"extract_page_state, or a deeper page scan).",
-                )
-
-        # Step 2: synthesize the validated raw output into a focused answer.
-        answer = await self.synthesizer.synthesize(task.objective, raw, original_message=original_message)
-        if not answer:
-            sample = raw[:400].replace("\n", " ")
-            return await self._replan_with_error(
-                task,
-                f"Synthesizer could not extract a focused answer from validated raw output. "
-                f"Sample: '{sample}'. Try a different tool/operation.",
-            )
-
-        latest = self.repositories.tasks.get(task.id) or task
-        meta = {**latest.metadata, "synthesized_answer": answer}
-        self.repositories.tasks.update_metadata(task.id, meta)
-        self.audit.append(
-            AuditEventType.TASK_STATE_CHANGED,
-            actor="synthesizer",
-            task_id=task.id,
-            payload={"action": "answer_synthesized", "tool": tool_name},
-        )
-        return None
-
-    async def _replan_with_error(
-        self,
-        task: TaskRecord,
-        error_context: str,
-        *,
-        extra_config_context: str = "",
-    ) -> TaskRecord | None:
-        """Ask the LLM planner to produce a new plan given the error context (up to 2 replan attempts)."""
-        if self.planner is None:
-            return None
-        replan_count = int(task.metadata.get("replan_count", 0))
-        if replan_count >= 2:
-            return None
-        enriched_objective = (
-            f"{task.objective}\n\n"
-            f"[Previous attempt failed: {error_context[:400]}. "
-            "Try a different approach or different tool to accomplish the same goal.]"
-        )
-        latest = self.repositories.tasks.get(task.id) or task
-        metadata = {
-            **latest.metadata,
-            "replan_count": replan_count + 1,
-            "last_replan_reason": error_context[:400],
-            "replan_objective": enriched_objective,
-        }
-        self.repositories.tasks.update_metadata(task.id, metadata, TaskStatus.RECEIVED)
-        self.audit.append(
-            AuditEventType.TASK_STATE_CHANGED,
-            actor="orchestrator",
-            task_id=task.id,
-            payload={"reason": "replan_after_failure", "replan_count": replan_count + 1, "error": error_context[:400]},
-        )
-        try:
-            await self.planner.plan_task(
-                task.id,
-                self._planner_context(extra_config_context + f"\n\nError context: {error_context[:400]}"),
-            )
-        except Exception:
-            logger.warning("replanning planner call failed for task %s", task.id, exc_info=True)
-            return None
-        return self.repositories.tasks.get(task.id)
 
     def _planner_context(self, extra: str = "") -> str:
         if self.config_context_factory is None:
@@ -917,176 +793,18 @@ class TaskWorker:
                 metadata["last_delivered_artifact_id"] = output["artifact_id"]
         return self.repositories.tasks.update_metadata(task_id, metadata)
 
-    @staticmethod
-    def _next_runnable_step(steps: list[PlanStep], current_step_id: str) -> PlanStep | None:
-        found = False
-        for step in steps:
-            if found and step.tool_name:
-                return step
-            if step.id == current_step_id:
-                found = True
-        return None
-
-    def _transition(self, task: TaskRecord, status: TaskStatus, reason: str) -> TaskRecord:
-        if status == TaskStatus.COMPLETED:
-            latest = self.repositories.tasks.get(task.id) or task
-            plan = self.repositories.plans.get(latest.plan_id) if latest.plan_id else None
-            validation = validate_fulfillment(latest, plan)
-            gap = validation.first_gap
-            if gap:
-                recovery = self._attach_recovery_plan(latest, gap)
-                if recovery is not None:
-                    return recovery
-                retry_count = int(latest.metadata.get("fulfillment_retry_count", 0))
-                metadata = {
-                    **latest.metadata,
-                    "fulfillment_gap": gap,
-                    "fulfillment_expected": [item.model_dump(mode="json") for item in validation.expected],
-                    "fulfillment_missing": [item.value for item in validation.missing],
-                    "fulfillment_retry_count": retry_count + 1,
-                }
-                if retry_count < 2:
-                    updated = self.repositories.tasks.update_metadata(latest.id, metadata, TaskStatus.RECEIVED)
-                    self.audit.task_state_changed("validator", latest.id, latest.status, updated.status)
-                    self.audit.append(
-                        AuditEventType.TASK_STATE_CHANGED,
-                        actor="validator",
-                        task_id=latest.id,
-                        payload={"reason": "fulfillment_retry", "gap": gap, "status": updated.status.value},
-                    )
-                    return updated
-                self.repositories.tasks.update_metadata(latest.id, metadata)
-                self.audit.append(
-                    AuditEventType.TASK_STATE_CHANGED,
-                    actor="validator",
-                    task_id=latest.id,
-                    payload={"reason": "fulfillment_validation_failed", "gap": gap},
-                )
-                return self._ask_user(latest, gap)
-        updated = self.repositories.tasks.update_status(task.id, status)
-        self.audit.task_state_changed("orchestrator", task.id, task.status, updated.status)
-        self.audit.append(
-            AuditEventType.TASK_STATE_CHANGED,
-            actor="orchestrator",
-            task_id=task.id,
-            payload={"reason": reason, "status": status.value},
-        )
-        return updated
-
-
-def _resolve_step_input(task: TaskRecord, value: Any) -> Any:
-    replacements = {
-        "{{workspace_dir}}": str(task.metadata.get("workspace_dir") or ""),
-        "{{adapter_dir}}": str(task.metadata.get("adapter_dir") or ""),
-        "{{adapter_name}}": str(task.metadata.get("adapter_name") or ""),
-        "{{preview_url}}": str(task.metadata.get("preview_url") or ""),
-        "{{last_output}}": _last_tool_output_text(task),
-        "{{last_manifest}}": _last_manifest(task),
-        "{{last_entry_path}}": _last_entry_path(task),
-    }
-    return _replace_placeholders(value, replacements)
-
-
-def _is_background_external_result(step: PlanStep, result: ToolCallResult) -> bool:
-    if step.tool_name != "coding.agent" or result.status != ToolResultStatus.SUCCEEDED:
+def _is_background_external_tool_result(tool_name: str | None, result: ToolCallResult) -> bool:
+    if tool_name != "coding.agent" or result.status != ToolResultStatus.SUCCEEDED:
         return False
     output = result.output if isinstance(result.output, dict) else {}
     return output.get("status") == "running" and bool(output.get("session_id"))
 
 
-def _pending_tool_result(task: TaskRecord, step: PlanStep) -> ToolCallResult | None:
-    pending = task.metadata.get("pending_tool_result")
-    if not isinstance(pending, dict):
-        return None
-    if pending.get("step_id") and pending.get("step_id") != step.id:
-        return None
-    if pending.get("tool_name") and pending.get("tool_name") != step.tool_name:
-        return None
-    result = pending.get("result")
-    if not isinstance(result, dict):
-        return None
-    try:
-        return ToolCallResult.model_validate(result)
-    except Exception:
-        return None
-
-
-def _operation_from_step_result(step: PlanStep, result: ToolCallResult) -> str:
-    output = result.output if isinstance(result.output, dict) else {}
-    if output.get("operation"):
-        return str(output["operation"])
-    if step.tool_input.get("operation"):
-        return str(step.tool_input["operation"])
-    return ""
-
-
-def _replace_placeholders(value: Any, replacements: dict[str, Any]) -> Any:
-    if isinstance(value, str):
-        if value in replacements:
-            return replacements[value]
-        rendered = value
-        for placeholder, replacement in replacements.items():
-            if isinstance(replacement, str):
-                rendered = rendered.replace(placeholder, replacement)
-        return rendered
-    if isinstance(value, list):
-        return [_replace_placeholders(item, replacements) for item in value]
-    if isinstance(value, dict):
-        return {key: _replace_placeholders(item, replacements) for key, item in value.items()}
-    return value
-
-
-def _last_manifest(task: TaskRecord) -> list[dict]:
-    payload = task.metadata.get("last_tool_result")
-    if not isinstance(payload, dict):
-        return []
-    output = payload.get("output")
-    if not isinstance(output, dict):
-        return []
-    manifest = output.get("manifest")
-    return manifest if isinstance(manifest, list) else []
-
-
-def _last_entry_path(task: TaskRecord) -> str:
-    payload = task.metadata.get("last_tool_result")
-    if not isinstance(payload, dict):
-        return ""
-    output = payload.get("output")
-    if not isinstance(output, dict):
-        return ""
-    if output.get("path"):
-        return str(output["path"])
-    entries = output.get("entries")
-    if isinstance(entries, list):
-        for entry in entries:
-            if isinstance(entry, dict) and entry.get("path") and not entry.get("is_dir"):
-                return str(entry["path"])
-    return ""
-
-
-def _last_tool_output_text(task: TaskRecord) -> str:
-    stored_output = task.metadata.get("last_tool_output_text")
-    if isinstance(stored_output, str):
-        return stored_output
-    payload = task.metadata.get("last_tool_result")
-    if not isinstance(payload, dict):
-        return ""
-    output = payload.get("output")
-    if not isinstance(output, dict):
-        return ""
-    terminal_output = output.get("terminal_output")
-    if isinstance(terminal_output, list):
-        chunks = []
-        for item in terminal_output:
-            if isinstance(item, dict) and item.get("content"):
-                chunks.append(str(item["content"]))
-        if chunks:
-            return "\n\n".join(chunks)
-    for key in ("final_summary", "summary", "text", "message", "content"):
-        if output.get(key):
-            return str(output[key])
-    return json.dumps(output, default=str)
-
+def _last_content_tool_history_entry(history: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for entry in reversed(history):
+        if entry.get("status") == "succeeded" and AuditorService.is_content_tool(entry.get("tool_name")):
+            return entry
+    return None
 
 def _tool_output_text(result: ToolCallResult) -> str:
     output = result.output
@@ -1112,7 +830,6 @@ def _tool_output_text(result: ToolCallResult) -> str:
             return str(output[key])
     return ""
 
-
 def _looks_like_mcp_output(output: dict[str, Any]) -> bool:
     if output.get("operation") in {"discover", "list_tools", "call_tool", "health"} and (
         "servers" in output or "tools" in output or "result" in output
@@ -1120,65 +837,14 @@ def _looks_like_mcp_output(output: dict[str, Any]) -> bool:
         return True
     return bool(output.get("catalog_path") and ("servers" in output or "tools" in output))
 
-
 def _looks_like_http_output(output: dict[str, Any]) -> bool:
     return output.get("operation") == "request" and "status_code" in output and (
         "json" in output or "text" in output
     )
 
-
-def _is_mcp_recovery_discovery(task: TaskRecord, step: PlanStep, operation: str) -> bool:
-    if step.tool_name != "mcp.client" or operation not in {"discover", "list_tools", "health"}:
-        return False
-    reason = str(task.metadata.get("evaluator_repair_reason") or task.metadata.get("last_failure_type") or "").lower()
-    stage = str(task.metadata.get("recovery_stage") or "").lower()
-    return (
-        "connector_missing" in reason
-        or "tool adapter not registered" in reason
-        or "unregistered tool" in reason
-        or stage == "mcp_catalog_refresh"
-    )
-
-
-def _recovery_stage_for_plan(plan: PlanModel) -> str:
-    tool_ops = {(step.tool_name or "", str(step.tool_input.get("operation") or "")) for step in plan.steps}
-    if any(tool == "mcp.client" and operation in {"discover", "list_tools", "health"} for tool, operation in tool_ops):
-        return "mcp_catalog_refresh"
-    if any(tool == "mcp.client" and operation == "call_tool" for tool, operation in tool_ops):
-        return "mcp_call_tool"
-    if any(tool == "code.interpreter" for tool, _operation in tool_ops):
-        return "code_interpreter"
-    if any(tool == "adapter.factory" for tool, _operation in tool_ops):
-        return "adapter_factory"
-    if any(tool == "filesystem.manage" for tool, _operation in tool_ops):
-        return "filesystem_recovery"
-    if any(tool == "artifact.deliver" for tool, _operation in tool_ops):
-        return "artifact_delivery"
-    if any(tool == "computer.use" for tool, _operation in tool_ops):
-        return "computer_use_recovery"
-    return "evaluator_recovery"
-
-
-def _recovery_stage_counts(value: Any) -> dict[str, int]:
-    if not isinstance(value, dict):
-        return {}
-    counts: dict[str, int] = {}
-    for key, raw in value.items():
-        if not isinstance(key, str):
-            continue
-        try:
-            count = int(raw)
-        except (TypeError, ValueError):
-            continue
-        if count > 0:
-            counts[key] = count
-    return counts
-
-
 def _trim_result(result: ToolCallResult) -> dict:
     payload = result.model_dump(mode="json")
     return _trim_value(payload)
-
 
 def _trim_value(value):
     if isinstance(value, str):
@@ -1188,7 +854,6 @@ def _trim_value(value):
     if isinstance(value, dict):
         return {key: _trim_value(item) for key, item in value.items()}
     return value
-
 
 def _task_memory_summary(task: TaskRecord) -> str:
     metadata = task.metadata
@@ -1220,7 +885,6 @@ def _task_memory_summary(task: TaskRecord) -> str:
         parts.append(f"error: {error}")
     return _trim_value(" | ".join(parts))  # type: ignore[return-value]
 
-
 def _compact_jsonish(value: Any, limit: int = 900) -> str:
     if isinstance(value, str):
         text = value
@@ -1228,7 +892,6 @@ def _compact_jsonish(value: Any, limit: int = 900) -> str:
         text = json.dumps(value, ensure_ascii=False, default=str)
     text = " ".join(text.split())
     return text if len(text) <= limit else f"{text[: limit - 3]}..."
-
 
 def _last_error_from_task(task: TaskRecord) -> str | None:
     result = task.metadata.get("last_tool_result")
@@ -1240,27 +903,3 @@ def _last_error_from_task(task: TaskRecord) -> str | None:
         return str(task.metadata["fulfillment_gap"])
     return None
 
-
-def _route_decision(task: TaskRecord, plan: PlanModel) -> dict[str, Any]:
-    tool_names = [step.tool_name for step in plan.steps if step.tool_name]
-    lowered = task.objective.lower()
-    explicit_external_agents = []
-    if "codex" in lowered:
-        explicit_external_agents.append("codex")
-    if "copilot" in lowered:
-        explicit_external_agents.append("github_copilot")
-    used_external_agents = []
-    if any(tool and "copilot" in tool for tool in tool_names):
-        used_external_agents.append("github_copilot")
-    if any(tool in {"coding.agent", "coding_assistant"} for tool in tool_names):
-        used_external_agents.append("coding_agent")
-    skipped: list[str] = []
-    if not explicit_external_agents:
-        skipped.append("codex_and_github_copilot_not_used_without_explicit_user_request")
-    return {
-        "objective": task.objective,
-        "selected_tools": tool_names,
-        "explicit_external_agents": explicit_external_agents,
-        "used_external_agents": used_external_agents,
-        "external_agent_skipped": skipped,
-    }

@@ -3,10 +3,8 @@ from __future__ import annotations
 import pytest
 
 from agent_control.config import BrowserAdapterConfig
-from agent_control.orchestration.default_plans import build_default_task_plan
 from agent_control.schemas import Capability, TaskRecord, ToolCallRequest
 from agent_control.tools.browser import BrowserAdapter, BrowserTarget
-
 
 class FakeClient:
     def __init__(self, config: BrowserAdapterConfig) -> None:
@@ -55,7 +53,6 @@ class FakeClient:
     def fill_form(self, target: BrowserTarget, fields: dict[str, str], *, submit: bool, submit_selector: str | None) -> dict:
         return {"filled": sorted(fields), "submitted": submit}
 
-
 @pytest.mark.asyncio
 async def test_browser_research_pages_visits_limited_results(monkeypatch) -> None:
     monkeypatch.setattr("agent_control.tools.browser.ChromeDevToolsClient", FakeClient)
@@ -74,7 +71,6 @@ async def test_browser_research_pages_visits_limited_results(monkeypatch) -> Non
     assert result.output["visited_urls"] == ["https://one.test/page", "https://two.test/page"]
     assert len(result.output["page_summaries"]) == 2
 
-
 @pytest.mark.asyncio
 async def test_browser_check_page_update_extracts_markers(monkeypatch) -> None:
     monkeypatch.setattr("agent_control.tools.browser.ChromeDevToolsClient", FakeClient)
@@ -92,7 +88,6 @@ async def test_browser_check_page_update_extracts_markers(monkeypatch) -> None:
     assert result.status.value == "succeeded"
     markers = result.output["browser_state"]["update_check"]["markers"]
     assert any("episode 7" in marker.lower() for marker in markers)
-
 
 @pytest.mark.asyncio
 async def test_browser_extract_state_and_fill_form_step(monkeypatch) -> None:
@@ -120,23 +115,3 @@ async def test_browser_extract_state_and_fill_form_step(monkeypatch) -> None:
     assert filled.output["browser_state"]["filled_fields"]["filled"] == ["email"]
     assert filled.output["browser_state"]["filled_fields"]["submitted"] is False
 
-
-def test_default_browser_form_plan_extracts_then_fills() -> None:
-    from agent_control.config import AppSettings, CapabilityPolicy
-    from agent_control.schemas import RiskLevel
-
-    settings = AppSettings(
-        _env_file=None,
-        adapters={"browser": {"enabled": True}},
-        capabilities={
-            Capability.BROWSER_OPEN: CapabilityPolicy(enabled=True, requires_approval=False, max_risk_level=RiskLevel.LOW),
-            Capability.BROWSER_CONTROL: CapabilityPolicy(enabled=True, requires_approval=False, max_risk_level=RiskLevel.CRITICAL),
-        },
-    )
-
-    plan = build_default_task_plan(
-        settings,
-        TaskRecord(objective="Open https://form.test and start filling the form email=a@example.com"),
-    )
-
-    assert plan is None

@@ -7,11 +7,9 @@ import subprocess
 import pytest
 
 from agent_control.config import AdapterFactoryConfig, AppSettings, CapabilityPolicy, WorkspaceAdapterConfig
-from agent_control.orchestration.default_plans import build_default_task_plan
 from agent_control.schemas import Capability, RiskLevel, TaskRecord, ToolCallRequest, ToolResultStatus
 from agent_control.tools.adapter_factory import AdapterFactoryAdapter
 from agent_control.tools.local_workspace import LocalWorkspaceAdapter, LocalWorkspaceWebAppAdapter
-
 
 @pytest.mark.asyncio
 async def test_local_workspace_web_app_creates_files_and_url(tmp_path) -> None:
@@ -35,7 +33,6 @@ async def test_local_workspace_web_app_creates_files_and_url(tmp_path) -> None:
     assert (workspace / "README.md").exists()
 
     _stop_process(int(result.output["server_pid"]))
-
 
 @pytest.mark.asyncio
 async def test_local_workspace_prepare_and_write_files(tmp_path) -> None:
@@ -61,7 +58,6 @@ async def test_local_workspace_prepare_and_write_files(tmp_path) -> None:
     assert result.output["workspace_dir"] == str(workspace)
     assert (workspace / "TASK.md").exists()
     assert (workspace / "src" / "app.py").read_text(encoding="utf-8") == "print('hello')\n"
-
 
 @pytest.mark.asyncio
 async def test_local_workspace_materializes_static_app_from_assistant_output(tmp_path) -> None:
@@ -92,7 +88,6 @@ body { font-family: sans-serif; }
     assert result.output["materialized_from"] == "assistant_output"
     assert "Ferret Studio" in (workspace / "index.html").read_text(encoding="utf-8")
     assert (workspace / "styles.css").exists()
-
 
 @pytest.mark.asyncio
 async def test_local_workspace_materialize_creates_missing_local_assets(tmp_path) -> None:
@@ -125,7 +120,6 @@ body { font-family: sans-serif; }
     assert (workspace / "script.js").exists()
     assert str(workspace / "script.js") in result.output["files"]
 
-
 @pytest.mark.asyncio
 async def test_local_workspace_launch_reports_existing_static_files(tmp_path) -> None:
     adapter = LocalWorkspaceAdapter(
@@ -150,7 +144,6 @@ async def test_local_workspace_launch_reports_existing_static_files(tmp_path) ->
     assert str(workspace / "styles.css") in result.output["files"]
     _stop_process(int(result.output["server_pid"]))
 
-
 @pytest.mark.asyncio
 async def test_local_workspace_strict_materialize_rejects_missing_app_files(tmp_path) -> None:
     adapter = LocalWorkspaceAdapter(
@@ -174,7 +167,6 @@ async def test_local_workspace_strict_materialize_rejects_missing_app_files(tmp_
 
     assert result.status == ToolResultStatus.FAILED
     assert "materializable static app files" in (result.error_message or "")
-
 
 @pytest.mark.asyncio
 async def test_local_workspace_strict_materialize_requires_index(tmp_path) -> None:
@@ -202,7 +194,6 @@ body { color: teal; }
     assert result.status == ToolResultStatus.FAILED
     assert "index.html" in (result.error_message or "")
 
-
 @pytest.mark.asyncio
 async def test_adapter_factory_scaffolds_cached_adapter(tmp_path) -> None:
     adapter = AdapterFactoryAdapter(AdapterFactoryConfig(root_dir=str(tmp_path / "adapters")))
@@ -226,26 +217,6 @@ async def test_adapter_factory_scaffolds_cached_adapter(tmp_path) -> None:
     assert (adapter_dir / "manifest.json").exists()
     assert (adapter_dir / "adapter.py").exists()
 
-
-def test_default_plan_routes_adapter_request_without_development_classification(tmp_path) -> None:
-    settings = AppSettings(
-        _env_file=None,
-        adapters={"adapter_factory": {"enabled": True, "root_dir": str(tmp_path / "adapters")}},
-        capabilities={
-            Capability.FILESYSTEM_WRITE: CapabilityPolicy(
-                enabled=True,
-                requires_approval=False,
-                max_risk_level=RiskLevel.HIGH,
-            )
-        },
-    )
-
-    plan = build_default_task_plan(
-        settings,
-        TaskRecord(objective="Create an adapter to access a fake calendar service API.", metadata={"task_type": "other"}),
-    )
-
-    assert plan is None
 def _stop_process(pid: int) -> None:
     if os.name == "nt":
         subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False, capture_output=True)

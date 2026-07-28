@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 
 from agent_control.config import CodingAssistantAdapterConfig
-from agent_control.schemas import ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.schemas import Capability, ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.tools.contracts import CodingAssistantInput, CodingAssistantOutput
+from agent_control.tools.spec import Adapters, Definitions, RegistryDeps, ToolDefinition, capability_enabled
 
 
 class GenericTerminalAgentAdapter:
@@ -91,3 +93,20 @@ class GenericTerminalAgentAdapter:
             error_class=error_class,
             error_message=error_class.value,
         )
+
+
+def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -> None:
+    settings = deps.settings
+    enabled = capability_enabled(settings, Capability.TERMINAL_RUN) and settings.adapters.coding_assistant.enabled
+    definitions.append(
+        ToolDefinition(
+            name="coding_assistant",
+            capability=Capability.TERMINAL_RUN,
+            enabled=enabled,
+            description="run the configured local coding assistant command template",
+            input_schema=CodingAssistantInput,
+            output_schema=CodingAssistantOutput,
+        )
+    )
+    if settings.adapters.coding_assistant.enabled:
+        adapters["coding_assistant"] = GenericTerminalAgentAdapter(settings.adapters.coding_assistant)

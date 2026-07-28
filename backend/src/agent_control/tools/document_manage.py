@@ -6,9 +6,27 @@ import re
 from typing import Any
 from zipfile import ZIP_DEFLATED, ZipFile
 
+from agent_control.config import AppSettings
 from agent_control.llm.providers import LLMProvider
-from agent_control.schemas import Artifact, ArtifactType, ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.schemas import (
+    Artifact,
+    ArtifactType,
+    Capability,
+    ErrorClass,
+    ToolCallRequest,
+    ToolCallResult,
+    ToolResultStatus,
+)
 from agent_control.storage.repositories import ArtifactRepository
+from agent_control.tools.contracts import DocumentManageInput, DocumentManageOutput
+from agent_control.tools.spec import (
+    Adapters,
+    Definitions,
+    RegistryDeps,
+    ToolDefinition,
+    capability_enabled,
+    same_output_schema,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -308,3 +326,44 @@ def _failed(request: ToolCallRequest, message: str) -> ToolCallResult:
         error_class=ErrorClass.ADAPTER_FAILED,
         error_message=message,
     )
+
+
+def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -> None:
+    settings = deps.settings
+    enabled = capability_enabled(settings, Capability.FILESYSTEM_WRITE)
+    definitions.append(
+        ToolDefinition(
+            name="document.manage",
+            capability=Capability.FILESYSTEM_WRITE,
+            enabled=enabled,
+            description="inspect documents, summarize PDFs, and create or revise PowerPoint files as task artifacts",
+            operations=("inspect_document", "extract_text", "summarize_pdf", "create_presentation", "update_presentation"),
+            input_schema=DocumentManageInput,
+            output_schema=DocumentManageOutput,
+            operation_output_schemas=same_output_schema(
+                ("inspect_document", "extract_text", "summarize_pdf", "create_presentation", "update_presentation"),
+                DocumentManageOutput,
+            ),
+            default_operation="inspect_document",
+            examples=(
+                {"operation": "summarize_pdf", "path": "{{last_entry_path}}"},
+                {"operation": "create_presentation",
+                 "title": "Weekly Update",
+                 "content": "Status: green. Blockers: none."},
+            ),
+        )
+    )
+    if deps.artifact_repository is not None:
+        adapters["document.manage"] = DocumentManageAdapter(
+            deps.artifact_repository,  # type: ignore[arg-type]
+            provider=deps.provider,
+            allowed_roots=_document_roots(settings),
+        )
+
+
+def _document_roots(settings: AppSettings) -> list[str]:
+    return [
+        settings.storage.artifact_dir,
+        settings.adapters.workspace.root_dir,
+        *settings.adapters.computer_use.allowed_roots,
+    ]

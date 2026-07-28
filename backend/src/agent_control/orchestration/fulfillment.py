@@ -184,8 +184,27 @@ def _postconditions_from_plan(plan: PlanModel) -> list[PlanPostcondition]:
     return _dedupe(expected)
 
 
+_EMBEDDED_PATH = re.compile(r"[a-z]:\\\S+|\\\\\S+", re.IGNORECASE)
+
+
+def _strip_embedded_paths(text: str) -> str:
+    """Objectives routinely embed a literal filesystem path ("look in the
+    folder C:\\Users\\...\\search_results"). Left in, a path segment that
+    happens to contain a trigger word (a folder named "...search", "...app",
+    "...schedule") produces a false-positive expected postcondition that
+    nothing in the actual task run ever satisfies - this is the sole
+    fulfillment signal the Operator loop has (no PlanModel to derive
+    postconditions from instead, see validate_fulfillment), so a false
+    positive here means a task that genuinely finished loops on a gap it
+    can never close. Strip anything path-shaped before keyword matching, not
+    just this one trigger word - the failure mode is the pattern (words
+    embedded in a path getting matched as intent), not any single keyword.
+    """
+    return _EMBEDDED_PATH.sub(" ", text)
+
+
 def _postconditions_from_objective(objective: str) -> list[PlanPostcondition]:
-    lowered = objective.lower()
+    lowered = _strip_embedded_paths(objective).lower()
     words = set(re.findall(r"[a-z0-9]+", lowered))
     visible_action = bool(words & {"launch", "start", "serve", "open", "preview"}) or "show me" in lowered or "url" in words
     app_request = bool(words & {"app", "application", "website", "webpage", "html"}) or "web page" in lowered

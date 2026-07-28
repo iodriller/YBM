@@ -757,6 +757,18 @@ class ScheduleRepository:
             raise KeyError(f"schedule not found: {schedule_id}")
         return self._row_to_schedule(row)
 
+    def update_metadata(self, schedule_id: str, metadata: dict[str, Any]) -> ScheduleRecord:
+        now = utc_now()
+        with self.database.connect() as connection:
+            connection.execute(
+                "UPDATE schedules SET metadata_json = ?, updated_at = ? WHERE id = ?",
+                (_dump(metadata), _dt(now), schedule_id),
+            )
+            row = connection.execute("SELECT * FROM schedules WHERE id = ?", (schedule_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"schedule not found: {schedule_id}")
+        return self._row_to_schedule(row)
+
     def mark_run(self, schedule_id: str, task_id: str, last_run_at: datetime, next_run_at: datetime) -> ScheduleRecord:
         now = utc_now()
         with self.database.connect() as connection:

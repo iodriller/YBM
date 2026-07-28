@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import re
 from typing import Any
 
-from agent_control.schemas import AuditEventType, ScheduleRecord, ScheduleStatus, TaskRecord, utc_now
+from agent_control.schemas import AuditEventType, ScheduleRecord, ScheduleStatus, TaskRecord, TaskStatus, utc_now
 from agent_control.storage.audit import AuditLogger
 from agent_control.storage.repositories import Repositories
 
@@ -70,12 +70,66 @@ def create_due_task(repositories: Repositories, audit: AuditLogger, schedule: Sc
     return task
 
 
-async def run_scheduler_once(repositories: Repositories, audit: AuditLogger, *, now: datetime | None = None, limit: int = 20) -> list[TaskRecord]:
+def _record_previous_run_outcome(
+    repositories: Repositories, audit: AuditLogger, schedule: ScheduleRecord, *, max_consecutive_failures: int
+) -> ScheduleRecord:
+    """Check whether the task this schedule spawned last time failed, and
+    track consecutive failures - auto-pausing the schedule once the streak
+    hits the configured limit, rather than letting it keep firing and
+    failing unnoticed (the motivating case: 7 real schedules whose target
+    had gone away, still firing daily for weeks - docs/ROADMAP.md P6).
+    Returns the schedule record, refreshed if its metadata/status changed."""
+    if not schedule.last_task_id:
+        return schedule
+    previous_task = repositories.tasks.get(schedule.last_task_id)
+    if previous_task is None:
+        return schedule
+    streak = int(schedule.metadata.get("consecutive_failures", 0))
+    if previous_task.status == TaskStatus.FAILED:
+        streak += 1
+    elif previous_task.status in {TaskStatus.COMPLETED, TaskStatus.BLOCKED, TaskStatus.CANCELLED}:
+        streak = 0
+    else:
+        # Still in flight (or in some non-terminal state) from last time -
+        # nothing new to learn about the streak yet.
+        return schedule
+    if streak == int(schedule.metadata.get("consecutive_failures", 0)):
+        return schedule
+    metadata = {**schedule.metadata, "consecutive_failures": streak}
+    schedule = repositories.schedules.update_metadata(schedule.id, metadata)
+    if streak >= max_consecutive_failures:
+        schedule = repositories.schedules.update_status(schedule.id, ScheduleStatus.PAUSED)
+        audit.append(
+            AuditEventType.ERROR,
+            actor="scheduler",
+            task_id=previous_task.id,
+            payload={
+                "schedule_id": schedule.id,
+                "error": f"schedule auto-paused after {streak} consecutive failures",
+                "objective": schedule.objective,
+            },
+        )
+    return schedule
+
+
+async def run_scheduler_once(
+    repositories: Repositories,
+    audit: AuditLogger,
+    *,
+    now: datetime | None = None,
+    limit: int = 20,
+    max_consecutive_failures: int = 5,
+) -> list[TaskRecord]:
     due = repositories.schedules.list_due(now or utc_now(), limit=limit)
     created: list[TaskRecord] = []
     for schedule in due:
         if schedule.status != ScheduleStatus.ENABLED:
             continue
+        schedule = _record_previous_run_outcome(
+            repositories, audit, schedule, max_consecutive_failures=max_consecutive_failures
+        )
+        if schedule.status != ScheduleStatus.ENABLED:
+            continue  # just auto-paused above; don't spawn another failing run
         try:
             created.append(create_due_task(repositories, audit, schedule))
         except Exception as exc:
@@ -92,9 +146,10 @@ async def run_scheduler_forever(
     audit: AuditLogger,
     *,
     poll_interval_seconds: float = 30.0,
+    max_consecutive_failures: int = 5,
 ) -> None:
     while True:
-        await run_scheduler_once(repositories, audit)
+        await run_scheduler_once(repositories, audit, max_consecutive_failures=max_consecutive_failures)
         await asyncio.sleep(poll_interval_seconds)
 
 

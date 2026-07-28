@@ -8,7 +8,7 @@ import httpx
 
 from agent_control.config import AppSettings, TelegramConfig
 from agent_control.config_sync import read_env_value
-from agent_control.channels.responder import TelegramResponder
+from agent_control.channels.responder import TelegramResponder, gateway_context
 from agent_control.channels.memory import ConversationMemoryService, memory_context
 from agent_control.llm.classifier import MessageClassifier, classification_trace
 from agent_control.orchestration.signals import apply_task_signal
@@ -494,10 +494,20 @@ class TelegramIntakeService:
 
         await self._send_progress(inbound.chat_id, "Got your message, figuring out what to do…")
         try:
-            classification_context = memory_context(
-                self.repositories.conversation_memory.get(conversation_id),
-                recent_turns=3,
-                max_chars=900,
+            # The Concierge prompt does double duty (classify + compose a chat
+            # reply in one call, see prompts/base/concierge_system.md) - a chat
+            # reply needs the same runtime context the old separate responder
+            # call used (capabilities, recent tasks), not just conversation
+            # memory. Falls back to the narrower memory-only context when no
+            # settings are available (e.g. a caller that never wired them).
+            classification_context = (
+                gateway_context(self.settings, self.repositories, conversation_id)
+                if self.settings is not None
+                else memory_context(
+                    self.repositories.conversation_memory.get(conversation_id),
+                    recent_turns=3,
+                    max_chars=900,
+                )
             )
             try:
                 classification = await self.classifier.classify(inbound, context=classification_context)
@@ -690,6 +700,13 @@ class TelegramIntakeService:
     ) -> OutboundMessage | None:
         if classification.task_type == TaskType.STATUS_REQUEST:
             return self._out(inbound.chat_id, self._status_summary())
+        # The Concierge composes the chat reply in the same call it
+        # classifies (see prompts/base/concierge_system.md) - no second LLM
+        # round trip needed. Falls back to the separate `responder` (if
+        # configured) for a classifier that doesn't populate `.reply`.
+        reply = (classification.reply or "").strip()
+        if reply:
+            return self._out(inbound.chat_id, reply[:3900])
         if self.responder is None:
             return None
         try:
