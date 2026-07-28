@@ -1,9 +1,28 @@
 from __future__ import annotations
 
 from agent_control.scheduler import cadence_from_text, create_due_task, next_run_after, objective_from_schedule_text, schedule_to_output
-from agent_control.schemas import ChannelType, ErrorClass, ScheduleRecord, ScheduleStatus, ToolCallRequest, ToolCallResult, ToolResultStatus, utc_now
+from agent_control.schemas import (
+    Capability,
+    ChannelType,
+    ErrorClass,
+    ScheduleRecord,
+    ScheduleStatus,
+    ToolCallRequest,
+    ToolCallResult,
+    ToolResultStatus,
+    utc_now,
+)
 from agent_control.storage.audit import AuditLogger
 from agent_control.storage.repositories import Repositories
+from agent_control.tools.contracts import ScheduleManageInput, ScheduleManageOutput
+from agent_control.tools.spec import (
+    Adapters,
+    Definitions,
+    RegistryDeps,
+    ToolDefinition,
+    capability_enabled,
+    same_output_schema,
+)
 
 
 class ScheduleManageAdapter:
@@ -111,3 +130,40 @@ def _failed(request: ToolCallRequest, message: str) -> ToolCallResult:
         error_class=ErrorClass.ADAPTER_FAILED,
         error_message=message,
     )
+
+
+def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -> None:
+    settings = deps.settings
+    enabled = capability_enabled(settings, Capability.SCHEDULE_MANAGE) and settings.scheduler.enabled
+    definitions.append(
+        ToolDefinition(
+            name="schedule.manage",
+            capability=Capability.SCHEDULE_MANAGE,
+            enabled=enabled,
+            description="create, list, pause, resume, delete, or run recurring task schedules",
+            operations=("create", "list", "pause", "resume", "delete", "run_now"),
+            input_schema=ScheduleManageInput,
+            output_schema=ScheduleManageOutput,
+            operation_output_schemas=same_output_schema(
+                ("create", "list", "pause", "resume", "delete", "run_now"),
+                ScheduleManageOutput,
+            ),
+            default_operation="create",
+            # Without a worked example the planner has only the bare schema to
+            # go on and reliably invents a nonexistent shape (a "frequency"
+            # field, a nested "task" object) instead of using "objective" +
+            # "cadence" - confirmed empirically while recording a scenario
+            # test fixture for this exact tool (docs/ROADMAP.md P2).
+            examples=(
+                {"operation": "create", "objective": "Check https://example.com/status for updates", "cadence": "daily"},
+                {"operation": "list"},
+                {"operation": "pause", "schedule_id": "{{schedule_id}}"},
+            ),
+        )
+    )
+    if deps.repositories is not None and deps.audit_logger is not None:
+        adapters["schedule.manage"] = ScheduleManageAdapter(
+            deps.repositories,  # type: ignore[arg-type]
+            deps.audit_logger,  # type: ignore[arg-type]
+            default_timezone=settings.scheduler.default_timezone,
+        )

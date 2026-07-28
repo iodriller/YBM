@@ -65,6 +65,41 @@ async def test_llm_classifier_retries_and_returns_structured_intent() -> None:
     assert classification.intent.cadence == "daily"
 
 
+class ChatReplyProvider:
+    async def generate_structured(self, system_prompt, user_prompt, output_model, **_ignored_kwargs):
+        return MessageClassification(
+            is_task=False,
+            task_type=TaskType.QUESTION,
+            confidence=0.95,
+            reason="pure chat",
+            reply="I can inspect files, control the browser, and run scheduled jobs.",
+        )
+
+    async def generate_text(self, system_prompt, user_prompt):
+        return "unused"
+
+
+@pytest.mark.asyncio
+async def test_llm_classifier_returns_concierge_composed_reply_for_chat() -> None:
+    """The Concierge (prompts/base/concierge_system.md) composes the chat
+    reply in the same structured-output call it classifies with - proves the
+    schema round-trips `reply` correctly, not just that the field exists."""
+    classifier = LLMMessageClassifier(ChatReplyProvider())
+
+    classification = await classifier.classify(
+        InboundMessage(
+            channel=ChannelType.TELEGRAM,
+            kind=MessageKind.TEXT,
+            sender_id="42",
+            chat_id="100",
+            text="what can you do?",
+        )
+    )
+
+    assert classification.is_task is False
+    assert classification.reply == "I can inspect files, control the browser, and run scheduled jobs."
+
+
 def test_emergency_classification_spawns_unknown_task_for_actionable_text_without_route_guessing() -> None:
     classification = emergency_classification(
         InboundMessage(

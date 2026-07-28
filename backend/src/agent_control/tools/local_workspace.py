@@ -12,7 +12,20 @@ import webbrowser
 from typing import Any
 
 from agent_control.config import WorkspaceAdapterConfig
-from agent_control.schemas import ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.schemas import Capability, ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.tools.contracts import (
+    WorkspaceLaunchStaticInput,
+    WorkspaceLaunchStaticOutput,
+    WorkspaceMaterializeStaticAppInput,
+    WorkspaceMaterializeStaticAppOutput,
+    WorkspacePrepareInput,
+    WorkspacePrepareOutput,
+    WorkspaceWebAppPreviewInput,
+    WorkspaceWebAppPreviewOutput,
+    WorkspaceWriteFilesInput,
+    WorkspaceWriteFilesOutput,
+)
+from agent_control.tools.spec import Adapters, Definitions, RegistryDeps, ToolDefinition, capability_enabled
 
 
 class LocalWorkspaceAdapter:
@@ -577,3 +590,36 @@ def _failed(request: ToolCallRequest, message: str) -> ToolCallResult:
         error_class=ErrorClass.ADAPTER_FAILED,
         error_message=message,
     )
+
+
+def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -> None:
+    settings = deps.settings
+    enabled = capability_enabled(settings, Capability.FILESYSTEM_WRITE) and settings.adapters.workspace.enabled
+    definitions.append(
+        ToolDefinition(
+            name="workspace.manage",
+            capability=Capability.FILESYSTEM_WRITE,
+            enabled=enabled,
+            description=f"manage task workspaces under {settings.adapters.workspace.root_dir}",
+            operations=("prepare", "write_files", "materialize_static_app", "launch_static", "web_app_preview"),
+            operation_schemas={
+                "prepare": WorkspacePrepareInput,
+                "write_files": WorkspaceWriteFilesInput,
+                "materialize_static_app": WorkspaceMaterializeStaticAppInput,
+                "launch_static": WorkspaceLaunchStaticInput,
+                "web_app_preview": WorkspaceWebAppPreviewInput,
+            },
+            operation_output_schemas={
+                "prepare": WorkspacePrepareOutput,
+                "write_files": WorkspaceWriteFilesOutput,
+                "materialize_static_app": WorkspaceMaterializeStaticAppOutput,
+                "launch_static": WorkspaceLaunchStaticOutput,
+                "web_app_preview": WorkspaceWebAppPreviewOutput,
+            },
+            default_operation="prepare",
+        )
+    )
+    if settings.adapters.workspace.enabled:
+        workspace = LocalWorkspaceAdapter(settings.adapters.workspace)
+        adapters["workspace.manage"] = workspace
+        adapters["workspace.web_app"] = workspace

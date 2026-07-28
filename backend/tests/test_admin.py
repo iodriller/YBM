@@ -31,7 +31,7 @@ def _repositories(database_url: str) -> Repositories:
     return Repositories.for_database(database)
 
 
-def test_admin_page_and_summary(monkeypatch, tmp_path) -> None:
+def test_admin_page_points_to_streamlit(monkeypatch, tmp_path) -> None:
     # chdir, not just delenv: read_env_value() reads .env from the current
     # working directory, so a bare delenv here is not real isolation.
     monkeypatch.chdir(tmp_path)
@@ -40,28 +40,32 @@ def test_admin_page_and_summary(monkeypatch, tmp_path) -> None:
     client = TestClient(app)
 
     page = client.get("/admin")
-    summary = client.get("/admin/api/summary")
 
+    # The Streamlit app (admin_streamlit.py) is the one real admin UI
+    # (docs/ROADMAP.md P4) - /admin is now just a small pointer to it, not a
+    # second console. Assert it stays small and points at Streamlit, rather
+    # than reintroducing the ~1,300-line embedded SPA this replaced.
     assert page.status_code == 200
     assert "Agent Control Admin" in page.text
+    assert "8501" in page.text
+    assert len(page.text) < 2000
+    assert "onclick=" not in page.text
+    assert "task-card" not in page.text
+
+
+def test_admin_summary_api_unaffected_by_html_page_removal(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)  # see test_admin_page_points_to_streamlit for why chdir, not just delenv
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    monkeypatch.setenv("AGENT_STORAGE__DATABASE_URL", f"sqlite:///{tmp_path / 'admin.db'}")
+    client = TestClient(app)
+
+    summary = client.get("/admin/api/summary")
+
     assert summary.status_code == 200
     assert summary.json()["config"]["identity"]["instance_name"] == "local-agent-control"
     assert "services" in summary.json()
     assert "schedules" in summary.json()
     assert "tool_registry" in summary.json()
-    assert 'onclick="setAccessMode' not in page.text
-    assert 'onclick="taskSignal' not in page.text
-    assert 'data-task-action="' in page.text
-    assert 'data-task-details="' in page.text
-    assert 'class="task-card"' in page.text
-    assert 'id="task-trace-modal"' in page.text
-    assert "trace-modal-body" in page.text
-    assert "height: min(920px, calc(100vh - 32px));" in page.text
-    assert "contain: size layout paint" not in page.text
-    assert "contain: layout paint" in page.text
-    assert "activeTraceTaskId" in page.text
-    assert "expandedTaskIds" not in page.text
-    assert 'data-access-mode-group="' in page.text
 
 
 def test_admin_fails_closed_on_non_loopback_host_without_token(monkeypatch, tmp_path) -> None:
@@ -74,6 +78,35 @@ def test_admin_fails_closed_on_non_loopback_host_without_token(monkeypatch, tmp_
     summary = client.get("/admin/api/summary")
 
     assert summary.status_code == 503
+
+
+def test_admin_rejects_cross_origin_request_even_without_token(monkeypatch, tmp_path) -> None:
+    # The exploitable case: no token configured (the common local, convenient
+    # setup), host is loopback (the default) - require_admin's token/host
+    # checks alone would let this through. A malicious site the admin's
+    # browser visits could otherwise trigger this exact request against
+    # 127.0.0.1 without ever needing to read the response.
+    monkeypatch.chdir(tmp_path)  # see test_admin_page_and_summary for why chdir, not just delenv
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    monkeypatch.setenv("AGENT_STORAGE__DATABASE_URL", f"sqlite:///{tmp_path / 'admin.db'}")
+    client = TestClient(app)
+
+    response = client.get("/admin/api/summary", headers={"origin": "http://evil.example"})
+
+    assert response.status_code == 403
+
+
+def test_admin_allows_same_origin_request_without_token(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)  # see test_admin_page_and_summary for why chdir, not just delenv
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    monkeypatch.setenv("AGENT_STORAGE__DATABASE_URL", f"sqlite:///{tmp_path / 'admin.db'}")
+    client = TestClient(app)
+
+    # TestClient's default base_url makes same-origin requests carry
+    # Origin: http://testserver against Host: testserver.
+    response = client.get("/admin/api/summary", headers={"origin": "http://testserver"})
+
+    assert response.status_code == 200
 
 
 def test_admin_lists_tasks_and_audit(monkeypatch, tmp_path) -> None:

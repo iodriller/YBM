@@ -7,7 +7,9 @@ from uuid import uuid4
 import wave
 
 from agent_control.config import TTSAdapterConfig
-from agent_control.schemas import ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.schemas import Capability, ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.tools.contracts import TTSSynthesizeInput, TTSSynthesizeOutput
+from agent_control.tools.spec import Adapters, Definitions, RegistryDeps, ToolDefinition, capability_enabled
 
 
 class TTSAdapter(Protocol):
@@ -141,3 +143,22 @@ def _failed(request: ToolCallRequest, message: str) -> ToolCallResult:
         error_class=ErrorClass.ADAPTER_FAILED,
         error_message=message,
     )
+
+
+def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -> None:
+    settings = deps.settings
+    enabled = capability_enabled(settings, Capability.TTS_SYNTHESIZE) and settings.adapters.tts.enabled
+    definitions.append(
+        ToolDefinition(
+            name="tts.synthesize",
+            capability=Capability.TTS_SYNTHESIZE,
+            enabled=enabled,
+            description="synthesize local speech audio with the configured Kokoro ONNX runtime",
+            operations=("synthesize",),
+            input_schema=TTSSynthesizeInput,
+            output_schema=TTSSynthesizeOutput,
+            default_operation="synthesize",
+        )
+    )
+    if settings.adapters.tts.enabled:
+        adapters["tts.synthesize"] = build_tts_adapter(settings.adapters.tts)

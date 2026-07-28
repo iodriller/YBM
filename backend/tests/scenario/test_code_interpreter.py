@@ -13,6 +13,14 @@ from agent_control.schemas import Capability, RiskLevel, TaskStatus
 
 from .harness import build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
 
+pytestmark = pytest.mark.skip(
+    reason="fixture recorded against the deleted plan-once path (PlannerService/ResponseSynthesizer/AnswerValidator prompts); the Operator loop (docs/ROADMAP.md P3 "
+    "\u00a72.2) is now the sole execution path and needs its own fixture, recorded fresh "
+    "against a live LLM - see orchestration/operator.py and test_operator_loop.py for the "
+    "pattern. Left in place (not deleted) so the scenario this file documents survives as "
+    "a checklist for that re-recording pass."
+)
+
 
 @pytest.mark.asyncio
 async def test_code_interpreter_computes_fibonacci(tmp_path, monkeypatch) -> None:
@@ -23,7 +31,21 @@ async def test_code_interpreter_computes_fibonacci(tmp_path, monkeypatch) -> Non
     settings = isolated_settings(
         monkeypatch, tmp_path,
         capabilities=caps,
-        adapters={"code_interpreter": {"enabled": True, "workspace_root": str(workspace)}},
+        # require_approval_for_untrusted_run_python: False - this test is
+        # about execution correctness (right tool, right file, right
+        # answer), not the approval gate itself (see
+        # test_code_interpreter.py's
+        # test_code_interpreter_generated_run_needs_approval_on_silent_docker_fallback
+        # for that, and test_code_interpreter_default_settings_need_approval_without_docker.py
+        # for this same objective proven to correctly require approval
+        # under the real default config, with no opt-out).
+        adapters={
+            "code_interpreter": {
+                "enabled": True,
+                "workspace_root": str(workspace),
+                "require_approval_for_untrusted_run_python": False,
+            }
+        },
     )
     scenario = build_scenario(settings, tmp_path=tmp_path, fixture_name="code_interpreter_fibonacci")
 

@@ -9,7 +9,30 @@ from typing import Any
 
 from agent_control.llm.providers import LLMProvider
 from agent_control.prompts import prompt_text, render_prompt
-from agent_control.schemas import ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.schemas import Capability, ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.tools.contracts import (
+    FilesystemApplyManifestInput,
+    FilesystemCollectFolderSnapshotInput,
+    FilesystemDescribeFolderInput,
+    FilesystemFindByDescriptionInput,
+    FilesystemInspectInput,
+    FilesystemManageOutput,
+    FilesystemOpenFileInput,
+    FilesystemOrganizePlanInput,
+    FilesystemReadFileInput,
+    FilesystemRenamePlanInput,
+    FilesystemResolveDesktopItemInput,
+    FilesystemSearchInput,
+    FilesystemWriteTextFileInput,
+)
+from agent_control.tools.spec import (
+    Adapters,
+    Definitions,
+    RegistryDeps,
+    ToolDefinition,
+    capability_enabled,
+    same_output_schema,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -705,3 +728,79 @@ def _failed(request: ToolCallRequest, message: str) -> ToolCallResult:
         error_class=ErrorClass.ADAPTER_FAILED,
         error_message=message,
     )
+
+
+def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -> None:
+    settings = deps.settings
+    enabled = (
+        settings.adapters.computer_use.enabled
+        and capability_enabled(settings, Capability.FILESYSTEM_WRITE)
+    )
+    definitions.append(
+        ToolDefinition(
+            name="filesystem.manage",
+            capability=Capability.FILESYSTEM_WRITE,
+            enabled=enabled,
+            description=(
+                "inspect, search, plan organization, and apply move/copy manifests inside configured "
+                f"roots: {', '.join(settings.adapters.computer_use.allowed_roots) or '<none>'}"
+            ),
+            operations=(
+                "inspect_folder",
+                "search",
+                "resolve_desktop_item",
+                "find_by_description",
+                "open_file",
+                "read_file",
+                "write_text_file",
+                "collect_folder_snapshot",
+                "describe_folder",
+                "organize_plan",
+                "rename_plan",
+                "apply_manifest",
+            ),
+            operation_schemas={
+                "inspect_folder": FilesystemInspectInput,
+                "search": FilesystemSearchInput,
+                "resolve_desktop_item": FilesystemResolveDesktopItemInput,
+                "find_by_description": FilesystemFindByDescriptionInput,
+                "open_file": FilesystemOpenFileInput,
+                "read_file": FilesystemReadFileInput,
+                "write_text_file": FilesystemWriteTextFileInput,
+                "collect_folder_snapshot": FilesystemCollectFolderSnapshotInput,
+                "describe_folder": FilesystemDescribeFolderInput,
+                "organize_plan": FilesystemOrganizePlanInput,
+                "rename_plan": FilesystemRenamePlanInput,
+                "apply_manifest": FilesystemApplyManifestInput,
+            },
+            output_schema=FilesystemManageOutput,
+            operation_output_schemas=same_output_schema(
+                (
+                    "inspect_folder",
+                    "search",
+                    "resolve_desktop_item",
+                    "find_by_description",
+                    "open_file",
+                    "read_file",
+                    "write_text_file",
+                    "collect_folder_snapshot",
+                    "describe_folder",
+                    "organize_plan",
+                    "rename_plan",
+                    "apply_manifest",
+                ),
+                FilesystemManageOutput,
+            ),
+            default_operation="inspect_folder",
+            examples=(
+                {"operation": "inspect_folder", "root": "desktop"},
+                {"operation": "search", "root": "desktop", "query": "resume"},
+                {"operation": "read_file", "path": "{{last_entry_path}}", "max_chars": 8000},
+            ),
+        )
+    )
+    if settings.adapters.computer_use.enabled:
+        adapters["filesystem.manage"] = FilesystemManageAdapter(
+            settings.adapters.computer_use.allowed_roots,
+            provider=deps.provider,  # type: ignore[arg-type]
+        )

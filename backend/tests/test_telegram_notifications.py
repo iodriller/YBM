@@ -248,3 +248,33 @@ def test_user_facing_message_retrying_status_explains_retry() -> None:
     message = _user_facing_task_message(task)
     lower = message.lower()
     assert "different" in lower or "trying" in lower or "approach" in lower or "retry" in lower
+
+
+def test_user_facing_message_awaiting_approval_shows_preview_and_real_resume_path() -> None:
+    # "Approving blind is not approval" (docs/ROADMAP.md P5) - the message
+    # must say what's being approved, and must not point at the admin UI,
+    # which has no approve/reject capability (read-only task-trace listing
+    # only). Replying "approve" in this chat is the only working resume path
+    # (channels/telegram.py's _approve_latest_pending()).
+    task = TaskRecord(
+        objective="Run a risky terminal command",
+        status=TaskStatus.AWAITING_APPROVAL,
+        metadata={"pending_approval_preview": "- Run cleanup script (risk: high) via terminal: {'command': 'rm -rf build'}"},
+    )
+
+    message = _user_facing_task_message(task)
+
+    assert "Run cleanup script" in message
+    assert "rm -rf build" in message
+    assert "approve" in message.lower()
+    assert "admin ui" not in message.lower()
+    assert "admin UI" not in message
+
+
+def test_user_facing_message_awaiting_approval_without_preview_still_names_resume_path() -> None:
+    task = TaskRecord(objective="Run a risky terminal command", status=TaskStatus.AWAITING_APPROVAL)
+
+    message = _user_facing_task_message(task)
+
+    assert "approve" in message.lower()
+    assert "admin UI" not in message

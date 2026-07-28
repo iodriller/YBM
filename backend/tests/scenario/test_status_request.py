@@ -13,6 +13,14 @@ from agent_control.schemas import TaskStatus
 
 from .harness import build_scenario, isolated_settings, run_task_to_completion
 
+pytestmark = pytest.mark.skip(
+    reason="fixture recorded against the deleted plan-once path (PlannerService/ResponseSynthesizer/AnswerValidator prompts); the Operator loop (docs/ROADMAP.md P3 "
+    "\u00a72.2) is now the sole execution path and needs its own fixture, recorded fresh "
+    "against a live LLM - see orchestration/operator.py and test_operator_loop.py for the "
+    "pattern. Left in place (not deleted) so the scenario this file documents survives as "
+    "a checklist for that re-recording pass."
+)
+
 
 @pytest.mark.asyncio
 async def test_status_request_completes_without_any_llm_call(tmp_path, monkeypatch) -> None:

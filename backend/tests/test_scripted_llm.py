@@ -82,6 +82,22 @@ def test_fixture_key_normalizes_embedded_random_ids() -> None:
     assert fixture_key("generate_text", "sys", prompt_a) == fixture_key("generate_text", "sys", prompt_b)
 
 
+def test_fixture_key_normalizes_embedded_tempdir_names() -> None:
+    # tempfile.TemporaryDirectory()/pytest's tmp_path fixture name dirs "tmp"
+    # + 8 chars from [a-z0-9] - not restricted to hex, so _HEX_RUN alone
+    # misses names like "tmpor3q4148". A relative plan-step path that
+    # resolves against that randomized CWD leaks the name into the
+    # policy-denial error text, which then feeds the next replan prompt -
+    # different every run, so no replan fixture could ever replay twice
+    # (real failure hit recording output_delivery.json).
+    prompt_a = "path is outside allowed roots: C:\\Users\\x\\AppData\\Local\\Temp\\tmpor3q4148\\out.txt"
+    prompt_b = "path is outside allowed roots: C:\\Users\\x\\AppData\\Local\\Temp\\tmpzz9k2b7c\\out.txt"
+
+    assert fixture_key("generate_structured", "sys", prompt_a) == fixture_key(
+        "generate_structured", "sys", prompt_b
+    )
+
+
 def test_fixture_key_still_distinguishes_genuinely_different_prompts() -> None:
     assert fixture_key("generate_text", "sys", "search for a resume") != fixture_key(
         "generate_text", "sys", "search for an invoice"

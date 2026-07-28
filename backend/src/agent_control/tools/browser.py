@@ -21,7 +21,32 @@ except ImportError:  # pragma: no cover - exercised only when optional dependenc
     websocket = None
 
 from agent_control.config import BrowserAdapterConfig
-from agent_control.schemas import ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.schemas import Capability, ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.tools.contracts import (
+    BrowserCheckPageUpdateInput,
+    BrowserClickInput,
+    BrowserCloseTabInput,
+    BrowserExtractPageStateInput,
+    BrowserFillFormInput,
+    BrowserFillFormStepInput,
+    BrowserInspectTabsInput,
+    BrowserNavigateInput,
+    BrowserOpenInput,
+    BrowserResearchInput,
+    BrowserResearchPagesInput,
+    BrowserScreenshotInput,
+    BrowserSearchInput,
+    BrowserSummarizePageInput,
+    BrowserToolOutput,
+)
+from agent_control.tools.spec import (
+    Adapters,
+    Definitions,
+    RegistryDeps,
+    ToolDefinition,
+    capability_enabled,
+    same_output_schema,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -961,3 +986,92 @@ def _failed(request: ToolCallRequest, message: str) -> ToolCallResult:
         error_class=ErrorClass.ADAPTER_FAILED,
         error_message=message,
     )
+
+
+def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -> None:
+    settings = deps.settings
+    open_enabled = settings.adapters.browser.enabled and capability_enabled(settings, Capability.BROWSER_OPEN)
+    control_enabled = settings.adapters.browser.enabled and capability_enabled(settings, Capability.BROWSER_CONTROL)
+    definitions.append(
+        ToolDefinition(
+            name="browser.open",
+            capability=Capability.BROWSER_OPEN,
+            enabled=open_enabled,
+            description=(
+                "open Chrome, search the web, summarize exposed tabs/pages, and capture browser screenshots "
+                f"through DevTools at {settings.adapters.browser.host}:{settings.adapters.browser.remote_debugging_port}"
+            ),
+            operations=("open", "search", "research", "inspect_tabs", "screenshot", "summarize_page", "research_pages"),
+            operation_schemas={
+                "open": BrowserOpenInput,
+                "search": BrowserSearchInput,
+                "research": BrowserResearchInput,
+                "inspect_tabs": BrowserInspectTabsInput,
+                "screenshot": BrowserScreenshotInput,
+                "summarize_page": BrowserSummarizePageInput,
+                "research_pages": BrowserResearchPagesInput,
+            },
+            output_schema=BrowserToolOutput,
+            operation_output_schemas=same_output_schema(
+                ("open", "search", "research", "inspect_tabs", "screenshot", "summarize_page", "research_pages"),
+                BrowserToolOutput,
+            ),
+            default_operation="open",
+            examples=(
+                {"operation": "open", "url": "https://dizibox.com"},
+                {"operation": "summarize_page", "objective": "list the first 5 new episodes"},
+                {"operation": "search", "query": "python official docs"},
+            ),
+        )
+    )
+    definitions.append(
+        ToolDefinition(
+            name="browser.control",
+            capability=Capability.BROWSER_CONTROL,
+            enabled=control_enabled,
+            description="navigate, close tabs, click elements, and fill simple forms in Chrome through DevTools",
+            operations=(
+                "navigate",
+                "close_tab",
+                "click",
+                "fill_form",
+                "check_page_update",
+                "extract_page_state",
+                "fill_form_step",
+            ),
+            operation_schemas={
+                "navigate": BrowserNavigateInput,
+                "close_tab": BrowserCloseTabInput,
+                "click": BrowserClickInput,
+                "fill_form": BrowserFillFormInput,
+                "check_page_update": BrowserCheckPageUpdateInput,
+                "extract_page_state": BrowserExtractPageStateInput,
+                "fill_form_step": BrowserFillFormStepInput,
+            },
+            output_schema=BrowserToolOutput,
+            operation_output_schemas=same_output_schema(
+                (
+                    "navigate",
+                    "close_tab",
+                    "click",
+                    "fill_form",
+                    "check_page_update",
+                    "extract_page_state",
+                    "fill_form_step",
+                ),
+                BrowserToolOutput,
+            ),
+            default_operation="navigate",
+            examples=(
+                {"operation": "navigate", "url": "https://example.com/contact"},
+                {"operation": "fill_form",
+                 "fields": {"name": "Oney", "email": "oney@example.com", "message": "Hello"},
+                 "submit": True},
+                {"operation": "click", "selector": "button.submit"},
+            ),
+        )
+    )
+    if settings.adapters.browser.enabled:
+        browser = BrowserAdapter(settings.adapters.browser)
+        adapters["browser.open"] = browser
+        adapters["browser.control"] = browser

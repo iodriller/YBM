@@ -5,21 +5,30 @@ from datetime import timedelta
 import pytest
 
 from agent_control.config import AppSettings, CapabilityPolicy
-from agent_control.orchestration.default_plans import build_default_task_plan
 from agent_control.orchestration.fulfillment import validate_fulfillment
 from agent_control.scheduler import objective_from_schedule_text, run_scheduler_once
-from agent_control.schemas import Capability, PlanModel, PlanStep, RiskLevel, ScheduleRecord, ToolCallRequest, ToolResultStatus, utc_now
+from agent_control.schemas import (
+    AuditEventType,
+    Capability,
+    PlanModel,
+    PlanStep,
+    RiskLevel,
+    ScheduleRecord,
+    ScheduleStatus,
+    TaskStatus,
+    ToolCallRequest,
+    ToolResultStatus,
+    utc_now,
+)
 from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.tools.registry import build_tool_registry
 from agent_control.tools.schedule_manage import ScheduleManageAdapter
-
 
 def _repos(tmp_path) -> tuple[Repositories, AuditLogger]:
     database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
     database.initialize()
     repos = Repositories.for_database(database)
     return repos, AuditLogger(repos.audit)
-
 
 def _settings(tmp_path, *, terminal: bool = False) -> AppSettings:
     capabilities = {
@@ -42,14 +51,12 @@ def _settings(tmp_path, *, terminal: bool = False) -> AppSettings:
         capabilities=capabilities,
     )
 
-
 def test_objective_from_schedule_text_removes_scheduling_wrapper() -> None:
     objective = objective_from_schedule_text(
         "Set up a scheduled job every day to check https://example.com and tell me if a new episode came out."
     )
 
     assert objective == "check https://example.com and tell me if a new episode came out"
-
 
 @pytest.mark.asyncio
 async def test_schedule_manage_creates_lists_pauses_resumes_and_runs_now(tmp_path) -> None:
@@ -113,7 +120,6 @@ async def test_schedule_manage_creates_lists_pauses_resumes_and_runs_now(tmp_pat
     assert run_now.output["task_id"]
     assert repos.tasks.get(run_now.output["task_id"]).metadata["source_schedule_id"] == schedule_id
 
-
 @pytest.mark.asyncio
 async def test_due_schedule_creates_task_and_advances_next_run(tmp_path) -> None:
     repos, audit = _repos(tmp_path)
@@ -135,6 +141,81 @@ async def test_due_schedule_creates_task_and_advances_next_run(tmp_path) -> None
     assert updated.last_task_id == tasks[0].id
     assert updated.next_run_at > due
 
+@pytest.mark.asyncio
+async def test_schedule_tracks_consecutive_failures_but_keeps_running_below_threshold(tmp_path) -> None:
+    repos, audit = _repos(tmp_path)
+    due = utc_now() - timedelta(minutes=1)
+    schedule = repos.schedules.create(
+        ScheduleRecord(
+            source_chat_id="100",
+            objective="check a target that keeps failing",
+            cadence="every 5 minutes",
+            next_run_at=due,
+        )
+    )
+    failing_task = repos.tasks.create("previous run")
+    repos.tasks.update_status(failing_task.id, TaskStatus.FAILED)
+    repos.schedules.mark_run(schedule.id, failing_task.id, due, due)
+
+    tasks = await run_scheduler_once(repos, audit, now=utc_now(), max_consecutive_failures=5)
+
+    assert len(tasks) == 1  # still spawns - one failure is below the threshold
+    updated = repos.schedules.get(schedule.id)
+    assert updated.status == ScheduleStatus.ENABLED
+    assert updated.metadata["consecutive_failures"] == 1
+
+@pytest.mark.asyncio
+async def test_schedule_auto_pauses_after_reaching_consecutive_failure_threshold(tmp_path) -> None:
+    repos, audit = _repos(tmp_path)
+    due = utc_now() - timedelta(minutes=1)
+    schedule = repos.schedules.create(
+        ScheduleRecord(
+            source_chat_id="100",
+            objective="check a target that has gone away",
+            cadence="every 5 minutes",
+            next_run_at=due,
+            metadata={"consecutive_failures": 2},
+        )
+    )
+    failing_task = repos.tasks.create("previous run, the 3rd failure in a row")
+    repos.tasks.update_status(failing_task.id, TaskStatus.FAILED)
+    repos.schedules.mark_run(schedule.id, failing_task.id, due, due)
+
+    tasks = await run_scheduler_once(repos, audit, now=utc_now(), max_consecutive_failures=3)
+
+    assert tasks == []  # auto-paused before spawning another failing run
+    updated = repos.schedules.get(schedule.id)
+    assert updated.status == ScheduleStatus.PAUSED
+    assert updated.metadata["consecutive_failures"] == 3
+    events = repos.audit.list_for_task(failing_task.id)
+    assert any(
+        event.type == AuditEventType.ERROR and "auto-paused" in str(event.payload.get("error", ""))
+        for event in events
+    )
+
+@pytest.mark.asyncio
+async def test_schedule_failure_streak_resets_after_a_successful_run(tmp_path) -> None:
+    repos, audit = _repos(tmp_path)
+    due = utc_now() - timedelta(minutes=1)
+    schedule = repos.schedules.create(
+        ScheduleRecord(
+            source_chat_id="100",
+            objective="check a target that recovered",
+            cadence="every 5 minutes",
+            next_run_at=due,
+            metadata={"consecutive_failures": 4},
+        )
+    )
+    succeeded_task = repos.tasks.create("previous run, which succeeded")
+    repos.tasks.update_status(succeeded_task.id, TaskStatus.COMPLETED)
+    repos.schedules.mark_run(schedule.id, succeeded_task.id, due, due)
+
+    tasks = await run_scheduler_once(repos, audit, now=utc_now(), max_consecutive_failures=5)
+
+    assert len(tasks) == 1
+    updated = repos.schedules.get(schedule.id)
+    assert updated.status == ScheduleStatus.ENABLED
+    assert updated.metadata["consecutive_failures"] == 0
 
 def test_schedule_manage_is_registered_under_schedule_capability(tmp_path) -> None:
     settings = _settings(tmp_path)
@@ -145,7 +226,6 @@ def test_schedule_manage_is_registered_under_schedule_capability(tmp_path) -> No
     assert definition.enabled is True
     assert definition.capability == Capability.SCHEDULE_MANAGE
     assert "schedule.manage" in registry.adapters
-
 
 def test_registry_rejects_invalid_schedule_operation(tmp_path) -> None:
     settings = _settings(tmp_path)
@@ -168,34 +248,3 @@ def test_registry_rejects_invalid_schedule_operation(tmp_path) -> None:
     with pytest.raises(ValueError, match="invalid input for schedule.manage"):
         registry.validate_plan(plan)
 
-
-def test_default_plan_routes_scheduled_job_to_schedule_manage(tmp_path) -> None:
-    settings = _settings(tmp_path)
-    repos, _ = _repos(tmp_path)
-    record = repos.tasks.create(
-        "set up a scheduled job every day to check https://example.com and tell me if a new episode came out",
-        metadata={"source_chat_id": "100"},
-    )
-
-    plan = build_default_task_plan(settings, record)
-
-    assert plan is None
-def test_schedule_job_can_reference_explicit_coding_workspace(tmp_path) -> None:
-    settings = _settings(tmp_path, terminal=True)
-    repos, _ = _repos(tmp_path)
-    record = repos.tasks.create(
-        "use Codex to prepare the script and set up a scheduled job every day to search the web for LLM deployment news",
-        metadata={"source_chat_id": "100"},
-    )
-
-    plan = build_default_task_plan(settings, record)
-
-    assert plan is None
-def test_default_plan_routes_schedule_pause_when_schedule_id_is_named(tmp_path) -> None:
-    settings = _settings(tmp_path)
-    repos, _ = _repos(tmp_path)
-    record = repos.tasks.create("pause schedule schedule_abc123")
-
-    plan = build_default_task_plan(settings, record)
-
-    assert plan is None

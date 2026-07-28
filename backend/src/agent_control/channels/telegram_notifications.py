@@ -110,10 +110,15 @@ def _user_facing_task_message(task: TaskRecord) -> str:
             return f"That attempt did not work, so I am trying a different approach now.\n{attempt}"
         return "That attempt did not work, so I am trying a different approach now."
     if task.status == TaskStatus.AWAITING_APPROVAL:
-        return _trim(
-            "I need approval before I can continue. If full access is enabled for this capability, the worker will approve it automatically; otherwise approve it from the admin UI.",
-            3900,
-        )
+        preview = str(task.metadata.get("pending_approval_preview") or "").strip()
+        lines = ["I need approval before I can continue:"]
+        if preview:
+            lines.append(preview)
+        else:
+            lines.append("(no preview available for this step)")
+        lines.append("")
+        lines.append("Reply 'approve' here to continue, or say 'cancel'.")
+        return _trim("\n".join(lines), 3900)
     if task.status == TaskStatus.AWAITING_EXTERNAL:
         session = task.metadata.get("awaiting_external") if isinstance(task.metadata, dict) else None
         if isinstance(session, dict) and session.get("provider"):

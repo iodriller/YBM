@@ -7,11 +7,38 @@ from collections.abc import Iterator
 
 from agent_control.storage.migrations import SCHEMA_STATEMENTS, apply_additive_migrations
 
+# Pre-P6 default location (repo root) and current default (nested under
+# .agent_control/ with every other piece of runtime state - artifacts, the
+# secret vault, workspaces). Only used to detect "did this install predate
+# the P6 move" - never compared against a caller-customized database_url.
+_LEGACY_DEFAULT_PATH = "./agent_control.db"
+_CURRENT_DEFAULT_PATH = ".agent_control/agent_control.db"
+
+
+def _migrate_legacy_database_file(current_path: str) -> None:
+    """One-time move of a pre-P6 repo-root database into .agent_control/.
+
+    Only acts when ``current_path`` is exactly today's default location, the
+    legacy file exists, and nothing already sits at the new location -
+    never touches a database_url a caller explicitly customized, and never
+    overwrites an existing file at the destination (docs/ROADMAP.md P6)."""
+    if Path(current_path) != Path(_CURRENT_DEFAULT_PATH):
+        return
+    legacy = Path(_LEGACY_DEFAULT_PATH)
+    target = Path(current_path)
+    if target.exists() or not legacy.exists():
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    legacy.replace(target)
+    print(f"moved {legacy} -> {target} (database now lives under .agent_control/, like everything else)")
+
 
 class Database:
     def __init__(self, database_url: str) -> None:
         self.database_url = database_url
         self.path = self._sqlite_path(database_url)
+        if self.path != ":memory:":
+            _migrate_legacy_database_file(self.path)
 
     @staticmethod
     def _sqlite_path(database_url: str) -> str:

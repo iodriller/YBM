@@ -12,6 +12,15 @@ from mcp.client.stdio import stdio_client
 from agent_control.config import MCPConfig, MCPServerConfig
 from agent_control.config_sync import ConfigManager
 from agent_control.schemas import Capability, ErrorClass, RiskLevel, ToolCallRequest, ToolCallResult, ToolResultStatus, utc_now
+from agent_control.tools.contracts import MCPClientInput, MCPClientOutput
+from agent_control.tools.spec import (
+    Adapters,
+    Definitions,
+    RegistryDeps,
+    ToolDefinition,
+    capability_enabled,
+    same_output_schema,
+)
 
 
 class MCPClientAdapter:
@@ -360,3 +369,39 @@ def _failed(request: ToolCallRequest, message: str) -> ToolCallResult:
         error_class=ErrorClass.ADAPTER_FAILED,
         error_message=message,
     )
+
+
+def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -> None:
+    settings = deps.settings
+    enabled = (
+        settings.mcp.enabled
+        and capability_enabled(settings, Capability.TERMINAL_RUN)
+    )
+    definitions.append(
+        ToolDefinition(
+            name="mcp.client",
+            capability=Capability.TERMINAL_RUN,
+            enabled=enabled,
+            description="discover and call configured external MCP server tools through stdio",
+            operations=("discover", "list_tools", "call_tool", "health", "install_server"),
+            input_schema=MCPClientInput,
+            output_schema=MCPClientOutput,
+            operation_output_schemas=same_output_schema(
+                ("discover", "list_tools", "call_tool", "health", "install_server"),
+                MCPClientOutput,
+            ),
+            default_operation="list_tools",
+            examples=(
+                {"operation": "list_tools"},
+                {"operation": "call_tool", "server": "example", "tool": "search", "arguments": {"query": "docs"}},
+                {
+                    "operation": "install_server",
+                    "name": "filesystem",
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\\\Users\\\\oneye"],
+                },
+            ),
+        )
+    )
+    if settings.mcp.enabled:
+        adapters["mcp.client"] = MCPClientAdapter(settings.mcp)

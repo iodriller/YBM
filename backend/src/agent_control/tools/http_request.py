@@ -9,9 +9,18 @@ from urllib.parse import urlparse
 import httpx
 
 from agent_control.config import HttpRequestAdapterConfig, SecretVaultConfig
-from agent_control.schemas import ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.schemas import Capability, ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
 from agent_control.storage.redaction import redact_payload
 from agent_control.storage.secrets import SecretVault, SecretVaultError
+from agent_control.tools.contracts import HttpRequestInput, HttpRequestOutput
+from agent_control.tools.spec import (
+    Adapters,
+    Definitions,
+    RegistryDeps,
+    ToolDefinition,
+    capability_enabled,
+    same_output_schema,
+)
 
 
 _SENSITIVE_PATTERNS = ("token", "api_key", "secret", "password", "authorization", "cookie", "set-cookie")
@@ -242,3 +251,40 @@ def _failed(request: ToolCallRequest, message: str) -> ToolCallResult:
         error_class=ErrorClass.ADAPTER_FAILED,
         error_message=message,
     )
+
+
+def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -> None:
+    settings = deps.settings
+    allowlist = [*settings.adapters.http_request.allowed_hosts, *settings.adapters.http_request.allowed_url_prefixes]
+    enabled = (
+        capability_enabled(settings, Capability.NETWORK_HTTP)
+        and settings.adapters.http_request.enabled
+        and bool(allowlist)
+    )
+    definitions.append(
+        ToolDefinition(
+            name="http.request",
+            capability=Capability.NETWORK_HTTP,
+            enabled=enabled,
+            description=(
+                "call allowlisted HTTP/REST APIs with optional secret injection; "
+                f"allowed targets: {', '.join(allowlist) or '<none configured>'}"
+            ),
+            operations=("request",),
+            input_schema=HttpRequestInput,
+            output_schema=HttpRequestOutput,
+            operation_output_schemas=same_output_schema(("request",), HttpRequestOutput),
+            default_operation="request",
+            examples=(
+                {"operation": "request", "method": "GET", "url": "https://api.example.com/status"},
+                {
+                    "operation": "request",
+                    "method": "GET",
+                    "url": "https://api.example.com/user",
+                    "secret_refs": {"headers.Authorization": {"ref": "example.token", "template": "Bearer {secret}"}},
+                },
+            ),
+        )
+    )
+    if settings.adapters.http_request.enabled:
+        adapters["http.request"] = HttpRequestAdapter(settings.adapters.http_request, settings.secrets)

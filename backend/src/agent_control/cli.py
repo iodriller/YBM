@@ -20,12 +20,8 @@ from agent_control.channels.telegram_notifications import TelegramTaskNotifier
 from agent_control.config import load_settings
 from agent_control.llm import LLMMessageClassifier, build_default_llm_provider
 from agent_control.llm.providers import build_major_llm_provider
-from agent_control.llm.planner import PlannerService
-from agent_control.llm.synthesizer import ResponseSynthesizer
-from agent_control.llm.validator import AnswerValidator
 from agent_control.observation import ArtifactService, ScreenshotService
-from agent_control.orchestration import TaskWorker, ToolExecutor
-from agent_control.orchestration.default_plans import build_default_task_plan, build_evaluator_recovery_plan
+from agent_control.orchestration import AuditorService, OperatorLoopService, TaskWorker, ToolExecutor, reconcile_orphaned_tasks
 from agent_control.policy import PolicyEngine
 from agent_control.recovery import RetryPolicy
 from agent_control.scheduler import run_scheduler_forever
@@ -99,6 +95,9 @@ async def poll_telegram() -> None:
 async def run_worker() -> None:
     settings = load_settings()
     repositories, audit = build_repositories()
+    reconciled = reconcile_orphaned_tasks(repositories, audit)
+    if reconciled:
+        print(f"reconciled {reconciled} task(s) left running/interpreting by a previous worker (failed explicitly)")
     provider = build_default_llm_provider(settings)
     policy = PolicyEngine(settings, audit)
     registry = build_tool_registry(
@@ -113,9 +112,8 @@ async def run_worker() -> None:
         telegram_client=_telegram_client(settings, audit),
     )
     major_provider = build_major_llm_provider(settings)
-    planner = PlannerService(provider, repositories, audit, plan_validator=registry.validate_plan, major_provider=major_provider) if provider else None
-    synthesizer = ResponseSynthesizer(provider) if provider else None
-    validator = AnswerValidator(provider) if provider else None
+    operator = OperatorLoopService(provider, major_provider=major_provider) if provider else None
+    auditor = AuditorService(provider) if provider else None
     executor = ToolExecutor(
         policy,
         repositories,
@@ -131,17 +129,15 @@ async def run_worker() -> None:
         TaskWorker(
             repositories,
             audit,
-            planner=planner,
             executor=executor,
             retry_policy=RetryPolicy(settings.limits),
             config_context=_worker_config_context(registry),
             config_context_factory=lambda registry=registry: _worker_config_context(registry),
-            default_plan_factory=lambda task: build_default_task_plan(settings, task),
-            recovery_plan_factory=lambda task, reason: build_evaluator_recovery_plan(settings, task, reason),
             notification_sink=notifier,
-            synthesizer=synthesizer,
-            validator=validator,
             task_budget_seconds=float(settings.limits.task_budget_seconds),
+            operator=operator,
+            operator_max_steps=settings.operator.max_steps,
+            auditor=auditor,
         )
         for _ in range(max(settings.limits.max_parallel_tasks, 1))
     ]
@@ -155,6 +151,7 @@ async def run_scheduler() -> None:
         repositories,
         audit,
         poll_interval_seconds=settings.scheduler.poll_interval_seconds,
+        max_consecutive_failures=settings.scheduler.max_consecutive_failures,
     )
 
 

@@ -5,22 +5,11 @@ import pytest
 from pydantic import BaseModel
 
 from agent_control.channels.telegram import TelegramAdapter, TelegramIntakeService
-from agent_control.config import AppSettings, CapabilityPolicy, LLMConfig, LLMProfileConfig, TelegramConfig
+from agent_control.config import AppSettings, LLMConfig, LLMProfileConfig, TelegramConfig
 from agent_control.llm.providers import FailoverLLMProvider, build_default_llm_provider
-from agent_control.orchestration.worker import TaskWorker
-from agent_control.policy import PolicyEngine
-from agent_control.orchestration.executor import ToolExecutor
-from agent_control.recovery import RetryPolicy
 from agent_control.schemas import (
-    Capability,
     ChannelType,
-    ErrorClass,
-    PlanModel,
-    PlanStep,
-    RiskLevel,
     TaskStatus,
-    ToolCallResult,
-    ToolResultStatus,
 )
 from agent_control.storage import AuditLogger, Database, Repositories
 
@@ -120,74 +109,6 @@ def _repos(tmp_path) -> tuple[Repositories, AuditLogger]:
     database.initialize()
     repos = Repositories.for_database(database)
     return repos, AuditLogger(repos.audit)
-
-
-class FailingAdapter:
-    async def execute(self, request) -> ToolCallResult:
-        return ToolCallResult(
-            request_id=request.id,
-            status=ToolResultStatus.FAILED,
-            error_class=ErrorClass.ADAPTER_FAILED,
-            error_message="Chrome DevTools endpoint is unreachable",
-        )
-
-
-def _settings() -> AppSettings:
-    return AppSettings(
-        _env_file=None,
-        capabilities={
-            Capability.BROWSER_OPEN: CapabilityPolicy(
-                enabled=True, requires_approval=False, max_risk_level=RiskLevel.HIGH
-            )
-        },
-        limits={"max_retries": 1, "retry_backoff_seconds": 1},
-    )
-
-
-def _browser_task(repos: Repositories):
-    task = repos.tasks.create(
-        "Check the page",
-        metadata={"source_chat_id": "100"},
-    )
-    plan = repos.plans.create(
-        task.id,
-        PlanModel(
-            objective="Check the page",
-            steps=[
-                PlanStep(
-                    title="Open page",
-                    description="Open the page in the browser.",
-                    required_capabilities=[Capability.BROWSER_OPEN],
-                    risk_level=RiskLevel.LOW,
-                    tool_name="browser.open",
-                )
-            ],
-            success_criteria=["Page content is reported."],
-        ),
-    )
-    repos.tasks.attach_plan(task.id, plan.id)
-    return task
-
-
-@pytest.mark.asyncio
-async def test_exhausted_task_asks_a_targeted_question(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
-    task = _browser_task(repos)
-    settings = _settings()
-    executor = ToolExecutor(PolicyEngine(settings, audit), repos, audit, adapters={"browser.open": FailingAdapter()})
-    worker = TaskWorker(repos, audit, executor=executor, retry_policy=RetryPolicy(settings.limits))
-
-    current = await worker.process_task(task.id)
-    for _ in range(6):
-        if current.status == TaskStatus.CLARIFYING:
-            break
-        current = await worker.process_task(task.id)
-
-    assert current.status == TaskStatus.CLARIFYING
-    question = current.metadata["clarifying_question"]
-    # The browser failure maps to a browser-specific question, not a generic one.
-    assert "browser" in question.lower() or "chrome" in question.lower()
-    assert current.metadata["clarify_count"] == 1
 
 
 @pytest.mark.asyncio

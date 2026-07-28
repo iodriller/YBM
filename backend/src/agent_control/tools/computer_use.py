@@ -14,7 +14,21 @@ from typing import Any, Protocol
 from agent_control.config import ComputerUseAdapterConfig
 from agent_control.llm.providers import LLMProvider
 from agent_control.prompts import prompt_text, render_prompt
-from agent_control.schemas import ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.schemas import Capability, ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.tools.contracts import (
+    ComputerActInput,
+    ComputerObserveInput,
+    ComputerRunGoalInput,
+    ComputerUseOutput,
+)
+from agent_control.tools.spec import (
+    Adapters,
+    Definitions,
+    RegistryDeps,
+    ToolDefinition,
+    capability_enabled,
+    same_output_schema,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -511,3 +525,44 @@ def _failed(request: ToolCallRequest, message: str) -> ToolCallResult:
         error_class=ErrorClass.ADAPTER_FAILED,
         error_message=message,
     )
+
+
+def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -> None:
+    settings = deps.settings
+    enabled = (
+        settings.adapters.computer_use.enabled
+        and settings.adapters.desktop.control_enabled
+        and capability_enabled(settings, Capability.DESKTOP_CONTROL)
+    )
+    definitions.append(
+        ToolDefinition(
+            name="computer.use",
+            capability=Capability.DESKTOP_CONTROL,
+            enabled=enabled,
+            description="observe and control the local Windows desktop with bounded screenshot/action loops",
+            operations=("observe", "act", "run_goal"),
+            operation_schemas={
+                "observe": ComputerObserveInput,
+                "act": ComputerActInput,
+                "run_goal": ComputerRunGoalInput,
+            },
+            output_schema=ComputerUseOutput,
+            operation_output_schemas=same_output_schema(("observe", "act", "run_goal"), ComputerUseOutput),
+            default_operation="observe",
+        )
+    )
+    if settings.adapters.computer_use.enabled:
+        adapters["computer.use"] = ComputerUseAdapter(
+            settings.adapters.computer_use,
+            provider=deps.provider,
+            should_continue=deps.should_continue,
+        )
+
+    # NOTE: There used to be a `desktop.screenshot` ToolDefinition here, but no
+    # adapter was ever registered for it — the planner happily picked it from
+    # the catalog and execution then failed with "tool adapter not registered".
+    # All real screenshot work is done by `computer.use observe` (captures +
+    # returns the image) and `artifact.deliver send_screenshot` (delivers it).
+    # The legacy `/screenshot` command in telegram.py is a separate code path
+    # that uses Capability.DESKTOP_SCREENSHOT directly, unaffected by removing
+    # this tool advertisement.

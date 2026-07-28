@@ -8,7 +8,6 @@ deep in a supervised background process (see docs/ROADMAP.md P0).
 from __future__ import annotations
 
 import importlib.util
-import os
 import secrets as secrets_module
 import socket
 import sys
@@ -144,7 +143,7 @@ def _check_localdeploy(settings: AppSettings) -> Check:
     health_url = base_url.rsplit("/v1", 1)[0].rstrip("/") + "/health"
     if _http_ok(health_url):
         return Check("LocalDeploy", "ok", f"reachable at {health_url}")
-    root = os.environ.get("YBM_LOCALDEPLOY_ROOT")
+    root = read_env_value("YBM_LOCALDEPLOY_ROOT")
     detail = "not reachable" + (f" (YBM_LOCALDEPLOY_ROOT={root})" if root else " (YBM_LOCALDEPLOY_ROOT not set)")
     if settings.llm.fallback_profile:
         detail += f"; fallback profile '{settings.llm.fallback_profile}' will be used"
@@ -165,7 +164,12 @@ def _check_admin_token(settings: AppSettings) -> Check:
     if read_env_value(settings.server.admin_token_env):
         return Check("Admin token", "ok", "set")
     if is_loopback_host(settings.server.host):
-        return Check("Admin token", "warn", "not set - admin API trusts any loopback caller until P5 CSRF/origin work lands")
+        return Check(
+            "Admin token",
+            "warn",
+            "not set - admin API trusts any loopback caller (cross-origin requests are still "
+            "rejected regardless; run `ybm setup` to generate a token for defense in depth)",
+        )
     return Check("Admin token", "fail", f"not set and server.host={settings.server.host} is not loopback-only")
 
 

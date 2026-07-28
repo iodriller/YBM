@@ -1,3 +1,10 @@
+"""The Concierge (docs/ROADMAP.md P3 §2.1): classify chat-vs-task AND, when
+it's chat, compose the reply - one LLM call, not two. Class names below stay
+"classifier"-shaped since that's still an accurate description of the
+Protocol/return type (MessageClassification, now carrying an optional
+`reply`); prompts/base/concierge_system.md is where the merge actually lives.
+"""
+
 from __future__ import annotations
 
 from typing import Protocol
@@ -7,7 +14,7 @@ from agent_control.prompts import prompt_text, render_prompt
 from agent_control.schemas import InboundMessage, IntentRoute, MessageClassification, OrchestrationIntent, TaskType
 
 
-CLASSIFIER_SYSTEM_PROMPT = prompt_text("base/classifier_system.md")
+CLASSIFIER_SYSTEM_PROMPT = prompt_text("base/concierge_system.md")
 
 
 class MessageClassifier(Protocol):
@@ -80,7 +87,7 @@ class StaticMessageClassifier:
 
 def _classification_prompt(message: InboundMessage, context: str | None = None) -> str:
     return render_prompt(
-        "tasks/classifier_user.md",
+        "tasks/concierge_user.md",
         channel=message.channel.value,
         kind=message.kind.value,
         sender_id=message.sender_id,

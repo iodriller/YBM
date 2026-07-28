@@ -6,19 +6,16 @@ from zipfile import ZipFile
 import pytest
 
 from agent_control.config import AppSettings, CapabilityPolicy
-from agent_control.orchestration.default_plans import build_default_task_plan
 from agent_control.schemas import ArtifactType, Capability, RiskLevel, TaskRecord, ToolCallRequest
 from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.tools.document_manage import DocumentManageAdapter
 from agent_control.tools.registry import build_tool_registry
-
 
 def _repos(tmp_path) -> tuple[Repositories, AuditLogger]:
     database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
     database.initialize()
     repos = Repositories.for_database(database)
     return repos, AuditLogger(repos.audit)
-
 
 def test_registry_exposes_document_manage_when_filesystem_write_is_enabled(tmp_path) -> None:
     repos, _audit = _repos(tmp_path)
@@ -47,82 +44,6 @@ def test_registry_exposes_document_manage_when_filesystem_write_is_enabled(tmp_p
     assert "create_presentation" in definitions["document.manage"].operations
     assert "document.manage" in registry.adapters
 
-
-def test_default_document_plan_routes_pdf_summary(tmp_path) -> None:
-    pdf = tmp_path / "notes.pdf"
-    pdf.write_text("hello", encoding="utf-8")
-    settings = AppSettings(
-        _env_file=None,
-        adapters={"computer_use": {"allowed_roots": [str(tmp_path)]}},
-        capabilities={
-            Capability.FILESYSTEM_WRITE: CapabilityPolicy(
-                enabled=True,
-                requires_approval=False,
-                max_risk_level=RiskLevel.HIGH,
-            )
-        },
-    )
-
-    plan = build_default_task_plan(settings, TaskRecord(objective=f"Tell me what this PDF is about {pdf}"))
-
-    assert plan is None
-def test_default_document_plan_prefers_file_api_for_desktop_pdf_request(tmp_path) -> None:
-    desktop = tmp_path / "Desktop Folder"
-    desktop.mkdir()
-    pdf = desktop / "agent-control-sample.pdf"
-    pdf.write_text("hello", encoding="utf-8")
-    settings = AppSettings(
-        _env_file=None,
-        adapters={
-            "computer_use": {"enabled": True, "allowed_roots": [str(tmp_path)]},
-            "desktop": {"control_enabled": True},
-        },
-        capabilities={
-            Capability.FILESYSTEM_WRITE: CapabilityPolicy(
-                enabled=True,
-                requires_approval=False,
-                max_risk_level=RiskLevel.HIGH,
-            ),
-            Capability.DESKTOP_CONTROL: CapabilityPolicy(
-                enabled=True,
-                requires_approval=False,
-                max_risk_level=RiskLevel.CRITICAL,
-            ),
-        },
-    )
-
-    plan = build_default_task_plan(
-        settings,
-        TaskRecord(objective=f"Open the desktop folder {desktop} and open the PDF file inside it, then tell me what the PDF is about."),
-    )
-
-    assert plan is None
-def test_default_document_plan_routes_powerpoint_create_and_delivery(tmp_path) -> None:
-    settings = AppSettings(
-        _env_file=None,
-        capabilities={
-            Capability.FILESYSTEM_WRITE: CapabilityPolicy(enabled=True, requires_approval=False, max_risk_level=RiskLevel.HIGH),
-            Capability.TELEGRAM_SEND: CapabilityPolicy(enabled=True, requires_approval=False, max_risk_level=RiskLevel.LOW),
-        },
-    )
-
-    plan = build_default_task_plan(settings, TaskRecord(objective="Create a PowerPoint presentation about ducks and send it to me"))
-
-    assert plan is None
-def test_default_document_plan_honors_explicit_codex_for_powerpoint(tmp_path) -> None:
-    settings = AppSettings(
-        _env_file=None,
-        adapters={"coding_agent": {"enabled": True, "workspace_root": str(tmp_path)}},
-        capabilities={
-            Capability.FILESYSTEM_WRITE: CapabilityPolicy(enabled=True, requires_approval=False, max_risk_level=RiskLevel.HIGH),
-            Capability.TERMINAL_RUN: CapabilityPolicy(enabled=True, requires_approval=False, max_risk_level=RiskLevel.HIGH),
-            Capability.TELEGRAM_SEND: CapabilityPolicy(enabled=True, requires_approval=False, max_risk_level=RiskLevel.LOW),
-        },
-    )
-
-    plan = build_default_task_plan(settings, TaskRecord(objective="Use Codex and create a PowerPoint presentation about ducks and send it to me"))
-
-    assert plan is None
 @pytest.mark.asyncio
 async def test_document_manage_summarizes_pdf_text_and_records_artifact(tmp_path) -> None:
     repos, _audit = _repos(tmp_path)
@@ -145,7 +66,6 @@ async def test_document_manage_summarizes_pdf_text_and_records_artifact(tmp_path
     assert "Ferrets are curious animals" in result.output["summary"]
     assert result.output["artifact_ids"] == [artifacts[0].id]
     assert artifacts[0].type == ArtifactType.TEXT_LOG
-
 
 @pytest.mark.asyncio
 async def test_document_manage_creates_and_updates_powerpoint_artifacts(tmp_path) -> None:

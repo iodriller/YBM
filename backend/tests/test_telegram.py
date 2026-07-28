@@ -210,6 +210,91 @@ def test_telegram_non_task_question_gets_llm_response(tmp_path) -> None:
     assert repos.audit.list_by_type(AuditEventType.TASK_SPAWN_FAILED) == []
 
 
+def test_telegram_non_task_uses_concierge_reply_without_calling_responder(tmp_path) -> None:
+    """The Concierge composes the chat reply in the same call it classifies
+    (prompts/base/concierge_system.md) - when `.reply` is populated, the
+    separate `responder` round trip must not happen at all."""
+    responder = StaticTelegramResponder("responder should not be called")
+    service, repos = _service(
+        tmp_path,
+        TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
+        classifier=StaticMessageClassifier(
+            MessageClassification(
+                is_task=False,
+                task_type=TaskType.QUESTION,
+                confidence=0.9,
+                reason="question only",
+                reply="I can inspect files, control the browser, and run scheduled jobs.",
+            )
+        ),
+    )
+    service.responder = responder
+
+    result = service.handle_update(
+        {
+            "message": {
+                "message_id": 13,
+                "from": {"id": 42},
+                "chat": {"id": 100},
+                "text": "what can you do?",
+            }
+        }
+    )
+
+    assert result.task is None
+    assert result.outbound_message is not None
+    assert result.outbound_message.text == "I can inspect files, control the browser, and run scheduled jobs."
+    assert responder.messages == []
+
+
+class _ContextRecordingClassifier:
+    """Records the `context` argument classify() was called with, so the
+    Concierge merge's context-building choice (gateway_context vs the
+    narrower memory_context) can be asserted on directly."""
+
+    def __init__(self, classification: MessageClassification) -> None:
+        self.classification = classification
+        self.contexts: list[str | None] = []
+
+    async def classify(self, message, context: str | None = None) -> MessageClassification:
+        self.contexts.append(context)
+        return self.classification
+
+
+def test_telegram_classification_uses_full_gateway_context_when_settings_available(tmp_path) -> None:
+    """The Concierge answers capability questions in the same call it
+    classifies (see prompts/base/concierge_system.md) - that needs the same
+    richer runtime context (capabilities, recent tasks) the old separate
+    responder call used, not just the conversation-memory summary."""
+    classifier = _ContextRecordingClassifier(
+        MessageClassification(is_task=False, task_type=TaskType.QUESTION, confidence=0.9, reason="chat", reply="hi")
+    )
+    settings = AppSettings(
+        _env_file=None,
+        capabilities={Capability.TELEGRAM_SEND: CapabilityPolicy(enabled=True, requires_approval=False, max_risk_level=RiskLevel.LOW)},
+    )
+    service, _ = _service(
+        tmp_path,
+        TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
+        settings=settings,
+        classifier=classifier,
+    )
+
+    service.handle_update(
+        {
+            "message": {
+                "message_id": 14,
+                "from": {"id": 42},
+                "chat": {"id": 100},
+                "text": "what can you do?",
+            }
+        }
+    )
+
+    assert len(classifier.contexts) == 1
+    assert "LLM profile:" in (classifier.contexts[0] or "")
+
+
 def test_telegram_plain_status_does_not_require_slash(tmp_path) -> None:
     service, repos = _service(
         tmp_path,

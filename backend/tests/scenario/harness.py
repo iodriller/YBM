@@ -13,11 +13,9 @@ import shutil
 import tempfile
 
 from agent_control.config import AppSettings
-from agent_control.llm.planner import PlannerService
-from agent_control.llm.synthesizer import ResponseSynthesizer
-from agent_control.llm.validator import AnswerValidator
-from agent_control.orchestration.default_plans import build_default_task_plan, build_evaluator_recovery_plan
+from agent_control.orchestration.auditor import AuditorService
 from agent_control.orchestration.executor import ToolExecutor
+from agent_control.orchestration.operator import OperatorLoopService
 from agent_control.orchestration.worker import TaskWorker
 from agent_control.policy.engine import PolicyEngine
 from agent_control.recovery.retry import RetryPolicy
@@ -47,6 +45,31 @@ def scenario_scratch_dir(name: str) -> Path:
     path.mkdir(parents=True)
     return path
 
+class FakeTelegramClient:
+    """Records delivered files instead of calling the real Telegram API.
+    Scenario tasks aren't created from a real Telegram update, so
+    ``run_task_to_completion`` stamps ``source_chat_id`` into task metadata by
+    default (mirroring what the production message handler sets) - without
+    it, ``artifact.deliver`` raises "chat_id is required" for any plan that
+    delivers a created file, which the planner does routinely (see
+    docs/ROADMAP.md P2 - discovered while recording the
+    code_interpreter_csv_summary fixture)."""
+
+    def __init__(self) -> None:
+        self.photos: list[tuple[str | int, str, str | None]] = []
+        self.documents: list[tuple[str | int, str, str | None]] = []
+
+    async def send_photo_file(self, chat_id: str | int, path: str, caption: str | None = None) -> dict:
+        self.photos.append((chat_id, path, caption))
+        return {"ok": True, "method": "sendPhoto"}
+
+    async def send_document_file(self, chat_id: str | int, path: str, caption: str | None = None) -> dict:
+        self.documents.append((chat_id, path, caption))
+        return {"ok": True, "method": "sendDocument"}
+
+
+SCENARIO_CHAT_ID = "scenario_test_chat"
+
 TERMINAL_STATUSES = {
     TaskStatus.COMPLETED,
     TaskStatus.FAILED,
@@ -64,6 +87,7 @@ class Scenario:
     audit: AuditLogger
     worker: TaskWorker
     provider: ScriptedLLMProvider | RecordingLLMProvider
+    telegram: FakeTelegramClient
 
 
 def isolated_settings(monkeypatch, tmp_path: Path, **overrides) -> AppSettings:
@@ -88,12 +112,21 @@ def build_scenario(
     tmp_path: Path,
     fixture_name: str,
     record_with: object | None = None,
+    include_auditor: bool = False,
 ) -> Scenario:
     """Build a scenario. Pass ``record_with=<a live LLMProvider>`` to record a
     fresh fixture instead of replaying one - e.g.
     ``record_with=OpenAICompatibleProvider(settings.llm.profiles["openai_saved"])``.
     Every call the worker makes during that run is persisted to
     ``fixtures/<fixture_name>.json``, ready to commit and replay from after.
+
+    Wires the Operator loop (P3 §2.2), mirroring cli.run_worker()'s
+    production wiring - the sole execution path since 2026-07-28.
+
+    ``include_auditor=True`` also wires the Auditor (P3 §2.1) - opt-in, not
+    the default, because it adds a `generate_text` call the fixture has to
+    have recorded; existing fixtures recorded before the Auditor existed
+    don't have it and would fail fixture lookup if this defaulted on.
     """
     database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
     database.initialize()
@@ -107,6 +140,7 @@ def build_scenario(
     else:
         provider = ScriptedLLMProvider(fixture_path)
 
+    telegram = FakeTelegramClient()
     registry = build_tool_registry(
         settings,
         "http://127.0.0.1:8765",
@@ -116,7 +150,7 @@ def build_scenario(
         task_repository=repositories.tasks,
         repositories=repositories,
         audit_logger=audit,
-        telegram_client=None,
+        telegram_client=telegram,
     )
     policy = PolicyEngine(settings, audit)
     executor = ToolExecutor(
@@ -124,24 +158,24 @@ def build_scenario(
         adapters=registry.adapters,
         tool_definitions=registry.definition_index,
     )
-    planner = PlannerService(provider, repositories, audit, plan_validator=registry.validate_plan)
-    synthesizer = ResponseSynthesizer(provider)
-    validator = AnswerValidator(provider)
+    operator = OperatorLoopService(provider)
+    auditor = AuditorService(provider) if include_auditor else None
 
     worker = TaskWorker(
         repositories,
         audit,
-        planner=planner,
         executor=executor,
         retry_policy=RetryPolicy(settings.limits),
         config_context=registry.context(),
-        default_plan_factory=lambda task: build_default_task_plan(settings, task),
-        recovery_plan_factory=lambda task, reason: build_evaluator_recovery_plan(settings, task, reason),
-        synthesizer=synthesizer,
-        validator=validator,
+        operator=operator,
+        operator_max_steps=settings.operator.max_steps,
+        auditor=auditor,
     )
 
-    return Scenario(settings=settings, repositories=repositories, audit=audit, worker=worker, provider=provider)
+    return Scenario(
+        settings=settings, repositories=repositories, audit=audit, worker=worker, provider=provider,
+        telegram=telegram,
+    )
 
 
 async def run_task_to_completion(
@@ -153,8 +187,14 @@ async def run_task_to_completion(
 ) -> TaskRecord:
     """Creates a task and drives worker.process_task() until a terminal
     status. Raises (not hangs) if the task doesn't settle within max_ticks -
-    a stuck scenario test should fail fast and loud, not time out silently."""
-    task = scenario.repositories.tasks.create(objective=objective, metadata=metadata or {})
+    a stuck scenario test should fail fast and loud, not time out silently.
+
+    Stamps ``source_chat_id`` by default, mirroring what the production
+    Telegram message handler sets on every real task - without it, any plan
+    step that delivers a file (``artifact.deliver``) fails with a synthetic
+    "chat_id is required" error that would never happen in production."""
+    task_metadata = {"source_chat_id": SCENARIO_CHAT_ID, **(metadata or {})}
+    task = scenario.repositories.tasks.create(objective=objective, metadata=task_metadata)
     for _ in range(max_ticks):
         task = await scenario.worker.process_task(task.id)
         if task.status in TERMINAL_STATUSES:

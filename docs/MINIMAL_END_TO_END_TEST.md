@@ -36,7 +36,9 @@ Open:
 http://127.0.0.1:8501
 ```
 
-The legacy FastAPI admin page remains available at `http://127.0.0.1:8765/admin`.
+`http://127.0.0.1:8765/admin` used to serve a second, ~1,300-line embedded-HTML console; it's now a
+small pointer page back to the Streamlit UI above. The JSON API underneath it
+(`/admin/api/*`) is unchanged and is what Streamlit itself talks to.
 
 ## 3. Confirm The Local Orchestrator LLM
 
