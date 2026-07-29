@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent_control.orchestration.auditor import AuditorService, CONTENT_TOOLS
+from agent_control.orchestration.auditor import AuditorService
 
 
 class QueueProvider:

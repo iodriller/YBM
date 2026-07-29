@@ -7,7 +7,7 @@ import pytest
 from pydantic import BaseModel
 
 from agent_control.config import AppSettings, CapabilityPolicy, CodeInterpreterAdapterConfig
-from agent_control.schemas import Capability, IntentRoute, OrchestrationIntent, RiskLevel, TaskRecord, ToolCallRequest
+from agent_control.schemas import Capability, RiskLevel, ToolCallRequest
 from agent_control.tools import code_interpreter as code_interpreter_module
 from agent_control.tools.code_interpreter import (
     CodeExecutionPlan,

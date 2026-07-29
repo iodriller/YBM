@@ -6,8 +6,8 @@ import subprocess
 
 import pytest
 
-from agent_control.config import AdapterFactoryConfig, AppSettings, CapabilityPolicy, WorkspaceAdapterConfig
-from agent_control.schemas import Capability, RiskLevel, TaskRecord, ToolCallRequest, ToolResultStatus
+from agent_control.config import AdapterFactoryConfig, WorkspaceAdapterConfig
+from agent_control.schemas import Capability, ToolCallRequest, ToolResultStatus
 from agent_control.tools.adapter_factory import AdapterFactoryAdapter
 from agent_control.tools.local_workspace import LocalWorkspaceAdapter, LocalWorkspaceWebAppAdapter
 
