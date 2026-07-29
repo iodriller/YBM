@@ -42,7 +42,10 @@ async def test_operator_loop_finds_and_reads_resume_file(tmp_path, monkeypatch) 
         scenario, f"look in the folder {docs_dir} and find which file mentions a resume", max_ticks=6,
     )
 
-    assert task.status == TaskStatus.COMPLETED
+    audit_events = scenario.repositories.audit.list_for_task(task.id)
+    assert task.status == TaskStatus.COMPLETED, [
+        event.model_dump(mode="json") for event in audit_events
+    ]
     assert "resume.txt" in task.metadata["synthesized_answer"]
     history = task.metadata["operator_history"]
     assert [entry["tool_name"] for entry in history] == ["filesystem.manage", "filesystem.manage"]
