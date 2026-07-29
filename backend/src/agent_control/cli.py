@@ -3,10 +3,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
+import sys
 
 from agent_control.bootstrap import run_doctor, run_setup
 from agent_control.config_sync import set_config_path
 from agent_control.db_tools import db_clean, db_inspect, db_reset
+from agent_control.logging_setup import configure_logging
 from agent_control.channels.telegram import (
     TelegramAdapter,
     TelegramBotApi,
@@ -26,7 +29,7 @@ from agent_control.policy import PolicyEngine
 from agent_control.recovery import RetryPolicy
 from agent_control.scheduler import run_scheduler_forever
 from agent_control.schemas import AuditEventType, TaskStatus
-from agent_control.storage import AuditLogger, Database, Repositories
+from agent_control.storage import ApprovalRepository, AuditLogger, Database, Repositories
 from agent_control.tools.registry import build_tool_registry
 from agent_control.tools.stt import build_stt_adapter
 from agent_control.tools.coding_agent import (
@@ -55,6 +58,67 @@ def init_db() -> None:
 
 def config_summary() -> None:
     print(json.dumps(load_settings().safe_summary(), indent=2, default=str))
+
+
+def trace_task(task_id: str, *, as_json: bool = False) -> int:
+    """One-command task post-mortem, reading the DB directly - no running
+    backend required, unlike the admin UI (docs/HISTORY.md §2.4: "to debug a
+    failed task today you need the stack running, then the admin UI, then
+    click into a trace"). Shares `build_task_trace()` with the
+    `/admin/api/tasks/{id}/trace` endpoint so the two never drift apart.
+    Returns a process exit code (0 found, 1 not found).
+    """
+    from agent_control.admin import build_task_trace
+
+    repositories, _audit = build_repositories()
+    trace = build_task_trace(repositories, task_id)
+    if trace is None:
+        print(f"no task found with id {task_id}")
+        return 1
+    if as_json:
+        print(json.dumps(trace, indent=2, default=str))
+        return 0
+
+    task = trace["task"]
+    print(f"task    {task['id']}")
+    print(f"status  {task['status']}")
+    print(f"goal    {task['objective']}")
+    metadata = task.get("metadata") or {}
+    if metadata.get("synthesized_answer"):
+        print(f"answer  {metadata['synthesized_answer']}")
+    if metadata.get("last_worker_error"):
+        print(f"error   {metadata['last_worker_error']}")
+
+    history = trace.get("operator_history") or []
+    print(f"\noperator steps ({len(history)}):")
+    if not history:
+        print("  (none recorded)")
+    for index, step in enumerate(history, 1):
+        tool_name = step.get("tool_name") or "?"
+        status = step.get("status") or "?"
+        print(f"  {index}. {tool_name}  [{status}]")
+        if step.get("input"):
+            print(f"     input:  {json.dumps(step['input'], default=str)}")
+        if step.get("output_summary"):
+            summary = str(step["output_summary"]).replace("\n", " ")
+            print(f"     output: {summary[:300]}")
+        if step.get("error"):
+            print(f"     error:  {step['error']}")
+
+    tool_invocations = trace.get("tool_invocations") or []
+    print(f"\ntool invocations recorded in DB: {len(tool_invocations)}")
+    print(f"audit events: {len(trace.get('audit') or [])}")
+
+    evidence = trace.get("evidence") or {}
+    files = evidence.get("files") or []
+    urls = evidence.get("urls") or []
+    commands = evidence.get("commands") or []
+    if files or urls or commands:
+        print("\nevidence (what this task touched):")
+        for label, items in (("files", files), ("urls", urls), ("commands", commands)):
+            for item in items:
+                print(f"  [{label}] {item.get('value')}  ({item.get('tool_name')})")
+    return 0
 
 
 async def poll_telegram() -> None:
@@ -121,7 +185,7 @@ async def run_worker() -> None:
         adapters=registry.adapters,
         tool_definitions=registry.definition_index,
     )
-    notifier = _telegram_notifier(settings, audit)
+    notifier = _telegram_notifier(settings, audit, approvals=repositories.approvals)
     # Run max_parallel_tasks worker loops in one process. claim_next() claims
     # atomically per worker_id, so quick tasks (status, delivery) are not
     # starved behind a long-running coding or browser task.
@@ -217,12 +281,14 @@ def _coding_session_brief(session: dict) -> dict:
     }
 
 
-def _telegram_notifier(settings, audit: AuditLogger | None = None) -> TelegramTaskNotifier | None:
+def _telegram_notifier(
+    settings, audit: AuditLogger | None = None, approvals: ApprovalRepository | None = None
+) -> TelegramTaskNotifier | None:
     if not settings.channels.telegram.enabled:
         return None
     try:
         client = _telegram_client(settings, audit)
-        return TelegramTaskNotifier(client) if client else None
+        return TelegramTaskNotifier(client, approvals=approvals) if client else None
     except RuntimeError:
         return None
 
@@ -267,6 +333,33 @@ def _worker_config_context(registry) -> str:
 Prefer conservative plans. Use registered tool names exactly and include explicit operations when a tool supports them. For exact JSON/REST APIs, prefer http.request when the target is allowlisted. If a needed connector is missing, refresh or install MCP when a matching server is known; otherwise use adapter.factory to scaffold and test a proposal instead of inventing unregistered tool names."""
 
 
+# Long-running services get their own log file, named to match ybm.ps1's
+# service names (`ybm logs <service>` / `ybm start` use the same strings) so
+# a log file and a running process are trivially correlated. One-off CLI
+# utility commands (doctor, db-*, config-*) share a catch-all "cli" log.
+_COMMAND_SERVICE_NAMES = {
+    "run-worker": "worker",
+    "run-scheduler": "scheduler",
+    "poll-telegram": "telegram_polling",
+    "run-coding-session-watcher": "coding_session_watcher",
+    "run-coding-agent-session": "coding_agent_session",
+}
+
+
+def _configure_logging_for_command(command: str) -> None:
+    service_name = _COMMAND_SERVICE_NAMES.get(command, "cli")
+    try:
+        configure_logging(load_settings(), service_name)
+    except Exception:
+        # Config itself might be broken (that's what `doctor` exists to
+        # diagnose) - fall back to basic stderr logging rather than let a
+        # settings-loading failure take down the command before it even runs.
+        logging.basicConfig(level=logging.INFO, stream=sys.stderr)
+        logging.getLogger(__name__).warning(
+            "structured logging setup failed; falling back to basic logging", exc_info=True
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser("agent-control")
     parser.add_argument(
@@ -280,6 +373,7 @@ def main() -> None:
             "db-inspect",
             "db-clean",
             "db-reset",
+            "trace-task",
             "poll-telegram",
             "run-worker",
             "run-scheduler",
@@ -291,11 +385,14 @@ def main() -> None:
     parser.add_argument("--session-id", default=None)
     parser.add_argument("--poll-interval-seconds", type=float, default=5.0)
     parser.add_argument("--telegram-token", default=None, help="used by `setup` to save TELEGRAM_BOT_TOKEN")
-    parser.add_argument("path", nargs="?", default=None, help="dotted config path, for `config-set`")
+    parser.add_argument("path", nargs="?", default=None, help="dotted config path, for `config-set` / task id, for `trace-task`")
     parser.add_argument("value", nargs="?", default=None, help="new value, for `config-set`")
     parser.add_argument("--days", type=int, default=30, help="retention window for `db-clean`")
     parser.add_argument("--yes", action="store_true", help="required to confirm `db-reset`")
+    parser.add_argument("--json", action="store_true", help="raw JSON output for `trace-task`")
     args = parser.parse_args()
+
+    _configure_logging_for_command(args.command)
 
     if args.command == "doctor":
         raise SystemExit(run_doctor())
@@ -317,6 +414,10 @@ def main() -> None:
         raise SystemExit(db_clean(args.days))
     elif args.command == "db-reset":
         raise SystemExit(db_reset(yes=args.yes))
+    elif args.command == "trace-task":
+        if not args.path:
+            raise SystemExit("usage: agent-control trace-task <task_id> [--json]")
+        raise SystemExit(trace_task(args.path, as_json=args.json))
     elif args.command == "poll-telegram":
         asyncio.run(poll_telegram())
     elif args.command == "run-worker":

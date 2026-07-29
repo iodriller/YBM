@@ -10,8 +10,6 @@ from agent_control.scheduler import objective_from_schedule_text, run_scheduler_
 from agent_control.schemas import (
     AuditEventType,
     Capability,
-    PlanModel,
-    PlanStep,
     RiskLevel,
     ScheduleRecord,
     ScheduleStatus,
@@ -230,21 +228,8 @@ def test_schedule_manage_is_registered_under_schedule_capability(tmp_path) -> No
 def test_registry_rejects_invalid_schedule_operation(tmp_path) -> None:
     settings = _settings(tmp_path)
     registry = build_tool_registry(settings, "http://127.0.0.1:8765")
-    plan = PlanModel(
-        objective="schedule something",
-        required_capabilities=[Capability.SCHEDULE_MANAGE],
-        steps=[
-            PlanStep(
-                title="Bad schedule step",
-                description="Use unsupported operation",
-                required_capabilities=[Capability.SCHEDULE_MANAGE],
-                risk_level=RiskLevel.MEDIUM,
-                tool_name="schedule.manage",
-                tool_input={"operation": "bogus", "objective": "check example.com"},
-            )
-        ],
-    )
+    definition = next(item for item in registry.definitions if item.name == "schedule.manage")
 
-    with pytest.raises(ValueError, match="invalid input for schedule.manage"):
-        registry.validate_plan(plan)
+    with pytest.raises(ValueError):
+        definition.validate_input({"operation": "bogus", "objective": "check example.com"})
 

@@ -1,4 +1,4 @@
-"""Scenario: proves the code.interpreter approval gate (docs/ROADMAP.md P5)
+"""Scenario: proves the code.interpreter approval gate (docs/HISTORY.md P5)
 holds through the *entire* real worker/planner/policy/registry/executor
 stack under genuinely default settings - not just at the adapter unit-test
 level (see test_code_interpreter.py's
@@ -19,6 +19,8 @@ clarifying question instead of silently executing it.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from agent_control.config import CapabilityPolicy, default_capability_policies
@@ -26,8 +28,9 @@ from agent_control.schemas import Capability, RiskLevel, TaskStatus
 
 from .harness import build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
 
-pytestmark = pytest.mark.skip(
-    reason="fixture recorded against the deleted plan-once path (PlannerService/ResponseSynthesizer/AnswerValidator prompts); the Operator loop (docs/ROADMAP.md P3 "
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("YBM_SCENARIO_RECORD"),
+    reason="fixture recorded against the deleted plan-once path (PlannerService/ResponseSynthesizer/AnswerValidator prompts); the Operator loop (docs/HISTORY.md P3 "
     "\u00a72.2) is now the sole execution path and needs its own fixture, recorded fresh "
     "against a live LLM - see orchestration/operator.py and test_operator_loop.py for the "
     "pattern. Left in place (not deleted) so the scenario this file documents survives as "

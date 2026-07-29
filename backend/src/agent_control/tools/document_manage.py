@@ -207,7 +207,10 @@ def _extract_text(path: Path) -> str:
             reader = PdfReader(str(path))
             return "\n\n".join((page.extract_text() or "").strip() for page in reader.pages).strip()
         except Exception:
-            logger.debug("pypdf extraction failed for %s; falling back to raw bytes decode", path, exc_info=True)
+            # The fallback decodes a binary PDF as if it were text, which
+            # produces near-garbage for a real PDF - this is a real quality
+            # degradation on the "summarize this PDF" path, not routine noise.
+            logger.warning("pypdf extraction failed for %s; falling back to raw bytes decode", path, exc_info=True)
             return path.read_bytes().decode("utf-8", errors="ignore")
     return path.read_text(encoding="utf-8", errors="ignore")
 

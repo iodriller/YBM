@@ -1,5 +1,5 @@
 """The Operator loop: observe -> decide -> act - the sole execution path
-(docs/ROADMAP.md P3 §2.2), replacing the old plan-once-then-replan path.
+(docs/HISTORY.md P3 §2.2), replacing the old plan-once-then-replan path.
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ class OperatorLoopService:
                 )
                 # Escalate to the major provider (larger context/capacity)
                 # after an OBSERVED decide() failure, same reasoning as the
-                # old planner's escalation (docs/ROADMAP.md P3 item 5): a
+                # old planner's escalation (docs/HISTORY.md P3 item 5): a
                 # retry costs one extra call on a genuinely hard step, cheaper
                 # than guessing complexity from objective text up front.
                 if self.major_provider is not None and provider is not self.major_provider:

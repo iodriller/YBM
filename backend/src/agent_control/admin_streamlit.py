@@ -11,7 +11,9 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+from agent_control.config import load_settings
 from agent_control.config_sync import read_env_value
+from agent_control.logging_setup import configure_logging
 
 
 DEFAULT_BACKEND_URL = "http://127.0.0.1:8765"
@@ -22,7 +24,19 @@ ACTIVE_STATUSES = {"received", "interpreting", "planned", "running", "retrying",
 TERMINAL_STATUSES = {"completed", "cancelled", "failed"}
 
 
+@st.cache_resource
+def _configure_logging_once() -> None:
+    # Streamlit reruns this whole module top-to-bottom on every interaction -
+    # cache_resource is Streamlit's per-process singleton, so the log file
+    # handler is opened once, not re-opened on every click.
+    try:
+        configure_logging(load_settings(), "admin_ui")
+    except Exception:
+        pass  # admin UI should still render even if settings/logging setup fails
+
+
 def main() -> None:
+    _configure_logging_once()
     st.set_page_config(page_title="Agent Control", layout="wide", initial_sidebar_state="collapsed")
     _inject_css()
 
@@ -53,6 +67,7 @@ def _render_live_page(state: dict[str, str]) -> None:
         return
 
     _render_header(summary)
+    _render_pending_approvals(state)
     _render_live_activity(summary, state)
     _render_operations(summary, state)
     st.divider()
@@ -121,6 +136,37 @@ def _extract_last_output(task: dict[str, Any]) -> str | None:
     return None
 
 
+def _render_pending_approvals(state: dict[str, str]) -> None:
+    try:
+        payload = _api_json(state["backend_url"], "/admin/api/approvals", state["token"])
+    except ApiError as exc:
+        st.error(f"Could not load pending approvals: {exc}")
+        return
+    items = payload.get("approvals") or []
+    if not items:
+        return
+    st.markdown("### Pending Approvals")
+    for item in items:
+        approval = item.get("approval") or {}
+        approval_id = approval.get("id")
+        with st.container(border=True):
+            cols = st.columns([3, 1, 1, 1, 1])
+            cols[0].markdown(f"**{html_escape(str(approval.get('summary') or ''))}**")
+            cols[0].caption(html_escape(str(item.get("task_objective") or "")))
+            cols[1].metric("Capability", str(approval.get("capability") or ""))
+            cols[2].metric("Risk", str(approval.get("risk_level") or ""))
+            if cols[3].button("Approve", key=f"approve-{approval_id}", type="primary"):
+                _post_feedback(
+                    state, f"/admin/api/approvals/{parse.quote(str(approval_id))}/decide",
+                    {"decision": "approve"}, "Approved.",
+                )
+            if cols[4].button("Reject", key=f"reject-{approval_id}"):
+                _post_feedback(
+                    state, f"/admin/api/approvals/{parse.quote(str(approval_id))}/decide",
+                    {"decision": "reject"}, "Rejected.",
+                )
+
+
 def _render_live_activity(summary: dict[str, Any], state: dict[str, str]) -> None:
     tasks = summary.get("tasks") or []
     active = [task for task in tasks if task.get("status") in ACTIVE_STATUSES]
@@ -130,13 +176,18 @@ def _render_live_activity(summary: dict[str, Any], state: dict[str, str]) -> Non
     for task in active:
         status = str(task.get("status") or "")
         last_output = _extract_last_output(task)
-        step = task.get("current_step_id")
+        # Step count comes from operator_history. This used to read
+        # task["current_step_id"], a plan-era field with zero writers since the
+        # Operator loop replaced the plan path - so the metric read "—" for
+        # every task forever, no matter how many tools it had actually called.
+        history = (task.get("metadata") or {}).get("operator_history")
+        steps_taken = len(history) if isinstance(history, list) else 0
         with st.container(border=True):
             cols = st.columns([3, 1, 1, 1])
             cols[0].markdown(f"**{html_escape(task.get('objective') or '')}**")
             cols[1].metric("Status", _activity_label(status))
             cols[2].metric("Updated", _relative_time(task.get("updated_at")))
-            cols[3].metric("Step", step or "—")
+            cols[3].metric("Steps", steps_taken)
             if last_output:
                 _wrapped_text(last_output[:800], css_class="live-output-text")
             btn_cols = st.columns([1, 1, 6])
@@ -278,15 +329,13 @@ def _render_task_card(task: dict[str, Any], state: dict[str, str]) -> None:
 
 def _render_task_trace(trace: dict[str, Any], key_prefix: str = "trace") -> None:
     st.markdown("#### Trace")
-    plan = trace.get("plan") or {}
-    steps = plan.get("steps") or []
+    operator_history = trace.get("operator_history") or []
     tools = trace.get("tool_invocations") or []
-    timeline = trace.get("timeline") or []
     audit = trace.get("audit") or []
     trace_timeline = _trace_timeline_rows(trace)
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Plan Steps", len(steps))
+    c1.metric("Operator Steps", len(operator_history))
     c2.metric("Tool Calls", len(tools))
     c3.metric("Timeline", len(trace_timeline))
     c4.metric("Audit", len(audit))
@@ -311,26 +360,8 @@ def _render_task_trace(trace: dict[str, Any], key_prefix: str = "trace") -> None
     else:
         st.info("No timeline entries.")
 
-    with st.expander(f"Plan ({len(steps)} steps)", expanded=False):
-        if not steps:
-            st.info("No plan persisted yet.")
-        for index, step in enumerate(steps, 1):
-            st.markdown(f"**{index}. {step.get('title') or 'Step'}**")
-            st.caption(
-                f"tool={step.get('tool_name') or 'plan only'} | "
-                f"risk={step.get('risk_level')} | "
-                f"capabilities={', '.join(step.get('required_capabilities') or []) or 'none'}"
-            )
-            if step.get("description"):
-                st.write(step["description"])
-            if step.get("tool_input"):
-                st.text_area(
-                    "Step input / prompt",
-                    _json_text(step["tool_input"]),
-                    height=130,
-                    key=f"{key_prefix}-step-input-{index}",
-                    disabled=True,
-                )
+    with st.expander(f"Operator Steps ({len(operator_history)})", expanded=False):
+        _render_operator_history(operator_history, key_prefix)
 
     with st.expander(f"Tools Used ({len(tools)} calls)", expanded=False):
         if not tools:
@@ -353,6 +384,11 @@ def _render_task_trace(trace: dict[str, Any], key_prefix: str = "trace") -> None
                 disabled=True,
             )
 
+    evidence = trace.get("evidence") or {}
+    evidence_count = sum(len(evidence.get(bucket) or []) for bucket in ("files", "urls", "commands"))
+    with st.expander(f"Evidence — what this task touched ({evidence_count})", expanded=False):
+        _render_evidence(evidence)
+
     related_left, related_right = st.columns(2)
     with related_left:
         _json_expander("Orchestrator Context", trace.get("context") or {})
@@ -368,6 +404,54 @@ def _render_task_trace(trace: dict[str, Any], key_prefix: str = "trace") -> None
         )
 
     _json_expander("Raw trace JSON", trace)
+
+
+def _render_evidence(evidence: dict[str, Any]) -> None:
+    """What a completed task actually touched, sourced from real
+    tool_invocations (docs/HISTORY.md N5) - the "we need to be able to see the
+    result of it" ask, without having to open a log file or read raw JSON."""
+    files = evidence.get("files") or []
+    urls = evidence.get("urls") or []
+    commands = evidence.get("commands") or []
+    if not files and not urls and not commands:
+        st.info("Nothing recorded yet for this task.")
+        return
+    for label, items in (("Files", files), ("URLs", urls), ("Commands", commands)):
+        if not items:
+            continue
+        st.markdown(f"**{label}**")
+        for item in items:
+            st.markdown(f"- `{html_escape(str(item.get('value') or ''))}` — {html_escape(str(item.get('tool_name') or ''))}")
+
+
+def _render_operator_history(history: list[dict[str, Any]], key_prefix: str) -> None:
+    """operator_history is the Operator loop's own observe/decide/act record -
+    one entry per tool call plus fulfillment/audit gap checks (docs/HISTORY.md
+    §2.2). This is the real "what did the agent do" view; the admin UI used
+    to render a PlanModel that nothing creates anymore and always showed
+    "No plan persisted yet" for every task."""
+    if not history:
+        st.info("No steps recorded yet.")
+        return
+    for index, step in enumerate(history, 1):
+        tool_name = str(step.get("tool_name") or "")
+        status = str(step.get("status") or "unknown")
+        is_check = tool_name.startswith("_")
+        label = "check" if is_check else tool_name or "step"
+        st.markdown(f"**{index}. {label}** — {status}")
+        step_input = step.get("input")
+        if step_input:
+            st.text_area(
+                "Input", _json_text(step_input), height=90,
+                key=f"{key_prefix}-op-input-{index}", disabled=True,
+            )
+        if step.get("output_summary"):
+            st.text_area(
+                "Output", str(step["output_summary"]), height=120,
+                key=f"{key_prefix}-op-output-{index}", disabled=True,
+            )
+        if step.get("error"):
+            st.error(str(step["error"]))
 
 
 def _render_configuration(summary: dict[str, Any], state: dict[str, str]) -> None:
@@ -401,6 +485,7 @@ def _render_configuration(summary: dict[str, Any], state: dict[str, str]) -> Non
 
 def _render_access_config(summary: dict[str, Any], state: dict[str, str]) -> None:
     access_modes = summary.get("access_modes") or {}
+    _render_kill_switch(access_modes, state)
     for name, item in access_modes.items():
         options = item.get("options") or [
             {"value": "off", "label": "Off"},
@@ -445,6 +530,21 @@ def _render_access_config(summary: dict[str, Any], state: dict[str, str]) -> Non
                     {"modes": modes},
                     f"{item.get('label') or name} set to {labels.get(str(selected), str(selected))}.",
                 )
+
+
+def _render_kill_switch(access_modes: dict[str, Any], state: dict[str, str]) -> None:
+    already_off = access_modes and all(str(item.get("mode") or "off") == "off" for item in access_modes.values())
+    with st.container(border=True):
+        st.markdown("**Kill switch**")
+        st.caption("Sets every access group below to Off in one action. The worker keeps running but every gated capability stops being usable until you turn groups back on.")
+        confirm = st.checkbox("I understand this disables every capability", key="confirm-kill-switch", disabled=already_off)
+        if st.button("Disable everything now", type="primary", disabled=not confirm or already_off):
+            _post_feedback(
+                state,
+                "/admin/api/config/access-modes",
+                {"modes": {name: "off" for name in access_modes}},
+                "All access groups set to Off.",
+            )
 
 
 def _render_llm_config(summary: dict[str, Any], state: dict[str, str]) -> None:
@@ -927,52 +1027,7 @@ def _trace_timeline_frame(trace: dict[str, Any]) -> pd.DataFrame:
 
 
 def _trace_timeline_rows(trace: dict[str, Any]) -> list[dict[str, Any]]:
-    rows = list(trace.get("timeline") or [])
-    plan = trace.get("plan") or {}
-    steps = plan.get("steps") or []
-    if not isinstance(steps, list) or not steps:
-        return rows
-
-    plan_at = _plan_timeline_time(rows)
-    synthetic_steps = []
-    for index, step in enumerate(steps, 1):
-        if not isinstance(step, dict):
-            continue
-        synthetic_steps.append(
-            {
-                "at": plan_at,
-                "kind": "plan step",
-                "title": f"{index}. {step.get('title') or 'Step'}",
-                "summary": step.get("description") or step.get("expected_output") or "",
-                "actor": "planner",
-                "details": {"step_index": index, "step": step},
-            }
-        )
-    return _insert_plan_steps(rows, synthetic_steps)
-
-
-def _plan_timeline_time(rows: list[dict[str, Any]]) -> str:
-    for item in rows:
-        title = str(item.get("title") or "").lower()
-        if "plan" in title:
-            return str(item.get("at") or "")
-    return str(rows[0].get("at") or "") if rows else ""
-
-
-def _insert_plan_steps(rows: list[dict[str, Any]], steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    if not steps:
-        return rows
-    inserted = False
-    result: list[dict[str, Any]] = []
-    for item in rows:
-        result.append(item)
-        title = str(item.get("title") or "").lower()
-        if not inserted and "plan" in title:
-            result.extend(steps)
-            inserted = True
-    if not inserted:
-        result = steps + result
-    return result
+    return list(trace.get("timeline") or [])
 
 
 def _timeline_frame(timeline: list[dict[str, Any]]) -> pd.DataFrame:

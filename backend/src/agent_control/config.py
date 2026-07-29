@@ -99,7 +99,7 @@ class StorageConfig(StrictBaseModel):
     # used to be the one exception, sitting in the repo root. storage/database.py's
     # Database.__init__ auto-migrates an existing repo-root file into this
     # location the first time it's constructed with this exact default
-    # (docs/ROADMAP.md P6); it never touches a path a caller customized.
+    # (docs/HISTORY.md P6); it never touches a path a caller customized.
     database_url: str = "sqlite:///.agent_control/agent_control.db"
     artifact_dir: str = ".agent_control/artifacts"
 
@@ -115,7 +115,7 @@ class SchedulerConfig(StrictBaseModel):
     default_timezone: str = "America/Chicago"
     # A schedule whose spawned task fails this many times in a row is
     # auto-paused rather than left to keep failing silently and unnoticed
-    # (docs/ROADMAP.md P6 - the motivating case was 7 real schedules whose
+    # (docs/HISTORY.md P6 - the motivating case was 7 real schedules whose
     # target had gone away, still firing and failing every day for weeks).
     max_consecutive_failures: int = Field(default=5, ge=1, le=100)
 
@@ -139,7 +139,7 @@ class LimitsConfig(StrictBaseModel):
 
 
 class OperatorConfig(StrictBaseModel):
-    # The observe/decide/act agent loop (docs/ROADMAP.md P3 §2.2) - the sole
+    # The observe/decide/act agent loop (docs/HISTORY.md P3 §2.2) - the sole
     # execution path as of 2026-07-28 (the old plan-once-then-replan path and
     # its keyword-driven recovery were deleted, not just defaulted off).
     max_steps: int = Field(default=8, ge=1, le=50)

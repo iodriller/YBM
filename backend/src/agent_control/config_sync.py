@@ -104,14 +104,6 @@ def _env_value(value: str) -> str:
     return value
 
 
-def env_bool(value: bool) -> str:
-    return "true" if value else "false"
-
-
-def env_json(value: Any) -> str:
-    return json.dumps(value)
-
-
 def parse_scalar(value: str) -> Any:
     if value.lower() in ("true", "false"):
         return value.lower() == "true"

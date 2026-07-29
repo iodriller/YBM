@@ -79,10 +79,17 @@ def _service_record(name: str, expected: bool) -> dict[str, Any]:
 
 
 def _read_json(path: Path) -> dict[str, Any]:
+    # A missing file is routine - this is polled every few seconds by the
+    # admin UI, and "service not started yet" is a normal state, not a
+    # problem worth logging. A file that exists but won't parse is different:
+    # that means a supervisor wrote a truncated/corrupt status file, which is
+    # worth knowing about.
+    if not path.exists():
+        return {}
     try:
         return json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception:
-        logger.debug("failed to read service status file %s", path, exc_info=True)
+        logger.warning("service status file exists but failed to parse: %s", path, exc_info=True)
         return {}
 
 

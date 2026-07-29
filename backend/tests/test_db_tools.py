@@ -3,10 +3,12 @@ from __future__ import annotations
 from datetime import timedelta
 
 from agent_control import db_tools
+from agent_control.storage.audit import AuditLogger
 from agent_control.storage.database import Database
 from agent_control.storage.repositories import Repositories
 from agent_control.schemas import (
     ApprovalRequest,
+    AuditEventType,
     Capability,
     ChannelType,
     RiskLevel,
@@ -52,6 +54,48 @@ def test_db_clean_removes_old_tasks_keeps_recent(tmp_path, monkeypatch) -> None:
     assert exit_code == 0
     assert repositories.tasks.get(old_task.id) is None
     assert repositories.tasks.get(recent_task.id) is not None
+
+
+def _backdate_audit_event(database: Database, event_id: str, *, days_old: int) -> None:
+    created_at = (utc_now() - timedelta(days=days_old)).isoformat()
+    with database.connect() as connection:
+        connection.execute("UPDATE audit_events SET created_at = ? WHERE id = ?", (created_at, event_id))
+
+
+def test_db_clean_removes_old_orphaned_audit_events_keeps_recent(tmp_path, monkeypatch) -> None:
+    """audit_events.task_id is nullable (config changes, Telegram access
+    decisions, pre-task messages) - the task-anchored cascade in db_clean
+    never reaches these, so without an explicit pass they accumulate forever
+    regardless of --days (docs/HISTORY.md N5)."""
+    repositories, database = _repositories(tmp_path, monkeypatch)
+    audit = AuditLogger(repositories.audit)
+    old_event = audit.append(AuditEventType.CONFIG_UPDATED, actor="admin", payload={"section": "llm"})
+    recent_event = audit.append(AuditEventType.CONFIG_UPDATED, actor="admin", payload={"section": "telegram"})
+    _backdate_audit_event(database, old_event.id, days_old=60)
+    _backdate_audit_event(database, recent_event.id, days_old=1)
+
+    exit_code = db_tools.db_clean(days=30)
+
+    assert exit_code == 0
+    remaining_ids = {event.id for event in repositories.audit.list_recent(100)}
+    assert old_event.id not in remaining_ids
+    assert recent_event.id in remaining_ids
+
+
+def test_db_clean_does_not_delete_orphaned_audit_events_attached_to_a_kept_task(tmp_path, monkeypatch) -> None:
+    repositories, database = _repositories(tmp_path, monkeypatch)
+    audit = AuditLogger(repositories.audit)
+    recent_task = repositories.tasks.create(objective="recent task")
+    _backdate_task(database, recent_task, days_old=1)
+    event = audit.append(AuditEventType.TASK_CREATED, actor="test", task_id=recent_task.id)
+    _backdate_audit_event(database, event.id, days_old=60)
+
+    exit_code = db_tools.db_clean(days=30)
+
+    assert exit_code == 0
+    assert repositories.tasks.get(recent_task.id) is not None
+    remaining_ids = {e.id for e in repositories.audit.list_for_task(recent_task.id)}
+    assert event.id in remaining_ids
 
 
 def test_db_clean_rejects_invalid_days(tmp_path, monkeypatch) -> None:

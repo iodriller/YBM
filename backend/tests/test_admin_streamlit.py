@@ -9,7 +9,7 @@ from agent_control import admin_streamlit
 
 
 def test_streamlit_admin_has_no_legacy_admin_link() -> None:
-    # admin.py's ~1,300-line embedded HTML admin was deleted (docs/ROADMAP.md
+    # admin.py's ~1,300-line embedded HTML admin was deleted (docs/HISTORY.md
     # P4) - Streamlit is the one real admin UI now, so a button pointing back
     # to it would be circular. st.link_button isn't inspectable through
     # AppTest's structured widget API, so check the source directly.
@@ -111,30 +111,47 @@ def test_streamlit_admin_timeline_details_are_human_readable() -> None:
     assert frame.iloc[1]["Next"] == "worker result: succeeded"
     assert "prompt: Launch the preview server" in frame.iloc[1]["Prompt / Payload"]
 
-    trace_frame = admin_streamlit._trace_timeline_frame(
+    # _trace_timeline_rows() is now a passthrough of trace["timeline"] - there
+    # is no PlanModel to synthesize synthetic "plan step" rows from anymore
+    # (docs/HISTORY.md §1.1/§2.2, nothing creates one). A stray "plan" key in
+    # the trace payload must be ignored, not crash or resurrect old rows.
+    trace_frame = admin_streamlit._trace_timeline_frame({"timeline": timeline, "plan": {"steps": [{"title": "ignored"}]}})
+    assert "plan step" not in set(trace_frame["Kind"])
+    assert len(trace_frame) == len(timeline)
+
+
+def test_streamlit_admin_renders_operator_history_steps() -> None:
+    history = [
         {
-            "timeline": timeline,
-            "plan": {
-                "steps": [
-                    {
-                        "title": "Prepare workspace",
-                        "description": "Create the task workspace",
-                        "tool_name": "workspace.manage",
-                        "risk_level": "high",
-                        "required_capabilities": ["filesystem.write"],
-                        "tool_input": {"operation": "prepare"},
-                        "expected_output": "workspace path",
-                    }
-                ]
-            },
-        }
-    )
-    plan_step = trace_frame[trace_frame["Kind"] == "plan step"].iloc[0]
-    assert plan_step["Title"] == "1. Prepare workspace"
-    assert plan_step["Source"] == "plan"
-    assert plan_step["Next"] == "workspace.manage"
-    assert "step_input:" in plan_step["Prompt / Payload"]
-    assert "capabilities: filesystem.write" in plan_step["Details"]
+            "tool_name": "filesystem.manage",
+            "input": {"operation": "search", "query": "resume"},
+            "status": "succeeded",
+            "output_summary": "Found 1 result: resume.txt",
+            "error": None,
+        },
+        {
+            "tool_name": "_fulfillment_check",
+            "input": None,
+            "status": "fulfillment_gap",
+            "error": "expected_workspace_dir_missing",
+        },
+    ]
+
+    at = AppTest.from_function(_render_history_probe, kwargs={"history": history})
+    at.run()
+
+    assert not at.exception
+    markdown_text = "\n".join(m.value for m in at.markdown)
+    assert "filesystem.manage" in markdown_text
+    assert "check" in markdown_text  # the _fulfillment_check row shows as "check", not the raw internal name
+    errors = [e.value for e in at.error]
+    assert any("expected_workspace_dir_missing" in text for text in errors)
+
+
+def _render_history_probe(history: list[dict]) -> None:
+    from agent_control import admin_streamlit as _mod
+
+    _mod._render_operator_history(history, "probe")
 
 
 def test_streamlit_admin_action_disabled_rules() -> None:
@@ -295,3 +312,92 @@ admin_streamlit.main()
     assert not app.exception
     assert app.markdown[0].value
     assert any("File system" in item.value for item in app.markdown)
+
+
+def test_streamlit_admin_renders_pending_approval_and_kill_switch(tmp_path: Path) -> None:
+    app_file = tmp_path / "streamlit_approvals_smoke.py"
+    app_file.write_text(
+        '''
+from agent_control import admin_streamlit
+
+PENDING_APPROVAL = {
+    "approval": {
+        "id": "approval_1",
+        "task_id": "task_1",
+        "capability": "filesystem.write",
+        "risk_level": "high",
+        "summary": "write report.txt",
+        "status": "pending",
+    },
+    "task_objective": "write a report",
+    "task_status": "awaiting_approval",
+}
+
+
+def fake_api_json(backend_url, path, token, method="GET", payload=None):
+    summary = {
+        "config": {
+            "identity": {"instance_name": "test-agent"},
+            "channels": {"telegram": {"enabled": True, "token_env": "TELEGRAM_BOT_TOKEN", "allowed_user_ids": [], "allowed_chat_ids": [], "polling": True}},
+            "llm": {"default_profile": "local", "profiles": {"local": {"provider": "openai_compatible", "model": "gemma", "timeout_seconds": 180, "max_tokens": 1024, "temperature": 0.2}}},
+            "adapters": {
+                "workspace": {"enabled": True, "root_dir": ".agent_control/workspaces", "web_host": "127.0.0.1", "web_port_start": 8890, "open_browser": True},
+                "vscode": {"enabled": True, "bridge_host": "127.0.0.1", "bridge_port": 8766, "auth_token_env": "VSCODE_BRIDGE_TOKEN"},
+                "adapter_factory": {"root_dir": ".agent_control/adapters"},
+                "computer_use": {"enabled": True, "max_steps": 8, "screenshot_dir": ".agent_control/computer_use/screenshots", "allowed_roots": [".agent_control/workspaces"], "allowed_apps": []},
+            },
+            "server": {},
+            "storage": {},
+            "limits": {},
+        },
+        "tasks": [],
+        "task_pagination": {"total": 0, "has_more": False},
+        "audit": [],
+        "vscode": {"connected": False, "state": None, "heartbeat": None, "terminal_outputs": []},
+        "access_modes": {
+            "filesystem": {
+                "label": "File system",
+                "mode": "full_access",
+                "capabilities": ["filesystem.read", "filesystem.write"],
+                "options": [
+                    {"value": "off", "label": "Off"},
+                    {"value": "read_only", "label": "Read-only"},
+                    {"value": "write_access", "label": "Write with approval"},
+                    {"value": "full_access", "label": "Full access"},
+                ],
+            },
+        },
+        "approvals": [PENDING_APPROVAL],
+        "warnings": [],
+        "database": {"path": "agent_control.db"},
+        "integrations": {"telegram": {"enabled": True, "allowed_user_count": 0}, "llm": {"presets": []}},
+        "admin": {"token_required": False, "config_file": "config/config.yaml"},
+    }
+    if path.startswith("/admin/api/approvals"):
+        return {"approvals": [PENDING_APPROVAL]}
+    if path.startswith("/admin/api/tasks"):
+        return {"tasks": [], "pagination": {"total": 0, "has_more": False}}
+    if path.startswith("/admin/api/audit"):
+        return {"events": []}
+    if path.startswith("/admin/api/config/effective"):
+        return {"config": summary["config"], "access_modes": summary["access_modes"], "warnings": []}
+    return summary
+
+
+admin_streamlit._api_json = fake_api_json
+admin_streamlit.main()
+''',
+        encoding="utf-8",
+    )
+
+    app = AppTest.from_file(str(app_file))
+    app.run(timeout=10)
+
+    assert not app.exception
+    assert any("Pending Approvals" in item.value for item in app.markdown)
+    assert any("write report.txt" in item.value for item in app.markdown)
+    assert any("Kill switch" in item.value for item in app.markdown)
+    button_labels = {button.label for button in app.button}
+    assert "Approve" in button_labels
+    assert "Reject" in button_labels
+    assert "Disable everything now" in button_labels

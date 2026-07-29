@@ -69,7 +69,7 @@ class ConversationMemoryService:
                 timeout=self.summarization_timeout_seconds,
             )
         except Exception:
-            logger.debug("conversation summarization failed; falling back to heuristic summary", exc_info=True)
+            logger.warning("conversation summarization failed; falling back to heuristic summary", exc_info=True)
             return _fallback_summary(existing_summary, recent_turns, self.max_summary_chars)
         return _clean_summary(output, self.max_summary_chars)
 

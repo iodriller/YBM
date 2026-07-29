@@ -1,5 +1,5 @@
 """Unit tests for the Operator loop path in orchestration/worker.py - the
-sole execution path (docs/ROADMAP.md P3 §2.2). Uses the same
+sole execution path (docs/HISTORY.md P3 §2.2). Uses the same
 StaticToolAdapter/PolicyEngine harness as test_worker.py, but drives
 TaskWorker with a scripted decision sequence instead of a persisted plan.
 See orchestration/operator.py's module docstring for the design.
@@ -245,6 +245,132 @@ async def test_operator_loop_exhausts_step_budget(tmp_path) -> None:
         for event in audit_events
         if event.type == "error"
     )
+
+
+@pytest.mark.asyncio
+async def test_gap_check_entries_do_not_consume_the_tool_call_budget(tmp_path) -> None:
+    """Regression guard (docs/HISTORY.md §3.1): the fulfillment/audit gap paths
+    append check pseudo-entries to operator_history so the next decide() sees
+    why `done` was rejected. Those are bookkeeping - counting them against
+    operator_max_steps meant every gap stole a slot from the tool calls the
+    model needs to close that gap, and a task could exhaust its whole budget
+    having called zero tools."""
+    repos, audit = _repos(tmp_path)
+    task = repos.tasks.create("summarize the report")
+    settings = _settings()
+    executor = _executor(settings, audit, repos, tool_name="filesystem.manage", output={"text": "content"})
+
+    class GapThenOkAuditor:
+        def __init__(self) -> None:
+            self.calls = 0
+        async def audit(self, objective, raw_output, *, original_message=None):
+            self.calls += 1
+            if self.calls == 1:
+                return AuditResult(sufficient=False, reason="need more")
+            return AuditResult(sufficient=True, answer="grounded")
+
+    class AlwaysCallTool:
+        def __init__(self, prefix) -> None:
+            self.prefix = list(prefix)
+        async def decide(self, objective, config_context, history, *, memory_context=""):
+            if self.prefix:
+                return self.prefix.pop(0)
+            return OperatorDecision(
+                action=OperatorAction.CALL_TOOL, tool_name="filesystem.manage",
+                tool_input={}, risk_level=RiskLevel.LOW,
+            )
+
+    operator = AlwaysCallTool([
+        OperatorDecision(action=OperatorAction.CALL_TOOL, tool_name="filesystem.manage", tool_input={}, risk_level=RiskLevel.LOW),
+        OperatorDecision(action=OperatorAction.DONE, final_answer="early"),
+    ])
+    worker = TaskWorker(
+        repos, audit, executor=executor, operator=operator,
+        auditor=GapThenOkAuditor(), operator_max_steps=3,
+    )
+
+    result = task
+    for _ in range(12):
+        result = await worker.process_task(result.id)
+        if result.status != TaskStatus.RUNNING:
+            break
+
+    history = result.metadata["operator_history"]
+    real = [h for h in history if not str(h.get("tool_name") or "").startswith("_")]
+    pseudo = [h for h in history if str(h.get("tool_name") or "").startswith("_")]
+    assert pseudo, "expected an audit-gap check entry in this scenario"
+    # The budget bought 3 REAL tool calls; the check row did not steal one.
+    assert len(real) == 3
+
+
+@pytest.mark.asyncio
+async def test_auditor_receives_full_output_not_the_truncated_history_summary(tmp_path) -> None:
+    """Regression guard (docs/HISTORY.md §3.2): history entries store a
+    2000-char display summary. The Auditor judges count/section sufficiency,
+    so handing it a truncation produces false INSUFFICIENT verdicts on exactly
+    the long-content objectives it exists for."""
+    repos, audit = _repos(tmp_path)
+    task = repos.tasks.create("list every line")
+    settings = _settings()
+    long_text = "EPISODE-LINE " * 900  # ~11.7k chars, well past the 2000 summary cut
+    executor = _executor(settings, audit, repos, tool_name="filesystem.manage", output={"text": long_text})
+
+    class RecordingAuditor:
+        def __init__(self) -> None:
+            self.seen: list[str] = []
+        async def audit(self, objective, raw_output, *, original_message=None):
+            self.seen.append(raw_output)
+            return AuditResult(sufficient=True, answer="ok")
+
+    auditor = RecordingAuditor()
+    operator = QueueOperator([
+        OperatorDecision(action=OperatorAction.CALL_TOOL, tool_name="filesystem.manage", tool_input={}, risk_level=RiskLevel.LOW),
+        OperatorDecision(action=OperatorAction.DONE, final_answer="done"),
+    ])
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator, auditor=auditor)
+
+    running = await worker.process_task(task.id)
+    await worker.process_task(running.id)
+
+    assert auditor.seen, "auditor should have run"
+    assert len(auditor.seen[0]) > 2000
+    assert len(auditor.seen[0]) == len(long_text)
+
+
+@pytest.mark.asyncio
+async def test_multi_step_task_sends_a_progress_notification_per_step(tmp_path) -> None:
+    """Regression guard (docs/HISTORY.md §3.3): the RUNNING dedupe key used to be
+    built from metadata["attempt_history"] + current_step_id, both plan-era
+    fields with zero writers since P3. That collapsed the key to the constant
+    "running", so a 30-step task sent one "working on it" and then went
+    silent."""
+    repos, audit = _repos(tmp_path)
+    task = repos.tasks.create("do three things", metadata={"source_chat_id": "100"})
+    settings = _settings()
+    executor = _executor(settings, audit, repos, output={"text": "ok"})
+    operator = QueueOperator([
+        OperatorDecision(action=OperatorAction.CALL_TOOL, tool_name="llm", tool_input={}, risk_level=RiskLevel.LOW),
+        OperatorDecision(action=OperatorAction.CALL_TOOL, tool_name="llm", tool_input={}, risk_level=RiskLevel.LOW),
+        OperatorDecision(action=OperatorAction.CALL_TOOL, tool_name="llm", tool_input={}, risk_level=RiskLevel.LOW),
+        OperatorDecision(action=OperatorAction.DONE, final_answer="finished"),
+    ])
+
+    class RecordingNotifier:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+        async def notify(self, task) -> None:
+            self.sent.append(task.status.value)
+
+    notifier = RecordingNotifier()
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator, notification_sink=notifier)
+
+    for _ in range(6):
+        processed = await worker.process_next()
+        if processed is None or processed.status in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
+            break
+
+    assert notifier.sent.count("running") == 3, notifier.sent
+    assert notifier.sent[-1] == "completed"
 
 
 @pytest.mark.asyncio

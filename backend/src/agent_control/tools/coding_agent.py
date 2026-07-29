@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 import json
+import logging
 import os
 from pathlib import Path
 import shutil
@@ -24,6 +25,8 @@ from agent_control.tools.spec import (
     same_output_schema,
 )
 
+
+logger = logging.getLogger(__name__)
 
 PROVIDERS = ("codex", "github_copilot", "claude_code")
 
@@ -444,6 +447,9 @@ def load_sessions(session_root: str, limit: int | None = 20) -> list[dict]:
         try:
             sessions.append(json.loads(path.read_text(encoding="utf-8")))
         except (OSError, json.JSONDecodeError):
+            # A corrupt session file means that session's history silently
+            # disappears from every status listing - worth knowing about.
+            logger.warning("failed to read coding session file %s; skipping", path, exc_info=True)
             continue
     sessions.sort(key=lambda item: str(item.get("started_at") or ""), reverse=True)
     return sessions[:limit] if limit is not None else sessions

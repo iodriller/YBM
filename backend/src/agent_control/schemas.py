@@ -64,15 +64,6 @@ class ScheduleStatus(StrEnum):
     DELETED = "deleted"
 
 
-class SubtaskStatus(StrEnum):
-    PENDING = "pending"
-    RUNNING = "running"
-    BLOCKED = "blocked"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-
-
 class RiskLevel(StrEnum):
     LOW = "low"
     MEDIUM = "medium"
@@ -431,180 +422,21 @@ class FormattedAuditEvent(StrictBaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
-class ApprovalGate(StrictBaseModel):
-    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True, validate_assignment=True, use_enum_values=False)
-    capability: Capability
-    risk_level: RiskLevel
-    summary: str
-    required_before_step: str | None = None
-
-    @field_validator("capability", mode="before")
-    @classmethod
-    def map_capability_alias(cls, value: Any) -> Any:
-        # Same alias table as PlanStep.required_capabilities — the LLM
-        # routinely confuses tool names ("artifact.deliver") with capabilities
-        # ("telegram.send"). Without this, the plan is rejected outright and
-        # the planner replans the same mistake.
-        return _normalize_capability_value(value)
-
-
 class PlanPostcondition(StrictBaseModel):
+    """Not plan-era despite the name - this is the Operator loop's own
+    deterministic postcondition record (orchestration/fulfillment.py's
+    expected_postconditions()), inferred from objective text + tool names,
+    not from a PlanModel (deleted; nothing constructs one anymore)."""
     model_config = ConfigDict(extra="ignore", str_strip_whitespace=True, validate_assignment=True, use_enum_values=False)
     type: PostconditionType
     description: str
     required: bool = True
 
 
-# Map common LLM mistakes (tool names / intent routes) to the actual Capability they need.
-# This is intentionally generous — the LLM frequently confuses a TOOL it's calling with the
-# CAPABILITY that tool requires (e.g. tool "artifact.deliver" needs capability "telegram.send").
-# Without this mapping, perfectly correct plans get rejected for a string-level confusion.
-_CAPABILITY_ALIASES: dict[str, str] = {
-    # Tool-name confusions (tool name → underlying capability)
-    "artifact.deliver":       "telegram.send",
-    "filesystem.manage":      "filesystem.read",   # write ops should explicitly list filesystem.write
-    "document.manage":        "filesystem.read",
-    "code.interpreter":       "terminal.run",
-    "computer.use":           "desktop.control",
-    "task.status":            "llm.generate",
-    "coding.agent":           "terminal.run",
-    "mcp.client":             "terminal.run",
-    "workspace.manage":       "filesystem.write",
-    "adapter.factory":        "llm.generate",
-    # IntentRoute sub-types → primary capability
-    "browser.research":       "browser.open",
-    "browser.search":         "browser.open",
-    "browser.screenshot":     "browser.open",
-    "browser.summarize":      "browser.open",
-    "browser.navigate":       "browser.control",
-    "browser.fill_form":      "browser.control",
-    "browser.form":           "browser.control",
-    "http.request":           "network.http",
-    "http":                   "network.http",
-    "rest":                   "network.http",
-    # Common informal names
-    "telegram":               "telegram.send",
-    "filesystem":             "filesystem.read",
-    "browser":                "browser.open",
-    "network":                "network.http",
-    "desktop":                "desktop.control",
-    "code":                   "terminal.run",
-    "python":                 "terminal.run",
-    "python.run":             "terminal.run",
-    "code.run":               "terminal.run",
-    "screenshot":             "desktop.screenshot",
-}
-
-
-def _normalize_capability_value(value: Any) -> Any:
-    """Translate a single LLM-produced capability string through the alias table.
-
-    Pass-through for already-Capability values or unknown strings (Pydantic will
-    then validate or reject downstream). The point is to catch the common
-    tool-name-mistaken-for-capability error ("artifact.deliver" → "telegram.send")
-    BEFORE Pydantic rejects it.
-    """
-    if isinstance(value, Capability) or value is None:
-        return value
-    key = str(value).strip().lower()
-    return _CAPABILITY_ALIASES.get(key, value)
-
-
-def _normalize_capabilities(value: Any) -> Any:
-    """Translate common LLM mistakes in required_capabilities to valid enum values."""
-    if not isinstance(value, list):
-        return value
-    normalized: list[Any] = []
-    seen: set[str] = set()
-    for item in value:
-        if isinstance(item, Capability):
-            normalized.append(item)
-            seen.add(item.value)
-            continue
-        if item is None:
-            continue
-        mapped = _normalize_capability_value(item)
-        # dedupe after mapping (multiple aliases can collapse to same capability)
-        marker = mapped.value if isinstance(mapped, Capability) else str(mapped).strip().lower()
-        if marker in seen:
-            continue
-        seen.add(marker)
-        normalized.append(mapped)
-    return normalized
-
-
-class PlanStep(StrictBaseModel):
-    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True, validate_assignment=True, use_enum_values=False)
-    id: str = Field(default_factory=lambda: new_id("step"))
-    title: str
-    description: str
-    required_capabilities: list[Capability] = Field(default_factory=list)
-    risk_level: RiskLevel = RiskLevel.LOW
-    requires_approval: bool = False
-    tool_name: str | None = None
-    tool_input: dict[str, Any] = Field(default_factory=dict)
-    expected_output: str | None = None
-
-    @field_validator("required_capabilities", mode="before")
-    @classmethod
-    def map_capability_aliases(cls, value: Any) -> Any:
-        return _normalize_capabilities(value)
-
-
-class PlanModel(StrictBaseModel):
-    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True, validate_assignment=True, use_enum_values=False)
-    id: str = Field(default_factory=lambda: new_id("plan"))
-    objective: str
-    assumptions: list[str] = Field(default_factory=list)
-    required_capabilities: list[Capability] = Field(default_factory=list)
-    approval_gates: list[ApprovalGate] = Field(default_factory=list)
-    steps: list[PlanStep] = Field(default_factory=list)
-    success_criteria: list[str] = Field(default_factory=list)
-    postconditions: list[PlanPostcondition] = Field(default_factory=list)
-
-    @field_validator("required_capabilities", mode="before")
-    @classmethod
-    def map_capability_aliases(cls, value: Any) -> Any:
-        return _normalize_capabilities(value)
-
-    @field_validator("postconditions", mode="before")
-    @classmethod
-    def drop_invalid_postconditions(cls, value: Any) -> Any:
-        """Postconditions are optional and inferred by the fulfillment validator.
-
-        Rather than reject the whole plan because the LLM invented a postcondition
-        type (e.g. ``"screenshot"`` instead of ``"desktop_observation"``), silently
-        drop entries that don't validate. The plan steps still execute correctly.
-        """
-        if not isinstance(value, list):
-            return value
-        kept: list[Any] = []
-        for item in value:
-            if isinstance(item, PlanPostcondition):
-                kept.append(item)
-                continue
-            if not isinstance(item, dict):
-                continue
-            try:
-                kept.append(PlanPostcondition.model_validate(item))
-            except Exception:
-                # Drop silently — leaving postconditions empty lets the fulfillment
-                # validator infer them from objective + step tool names.
-                continue
-        return kept
-
-    @field_validator("steps")
-    @classmethod
-    def plan_requires_steps(cls, value: list[PlanStep]) -> list[PlanStep]:
-        if not value:
-            raise ValueError("plan must contain at least one step")
-        return value
-
-
 class OperatorAction(StrEnum):
     """What the Operator loop's decide() call chose to do next.
 
-    See docs/ROADMAP.md P3 / orchestration/operator.py - the additive
+    See docs/HISTORY.md P3 / orchestration/operator.py - the additive
     observe/decide/act alternative to plan-once-then-replan.
     """
     CALL_TOOL = "call_tool"
@@ -640,8 +472,6 @@ class TaskRecord(StrictBaseModel):
     objective: str
     status: TaskStatus = TaskStatus.RECEIVED
     conversation_id: str | None = None
-    plan_id: str | None = None
-    current_step_id: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -659,17 +489,6 @@ class ScheduleRecord(StrictBaseModel):
     last_run_at: datetime | None = None
     last_task_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=utc_now)
-    updated_at: datetime = Field(default_factory=utc_now)
-
-
-class SubtaskRecord(StrictBaseModel):
-    id: str = Field(default_factory=lambda: new_id("subtask"))
-    task_id: str
-    title: str
-    status: SubtaskStatus = SubtaskStatus.PENDING
-    dependencies: list[str] = Field(default_factory=list)
-    retry_count: int = Field(default=0, ge=0)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -708,14 +527,6 @@ class ToolCallResult(StrictBaseModel):
     completed_at: datetime = Field(default_factory=utc_now)
 
 
-class ToolObservation(StrictBaseModel):
-    id: str = Field(default_factory=lambda: new_id("obs"))
-    task_id: str
-    tool_name: str
-    content: dict[str, Any]
-    observed_at: datetime = Field(default_factory=utc_now)
-
-
 class ApprovalRequest(StrictBaseModel):
     id: str = Field(default_factory=lambda: new_id("approval"))
     task_id: str
@@ -726,22 +537,6 @@ class ApprovalRequest(StrictBaseModel):
     status: ApprovalStatus = ApprovalStatus.PENDING
     expires_at: datetime
     created_at: datetime = Field(default_factory=utc_now)
-
-
-class ApprovalDecision(StrictBaseModel):
-    id: str = Field(default_factory=lambda: new_id("approval_decision"))
-    approval_request_id: str
-    status: ApprovalStatus
-    actor: str
-    reason: str | None = None
-    decided_at: datetime = Field(default_factory=utc_now)
-
-    @field_validator("status")
-    @classmethod
-    def decision_must_be_terminal(cls, value: ApprovalStatus) -> ApprovalStatus:
-        if value == ApprovalStatus.PENDING:
-            raise ValueError("approval decision cannot remain pending")
-        return value
 
 
 class Artifact(StrictBaseModel):

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import re
 from typing import Any
 
-from agent_control.schemas import PlanModel, PlanPostcondition, PostconditionType, TaskRecord
+from agent_control.schemas import PlanPostcondition, PostconditionType, TaskRecord
 
 
 @dataclass(frozen=True)
@@ -23,165 +23,26 @@ class FulfillmentValidation:
         return _gap_reason(self.missing[0])
 
 
-def expected_fulfillment(objective: str) -> dict[str, bool]:
-    expected = _postconditions_from_objective(objective)
-    return {
-        "workspace_dir": any(item.type == PostconditionType.WORKSPACE_DIR for item in expected),
-        "preview_url": any(item.type == PostconditionType.PREVIEW_URL for item in expected),
-        "adapter_proposal": any(item.type == PostconditionType.ADAPTER_PROPOSAL for item in expected),
-        "artifact_delivered": any(item.type == PostconditionType.ARTIFACT_DELIVERED for item in expected),
-        "document_summary": any(item.type == PostconditionType.DOCUMENT_SUMMARY for item in expected),
-        "presentation_file": any(item.type == PostconditionType.PRESENTATION_FILE for item in expected),
-        "coding_agent_step": any(item.type == PostconditionType.CODING_AGENT_STEP for item in expected),
-        "schedule_created": any(item.type == PostconditionType.SCHEDULE_CREATED for item in expected),
-        "browser_state": any(item.type == PostconditionType.BROWSER_STATE for item in expected),
-        "desktop_observation": any(item.type == PostconditionType.DESKTOP_OBSERVATION for item in expected),
-        "file_organization": any(item.type == PostconditionType.FILE_ORGANIZATION for item in expected),
-        "task_status": any(item.type == PostconditionType.TASK_STATUS for item in expected),
-        "github_pr": any(item.type == PostconditionType.GITHUB_PR for item in expected),
-        "external_command": any(item.type == PostconditionType.EXTERNAL_COMMAND for item in expected),
-    }
+def expected_postconditions(task: TaskRecord) -> tuple[PlanPostcondition, ...]:
+    """Objective-text inference is the only source of expected postconditions.
 
-
-def expected_postconditions(task: TaskRecord, plan: PlanModel | None = None) -> tuple[PlanPostcondition, ...]:
-    if plan and plan.postconditions:
-        return tuple(plan.postconditions)
-
-    # When the planner has actually produced tool steps, trust the plan-derived
-    # postconditions exclusively. The objective-keyword inference was over-eager
-    # (e.g. "create" + "files" demanded a workspace_dir for filesystem.manage
-    # plans that have no workspace at all). Only fall back to objective text
-    # when the plan produces no postconditions of its own — that covers the
-    # pre-plan state and edge cases where the plan is purely informational.
-    if plan is not None:
-        plan_inferred = _postconditions_from_plan(plan)
-        if plan_inferred:
-            return tuple(_dedupe(plan_inferred))
-
+    There used to be a plan-derived path here that took priority (the LLM's own
+    declared `plan.postconditions`, then tool-name-derived rules). Both are gone
+    with the plan-once execution path (docs/HISTORY.md P3) - nothing creates a
+    PlanModel anymore, so `plan` was always None and those branches were
+    unreachable. See docs/HISTORY.md §1.1.
+    """
     return tuple(_dedupe(_postconditions_from_objective(task.objective)))
 
 
-def validate_fulfillment(task: TaskRecord, plan: PlanModel | None = None) -> FulfillmentValidation:
-    expected = expected_postconditions(task, plan)
+def validate_fulfillment(task: TaskRecord) -> FulfillmentValidation:
+    expected = expected_postconditions(task)
     missing = tuple(
         item.type
         for item in expected
         if item.required and not _postcondition_satisfied(task, item.type)
     )
     return FulfillmentValidation(expected=expected, missing=missing)
-
-
-def fulfillment_gap(task: TaskRecord, plan: PlanModel | None = None) -> str | None:
-    return validate_fulfillment(task, plan).first_gap
-
-
-def _postconditions_from_plan(plan: PlanModel) -> list[PlanPostcondition]:
-    expected: list[PlanPostcondition] = []
-    for step in plan.steps:
-        operation = str(step.tool_input.get("operation") or "")
-        if step.tool_name == "adapter.factory" and operation in {"", "scaffold"}:
-            expected.append(
-                PlanPostcondition(
-                    type=PostconditionType.ADAPTER_PROPOSAL,
-                    description="A generated adapter proposal directory is reported.",
-                )
-            )
-        if step.tool_name == "artifact.deliver" and operation in {"send_file", "send_latest", "send_screenshot"}:
-            expected.append(
-                PlanPostcondition(
-                    type=PostconditionType.ARTIFACT_DELIVERED,
-                    description="The requested artifact is delivered to Telegram.",
-                )
-            )
-        if step.tool_name == "document.manage" and operation in {"summarize_pdf", "extract_text"}:
-            expected.append(
-                PlanPostcondition(
-                    type=PostconditionType.DOCUMENT_SUMMARY,
-                    description="A document text extraction or summary is reported.",
-                )
-            )
-        if step.tool_name == "document.manage" and operation in {"create_presentation", "update_presentation"}:
-            expected.append(
-                PlanPostcondition(
-                    type=PostconditionType.PRESENTATION_FILE,
-                    description="A PowerPoint file artifact is reported.",
-                )
-            )
-        if step.tool_name == "coding.agent":
-            expected.append(
-                PlanPostcondition(
-                    type=PostconditionType.CODING_AGENT_STEP,
-                    description="A coding-agent invocation completed or reported a limit.",
-                )
-            )
-        if step.tool_name == "schedule.manage" and operation in {"create", "run_now"}:
-            expected.append(
-                PlanPostcondition(
-                    type=PostconditionType.SCHEDULE_CREATED,
-                    description="A schedule ID or scheduled task ID is reported.",
-                )
-            )
-        if step.tool_name == "task.status" and operation in {"", "status"}:
-            expected.append(
-                PlanPostcondition(
-                    type=PostconditionType.TASK_STATUS,
-                    description="Current task and plan status are reported.",
-                )
-            )
-        if step.tool_name in {"workspace.manage", "workspace.web_app"}:
-            if operation in {"prepare", "write_files", "materialize_static_app", "web_app_preview", "launch_static"}:
-                expected.append(
-                    PlanPostcondition(
-                        type=PostconditionType.WORKSPACE_DIR,
-                        description="A task workspace directory is reported.",
-                    )
-                )
-            if operation == "write_files":
-                expected.append(
-                    PlanPostcondition(
-                        type=PostconditionType.FILE_ORGANIZATION,
-                        description="Generated or changed files are reported.",
-                    )
-                )
-            if operation in {"web_app_preview", "launch_static"}:
-                expected.append(
-                    PlanPostcondition(
-                        type=PostconditionType.PREVIEW_URL,
-                        description="A local preview URL is reported.",
-                    )
-                )
-        command_step = step.tool_name in {"vscode.terminal_command", "coding_assistant"} or (
-            step.tool_name == "vscode.copilot_terminal" and step.tool_input.get("command")
-        )
-        if command_step:
-            expected.append(
-                PlanPostcondition(
-                    type=PostconditionType.EXTERNAL_COMMAND,
-                    description="The external command reports successful completion.",
-                )
-            )
-        if step.tool_name in {"browser.open", "browser.control"}:
-            expected.append(
-                PlanPostcondition(
-                    type=PostconditionType.BROWSER_STATE,
-                    description="Browser state or an opened page URL is reported.",
-                )
-            )
-        if step.tool_name in {"desktop.screenshot", "computer.use"}:
-            expected.append(
-                PlanPostcondition(
-                    type=PostconditionType.DESKTOP_OBSERVATION,
-                    description="A desktop observation, action result, or completed goal is reported.",
-                )
-            )
-        if step.tool_name and step.tool_name.startswith("github.") and operation in {"create_pr", "open_pr", "pull_request"}:
-            expected.append(
-                PlanPostcondition(
-                    type=PostconditionType.GITHUB_PR,
-                    description="A GitHub pull request URL or number is reported.",
-                )
-            )
-    return _dedupe(expected)
 
 
 _EMBEDDED_PATH = re.compile(r"[a-z]:\\\S+|\\\\\S+", re.IGNORECASE)
@@ -193,12 +54,11 @@ def _strip_embedded_paths(text: str) -> str:
     happens to contain a trigger word (a folder named "...search", "...app",
     "...schedule") produces a false-positive expected postcondition that
     nothing in the actual task run ever satisfies - this is the sole
-    fulfillment signal the Operator loop has (no PlanModel to derive
-    postconditions from instead, see validate_fulfillment), so a false
-    positive here means a task that genuinely finished loops on a gap it
-    can never close. Strip anything path-shaped before keyword matching, not
-    just this one trigger word - the failure mode is the pattern (words
-    embedded in a path getting matched as intent), not any single keyword.
+    fulfillment signal the Operator loop has, so a false positive means a task
+    that genuinely finished loops on a gap it can never close. Strip anything
+    path-shaped before keyword matching, not just one trigger word - the
+    failure mode is the pattern (words embedded in a path getting matched as
+    intent), not any single keyword.
     """
     return _EMBEDDED_PATH.sub(" ", text)
 

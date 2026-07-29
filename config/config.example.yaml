@@ -166,6 +166,13 @@ limits:
   max_log_chars: 12000
   retry_backoff_seconds: 30
 
+# The Operator loop (observe -> decide -> act) is the sole execution path.
+operator:
+  # Hard ceiling on REAL tool calls per task - the only backstop against a
+  # model that never converges. Fulfillment/audit check entries do not count
+  # against it. Raise for genuinely long multi-tool work; lower to fail fast.
+  max_steps: 8
+
 adapters:
   vscode:
     enabled: false

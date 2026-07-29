@@ -1,8 +1,7 @@
 """Unit tests for the tool registry.
 
-Focuses on the registry-side contract: per-operation schema validation,
-plan validation (catches unregistered/disabled tools and invalid inputs),
-and the context/vault summary strings shown to the planner.
+Focuses on the registry-side contract: per-operation schema validation, and
+the context/vault summary strings shown to the Operator's decide() call.
 
 We use ad-hoc toy ToolDefinitions instead of pulling the full
 build_tool_registry — that path is covered indirectly by every other test
@@ -13,7 +12,7 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel, Field
 
-from agent_control.schemas import Capability, PlanModel, PlanStep
+from agent_control.schemas import Capability
 from agent_control.config import AppSettings, CapabilityPolicy
 from agent_control.tools.registry import ToolDefinition, ToolRegistry, build_tool_registry
 
@@ -112,97 +111,6 @@ def test_vault_summary_marks_disabled_as_known_gap() -> None:
     )
     summary = ToolRegistry(adapters={}, definitions=(disabled,)).vault_summary()
     assert "missing.tool: known_gap" in summary
-
-
-def test_validate_plan_rejects_unregistered_tool() -> None:
-    registry = ToolRegistry(adapters={}, definitions=(_toy_definition(),))
-    plan = PlanModel(
-        objective="o",
-        steps=[
-            PlanStep(
-                title="t",
-                description="d",
-                tool_name="not.registered",
-                tool_input={},
-            )
-        ],
-        success_criteria=["done"],
-    )
-    with pytest.raises(ValueError) as excinfo:
-        registry.validate_plan(plan)
-    assert "unregistered tool" in str(excinfo.value)
-
-
-def test_validate_plan_rejects_disabled_tool() -> None:
-    registry = ToolRegistry(adapters={}, definitions=(_toy_definition(enabled=False),))
-    plan = PlanModel(
-        objective="o",
-        steps=[
-            PlanStep(
-                title="t",
-                description="d",
-                tool_name="toy.tool",
-                tool_input={"operation": "read", "path": "/x"},
-            )
-        ],
-        success_criteria=["done"],
-    )
-    with pytest.raises(ValueError) as excinfo:
-        registry.validate_plan(plan)
-    assert "disabled tool" in str(excinfo.value)
-
-
-def test_validate_plan_propagates_input_validation_error() -> None:
-    registry = ToolRegistry(adapters={}, definitions=(_toy_definition(),))
-    plan = PlanModel(
-        objective="o",
-        steps=[
-            PlanStep(
-                title="t",
-                description="d",
-                tool_name="toy.tool",
-                tool_input={"operation": "read", "path": ""},  # empty path
-            )
-        ],
-        success_criteria=["done"],
-    )
-    with pytest.raises(ValueError) as excinfo:
-        registry.validate_plan(plan)
-    assert "invalid input for toy.tool" in str(excinfo.value)
-
-
-def test_validate_plan_inserts_capability_when_missing() -> None:
-    registry = ToolRegistry(adapters={}, definitions=(_toy_definition(),))
-    plan = PlanModel(
-        objective="o",
-        steps=[
-            PlanStep(
-                title="t",
-                description="d",
-                tool_name="toy.tool",
-                tool_input={"operation": "read", "path": "/x"},
-                required_capabilities=[],
-            )
-        ],
-        success_criteria=["done"],
-    )
-    validated = registry.validate_plan(plan)
-    # Step gets the tool's capability auto-inserted.
-    assert Capability.FILESYSTEM_READ in validated.steps[0].required_capabilities
-    # Plan-level required_capabilities also gets it.
-    assert Capability.FILESYSTEM_READ in validated.required_capabilities
-
-
-def test_validate_plan_passes_through_steps_without_tool() -> None:
-    registry = ToolRegistry(adapters={}, definitions=(_toy_definition(),))
-    plan = PlanModel(
-        objective="o",
-        steps=[PlanStep(title="t", description="d", tool_name=None)],
-        success_criteria=["done"],
-    )
-    # Plan-only steps don't get registry-validated and don't raise.
-    validated = registry.validate_plan(plan)
-    assert validated.steps[0].tool_name is None
 
 
 def test_build_registry_exposes_http_request_only_with_allowlist() -> None:

@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Single entry point for YBM: setup, doctor, start/stop/status/logs, test, e2e, db, config.
-  Replaces the 15+ separate scripts that used to live here (see docs/ROADMAP.md P1).
+  Replaces the 15+ separate scripts that used to live here (see docs/HISTORY.md P1).
 
 .EXAMPLE
   .\scripts\ybm.ps1 setup
@@ -15,7 +15,7 @@
 #>
 param(
   [Parameter(Position = 0)]
-  [ValidateSet("setup", "doctor", "start", "stop", "restart", "status", "logs", "test", "e2e", "e2e-login", "send", "db", "config", "clean", "benchmark", "benchmark-status", "package-extension", "help")]
+  [ValidateSet("setup", "doctor", "start", "stop", "restart", "status", "logs", "test", "e2e", "e2e-login", "send", "trace", "scenario", "db", "config", "clean", "package-extension", "help")]
   [string]$Command = "help",
 
   [Parameter(Position = 1)]
@@ -49,8 +49,9 @@ YBM - local agentic control stack
   ybm clean [flags]            wipe generated artifacts (-Caches -Workspaces -AdapterProposals -AllGenerated)
   ybm e2e-login                bootstrap the Telethon user session for live E2E checks
   ybm send "<message>"         send one ad-hoc message through the full pipeline and trace it
-  ybm benchmark                benchmark local LLM models on planning/classification (slow)
-  ybm benchmark-status [-Watch] read-only progress snapshot for a running benchmark
+  ybm trace <task_id> [--json] full post-mortem for one task - reads the DB directly, no running backend needed
+  ybm scenario record <name> [--profile <name>]
+                                re-record a scenario fixture against a live LLM (real API calls, may cost money)
   ybm package-extension        build the VS Code bridge extension .vsix
 "@ | Write-Host
 }
@@ -184,7 +185,7 @@ function Start-YbmService {
   Set-Content -LiteralPath $pidFile -Value $process.Id
 
   # Truthful readiness: poll for a real signal instead of assuming success
-  # the instant Start-Process returns (see docs/ROADMAP.md P0).
+  # the instant Start-Process returns (see docs/HISTORY.md P0).
   $deadline = (Get-Date).AddSeconds($ReadyTimeoutSeconds)
   while ((Get-Date) -lt $deadline) {
     Start-Sleep -Seconds 1
@@ -324,7 +325,7 @@ function Invoke-YbmStatus {
     }
     # A status.json can outlive its process if the supervisor was killed
     # before it could write a final "stopped" state - verify the pid is
-    # actually alive rather than trusting the file (see docs/ROADMAP.md P6).
+    # actually alive rather than trusting the file (see docs/HISTORY.md P6).
     $displayStatus = $status.status
     if ($status.child_pid -and $displayStatus -eq "running" -and -not (Get-Process -Id ([int]$status.child_pid) -ErrorAction SilentlyContinue)) {
       $displayStatus = "stale"
@@ -457,8 +458,21 @@ switch ($Command) {
   "db" { Invoke-YbmDb -Sub $Sub -Argv $Rest }
   "config" { Invoke-YbmConfig -Sub $Sub -Argv $Rest }
   "clean" {
-    $cleanArgv = @($Sub) + $Rest | Where-Object { $_ }
-    & "$Script:YbmRoot\scripts\clean_agent_control.ps1" @cleanArgv
+    # clean_agent_control.ps1's params are all [switch]. Splatting an ARRAY of
+    # "-Caches"-shaped strings does NOT re-parse them as flags - PowerShell
+    # passes each element positionally instead, and every param here is a
+    # switch with no positional slot, so every flag was silently dropped
+    # ("ybm clean -Caches" printed the "choose at least one switch" usage
+    # message no matter what flag was passed). Splatting a HASHTABLE does
+    # bind correctly to named/switch parameters, so build one from the raw
+    # "-Name" tokens instead.
+    $cleanSwitches = @{}
+    foreach ($arg in (@($Sub) + $Rest | Where-Object { $_ })) {
+      if ($arg -match '^-(\w+)$') {
+        $cleanSwitches[$matches[1]] = $true
+      }
+    }
+    & "$Script:YbmRoot\scripts\clean_agent_control.ps1" @cleanSwitches
     exit $LASTEXITCODE
   }
   "e2e-login" {
@@ -474,18 +488,25 @@ switch ($Command) {
     & (Get-YbmPython) "$Script:YbmRoot\scripts\test_e2e.py" $Sub
     exit $LASTEXITCODE
   }
-  "benchmark" {
-    $env:PYTHONPATH = "$Script:YbmRoot\backend\src"
-    & (Get-YbmPython) "$Script:YbmRoot\scripts\benchmark_models.py"
-    exit $LASTEXITCODE
-  }
-  "benchmark-status" {
-    $benchArgv = @($Sub) + $Rest | Where-Object { $_ }
-    & (Get-YbmPython) "$Script:YbmRoot\scripts\benchmark_progress.py" @benchArgv
-    exit $LASTEXITCODE
-  }
   "package-extension" {
     & "$Script:YbmRoot\scripts\package_vscode_extension.ps1"
+    exit $LASTEXITCODE
+  }
+  "trace" {
+    if (-not $Sub) {
+      Write-Host 'usage: ybm trace <task_id> [--json]'
+      exit 1
+    }
+    $env:PYTHONPATH = "$Script:YbmRoot\backend\src"
+    & (Get-YbmPython) -m agent_control.cli trace-task $Sub @Rest
+    exit $LASTEXITCODE
+  }
+  "scenario" {
+    if ($Sub -ne "record" -or $Rest.Count -lt 1) {
+      Write-Host 'usage: ybm scenario record <name> [--profile <name>]'
+      exit 1
+    }
+    & (Get-YbmPython) "$Script:YbmRoot\backend\tests\scenario\record.py" @Rest
     exit $LASTEXITCODE
   }
   default { Show-YbmHelp }

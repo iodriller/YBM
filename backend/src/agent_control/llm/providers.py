@@ -239,7 +239,7 @@ def _looks_like_localdeploy(profile: LLMProfileConfig) -> bool:
     try:
         parsed = urlparse(base_url)
     except Exception:
-        logger.debug("failed to parse profile base_url %r for localdeploy detection", base_url, exc_info=True)
+        logger.warning("failed to parse profile base_url %r for localdeploy detection", base_url, exc_info=True)
         return False
     hostname = (parsed.hostname or "").lower()
     return (

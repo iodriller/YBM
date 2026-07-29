@@ -1,7 +1,7 @@
 """Scenario: "use the fake MCP echo tool" through the real LLM planner ->
 mcp.client call_tool -> a real fake MCP server subprocess over stdio ->
 validator -> synthesizer. Ports e2e/all_cases.json's `mcp_call_fake_echo`
-case down to the deterministic tier (docs/ROADMAP.md P2) - the first MCP
+case down to the deterministic tier (docs/HISTORY.md P2) - the first MCP
 category case ported, and the first where the pre-built tool catalog (not
 just capability config) has to be part of the planner's prompt for the LLM
 to know `fake.echo` exists at all - mirrors test_mcp_client.py's
@@ -35,7 +35,7 @@ tool-derived rules when that list is empty. A real fix needs either a new
 which is embedded in every scenario fixture's key - would force
 re-recording all of them, not something to bundle into a porting pass) or a
 priority change in `expected_postconditions()` (a bigger behavioral change
-than warranted here). Tracked in docs/ROADMAP.md; this test asserts the
+than warranted here). Tracked in docs/HISTORY.md; this test asserts the
 actual guaranteed behavior instead of the ideal one - the tool call itself
 is correct and reproducible, only the completion status is wrong.
 """
@@ -43,6 +43,8 @@ is correct and reproducible, only the completion status is wrong.
 from __future__ import annotations
 
 import sys
+
+import os
 
 import pytest
 
@@ -52,9 +54,10 @@ from agent_control.tools.mcp_client import write_mcp_catalog
 
 from .harness import build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
 
-pytestmark = pytest.mark.skip(
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("YBM_SCENARIO_RECORD"),
     reason="fixture recorded against the deleted plan-once path (PlannerService/ResponseSynthesizer/"
-    "AnswerValidator prompts); the Operator loop (docs/ROADMAP.md P3 §2.2) is now the sole "
+    "AnswerValidator prompts); the Operator loop (docs/HISTORY.md P3 §2.2) is now the sole "
     "execution path and needs its own fixture, recorded fresh against a live LLM - see "
     "orchestration/operator.py and test_operator_loop.py for the pattern. Left in place (not "
     "deleted) so the scenario this file documents survives as a checklist for that re-recording "

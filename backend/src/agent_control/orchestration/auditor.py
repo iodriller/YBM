@@ -1,4 +1,4 @@
-"""The Auditor (docs/ROADMAP.md P3 §2.1): "did we actually achieve the
+"""The Auditor (docs/HISTORY.md P3 §2.1): "did we actually achieve the
 goal?" Merges the old two-call validator-then-synthesizer sequence into one
 - check whether raw tool output actually grounds an answer, and if it does,
 extract the focused answer, in a single LLM call.
@@ -73,7 +73,7 @@ class AuditorService:
         try:
             result = await self.provider.generate_text(AUDITOR_SYSTEM_PROMPT, user_prompt)
         except Exception:
-            logger.debug("auditor provider call failed; not blocking completion on it", exc_info=True)
+            logger.warning("auditor provider call failed; not blocking completion on it", exc_info=True)
             return AuditResult(sufficient=True, answer=None, reason="auditor_error")
         text = result.strip()
         if not text:
