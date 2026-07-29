@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import tempfile
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
 
@@ -58,9 +59,32 @@ _HEX_RUN = re.compile(r"[0-9a-f]{6,}", re.IGNORECASE)
 # the run's random tmp dir, and replay could never match the replan prompt
 # recorded under a different random name). Collapse it the same way.
 _TEMPDIR_RUN = re.compile(r"\btmp[a-z0-9]{6,}\b", re.IGNORECASE)
+_SCENARIO_SCRATCH_PATTERN = (
+    r"(?:[A-Za-z]:\\(?:[^\\\r\n]+\\)*AppData\\Local\\Temp\\ybm_scenario_scratch|"
+    r"/tmp/ybm_scenario_scratch)"
+)
+_SCENARIO_SCRATCH_ROOT = re.compile(
+    _SCENARIO_SCRATCH_PATTERN,
+    re.IGNORECASE,
+)
+_SCENARIO_SCRATCH_PATH = re.compile(
+    _SCENARIO_SCRATCH_PATTERN + r"(?:[\\/][^\s'\"),\]}]+)*",
+    re.IGNORECASE,
+)
+_CURRENT_SCENARIO_SCRATCH_ROOT = str(
+    Path(tempfile.gettempdir()) / "ybm_scenario_scratch"
+)
 
 
 def _normalize(text: str) -> str:
+    def replace_path(match: re.Match[str]) -> str:
+        matched_path = match.group(0)
+        root_match = _SCENARIO_SCRATCH_ROOT.match(matched_path)
+        suffix = matched_path[root_match.end():] if root_match else ""
+        normalized_suffix = suffix.replace("\\", "/")
+        return f"<scenario_scratch_root>{normalized_suffix}"
+
+    text = _SCENARIO_SCRATCH_PATH.sub(replace_path, text)
     return _HEX_RUN.sub("<id>", _TEMPDIR_RUN.sub("<tmpdir>", text))
 
 
@@ -76,6 +100,39 @@ def _load(fixture_path: Path) -> dict[str, dict[str, Any]]:
     return json.loads(fixture_path.read_text(encoding="utf-8"))
 
 
+def _reindex(entries: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Recompute keys when a stored fixture includes its original prompts."""
+    indexed = {}
+    for stored_key, entry in entries.items():
+        method = entry.get("method")
+        system_prompt = entry.get("system_prompt")
+        user_prompt = entry.get("user_prompt")
+        key = (
+            fixture_key(method, system_prompt, user_prompt)
+            if all(isinstance(value, str) for value in (method, system_prompt, user_prompt))
+            else stored_key
+        )
+        indexed[key] = entry
+    return indexed
+
+
+def _rebase_scenario_paths(value: Any) -> Any:
+    if isinstance(value, str):
+        def replace_path(match: re.Match[str]) -> str:
+            matched_path = match.group(0)
+            root_match = _SCENARIO_SCRATCH_ROOT.match(matched_path)
+            suffix = matched_path[root_match.end():] if root_match else ""
+            parts = [part for part in re.split(r"[\\/]", suffix) if part]
+            return str(Path(_CURRENT_SCENARIO_SCRATCH_ROOT, *parts))
+
+        return _SCENARIO_SCRATCH_PATH.sub(replace_path, value)
+    if isinstance(value, list):
+        return [_rebase_scenario_paths(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _rebase_scenario_paths(item) for key, item in value.items()}
+    return value
+
+
 def _save(fixture_path: Path, entries: dict[str, dict[str, Any]]) -> None:
     fixture_path.parent.mkdir(parents=True, exist_ok=True)
     fixture_path.write_text(json.dumps(entries, indent=2, sort_keys=True), encoding="utf-8")
@@ -86,7 +143,7 @@ class ScriptedLLMProvider:
 
     def __init__(self, fixture_path: str | Path) -> None:
         self.fixture_path = Path(fixture_path)
-        self._entries = _load(self.fixture_path)
+        self._entries = _reindex(_load(self.fixture_path))
         self.calls: list[dict[str, str]] = []  # for test assertions on call order/count
 
     def _lookup(self, method: str, system_prompt: str, user_prompt: str) -> dict[str, Any]:
@@ -101,7 +158,7 @@ class ScriptedLLMProvider:
                 "text changed and every fixture using it needs re-recording."
             )
         self.calls.append({"method": method, "key": key})
-        return entry
+        return _rebase_scenario_paths(entry)
 
     async def generate_text(self, system_prompt: str, user_prompt: str) -> str:
         return str(self._lookup("generate_text", system_prompt, user_prompt)["response"])
@@ -132,7 +189,7 @@ class RecordingLLMProvider:
     def __init__(self, live_provider: _LiveProvider, fixture_path: str | Path) -> None:
         self.live_provider = live_provider
         self.fixture_path = Path(fixture_path)
-        self._entries = _load(self.fixture_path)
+        self._entries = _reindex(_load(self.fixture_path))
 
     def _store(self, method: str, system_prompt: str, user_prompt: str, response: Any) -> None:
         key = fixture_key(method, system_prompt, user_prompt)

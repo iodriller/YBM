@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
+
 import pytest
 from pydantic import BaseModel
 
@@ -96,6 +99,44 @@ def test_fixture_key_normalizes_embedded_tempdir_names() -> None:
     assert fixture_key("generate_structured", "sys", prompt_a) == fixture_key(
         "generate_structured", "sys", prompt_b
     )
+
+
+def test_fixture_key_normalizes_scenario_scratch_root_across_platforms() -> None:
+    windows = (
+        r"search C:\Users\recording-user\AppData\Local\Temp"
+        r"\ybm_scenario_scratch\file_search"
+    )
+    linux = "search /tmp/ybm_scenario_scratch/file_search"
+
+    assert fixture_key("generate_text", "sys", windows) == fixture_key(
+        "generate_text", "sys", linux
+    )
+
+
+@pytest.mark.asyncio
+async def test_replay_rebases_recorded_scenario_response_path(tmp_path) -> None:
+    fixture = tmp_path / "fixture.json"
+    recorded_root = (
+        r"C:\Users\recording-user\AppData\Local\Temp"
+        r"\ybm_scenario_scratch\file_search"
+    )
+    current_root = Path(tempfile.gettempdir()) / "ybm_scenario_scratch" / "file_search"
+    _write_fixture(
+        fixture,
+        {
+            "legacy-key": {
+                "method": "generate_text",
+                "system_prompt": "sys",
+                "user_prompt": f"search {recorded_root}",
+                "response": f"read {recorded_root}\\resume.txt",
+            }
+        },
+    )
+
+    provider = ScriptedLLMProvider(fixture)
+    result = await provider.generate_text("sys", f"search {current_root}")
+
+    assert result == f"read {current_root / 'resume.txt'}"
 
 
 def test_fixture_key_still_distinguishes_genuinely_different_prompts() -> None:
