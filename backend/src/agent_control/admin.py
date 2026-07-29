@@ -17,7 +17,7 @@ from agent_control.orchestration.signals import apply_task_signal
 from agent_control.policy import apply_access_modes_to_config, summarize_access_modes
 from agent_control.prompts import render_prompt
 from agent_control.runtime_status import service_summary
-from agent_control.schemas import AuditEventType, Capability, CapabilityAccessMode, StrictBaseModel
+from agent_control.schemas import ApprovalStatus, AuditEventType, Capability, CapabilityAccessMode, StrictBaseModel
 from agent_control.storage.audit import AuditLogger
 from agent_control.storage.audit_view import format_audit_event
 from agent_control.storage.database import Database
@@ -92,6 +92,10 @@ class AdminComputerUseConfigRequest(StrictBaseModel):
 
 class AdminAccessModesRequest(StrictBaseModel):
     modes: dict[str, CapabilityAccessMode]
+
+
+class AdminApprovalDecisionRequest(StrictBaseModel):
+    decision: str = Field(pattern="^(approve|reject)$")
 
 
 SettingsLoader = Callable[[], AppSettings]
@@ -299,28 +303,48 @@ def create_admin_router(
     def admin_task_trace(request: Request, task_id: str) -> dict[str, Any]:
         require_admin(request)
         repositories = repositories_loader()
-        task = repositories.tasks.get(task_id)
-        if task is None:
+        trace = build_task_trace(repositories, task_id)
+        if trace is None:
             raise HTTPException(status_code=404, detail="task not found")
-        plan = repositories.plans.get(task.plan_id) if task.plan_id else None
-        raw_audit_events = _task_trace_audit_events(repositories, task.model_dump(mode="json"))
-        tool_invocations = repositories.tool_invocations.list_for_task(task_id)
-        formatted_audit = [format_audit_event(event).model_dump(mode="json") for event in raw_audit_events]
-        raw_audit = [event.model_dump(mode="json") for event in raw_audit_events]
-        plan_payload = plan.model_dump(mode="json") if plan else None
-        trace_context = _trace_context(task.model_dump(mode="json"), plan_payload, raw_audit)
-        return {
-            "task": task.model_dump(mode="json"),
-            "context": trace_context,
-            "plan": plan_payload,
-            "timeline": _trace_timeline(formatted_audit, tool_invocations),
-            "tool_invocations": tool_invocations,
-            "approvals": [approval.model_dump(mode="json") for approval in repositories.approvals.list_for_task(task_id)],
-            "artifacts": [artifact.model_dump(mode="json") for artifact in repositories.artifacts.list_for_task(task_id)],
-            "signals": [signal.model_dump(mode="json") for signal in repositories.task_signals.list_for_task(task_id)],
-            "audit": formatted_audit,
-            "raw_audit": raw_audit,
-        }
+        return trace
+
+    @router.get("/api/approvals")
+    def admin_pending_approvals(request: Request) -> dict[str, Any]:
+        require_admin(request)
+        repositories = repositories_loader()
+        pending = repositories.approvals.list_pending()
+        items = []
+        for approval in pending:
+            task = repositories.tasks.get(approval.task_id)
+            items.append(
+                {
+                    "approval": approval.model_dump(mode="json"),
+                    "task_objective": task.objective if task is not None else None,
+                    "task_status": task.status.value if task is not None else None,
+                }
+            )
+        return {"approvals": items}
+
+    @router.post("/api/approvals/{approval_id}/decide")
+    def admin_decide_approval(request: Request, approval_id: str, payload: AdminApprovalDecisionRequest) -> dict[str, Any]:
+        loaded = require_admin(request)
+        repositories = repositories_loader()
+        approval = repositories.approvals.get(approval_id)
+        if approval is None:
+            raise HTTPException(status_code=404, detail="approval not found")
+        if approval.status != ApprovalStatus.PENDING:
+            raise HTTPException(status_code=409, detail=f"approval is already {approval.status.value}, not pending")
+
+        new_status = ApprovalStatus.APPROVED if payload.decision == "approve" else ApprovalStatus.REJECTED
+        repositories.approvals.set_status(approval_id, new_status)
+        AuditLogger(repositories.audit, loaded.logging.redact_patterns).append(
+            AuditEventType.APPROVAL_DECIDED,
+            actor="admin",
+            task_id=approval.task_id,
+            payload={"approval_id": approval_id, "decision": payload.decision, "source": "admin_ui"},
+        )
+        updated = repositories.approvals.get(approval_id)
+        return {"approval": updated.model_dump(mode="json") if updated else None}
 
     @router.delete("/api/tasks")
     def admin_clear_tasks(
@@ -372,15 +396,6 @@ def create_admin_router(
             ]
         return {"events": [event.model_dump(mode="json") for event in formatted[:limit]]}
 
-    @router.get("/api/schedules")
-    def admin_schedules(request: Request, limit: int = Query(default=25, ge=1, le=100)) -> dict[str, Any]:
-        require_admin(request)
-        repositories = repositories_loader()
-        return {
-            "total": repositories.schedules.count(),
-            "schedules": [schedule.model_dump(mode="json") for schedule in repositories.schedules.list_recent(limit)],
-        }
-
     @router.delete("/api/audit")
     def admin_clear_audit(request: Request) -> dict[str, Any]:
         require_admin(request)
@@ -399,16 +414,6 @@ def create_admin_router(
             },
             "warnings": _config_warnings(loaded),
         }
-
-    @router.get("/api/database/summary")
-    def admin_database_summary(request: Request) -> dict[str, Any]:
-        loaded = require_admin(request)
-        return _database_summary(loaded)
-
-    @router.get("/api/vscode")
-    def admin_vscode(request: Request) -> dict[str, Any]:
-        require_admin(request)
-        return _vscode_summary(vscode_store)
 
     @router.post("/api/vscode/terminal-commands")
     def admin_enqueue_vscode_command(
@@ -758,6 +763,95 @@ def _audit_config_update(
     )
 
 
+def build_task_trace(repositories: Repositories, task_id: str) -> dict[str, Any] | None:
+    """The full "what did this task do" record - shared by the `/api/tasks/{id}/trace`
+    endpoint and `ybm trace` (which calls this directly against the DB, no
+    running backend required - see cli.py's `trace_task()`). Returns None if
+    the task doesn't exist.
+    """
+    task = repositories.tasks.get(task_id)
+    if task is None:
+        return None
+    raw_audit_events = _task_trace_audit_events(repositories, task.model_dump(mode="json"))
+    tool_invocations = repositories.tool_invocations.list_for_task(task_id)
+    formatted_audit = [format_audit_event(event).model_dump(mode="json") for event in raw_audit_events]
+    raw_audit = [event.model_dump(mode="json") for event in raw_audit_events]
+    # PlanModel is dead (docs/HISTORY.md §1.1 - the Operator loop never creates
+    # one); operator_history in task metadata is the real step-by-step
+    # execution record now.
+    trace_context = _trace_context(task.model_dump(mode="json"), raw_audit)
+    return {
+        "task": task.model_dump(mode="json"),
+        "context": trace_context,
+        "operator_history": task.metadata.get("operator_history") or [],
+        "timeline": _trace_timeline(formatted_audit, tool_invocations),
+        "tool_invocations": tool_invocations,
+        "evidence": _extract_evidence(tool_invocations),
+        "approvals": [approval.model_dump(mode="json") for approval in repositories.approvals.list_for_task(task_id)],
+        "artifacts": [artifact.model_dump(mode="json") for artifact in repositories.artifacts.list_for_task(task_id)],
+        "signals": [signal.model_dump(mode="json") for signal in repositories.task_signals.list_for_task(task_id)],
+        "audit": formatted_audit,
+        "raw_audit": raw_audit,
+    }
+
+
+# What a completed task actually touched (docs/HISTORY.md N5's "evidence view").
+# Deliberately key-based, not a per-tool_name dispatch table: every tool's
+# input/output dict already uses one of these field names for a path/URL/
+# command whenever it has one (confirmed across filesystem, browser, http,
+# code interpreter, workspace, VS Code, artifact delivery) - matching on the
+# key means a newly registered tool is covered automatically as long as it
+# follows the same naming, instead of needing a new branch here every time.
+_EVIDENCE_FILE_KEYS = (
+    "path", "paths", "workspace_dir", "changed_paths", "files_created",
+    "screenshot_path", "screenshot_uri", "adapter_dir",
+)
+_EVIDENCE_URL_KEYS = ("url", "urls", "visited_urls", "browser_url", "preview_url")
+_EVIDENCE_COMMAND_KEYS = ("command", "commands")
+
+
+def _collect_evidence_values(source: dict[str, Any], keys: tuple[str, ...]) -> list[str]:
+    values: list[str] = []
+    for key in keys:
+        value = source.get(key)
+        if not value:
+            continue
+        if isinstance(value, list):
+            values.extend(str(item) for item in value if item)
+        else:
+            values.append(str(value))
+    return values
+
+
+def _extract_evidence(tool_invocations: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    evidence: dict[str, list[dict[str, Any]]] = {"files": [], "urls": [], "commands": []}
+    seen: dict[str, set[str]] = {"files": set(), "urls": set(), "commands": set()}
+    for invocation in tool_invocations:
+        request = invocation.get("request") or {}
+        result = invocation.get("result") or {}
+        request_input = request.get("input") if isinstance(request, dict) else None
+        result_output = result.get("output") if isinstance(result, dict) else None
+        sources = [source for source in (request_input, result_output) if isinstance(source, dict)]
+        for bucket, keys in (
+            ("files", _EVIDENCE_FILE_KEYS),
+            ("urls", _EVIDENCE_URL_KEYS),
+            ("commands", _EVIDENCE_COMMAND_KEYS),
+        ):
+            for source in sources:
+                for value in _collect_evidence_values(source, keys):
+                    if value in seen[bucket]:
+                        continue
+                    seen[bucket].add(value)
+                    evidence[bucket].append(
+                        {
+                            "value": value,
+                            "tool_name": invocation.get("tool_name"),
+                            "at": invocation.get("created_at"),
+                        }
+                    )
+    return evidence
+
+
 def _task_trace_audit_events(repositories: Repositories, task: dict[str, Any]) -> list:
     events = repositories.audit.list_for_task(str(task["id"]))
     seen = {event.id for event in events}
@@ -783,12 +877,10 @@ def _task_trace_audit_events(repositories: Repositories, task: dict[str, Any]) -
     return sorted(events, key=lambda event: event.created_at)
 
 
-def _trace_context(task: dict[str, Any], plan: dict[str, Any] | None, raw_audit: list[dict[str, Any]]) -> dict[str, Any]:
+def _trace_context(task: dict[str, Any], raw_audit: list[dict[str, Any]]) -> dict[str, Any]:
     classification = next((event for event in raw_audit if event.get("type") == AuditEventType.MESSAGE_CLASSIFIED.value), None)
     message = next((event for event in raw_audit if event.get("type") == AuditEventType.MESSAGE_RECEIVED.value), None)
-    plan_created = next((event for event in raw_audit if event.get("type") == AuditEventType.PLAN_CREATED.value), None)
     classification_payload = classification.get("payload", {}) if classification else {}
-    plan_payload = plan_created.get("payload", {}) if plan_created else {}
     return {
         "inbound_message": message.get("payload", {}) if message else None,
         "classification": classification_payload or {
@@ -798,13 +890,6 @@ def _trace_context(task: dict[str, Any], plan: dict[str, Any] | None, raw_audit:
             "original_message_text": (task.get("metadata") or {}).get("original_message_text"),
         },
         "classifier_llm": classification_payload.get("llm"),
-        "planner_or_default_plan": {
-            "audit_payload": plan_payload,
-            "config_context": plan_payload.get("config_context") or (plan_payload.get("llm") or {}).get("config_context"),
-            "llm": plan_payload.get("llm"),
-            "plan_source": plan_payload.get("source") or "planner",
-        },
-        "plan": plan,
         "final_metadata": task.get("metadata") or {},
     }
 
@@ -859,7 +944,6 @@ def _database_summary(settings: AppSettings) -> dict[str, Any]:
         "conversation_memory",
         "messages",
         "tasks",
-        "plans",
         "approvals",
         "tool_invocations",
         "artifacts",
@@ -950,7 +1034,7 @@ def _tool_group(name: str) -> str:
 
 
 # The Streamlit app (admin_streamlit.py) is the one real admin UI - this used
-# to be a second, ~1,300-line embedded-HTML console (docs/ROADMAP.md P4).
+# to be a second, ~1,300-line embedded-HTML console (docs/HISTORY.md P4).
 # Kept as a small pointer, not a 404, for anyone with the old /admin URL
 # bookmarked; the JSON API below it (everything /admin/api/*) is unchanged
 # and is what Streamlit itself talks to.

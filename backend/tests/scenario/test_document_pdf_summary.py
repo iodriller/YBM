@@ -1,13 +1,15 @@
 """Scenario: "summarize the PDF at X" through the real LLM planner ->
 document.manage summarize_pdf -> validator -> synthesizer. Replayed from a
 fixture recorded against a live LLM. Ports e2e/all_cases.json's
-`pdf_open_summary` case down to the deterministic tier (docs/ROADMAP.md P2).
+`pdf_open_summary` case down to the deterministic tier (docs/HISTORY.md P2).
 """
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
+
+import os
 
 import pytest
 
@@ -19,8 +21,9 @@ from .harness import build_scenario, isolated_settings, run_task_to_completion, 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "e2e"))
 from fixtures import _write_minimal_pdf  # noqa: E402
 
-pytestmark = pytest.mark.skip(
-    reason="fixture recorded against the deleted plan-once path (PlannerService/ResponseSynthesizer/AnswerValidator prompts); the Operator loop (docs/ROADMAP.md P3 "
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("YBM_SCENARIO_RECORD"),
+    reason="fixture recorded against the deleted plan-once path (PlannerService/ResponseSynthesizer/AnswerValidator prompts); the Operator loop (docs/HISTORY.md P3 "
     "\u00a72.2) is now the sole execution path and needs its own fixture, recorded fresh "
     "against a live LLM - see orchestration/operator.py and test_operator_loop.py for the "
     "pattern. Left in place (not deleted) so the scenario this file documents survives as "

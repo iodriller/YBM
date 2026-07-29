@@ -43,23 +43,19 @@ class TaskStatusAdapter:
             combined_tasks.setdefault(task.id, task)
         task_rows = []
         for task in combined_tasks.values():
-            plan_summary: dict[str, Any] | None = None
-            if task.plan_id:
-                plan = self.repositories.plans.get(task.plan_id)
-                if plan is not None:
-                    plan_summary = {
-                        "id": plan.id,
-                        "objective": plan.objective,
-                        "step_count": len(plan.steps),
-                        "current_step_id": task.current_step_id,
-                    }
+            # Progress is the Operator loop's own step count. This used to read
+            # task.plan_id -> repositories.plans, which has had zero writers
+            # since the plan-based path was deleted, so every row reported
+            # "plan": null regardless of how much work the task had done.
+            history = task.metadata.get("operator_history")
+            steps_taken = len(history) if isinstance(history, list) else 0
             task_rows.append(
                 {
                     "id": task.id,
                     "status": task.status.value,
                     "objective": task.objective,
                     "updated_at": task.updated_at.isoformat(),
-                    "plan": plan_summary,
+                    "steps_taken": steps_taken,
                     "last_tool_name": task.metadata.get("last_tool_name"),
                     "last_error": task.metadata.get("last_error"),
                     "awaiting_external": task.metadata.get("awaiting_external"),

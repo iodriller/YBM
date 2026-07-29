@@ -1,16 +1,33 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from urllib.parse import unquote, urlparse
 
 from agent_control.channels.telegram import TelegramBotApi
-from agent_control.schemas import TaskRecord, TaskStatus
+from agent_control.schemas import ApprovalStatus, TaskRecord, TaskStatus
+from agent_control.storage.repositories import ApprovalRepository
 from agent_control.tools.mcp_client import mcp_output_text
 
 
+def _approval_inline_keyboard(approval_id: str) -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "Approve", "callback_data": f"approval:{approval_id}:approve"},
+                {"text": "Reject", "callback_data": f"approval:{approval_id}:reject"},
+            ]
+        ]
+    }
+
+
 class TelegramTaskNotifier:
-    def __init__(self, client: TelegramBotApi) -> None:
+    def __init__(self, client: TelegramBotApi, approvals: ApprovalRepository | None = None) -> None:
         self.client = client
+        # Optional: lets an AWAITING_APPROVAL notification carry a real
+        # Approve/Reject inline keyboard instead of only the plain-text
+        # "reply 'approve'" instruction. None (e.g. in tests) just skips it.
+        self.approvals = approvals
 
     async def notify(self, task: TaskRecord) -> None:
         chat_id = _task_chat_id(task)
@@ -19,7 +36,8 @@ class TelegramTaskNotifier:
 
         # Send text message without screenshot line
         message_text = _task_message_without_screenshot(task)
-        await self.client.send_message(chat_id, message_text)
+        reply_markup = self._pending_approval_keyboard(task)
+        await self.client.send_message(chat_id, message_text, reply_markup=reply_markup)
 
         # Send screenshot as separate photo if available
         screenshot_path = _get_screenshot_path(task)
@@ -35,6 +53,17 @@ class TelegramTaskNotifier:
                     f"Error: {_trim(str(exc), 600)}",
                 )
 
+    def _pending_approval_keyboard(self, task: TaskRecord) -> dict[str, Any] | None:
+        if self.approvals is None or task.status != TaskStatus.AWAITING_APPROVAL:
+            return None
+        pending = [a for a in self.approvals.list_for_task(task.id) if a.status == ApprovalStatus.PENDING]
+        if not pending:
+            return None
+        # The operator loop stashes exactly one pending tool call at a time
+        # (metadata["operator_pending_call"]), so there is always at most one
+        # approval to act on here even if list_for_task returns older ones.
+        return _approval_inline_keyboard(pending[-1].id)
+
 
 def _task_chat_id(task: TaskRecord) -> str | None:
     value = task.metadata.get("source_chat_id")
@@ -43,53 +72,6 @@ def _task_chat_id(task: TaskRecord) -> str | None:
     if task.conversation_id and task.conversation_id.startswith("conv_telegram_"):
         return task.conversation_id.removeprefix("conv_telegram_")
     return None
-
-
-def _task_message(task: TaskRecord) -> str:
-    if task.status == TaskStatus.COMPLETED:
-        lines = [f"Done: {_trim(task.objective, 220)}"]
-    elif task.status == TaskStatus.AWAITING_APPROVAL:
-        lines = [f"Approval needed: {_trim(task.objective, 220)}"]
-    elif task.status == TaskStatus.BLOCKED:
-        lines = [f"Blocked: {_trim(task.objective, 220)}"]
-    elif task.status == TaskStatus.FAILED:
-        lines = [f"Could not finish: {_trim(task.objective, 220)}"]
-    elif task.status == TaskStatus.CANCELLED:
-        lines = [f"Cancelled: {_trim(task.objective, 220)}"]
-    else:
-        lines = [f"Task {task.status.value}: {_trim(task.objective, 220)}"]
-
-    lines.extend(_result_lines(task))
-    if task.status in {TaskStatus.BLOCKED, TaskStatus.FAILED, TaskStatus.AWAITING_APPROVAL}:
-        lines.extend(_failure_lines(task))
-
-    tool_name = task.metadata.get("last_tool_name")
-    if tool_name:
-        lines.append(f"Tool: {tool_name}")
-
-    command_id = _last_command_id(task)
-    if command_id:
-        lines.append(f"Command: {command_id}")
-
-    usage = _last_usage(task)
-    if usage:
-        lines.append(f"Usage: {usage}")
-
-    lines.append(f"Task: {task.id}")
-    if task.status != TaskStatus.COMPLETED:
-        lines.append(f"Status: {task.status.value}")
-
-    output = _last_output(task)
-    if output:
-        lines.append("")
-        lines.append(f"Summary: {_trim(output, 2200)}")
-
-    error = _last_error(task)
-    if error and task.status not in {TaskStatus.BLOCKED, TaskStatus.FAILED}:
-        lines.append("")
-        lines.append(f"Error: {_trim(error, 1200)}")
-
-    return _trim("\n".join(lines), 3900)
 
 
 def _task_message_without_screenshot(task: TaskRecord) -> str:
@@ -136,6 +118,12 @@ def _user_facing_task_message(task: TaskRecord) -> str:
         first_line = _failure_headline(task, error)
         lines = [first_line]
         lines.extend(_failure_lines(task))
+        # "What was the last thing you actually tried?" is the first question a
+        # user asks about a failure, and the answer is right there in
+        # operator_history.
+        attempt = _latest_attempt_summary(task)
+        if attempt:
+            lines.append(attempt)
         return _trim("\n".join(lines), 3900)
     if task.status != TaskStatus.COMPLETED:
         return f"Status: {task.status.value}."
@@ -146,62 +134,40 @@ def _user_facing_task_message(task: TaskRecord) -> str:
     # defeats the entire purpose of synthesis.
     synthesized = str(task.metadata.get("synthesized_answer") or "").strip()
     if synthesized:
-        return _trim(synthesized, 3900)
+        return _with_result_links(task, synthesized)
 
     answer = _completed_answer(task)
     if answer:
-        return _trim(answer, 3900)
+        return _with_result_links(task, answer)
     output = _last_output(task)
     if output:
-        return _trim(output, 3900)
-    return "Done."
+        return _with_result_links(task, output)
+    return _with_result_links(task, "Done.")
 
 
-def _legacy_task_message_without_screenshot(task: TaskRecord) -> str:
-    if task.status == TaskStatus.COMPLETED:
-        lines = [f"Done: {_trim(task.objective, 220)}"]
-    elif task.status == TaskStatus.AWAITING_APPROVAL:
-        lines = [f"Approval needed: {_trim(task.objective, 220)}"]
-    elif task.status == TaskStatus.BLOCKED:
-        lines = [f"Blocked: {_trim(task.objective, 220)}"]
-    elif task.status == TaskStatus.FAILED:
-        lines = [f"Could not finish: {_trim(task.objective, 220)}"]
-    elif task.status == TaskStatus.CANCELLED:
-        lines = [f"Cancelled: {_trim(task.objective, 220)}"]
-    else:
-        lines = [f"Task {task.status.value}: {_trim(task.objective, 220)}"]
+def _with_result_links(task: TaskRecord, message: str) -> str:
+    """Append the URL/path a completed task produced, if the answer text does
+    not already contain it.
 
-    lines.extend(_result_lines_without_screenshot(task))
-    if task.status in {TaskStatus.BLOCKED, TaskStatus.FAILED, TaskStatus.AWAITING_APPROVAL}:
-        lines.extend(_failure_lines(task))
-
-    tool_name = task.metadata.get("last_tool_name")
-    if tool_name:
-        lines.append(f"Tool: {tool_name}")
-
-    command_id = _last_command_id(task)
-    if command_id:
-        lines.append(f"Command: {command_id}")
-
-    usage = _last_usage(task)
-    if usage:
-        lines.append(f"Usage: {usage}")
-
-    lines.append(f"Task: {task.id}")
-    if task.status != TaskStatus.COMPLETED:
-        lines.append(f"Status: {task.status.value}")
-
-    output = _last_output(task)
-    if output:
-        lines.append("")
-        lines.append(f"Summary: {_trim(output, 2200)}")
-
-    error = _last_error(task)
-    if error and task.status not in {TaskStatus.BLOCKED, TaskStatus.FAILED}:
-        lines.append("")
-        lines.append(f"Error: {_trim(error, 1200)}")
-
-    return _trim("\n".join(lines), 3900)
+    "Launch a web app" tasks stash the address in task.metadata["preview_url"],
+    but the per-tool answer builders only look inside the tool's own output
+    dict - so the reply was "The local workspace is ready." with no link, and
+    the user had no way to reach the thing they asked for. The old plan-era
+    formatter surfaced these via _result_lines(); nothing called it after the
+    Operator migration, so the behavior was silently lost.
+    """
+    extras = []
+    for label, value in (
+        ("Open it here", task.metadata.get("preview_url") or _output_value(task, "preview_url")),
+        ("Workspace", task.metadata.get("workspace_dir") or _output_value(task, "workspace_dir")),
+        ("Pull request", task.metadata.get("pull_request_url") or _output_value(task, "pull_request_url")),
+    ):
+        text = str(value or "").strip()
+        if text and text not in message:
+            extras.append(f"{label}: {text}")
+    if not extras:
+        return _trim(message, 3900)
+    return _trim(message + "\n" + "\n".join(extras), 3900)
 
 
 def _completed_answer(task: TaskRecord) -> str | None:
@@ -418,58 +384,6 @@ def _http_answer(output: dict) -> str:
     return "\n\n".join(lines)
 
 
-def _result_lines(task: TaskRecord) -> list[str]:
-    lines = []
-    pull_request = (
-        task.metadata.get("pull_request_url")
-        or task.metadata.get("pr_url")
-        or _output_value(task, "pull_request_url")
-        or _output_value(task, "html_url")
-    )
-    screenshot = (
-        task.metadata.get("screenshot_uri")
-        or task.metadata.get("screenshot_path")
-        or _output_value(task, "screenshot_uri")
-        or _output_value(task, "screenshot_path")
-    )
-    result_url = task.metadata.get("preview_url") or _output_value(task, "url")
-    browser_url = task.metadata.get("browser_url") or _output_value(task, "browser_url")
-    for label, value in (
-        ("Result", result_url),
-        ("Browser", browser_url if browser_url != result_url else None),
-        ("Workspace", task.metadata.get("workspace_dir") or _output_value(task, "workspace_dir")),
-        ("Adapter", task.metadata.get("adapter_dir") or _output_value(task, "adapter_dir")),
-        ("Pull request", pull_request),
-        ("Screenshot", screenshot),
-    ):
-        if value:
-            lines.append(f"{label}: {value}")
-    return lines
-
-
-def _result_lines_without_screenshot(task: TaskRecord) -> list[str]:
-    """Same as _result_lines but excludes screenshot to avoid showing path as link."""
-    lines = []
-    pull_request = (
-        task.metadata.get("pull_request_url")
-        or task.metadata.get("pr_url")
-        or _output_value(task, "pull_request_url")
-        or _output_value(task, "html_url")
-    )
-    result_url = task.metadata.get("preview_url") or _output_value(task, "url")
-    browser_url = task.metadata.get("browser_url") or _output_value(task, "browser_url")
-    for label, value in (
-        ("Result", result_url),
-        ("Browser", browser_url if browser_url != result_url else None),
-        ("Workspace", task.metadata.get("workspace_dir") or _output_value(task, "workspace_dir")),
-        ("Adapter", task.metadata.get("adapter_dir") or _output_value(task, "adapter_dir")),
-        ("Pull request", pull_request),
-    ):
-        if value:
-            lines.append(f"{label}: {value}")
-    return lines
-
-
 def _get_screenshot_path(task: TaskRecord) -> str | None:
     for value in (
         task.metadata.get("screenshot_path"),
@@ -532,19 +446,31 @@ def _failure_lines(task: TaskRecord) -> list[str]:
 
 
 def _latest_attempt_summary(task: TaskRecord) -> str | None:
-    history = task.metadata.get("attempt_history")
+    """Last real step the operator took, for the "what went wrong" message.
+
+    Reads operator_history. This used to read metadata["attempt_history"], a
+    plan-era field with zero writers since P3 - so it silently returned None
+    and every failure message lost its explanation. See docs/HISTORY.md §3.3.
+    """
+    history = task.metadata.get("operator_history")
     if not isinstance(history, list) or not history:
         return None
-    latest = next((item for item in reversed(history) if isinstance(item, dict)), None)
+    latest = next(
+        (
+            item
+            for item in reversed(history)
+            if isinstance(item, dict) and not str(item.get("tool_name") or "").startswith("_")
+        ),
+        None,
+    )
     if not latest:
         return None
-    tool = latest.get("tool") or "tool"
+    tool = latest.get("tool_name") or "tool"
     status = latest.get("status") or "unknown"
-    action = latest.get("next_action") or "continue"
-    message = str(latest.get("message") or "").strip()
-    line = f"Latest attempt: {tool} ended with {status}; next action: {action}."
-    if message and status != "succeeded":
-        line += f"\nReason: {_trim(message, 500)}"
+    line = f"Latest attempt: {tool} ended with {status}."
+    detail = str(latest.get("error") or "").strip()
+    if detail and status != "succeeded":
+        line += f"\nReason: {_trim(detail, 500)}"
     return _trim(line, 900)
 
 

@@ -6,7 +6,7 @@ own register() function without importing registry.py itself - registry.py is
 the one importing *them*, and a two-way import would be a cycle. New tool =
 new adapter module with a register() function, one import line added to
 registry.py's _REGISTRARS - no editing this file or any other tool's code
-(docs/ROADMAP.md P3).
+(docs/HISTORY.md P3).
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pydantic import BaseModel, ValidationError
 
 from agent_control.config import AppSettings
-from agent_control.schemas import Capability, PlanModel
+from agent_control.schemas import Capability
 
 
 @dataclass(frozen=True)
@@ -34,9 +34,10 @@ class ToolDefinition:
     output_schema: type[BaseModel] | None = None
     operation_output_schemas: dict[str, type[BaseModel]] | None = None
     default_operation: str | None = None
-    # Worked usage examples shown to the planner. Each entry is a `tool_input`
-    # dict the planner can imitate. The 8B model imitates concrete examples
-    # much more reliably than it follows abstract descriptions.
+    # Worked usage examples shown to the Operator's decide() call. Each entry
+    # is a `tool_input` dict the model can imitate - the 8B local model
+    # imitates concrete examples much more reliably than it follows abstract
+    # descriptions.
     examples: tuple[dict, ...] = ()
 
     def validate_input(self, value: dict) -> dict:
@@ -102,7 +103,7 @@ class ToolRegistry:
                 f"lifecycle={definition.lifecycle}; {definition.description}{operations}"
             )
             if definition.enabled and definition.examples:
-                # Show worked examples inline — the planner imitates these
+                # Show worked examples inline — the model imitates these
                 # better than abstract descriptions of input shape.
                 for ex in definition.examples:
                     lines.append(f"    example tool_input: {json.dumps(ex, ensure_ascii=False)}")
@@ -118,45 +119,6 @@ class ToolRegistry:
             state = "available" if definition.enabled else "known_gap"
             lines.append(f"- {definition.name}: {state}; {definition.description}")
         return "\n".join(lines)
-
-    def validate_plan(self, plan: PlanModel) -> PlanModel:
-        definitions = self.definition_index or {definition.name: definition for definition in self.definitions}
-        errors: list[str] = []
-        steps = []
-        required_capabilities = list(plan.required_capabilities)
-        for index, step in enumerate(plan.steps, start=1):
-            if not step.tool_name:
-                steps.append(step)
-                continue
-            definition = definitions.get(step.tool_name)
-            if definition is None:
-                errors.append(f"step {index} uses unregistered tool {step.tool_name!r}")
-                steps.append(step)
-                continue
-            if not definition.enabled:
-                errors.append(f"step {index} uses disabled tool {step.tool_name!r}")
-            try:
-                validated_input = definition.validate_input(step.tool_input)
-            except ValueError as exc:
-                errors.append(f"step {index} {exc}")
-                validated_input = step.tool_input
-            step_capabilities = list(step.required_capabilities)
-            if definition.capability not in step_capabilities:
-                step_capabilities.insert(0, definition.capability)
-            if definition.capability not in required_capabilities:
-                required_capabilities.append(definition.capability)
-            steps.append(
-                step.model_copy(
-                    update={
-                        "tool_input": validated_input,
-                        "required_capabilities": step_capabilities,
-                    }
-                )
-            )
-
-        if errors:
-            raise ValueError("plan failed registry validation:\n" + "\n".join(f"- {error}" for error in errors))
-        return plan.model_copy(update={"steps": steps, "required_capabilities": required_capabilities})
 
 
 @dataclass(frozen=True)

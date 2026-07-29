@@ -3,7 +3,7 @@ JSON" through the real LLM planner -> code.interpreter (which generates its
 own script via a second structured-output call) -> real local Python
 execution -> artifact.deliver. Ports e2e/all_cases.json's
 `code_interpreter_csv_summary` case down to the deterministic tier
-(docs/ROADMAP.md P2) - the counterpart to test_code_interpreter.py's
+(docs/HISTORY.md P2) - the counterpart to test_code_interpreter.py's
 single-number-result case, this one locks in a script that writes a file
 rather than just printing a value, and a delivery-only completion with no
 synthesizer/validator step at all.
@@ -18,7 +18,7 @@ only regenerates on a `SyntaxError`/`ValueError` (invalid Python), not on
 delivery-only plan (ending in `artifact.deliver`, no synthesis step) has no
 validator reading the file's actual content against the objective the way
 `test_document_pdf_summary.py`'s AnswerValidator round-trip does. Tracked as
-a real architecture gap in docs/ROADMAP.md, not something this test tries to
+a real architecture gap in docs/HISTORY.md, not something this test tries to
 paper over - it asserts the structural contract (ran, created a file,
 delivered it) that the pipeline does guarantee, not correctness of
 LLM-generated code content, which nothing here currently guarantees.
@@ -28,6 +28,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import os
+
 import pytest
 
 from agent_control.config import CapabilityPolicy, default_capability_policies
@@ -35,8 +37,9 @@ from agent_control.schemas import Capability, RiskLevel, TaskStatus
 
 from .harness import build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
 
-pytestmark = pytest.mark.skip(
-    reason="fixture recorded against the deleted plan-once path (PlannerService/ResponseSynthesizer/AnswerValidator prompts); the Operator loop (docs/ROADMAP.md P3 "
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("YBM_SCENARIO_RECORD"),
+    reason="fixture recorded against the deleted plan-once path (PlannerService/ResponseSynthesizer/AnswerValidator prompts); the Operator loop (docs/HISTORY.md P3 "
     "\u00a72.2) is now the sole execution path and needs its own fixture, recorded fresh "
     "against a live LLM - see orchestration/operator.py and test_operator_loop.py for the "
     "pattern. Left in place (not deleted) so the scenario this file documents survives as "

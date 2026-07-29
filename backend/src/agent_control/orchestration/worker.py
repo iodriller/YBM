@@ -9,6 +9,7 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from agent_control.channels.memory import ConversationMemoryService
+from agent_control.logging_setup import bind_task_context
 from agent_control.orchestration.auditor import AuditorService
 from agent_control.orchestration.executor import ToolExecutor
 from agent_control.orchestration.fulfillment import validate_fulfillment
@@ -69,8 +70,15 @@ NOTIFIABLE_STATUSES = {
 # re-claimed and re-run from a status that assumes in-flight state which no
 # longer exists - re-running from the top could duplicate side effects (a
 # second Telegram send, a second file write), and there's no checkpoint to
-# resume from mid-flight. See docs/ROADMAP.md P6.
+# resume from mid-flight. See docs/HISTORY.md P6.
 ORPHANABLE_STATUSES = (TaskStatus.RUNNING, TaskStatus.INTERPRETING)
+
+# Pseudo-entries the fulfillment/audit gap paths append to operator_history so
+# the next decide() call can see why `done` was rejected. They are observations,
+# not work - _tool_call_count() excludes them from the step budget.
+CHECK_ENTRY_FULFILLMENT = "_fulfillment_check"
+CHECK_ENTRY_AUDIT = "_audit_check"
+CHECK_ENTRY_NAMES = frozenset({CHECK_ENTRY_FULFILLMENT, CHECK_ENTRY_AUDIT})
 
 def reconcile_orphaned_tasks(repositories: Repositories, audit: AuditLogger) -> int:
     """Explicitly fail any task left RUNNING/INTERPRETING by a worker that
@@ -132,11 +140,11 @@ class TaskWorker:
             if task_budget_seconds is not None
             else self.DEFAULT_TASK_BUDGET_SECONDS
         )
-        # The observe/decide/act loop (docs/ROADMAP.md P3 §2.2) - the sole
+        # The observe/decide/act loop (docs/HISTORY.md P3 §2.2) - the sole
         # execution path. See orchestration/operator.py.
         self.operator = operator
         self.operator_max_steps = operator_max_steps
-        # The Auditor (docs/ROADMAP.md P3 §2.1) - grounds a `done` decision
+        # The Auditor (docs/HISTORY.md P3 §2.1) - grounds a `done` decision
         # against raw tool output before letting it complete. Optional: a
         # worker with no auditor configured skips straight to the
         # fulfillment-gap check, same as before this existed.
@@ -215,6 +223,13 @@ class TaskWorker:
                 await asyncio.sleep(poll_interval_seconds)
 
     async def process_task(self, task_id: str) -> TaskRecord:
+        # Rebind (not merge) so every log line for this tick is greppable by
+        # task_id alone - one grep, the whole story, instead of correlating
+        # timestamps across an unstructured stdout capture (docs/HISTORY.md §2.1).
+        # Rebinding fresh each call matters: this worker's asyncio Task is
+        # long-lived (run_forever() polls it repeatedly), so a stale task_id
+        # from a previous tick would otherwise leak into this one's logs.
+        bind_task_context(task_id=task_id, worker_id=self.worker_id)
         task = self.repositories.tasks.get(task_id)
         if task is None:
             raise KeyError(f"task not found: {task_id}")
@@ -276,7 +291,7 @@ class TaskWorker:
             )
             self.audit.task_state_changed("worker", task.id, task.status, TaskStatus.RUNNING)
 
-        if len(history) >= self.operator_max_steps:
+        if _tool_call_count(history) >= self.operator_max_steps:
             return self._transition_operator(
                 latest, {**latest.metadata, "operator_history": history},
                 TaskStatus.FAILED, "operator_step_budget_exhausted",
@@ -308,10 +323,25 @@ class TaskWorker:
             if content_entry is not None:
                 audit_gap_count = int(latest.metadata.get("operator_audit_gap_count", 0))
                 if audit_gap_count < 2:
-                    audit_result = await self.auditor.audit(latest.objective, content_entry.get("output_summary") or "")
+                    # Audit the FULL recorded output, not the history entry's
+                    # 2000-char display summary. The Auditor's whole job is
+                    # count/section sufficiency ("are all 5 episodes here?") -
+                    # judging a truncation produces false INSUFFICIENT verdicts
+                    # on exactly the long-content objectives it exists for.
+                    # See docs/HISTORY.md §3.2.
+                    raw_output = str(
+                        latest.metadata.get("last_tool_output_text")
+                        or content_entry.get("output_summary")
+                        or ""
+                    )
+                    audit_result = await self.auditor.audit(
+                        latest.objective,
+                        raw_output,
+                        original_message=str(latest.metadata.get("original_message_text") or "") or None,
+                    )
                     if not audit_result.sufficient:
                         history.append({
-                            "tool_name": "_audit_check",
+                            "tool_name": CHECK_ENTRY_AUDIT,
                             "input": None,
                             "status": "audit_gap",
                             "error": (
@@ -336,7 +366,7 @@ class TaskWorker:
                 gap_count = int(latest.metadata.get("operator_fulfillment_gap_count", 0))
                 if gap_count < 2:
                     history.append({
-                        "tool_name": "_fulfillment_check",
+                        "tool_name": CHECK_ENTRY_FULFILLMENT,
                         "input": None,
                         "status": "fulfillment_gap",
                         "error": (
@@ -408,7 +438,7 @@ class TaskWorker:
         every ~3s poll tick. Returns None to fall through to the normal "log
         it and let the next decide() call see it in context" handling for
         every other kind of failure - that in-context recovery is deliberate
-        (docs/ROADMAP.md P3 §2.2); this is narrowly about pacing, not
+        (docs/HISTORY.md P3 §2.2); this is narrowly about pacing, not
         diagnosis, the same split the plan-based path draws.
         """
         if self.retry_policy is None:
@@ -691,9 +721,15 @@ class TaskWorker:
         if task.status == TaskStatus.CLARIFYING:
             status_key = f"clarifying:{task.metadata.get('clarify_count', 0)}"
         elif task.status in {TaskStatus.RETRYING, TaskStatus.RUNNING}:
-            attempts = task.metadata.get("attempt_history")
-            if isinstance(attempts, list) and attempts:
-                status_key = f"{task.status.value}:attempts:{len(attempts)}:{task.current_step_id or ''}"
+            # Key on how many steps the operator has taken, so a long task
+            # sends a progress update per step instead of one "working on it"
+            # and then silence. This used to key on metadata["attempt_history"]
+            # + current_step_id - both plan-era fields with zero writers since
+            # P3, which collapsed the key to the constant "running" and killed
+            # progress reporting entirely. See docs/HISTORY.md §3.3.
+            history = task.metadata.get("operator_history")
+            if isinstance(history, list) and history:
+                status_key = f"{task.status.value}:steps:{len(history)}"
         notified = set(task.metadata.get("notified_statuses", []))
         if self.notification_sink is not None and status_key not in notified:
             await self.notification_sink.notify(task)
@@ -805,6 +841,20 @@ def _last_content_tool_history_entry(history: list[dict[str, Any]]) -> dict[str,
         if entry.get("status") == "succeeded" and AuditorService.is_content_tool(entry.get("tool_name")):
             return entry
     return None
+
+
+def _tool_call_count(history: list[dict[str, Any]]) -> int:
+    """Real tool calls only, excluding the check pseudo-entries.
+
+    The fulfillment/audit gap paths append CHECK_* rows to `history` so the
+    next decide() call sees why `done` was rejected. Those are bookkeeping,
+    not work: counting them against operator_max_steps meant every gap cycle
+    stole a slot from the tool calls the model needs to actually close the
+    gap - with the default budget of 8, two fulfillment plus two audit gaps
+    burned half of it, and a task could exhaust its budget having called zero
+    tools. See docs/HISTORY.md §3.1.
+    """
+    return len([entry for entry in history if entry.get("tool_name") not in CHECK_ENTRY_NAMES])
 
 def _tool_output_text(result: ToolCallResult) -> str:
     output = result.output

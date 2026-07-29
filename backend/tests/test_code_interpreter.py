@@ -178,7 +178,7 @@ async def test_code_interpreter_blocks_import_bypass_modules_by_default(tmp_path
     # wouldn't see "os"/"subprocess" being reached this way unless importlib
     # itself is blocked. multiprocessing (process spawning) and winreg
     # (Windows registry) are the same risk class as subprocess/os but were
-    # missing from the original list (docs/ROADMAP.md P5).
+    # missing from the original list (docs/HISTORY.md P5).
     adapter = CodeInterpreterAdapter(CodeInterpreterAdapterConfig(workspace_root=str(tmp_path / "code")))
 
     result = await adapter.execute(_request(tmp_path, "run_python", code=code))

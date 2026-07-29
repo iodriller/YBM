@@ -40,35 +40,10 @@ SCHEMA_STATEMENTS = [
         objective TEXT NOT NULL,
         status TEXT NOT NULL,
         conversation_id TEXT,
-        plan_id TEXT,
-        current_step_id TEXT,
         metadata_json TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         FOREIGN KEY(conversation_id) REFERENCES conversations(id)
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS plans (
-        id TEXT PRIMARY KEY,
-        task_id TEXT NOT NULL,
-        objective TEXT NOT NULL,
-        plan_json TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        FOREIGN KEY(task_id) REFERENCES tasks(id)
-    )
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS subtasks (
-        id TEXT PRIMARY KEY,
-        task_id TEXT NOT NULL,
-        title TEXT NOT NULL,
-        status TEXT NOT NULL,
-        dependencies_json TEXT NOT NULL,
-        retry_count INTEGER NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        FOREIGN KEY(task_id) REFERENCES tasks(id)
     )
     """,
     """

@@ -1,7 +1,7 @@
 """Scenario-test harness: the real worker/planner/policy/registry/executor
 stack wired against a temp DB and temp filesystem, with a ScriptedLLMProvider
 standing in for the LLM. Mirrors agent_control.cli.run_worker()'s production
-wiring - see docs/ROADMAP.md P2 for why this tier exists (nothing between
+wiring - see docs/HISTORY.md P2 for why this tier exists (nothing between
 mocked unit tests and a live Telegram+LLM+desktop E2E run previously did).
 """
 
@@ -9,10 +9,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import os
 import shutil
 import tempfile
 
-from agent_control.config import AppSettings
+from agent_control.config import AppSettings, load_settings
+from agent_control.llm.providers import OpenAICompatibleProvider
 from agent_control.orchestration.auditor import AuditorService
 from agent_control.orchestration.executor import ToolExecutor
 from agent_control.orchestration.operator import OperatorLoopService
@@ -24,15 +26,28 @@ from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.testing.scripted_llm import RecordingLLMProvider, ScriptedLLMProvider
 from agent_control.tools.registry import build_tool_registry
 
+# Env var read by `ybm scenario record <name>` (docs/HISTORY.md N3). Recording
+# is opt-in and never happens by default - a scenario test run with this
+# unset always replays fixtures, same as before this existed.
+RECORD_ENV_VAR = "YBM_SCENARIO_RECORD"
+RECORD_PROFILE_ENV_VAR = "YBM_SCENARIO_RECORD_PROFILE"
+
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
+# Anchored to this file's own location, not process cwd - every scenario test
+# calls isolated_settings(), which chdir's the process into a throwaway
+# tmp_path BEFORE build_scenario() runs, so by the time recording needs the
+# REAL config/config.yaml, cwd-relative lookup would already be pointed at
+# an empty temp dir regardless of where the test run itself was launched from.
+_REPO_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "config.yaml"
 
 # Recorded prompts are keyed on exact text (see testing/scripted_llm.py). Any
 # objective that mentions a filesystem path needs that path to be identical
 # on every run, so it can't use pytest's tmp_path (randomized per run) -
 # use this instead. Stable across repeated runs *on this machine*; not yet
 # portable across machines/clone paths (the objective text embeds an
-# absolute path) - a real limitation, tracked in docs/ROADMAP.md P2, not one
+# absolute path) - a real limitation, tracked in docs/HISTORY.md P2, not one
 # to design around today.
 SCENARIO_SCRATCH_ROOT = Path(tempfile.gettempdir()) / "ybm_scenario_scratch"
 
@@ -52,7 +67,7 @@ class FakeTelegramClient:
     default (mirroring what the production message handler sets) - without
     it, ``artifact.deliver`` raises "chat_id is required" for any plan that
     delivers a created file, which the planner does routinely (see
-    docs/ROADMAP.md P2 - discovered while recording the
+    docs/HISTORY.md P2 - discovered while recording the
     code_interpreter_csv_summary fixture)."""
 
     def __init__(self) -> None:
@@ -106,6 +121,25 @@ def isolated_settings(monkeypatch, tmp_path: Path, **overrides) -> AppSettings:
     return AppSettings(_env_file=None, **overrides)
 
 
+def _recording_provider_from_env() -> OpenAICompatibleProvider:
+    """Builds a live provider from THIS machine's real config/config.yaml +
+    .env - deliberately the real settings, not the scenario's isolated ones
+    (``isolated_settings()`` carries no LLM profiles by design, see its own
+    docstring). Profile is ``YBM_SCENARIO_RECORD_PROFILE`` if set, else
+    ``llm.default_profile``. Used only when ``YBM_SCENARIO_RECORD`` is set -
+    see ``ybm scenario record`` in scripts/ybm.ps1.
+    """
+    real_settings = load_settings(config_path=_REPO_CONFIG_PATH if _REPO_CONFIG_PATH.exists() else None)
+    profile_name = os.environ.get(RECORD_PROFILE_ENV_VAR) or real_settings.llm.default_profile
+    profile = real_settings.llm.profiles.get(profile_name)
+    if profile is None:
+        raise RuntimeError(
+            f"{RECORD_PROFILE_ENV_VAR}={profile_name!r} is not a profile in this machine's "
+            f"config/config.yaml (llm.profiles: {sorted(real_settings.llm.profiles)})"
+        )
+    return OpenAICompatibleProvider(profile)
+
+
 def build_scenario(
     settings: AppSettings,
     *,
@@ -119,6 +153,11 @@ def build_scenario(
     ``record_with=OpenAICompatibleProvider(settings.llm.profiles["openai_saved"])``.
     Every call the worker makes during that run is persisted to
     ``fixtures/<fixture_name>.json``, ready to commit and replay from after.
+    If ``record_with`` is omitted and ``YBM_SCENARIO_RECORD`` is set in the
+    environment, a live provider is built automatically from this machine's
+    real config (see ``_recording_provider_from_env``) - this is what
+    ``ybm scenario record <name>`` uses; a plain scenario/unit test run never
+    sets that env var, so this path is never reached unasked.
 
     Wires the Operator loop (P3 §2.2), mirroring cli.run_worker()'s
     production wiring - the sole execution path since 2026-07-28.
@@ -132,6 +171,9 @@ def build_scenario(
     database.initialize()
     repositories = Repositories.for_database(database)
     audit = AuditLogger(repositories.audit)
+
+    if record_with is None and os.environ.get(RECORD_ENV_VAR):
+        record_with = _recording_provider_from_env()
 
     fixture_path = FIXTURES_DIR / f"{fixture_name}.json"
     provider: ScriptedLLMProvider | RecordingLLMProvider

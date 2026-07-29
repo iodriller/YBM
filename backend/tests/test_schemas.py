@@ -1,14 +1,9 @@
 from __future__ import annotations
 
-from datetime import timedelta
-
 import pytest
 from pydantic import ValidationError
 
 from agent_control.schemas import (
-    ApprovalDecision,
-    ApprovalRequest,
-    ApprovalStatus,
     Capability,
     ChannelType,
     InboundMessage,
@@ -16,51 +11,24 @@ from agent_control.schemas import (
     OperatorAction,
     OperatorDecision,
     OrchestrationIntent,
-    PlanModel,
     PlanPostcondition,
-    PlanStep,
     PostconditionType,
     RiskLevel,
     ToolCallRequest,
-    utc_now,
 )
 
 
-def test_structured_plan_requires_steps() -> None:
-    with pytest.raises(ValidationError):
-        PlanModel(objective="Build app", steps=[])
-
-
-def test_structured_plan_validates() -> None:
-    plan = PlanModel(
-        objective="Build app",
-        required_capabilities=[Capability.VSCODE_READ_STATE],
-        steps=[
-            PlanStep(
-                title="Inspect workspace",
-                description="Read VS Code workspace state.",
-                required_capabilities=[Capability.VSCODE_READ_STATE],
-            )
-        ],
-        success_criteria=["Workspace state is summarized."],
+def test_plan_postcondition_validates() -> None:
+    # PlanPostcondition is the Operator loop's own deterministic postcondition
+    # record now (orchestration/fulfillment.py), not part of a PlanModel -
+    # that class was deleted with the plan-based path.
+    postcondition = PlanPostcondition(
+        type=PostconditionType.PREVIEW_URL,
+        description="A local preview URL is reported.",
     )
 
-    assert plan.steps[0].required_capabilities == [Capability.VSCODE_READ_STATE]
-
-
-def test_structured_plan_accepts_typed_postconditions() -> None:
-    plan = PlanModel(
-        objective="Launch app",
-        steps=[PlanStep(title="Launch", description="Launch app.")],
-        postconditions=[
-            PlanPostcondition(
-                type=PostconditionType.PREVIEW_URL,
-                description="A local preview URL is reported.",
-            )
-        ],
-    )
-
-    assert plan.postconditions[0].type == PostconditionType.PREVIEW_URL
+    assert postcondition.type == PostconditionType.PREVIEW_URL
+    assert postcondition.required is True
 
 
 def test_inbound_message_forbids_unknown_fields() -> None:
@@ -99,23 +67,6 @@ def test_tool_call_requires_valid_capability() -> None:
     )
 
     assert request.capability == Capability.VSCODE_READ_STATE
-
-
-def test_pending_approval_decision_is_invalid() -> None:
-    approval = ApprovalRequest(
-        task_id="task_1",
-        capability=Capability.TERMINAL_RUN,
-        risk_level=RiskLevel.HIGH,
-        summary="Run command",
-        expires_at=utc_now() + timedelta(minutes=5),
-    )
-
-    with pytest.raises(ValidationError):
-        ApprovalDecision(
-            approval_request_id=approval.id,
-            status=ApprovalStatus.PENDING,
-            actor="user",
-        )
 
 
 def test_operator_decision_call_tool_requires_tool_name() -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import logging
 from typing import Any
 
 import httpx
@@ -72,6 +73,9 @@ def load_telegram_token(config: TelegramConfig) -> str:
     return token
 
 
+logger = logging.getLogger(__name__)
+
+
 class TelegramBotApi:
     def __init__(
         self,
@@ -90,8 +94,13 @@ class TelegramBotApi:
         data = await self._post("getUpdates", payload)
         return list(data.get("result", []))
 
-    async def send_message(self, chat_id: str | int, text: str) -> dict[str, Any]:
-        data = await self._post("sendMessage", {"chat_id": chat_id, "text": text})
+    async def send_message(
+        self, chat_id: str | int, text: str, reply_markup: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        data = await self._post("sendMessage", payload)
         self._log_sent(chat_id, kind="text", text=text, response=data)
         return data
 
@@ -154,7 +163,11 @@ class TelegramBotApi:
         try:
             self.audit.append(AuditEventType.MESSAGE_SENT, actor="telegram_bot_api", payload=payload)
         except Exception:
-            pass
+            # The message already went out to the user - this only means its
+            # audit-trail record might be missing, which is worth knowing
+            # about given how much this system leans on the audit trail for
+            # "what did the agent actually do."
+            logger.warning("failed to record MESSAGE_SENT audit event", exc_info=True)
 
     async def get_file(self, file_id: str) -> dict[str, Any]:
         data = await self._post("getFile", {"file_id": file_id})
@@ -475,6 +488,16 @@ class TelegramIntakeService:
         if result.command:
             signal = self._apply_command(result.command)
             outbound = self._command_response(result.command, signal)
+            if result.command.type == "telegram.callback" and self.bot_api:
+                callback_query_id = result.command.payload.get("callback_query_id")
+                if callback_query_id:
+                    try:
+                        await self.bot_api.answer_callback_query(callback_query_id)
+                    except Exception:
+                        # The decision was already recorded (_apply_callback already
+                        # wrote it); this only stops the button's loading spinner,
+                        # so a failure here shouldn't surface as a handling error.
+                        logger.warning("failed to answer Telegram callback query", exc_info=True)
             return TelegramUpdateResult(
                 authorized=True,
                 inbound_message=result.inbound_message,

@@ -1,13 +1,15 @@
 """Scenario: "normalize this inline task list into JSON" through the real
 LLM planner -> code.interpreter generate_and_run -> real local Python
 execution. Ports e2e/all_cases.json's `code_interpreter_json_transform`
-case down to the deterministic tier (docs/ROADMAP.md P2) - data-in-the-
+case down to the deterministic tier (docs/HISTORY.md P2) - data-in-the-
 objective (no CSV/PDF fixture file needed), normalized-JSON-out; also
 asserts `coding.agent`/`vscode.copilot_terminal` are never selected, the
 same routing guard as test_implicit_code_interpreter_numbers_report.py.
 """
 
 from __future__ import annotations
+
+import os
 
 import pytest
 
@@ -16,8 +18,9 @@ from agent_control.schemas import Capability, RiskLevel, TaskStatus
 
 from .harness import build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
 
-pytestmark = pytest.mark.skip(
-    reason="fixture recorded against the deleted plan-once path (PlannerService/ResponseSynthesizer/AnswerValidator prompts); the Operator loop (docs/ROADMAP.md P3 "
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("YBM_SCENARIO_RECORD"),
+    reason="fixture recorded against the deleted plan-once path (PlannerService/ResponseSynthesizer/AnswerValidator prompts); the Operator loop (docs/HISTORY.md P3 "
     "\u00a72.2) is now the sole execution path and needs its own fixture, recorded fresh "
     "against a live LLM - see orchestration/operator.py and test_operator_loop.py for the "
     "pattern. Left in place (not deleted) so the scenario this file documents survives as "

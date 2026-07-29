@@ -7,12 +7,14 @@ import yaml
 from agent_control.admin import create_admin_router
 from agent_control.config import AppSettings, default_capability_policies
 from agent_control.main import app, vscode_store
+from datetime import timedelta
+
 from agent_control.schemas import (
+    ApprovalRequest,
+    ApprovalStatus,
     AuditEventType,
     Capability,
     CapabilityAccessMode,
-    PlanModel,
-    PlanStep,
     RiskLevel,
     ScheduleRecord,
     TaskStatus,
@@ -42,7 +44,7 @@ def test_admin_page_points_to_streamlit(monkeypatch, tmp_path) -> None:
     page = client.get("/admin")
 
     # The Streamlit app (admin_streamlit.py) is the one real admin UI
-    # (docs/ROADMAP.md P4) - /admin is now just a small pointer to it, not a
+    # (docs/HISTORY.md P4) - /admin is now just a small pointer to it, not a
     # second console. Assert it stays small and points at Streamlit, rather
     # than reintroducing the ~1,300-line embedded SPA this replaced.
     assert page.status_code == 200
@@ -153,30 +155,137 @@ def test_admin_task_signal_updates_task(monkeypatch, tmp_path) -> None:
     assert updated.status == TaskStatus.PAUSED
 
 
-def test_admin_task_trace_includes_plan_tool_calls_and_audit(monkeypatch, tmp_path) -> None:
+def _pending_approval(repositories, task_id: str) -> ApprovalRequest:
+    return repositories.approvals.create(
+        ApprovalRequest(
+            task_id=task_id,
+            capability=Capability.FILESYSTEM_WRITE,
+            risk_level=RiskLevel.HIGH,
+            summary="write a file",
+            expires_at=utc_now() + timedelta(minutes=15),
+        )
+    )
+
+
+def test_admin_pending_approvals_lists_only_pending(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    task = repositories.tasks.create("write a report", metadata={"source_chat_id": "1"})
+    pending = _pending_approval(repositories, task.id)
+    decided = _pending_approval(repositories, task.id)
+    repositories.approvals.set_status(decided.id, ApprovalStatus.APPROVED)
+    local_app = FastAPI()
+    local_app.include_router(
+        create_admin_router(lambda: AppSettings(_env_file=None), lambda: repositories, VSCodeBridgeStore())
+    )
+    client = TestClient(local_app)
+
+    response = client.get("/admin/api/approvals")
+
+    assert response.status_code == 200
+    items = response.json()["approvals"]
+    assert [item["approval"]["id"] for item in items] == [pending.id]
+    assert items[0]["task_objective"] == "write a report"
+    assert items[0]["task_status"] == TaskStatus.RECEIVED.value
+
+
+def test_admin_decide_approval_approve_updates_status_and_audits(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    task = repositories.tasks.create("write a report")
+    approval = _pending_approval(repositories, task.id)
+    local_app = FastAPI()
+    local_app.include_router(
+        create_admin_router(lambda: AppSettings(_env_file=None), lambda: repositories, VSCodeBridgeStore())
+    )
+    client = TestClient(local_app)
+
+    response = client.post(f"/admin/api/approvals/{approval.id}/decide", json={"decision": "approve"})
+
+    assert response.status_code == 200
+    assert response.json()["approval"]["status"] == ApprovalStatus.APPROVED.value
+    assert repositories.approvals.get(approval.id).status == ApprovalStatus.APPROVED
+    events = repositories.audit.list_for_task(task.id)
+    assert any(event.type == AuditEventType.APPROVAL_DECIDED for event in events)
+
+
+def test_admin_decide_approval_reject_updates_status(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    task = repositories.tasks.create("write a report")
+    approval = _pending_approval(repositories, task.id)
+    local_app = FastAPI()
+    local_app.include_router(
+        create_admin_router(lambda: AppSettings(_env_file=None), lambda: repositories, VSCodeBridgeStore())
+    )
+    client = TestClient(local_app)
+
+    response = client.post(f"/admin/api/approvals/{approval.id}/decide", json={"decision": "reject"})
+
+    assert response.status_code == 200
+    assert response.json()["approval"]["status"] == ApprovalStatus.REJECTED.value
+    assert repositories.approvals.get(approval.id).status == ApprovalStatus.REJECTED
+
+
+def test_admin_decide_approval_404_for_unknown_id(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    local_app = FastAPI()
+    local_app.include_router(
+        create_admin_router(lambda: AppSettings(_env_file=None), lambda: repositories, VSCodeBridgeStore())
+    )
+    client = TestClient(local_app)
+
+    response = client.post("/admin/api/approvals/approval_does_not_exist/decide", json={"decision": "approve"})
+
+    assert response.status_code == 404
+
+
+def test_admin_decide_approval_409_when_already_decided(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    task = repositories.tasks.create("write a report")
+    approval = _pending_approval(repositories, task.id)
+    repositories.approvals.set_status(approval.id, ApprovalStatus.APPROVED)
+    local_app = FastAPI()
+    local_app.include_router(
+        create_admin_router(lambda: AppSettings(_env_file=None), lambda: repositories, VSCodeBridgeStore())
+    )
+    client = TestClient(local_app)
+
+    response = client.post(f"/admin/api/approvals/{approval.id}/decide", json={"decision": "reject"})
+
+    assert response.status_code == 409
+
+
+def test_admin_task_trace_includes_operator_history_tool_calls_and_audit(monkeypatch, tmp_path) -> None:
+    """The trace endpoint's execution record is operator_history + real
+    tool_invocations now - PlanModel is dead (docs/HISTORY.md \u00a71.1), nothing
+    creates one anymore."""
     monkeypatch.chdir(tmp_path)  # see test_admin_page_and_summary for why chdir, not just delenv
     database_url = f"sqlite:///{tmp_path / 'admin.db'}"
     repositories = _repositories(database_url)
     audit = AuditLogger(repositories.audit)
     task = repositories.tasks.create("create a test app")
-    plan = repositories.plans.create(
+    repositories.tasks.update_metadata(
         task.id,
-        PlanModel(
-            objective=task.objective,
-            steps=[
-                PlanStep(
-                    title="Ask Copilot",
-                    description="Send prompt.",
-                    required_capabilities=[Capability.VSCODE_WRITE_FILES],
-                    risk_level=RiskLevel.HIGH,
-                    tool_name="vscode.copilot_terminal",
-                    tool_input={"prompt": "build the app", "cwd": "workspace"},
-                )
-            ],
-            success_criteria=["done"],
-        ),
+        {
+            "operator_history": [
+                {
+                    "tool_name": "vscode.copilot_terminal",
+                    "input": {"prompt": "build the app", "cwd": "workspace"},
+                    "status": "succeeded",
+                    "output_summary": "created files",
+                    "error": None,
+                }
+            ]
+        },
     )
-    repositories.tasks.attach_plan(task.id, plan.id)
     request = ToolCallRequest(
         task_id=task.id,
         tool_name="vscode.copilot_terminal",
@@ -192,10 +301,10 @@ def test_admin_task_trace_includes_plan_tool_calls_and_audit(monkeypatch, tmp_pa
         )
     )
     audit.append(
-        AuditEventType.PLAN_CREATED,
-        actor="planner",
+        AuditEventType.TASK_STATE_CHANGED,
+        actor="operator",
         task_id=task.id,
-        payload={"llm": {"system_prompt": "system", "user_prompt": "user"}, "plan_id": plan.id},
+        payload={"action": "operator_decision", "decision": {"action": "call_tool", "tool_name": "vscode.copilot_terminal"}},
     )
     local_app = FastAPI()
     local_app.include_router(
@@ -212,11 +321,69 @@ def test_admin_task_trace_includes_plan_tool_calls_and_audit(monkeypatch, tmp_pa
 
     assert response.status_code == 200
     assert body["task"]["id"] == task.id
-    assert body["context"]["planner_or_default_plan"]["llm"]["user_prompt"] == "user"
-    assert body["plan"]["steps"][0]["tool_input"]["prompt"] == "build the app"
+    assert "plan" not in body
+    assert body["operator_history"][0]["tool_name"] == "vscode.copilot_terminal"
+    assert body["operator_history"][0]["output_summary"] == "created files"
     assert body["tool_invocations"][0]["request"]["input"]["prompt"] == "build the app"
     assert body["tool_invocations"][0]["result"]["output"]["terminal_output"][0]["content"] == "created files"
-    assert body["audit"][0]["details"]["llm"]["user_prompt"] == "user"
+    assert body["audit"][0]["details"]["action"] == "operator_decision"
+
+
+def test_admin_task_trace_evidence_aggregates_files_urls_and_commands(monkeypatch, tmp_path) -> None:
+    """The evidence view (docs/HISTORY.md N5): what a completed task actually
+    touched, pulled from real tool_invocations rather than a new repository -
+    files/urls/commands are found by known field name across every tool's
+    input/output, deduplicated, so a task that wrote two files and visited
+    one URL surfaces exactly that, not raw per-tool payload dumps."""
+    monkeypatch.chdir(tmp_path)
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    task = repositories.tasks.create("write a report and check a page")
+
+    write_request = ToolCallRequest(
+        task_id=task.id,
+        tool_name="filesystem.manage",
+        capability=Capability.FILESYSTEM_WRITE,
+        input={"operation": "write_text_file", "path": "C:/tmp/report.txt"},
+    )
+    repositories.tool_invocations.create(write_request)
+    repositories.tool_invocations.complete(
+        ToolCallResult(
+            request_id=write_request.id,
+            status=ToolResultStatus.SUCCEEDED,
+            output={"changed_paths": ["C:/tmp/report.txt", "C:/tmp/report-backup.txt"]},
+        )
+    )
+
+    browser_request = ToolCallRequest(
+        task_id=task.id,
+        tool_name="browser.open",
+        capability=Capability.BROWSER_OPEN,
+        input={"url": "https://example.com"},
+    )
+    repositories.tool_invocations.create(browser_request)
+    repositories.tool_invocations.complete(
+        ToolCallResult(
+            request_id=browser_request.id,
+            status=ToolResultStatus.SUCCEEDED,
+            output={"url": "https://example.com", "visited_urls": ["https://example.com"]},
+        )
+    )
+
+    local_app = FastAPI()
+    local_app.include_router(
+        create_admin_router(lambda: AppSettings(_env_file=None), lambda: repositories, VSCodeBridgeStore())
+    )
+    client = TestClient(local_app)
+
+    response = client.get(f"/admin/api/tasks/{task.id}/trace")
+    evidence = response.json()["evidence"]
+
+    assert response.status_code == 200
+    assert [item["value"] for item in evidence["files"]] == ["C:/tmp/report.txt", "C:/tmp/report-backup.txt"]
+    assert [item["value"] for item in evidence["urls"]] == ["https://example.com"]
+    assert evidence["commands"] == []
+    assert evidence["files"][0]["tool_name"] == "filesystem.manage"
 
 
 def test_admin_clears_task_history_and_audit(monkeypatch, tmp_path) -> None:
@@ -657,32 +824,16 @@ def test_admin_access_modes_sync_browser_adapter(monkeypatch, tmp_path) -> None:
     assert saved["adapters"]["browser"]["enabled"] is True
 
 
-def test_admin_database_summary(monkeypatch, tmp_path) -> None:
+def test_admin_summary_includes_database_and_schedule_data(monkeypatch, tmp_path) -> None:
+    """Database table counts and schedule listing are embedded in
+    /api/summary, not a separate route - GET /api/database/summary and
+    GET /api/schedules were exact duplicates of data /api/summary already
+    returns, and the Streamlit UI never called either, so both were deleted
+    rather than kept as dead routes (docs/HISTORY.md redundancy pass)."""
     monkeypatch.chdir(tmp_path)  # see test_admin_page_and_summary for why chdir, not just delenv
     database_url = f"sqlite:///{tmp_path / 'admin.db'}"
     repositories = _repositories(database_url)
     repositories.tasks.create("inspect db")
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(
-            lambda: AppSettings(_env_file=None, storage={"database_url": database_url}),
-            lambda: repositories,
-            VSCodeBridgeStore(),
-        )
-    )
-    client = TestClient(local_app)
-
-    response = client.get("/admin/api/database/summary")
-
-    assert response.status_code == 200
-    assert response.json()["table_counts"]["tasks"] == 1
-    assert "schedules" in response.json()["table_counts"]
-
-
-def test_admin_lists_schedules(monkeypatch, tmp_path) -> None:
-    monkeypatch.chdir(tmp_path)  # see test_admin_page_and_summary for why chdir, not just delenv
-    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
-    repositories = _repositories(database_url)
     repositories.schedules.create(
         ScheduleRecord(
             objective="check example.com daily",
@@ -700,8 +851,11 @@ def test_admin_lists_schedules(monkeypatch, tmp_path) -> None:
     )
     client = TestClient(local_app)
 
-    response = client.get("/admin/api/schedules")
+    response = client.get("/admin/api/summary")
+    body = response.json()
 
     assert response.status_code == 200
-    assert response.json()["total"] == 1
-    assert response.json()["schedules"][0]["objective"] == "check example.com daily"
+    assert body["database"]["table_counts"]["tasks"] == 1
+    assert "schedules" in body["database"]["table_counts"]
+    assert body["schedules"]["total"] == 1
+    assert body["schedules"]["items"][0]["objective"] == "check example.com daily"

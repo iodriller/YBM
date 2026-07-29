@@ -2,7 +2,7 @@
 
 These exist so a missing dependency, missing config, or unreachable local
 service produces one readable line instead of a stack trace three layers
-deep in a supervised background process (see docs/ROADMAP.md P0).
+deep in a supervised background process (see docs/HISTORY.md P0).
 """
 
 from __future__ import annotations

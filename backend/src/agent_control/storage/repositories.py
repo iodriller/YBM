@@ -15,7 +15,6 @@ from agent_control.schemas import (
     AuditEventType,
     ChannelType,
     InboundMessage,
-    PlanModel,
     ScheduleRecord,
     ScheduleStatus,
     TaskRecord,
@@ -162,18 +161,16 @@ class TaskRepository:
             connection.execute(
                 """
                 INSERT INTO tasks (
-                    id, objective, status, conversation_id, plan_id, current_step_id,
+                    id, objective, status, conversation_id,
                     metadata_json, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task.id,
                     task.objective,
                     task.status.value,
                     task.conversation_id,
-                    task.plan_id,
-                    task.current_step_id,
                     _dump(task.metadata),
                     _dt(task.created_at),
                     _dt(task.updated_at),
@@ -225,7 +222,6 @@ class TaskRepository:
                 "approvals",
                 "tool_invocations",
                 "artifacts",
-                "plans",
                 "audit_events",
             ):
                 connection.execute(f"DELETE FROM {table} WHERE task_id IN ({placeholders})", task_ids)
@@ -343,30 +339,6 @@ class TaskRepository:
             raise KeyError(f"task not found: {task_id}")
         return self._row_to_task(row)
 
-    def attach_plan(self, task_id: str, plan_id: str, status: TaskStatus = TaskStatus.PLANNED) -> TaskRecord:
-        now = utc_now()
-        with self.database.connect() as connection:
-            connection.execute(
-                "UPDATE tasks SET plan_id = ?, status = ?, updated_at = ? WHERE id = ?",
-                (plan_id, status.value, _dt(now), task_id),
-            )
-            row = connection.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-        if row is None:
-            raise KeyError(f"task not found: {task_id}")
-        return self._row_to_task(row)
-
-    def set_current_step(self, task_id: str, step_id: str | None) -> TaskRecord:
-        now = utc_now()
-        with self.database.connect() as connection:
-            connection.execute(
-                "UPDATE tasks SET current_step_id = ?, updated_at = ? WHERE id = ?",
-                (step_id, _dt(now), task_id),
-            )
-            row = connection.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-        if row is None:
-            raise KeyError(f"task not found: {task_id}")
-        return self._row_to_task(row)
-
     def update_metadata(
         self,
         task_id: str,
@@ -397,8 +369,6 @@ class TaskRepository:
             objective=row["objective"],
             status=TaskStatus(row["status"]),
             conversation_id=row["conversation_id"],
-            plan_id=row["plan_id"],
-            current_step_id=row["current_step_id"],
             metadata=_load(row["metadata_json"], {}),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
@@ -446,35 +416,6 @@ class TaskSignalRepository:
         ]
 
 
-class PlanRepository:
-    def __init__(self, database: Database) -> None:
-        self.database = database
-
-    def create(self, task_id: str, plan: PlanModel) -> PlanModel:
-        with self.database.connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO plans (id, task_id, objective, plan_json, created_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    plan.id,
-                    task_id,
-                    plan.objective,
-                    plan.model_dump_json(),
-                    _dt(utc_now()),
-                ),
-            )
-        return plan
-
-    def get(self, plan_id: str) -> PlanModel | None:
-        with self.database.connect() as connection:
-            row = connection.execute("SELECT plan_json FROM plans WHERE id = ?", (plan_id,)).fetchone()
-        if row is None:
-            return None
-        return PlanModel.model_validate_json(row["plan_json"])
-
-
 class ApprovalRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
@@ -510,11 +451,27 @@ class ApprovalRepository:
                 (status.value, approval_id),
             )
 
+    def get(self, approval_id: str) -> ApprovalRequest | None:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM approvals WHERE id = ?",
+                (approval_id,),
+            ).fetchone()
+        return self._row_to_approval(row) if row is not None else None
+
     def list_for_task(self, task_id: str) -> list[ApprovalRequest]:
         with self.database.connect() as connection:
             rows = connection.execute(
                 "SELECT * FROM approvals WHERE task_id = ? ORDER BY created_at ASC",
                 (task_id,),
+            ).fetchall()
+        return [self._row_to_approval(row) for row in rows]
+
+    def list_pending(self, limit: int = 100) -> list[ApprovalRequest]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM approvals WHERE status = ? ORDER BY created_at ASC LIMIT ?",
+                (ApprovalStatus.PENDING.value, limit),
             ).fetchall()
         return [self._row_to_approval(row) for row in rows]
 
@@ -908,7 +865,6 @@ class Repositories:
     messages: MessageRepository
     tasks: TaskRepository
     task_signals: TaskSignalRepository
-    plans: PlanRepository
     approvals: ApprovalRepository
     tool_invocations: ToolInvocationRepository
     artifacts: ArtifactRepository
@@ -923,7 +879,6 @@ class Repositories:
             messages=MessageRepository(database),
             tasks=TaskRepository(database),
             task_signals=TaskSignalRepository(database),
-            plans=PlanRepository(database),
             approvals=ApprovalRepository(database),
             tool_invocations=ToolInvocationRepository(database),
             artifacts=ArtifactRepository(database),

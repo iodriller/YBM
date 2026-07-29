@@ -72,9 +72,11 @@ async def test_worker_notifies_once_on_completion(tmp_path) -> None:
     await worker.process_next()
 
     assert [item.status for item in notifier.tasks] == [TaskStatus.RUNNING, TaskStatus.COMPLETED]
+    # RUNNING is deduped per completed step (docs/HISTORY.md §3.3), so its key
+    # carries the step count; COMPLETED is once-per-task and stays bare.
     assert repos.tasks.get(task.id).metadata["notified_statuses"] == [
         TaskStatus.COMPLETED.value,
-        TaskStatus.RUNNING.value,
+        "running:steps:1",
     ]
 
 

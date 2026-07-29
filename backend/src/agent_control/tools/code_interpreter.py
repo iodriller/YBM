@@ -731,7 +731,7 @@ class CodeInterpreterAdapter:
             # but not when it silently fell back from the configured
             # sandboxed backend to unsandboxed local_subprocess (Docker
             # unavailable): that's full process-privilege execution of
-            # LLM-authored code with no human review at all (docs/ROADMAP.md
+            # LLM-authored code with no human review at all (docs/HISTORY.md
             # P5). An admin who explicitly configured local_subprocess as
             # untrusted_default_backend (no fallback occurred, this is None)
             # has already made that call and isn't re-prompted per call.
@@ -772,7 +772,10 @@ class CodeInterpreterAdapter:
                 ids.append(artifact.id)
             except Exception:
                 # Registration is best-effort — a missing repo or DB hiccup must
-                # not break the actual code execution result.
+                # not break the actual code execution result. But it does mean
+                # a generated file that artifact.deliver won't be able to find
+                # later, which is worth knowing about, not just swallowing.
+                logger.warning("failed to register generated artifact %s", relative, exc_info=True)
                 continue
         return ids
 
@@ -1111,7 +1114,10 @@ async def _best_effort_docker_rm(docker: str, container_name: str) -> None:
         )
         await asyncio.wait_for(process.communicate(), timeout=10)
     except Exception:
-        logger.debug("docker cleanup failed for %s", container_name, exc_info=True)
+        # No further fallback after this - an orphaned container is a real
+        # resource leak (unlike a zombie process, it keeps consuming disk/CPU
+        # until someone notices and runs `docker rm` by hand).
+        logger.warning("docker cleanup failed for %s; container may be orphaned", container_name, exc_info=True)
 
 
 def _safe_child_path(workspace: Path, relative_path: str) -> Path:

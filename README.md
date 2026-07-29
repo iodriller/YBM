@@ -7,15 +7,13 @@ Local-first, Telegram-first task runner with a small orchestration core and a gr
 Implemented:
 
 - Project scaffold
-- Phased project plan
-- Detailed step-by-step implementation plan
-- Pydantic schemas for commands, tasks, plans, tools, approvals, artifacts, and audit events
+- Pydantic schemas for commands, tasks, tools, approvals, artifacts, and audit events
 - Strict configuration models with safe default capability policies
 - SQLite persistence, repositories, audit logging, and redaction
 - Minimal Telegram Bot API polling wrapper, update normalizer, allowlist checks, command parsing, and task intake
 - Telegram gateway responses for direct questions, plain `status`, task lists, task details, logs, and screenshot capability state
 - Telegram voice download/transcription service with transcript artifacts
-- LLM provider abstraction and structured planner with plan persistence
+- LLM provider abstraction; three-agent Concierge/Operator/Auditor pipeline (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md))
 - Capability policy engine with approval requests
 - Gated tool executor and minimal durable task worker
 - Minimal VS Code bridge endpoints, extension state sync, and terminal command queue
@@ -56,7 +54,7 @@ Not implemented yet:
 
 `scripts/ybm.ps1` is the single entry point for everything below - setup, health checks,
 starting/stopping the stack, tests, and database maintenance. See
-[docs/ROADMAP.md](docs/ROADMAP.md) for the rationale.
+[docs/HISTORY.md](docs/HISTORY.md) for the rationale.
 
 First-time setup (creates `backend/.venv` via `uv`, installs dependencies, bootstraps
 `config/config.yaml` and the `.env` secrets used for the admin token and secret vault):
@@ -160,13 +158,13 @@ The Streamlit UI reads `AGENT_ADMIN_TOKEN` from `.env` and also has a sidebar to
 
 Docs:
 
-- [Roadmap](docs/ROADMAP.md) — the improvement plan this session is executing, with rationale
-- [Architecture and message flow](docs/ARCHITECTURE.md)
+- [Architecture and message flow](docs/ARCHITECTURE.md) — how the system works now, plus known gaps
+- [History](docs/HISTORY.md) — why it's built this way, and the full phase-by-phase record
 - [Local setup](docs/LOCAL_SETUP.md)
 - [Minimal end-to-end test](docs/MINIMAL_END_TO_END_TEST.md)
 - [Database inspection](docs/DATABASE_INSPECTION.md)
 
-Per-service launchers used internally by `ybm.ps1` live under `scripts/services/` if you need to run one directly for debugging. Everything else is available through `ybm` too: `ybm clean` wipes generated caches/workspaces/adapter proposals, `ybm e2e-login` bootstraps the Telethon user session needed for live E2E checks, `ybm send "<message>"` traces one ad-hoc message through the full pipeline, `ybm benchmark` / `ybm benchmark-status` run and monitor local-LLM benchmarks, and `ybm package-extension` builds the VS Code bridge `.vsix`. Run `.\scripts\ybm.ps1 help` for the full list.
+Per-service launchers used internally by `ybm.ps1` live under `scripts/services/` if you need to run one directly for debugging. Everything else is available through `ybm` too: `ybm clean` wipes generated caches/workspaces/adapter proposals, `ybm e2e-login` bootstraps the Telethon user session needed for live E2E checks, `ybm send "<message>"` traces one ad-hoc message through the full pipeline, `ybm trace <task_id>` prints a full post-mortem for a task straight from the DB, and `ybm package-extension` builds the VS Code bridge `.vsix`. Run `.\scripts\ybm.ps1 help` for the full list.
 
 ## Safety Defaults
 

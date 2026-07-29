@@ -23,6 +23,12 @@ if ($Caches -or $AllGenerated) {
     $targets.Add("code_interpreter")
     $targets.Add("mcp")
     $targets.Add("e2e_results")
+    $targets.Add("e2e_fixtures")
+    # e2e_runs / live_e2e_runs are dead names from a previous e2e runner
+    # version - nothing in the current codebase writes or reads them
+    # (docs/HISTORY.md §1.4), but clean up any that reappear regardless.
+    $targets.Add("e2e_runs")
+    $targets.Add("live_e2e_runs")
 }
 if ($Workspaces -or $AllGenerated) {
     $targets.Add("workspaces")

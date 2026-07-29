@@ -1,10 +1,25 @@
+"""Fulfillment checks for the Operator loop.
+
+Expectations come from objective text only - the plan-derived path
+(`plan.postconditions` and tool-name inference) went away with the plan-once
+execution path, since nothing creates a PlanModel anymore (docs/HISTORY.md §1.1).
+
+Tests are split accordingly:
+- `validate_fulfillment()` for the end-to-end path, driven by objective wording.
+- `_postcondition_satisfied()` directly for satisfaction rules whose
+  postcondition objective-text inference doesn't produce on its own. Those
+  rules are still live and load-bearing (a `run_goal` that stopped early or a
+  coding agent still running must NOT count as done) - previously they were
+  only reachable in tests via a hand-built plan, which no longer exists.
+"""
+
 from __future__ import annotations
 
-from agent_control.orchestration.fulfillment import validate_fulfillment
-from agent_control.schemas import PlanModel, PlanPostcondition, PlanStep, PostconditionType, TaskRecord
+from agent_control.orchestration.fulfillment import _postcondition_satisfied, validate_fulfillment
+from agent_control.schemas import PostconditionType, TaskRecord
 
 
-def test_fulfillment_supports_future_postcondition_types() -> None:
+def test_browser_state_postcondition_satisfied_from_objective_text() -> None:
     task = TaskRecord(
         objective="Open the browser, search docs, and tell me what you see",
         metadata={
@@ -16,18 +31,8 @@ def test_fulfillment_supports_future_postcondition_types() -> None:
             }
         },
     )
-    plan = PlanModel(
-        objective=task.objective,
-        steps=[PlanStep(title="Open browser", description="Open page.", tool_name="browser.open")],
-        postconditions=[
-            PlanPostcondition(
-                type=PostconditionType.BROWSER_STATE,
-                description="Browser state is reported.",
-            )
-        ],
-    )
 
-    validation = validate_fulfillment(task, plan)
+    validation = validate_fulfillment(task)
 
     assert validation.ok
 
@@ -49,89 +54,41 @@ def test_external_command_postcondition_requires_successful_exit() -> None:
             }
         },
     )
-    plan = PlanModel(
-        objective=task.objective,
-        steps=[
-            PlanStep(
-                title="Run",
-                description="Run command.",
-                tool_name="vscode.terminal_command",
-            )
-        ],
-        postconditions=[
-            PlanPostcondition(
-                type=PostconditionType.EXTERNAL_COMMAND,
-                description="Command succeeded.",
-            )
-        ],
-    )
 
-    validation = validate_fulfillment(task, plan)
+    validation = validate_fulfillment(task)
 
     assert not validation.ok
     assert validation.first_gap == "expected_external_command_missing"
 
 
-def test_desktop_run_goal_postcondition_requires_completed_output() -> None:
+def test_desktop_observation_inferred_from_objective_is_unsatisfied_without_evidence() -> None:
+    task = TaskRecord(objective="take a screenshot of my desktop", metadata={})
+
+    validation = validate_fulfillment(task)
+
+    assert not validation.ok
+    assert validation.first_gap == "expected_desktop_observation_missing"
+
+
+def test_run_goal_that_stopped_early_does_not_satisfy_desktop_observation() -> None:
+    """A run_goal is a multi-step action loop with a real objective; a
+    screenshot existing is not evidence the goal was reached. Only an explicit
+    completed=True counts - max_steps exhaustion reports False."""
     task = TaskRecord(
         objective="Use computer to open a folder",
         metadata={
             "last_tool_result": {
                 "output": {
                     "operation": "run_goal",
-                    "observation": {"active_window": {"title": "Desktop"}},
-                    "screenshot_path": "C:/tmp/screen.png",
                     "completed": False,
+                    "screenshot_path": "C:/tmp/screen.png",
                     "final_summary": "Stopped after max steps.",
                 }
             }
         },
     )
-    plan = PlanModel(
-        objective=task.objective,
-        steps=[PlanStep(title="Use computer", description="Run computer-use.", tool_name="computer.use")],
-        postconditions=[
-            PlanPostcondition(
-                type=PostconditionType.DESKTOP_OBSERVATION,
-                description="Desktop request is completed.",
-            )
-        ],
-    )
 
-    validation = validate_fulfillment(task, plan)
-
-    assert not validation.ok
-    assert validation.first_gap == "expected_desktop_observation_missing"
-
-
-def test_computer_use_step_infers_desktop_observation_postcondition_even_in_mixed_plan() -> None:
-    """A plan with computer.use plus another postcondition-producing step must still
-    check the computer.use outcome, not just the other step's postcondition."""
-    task = TaskRecord(
-        objective="Open notepad and type hello, then send me a screenshot",
-        metadata={
-            "last_tool_result": {
-                "output": {
-                    "operation": "run_goal",
-                    "completed": False,
-                    "final_summary": "Stopped after max steps.",
-                }
-            },
-            "artifact_delivery": {"delivered": True},
-        },
-    )
-    plan = PlanModel(
-        objective=task.objective,
-        steps=[
-            PlanStep(title="Open notepad", description="Run computer-use.", tool_name="computer.use"),
-            PlanStep(title="Send screenshot", description="Deliver artifact.", tool_name="artifact.deliver"),
-        ],
-    )
-
-    validation = validate_fulfillment(task, plan)
-
-    assert not validation.ok
-    assert validation.first_gap == "expected_desktop_observation_missing"
+    assert not _postcondition_satisfied(task, PostconditionType.DESKTOP_OBSERVATION)
 
 
 def test_run_goal_missing_completed_field_is_not_satisfied() -> None:
@@ -146,15 +103,25 @@ def test_run_goal_missing_completed_field_is_not_satisfied() -> None:
             }
         },
     )
-    plan = PlanModel(
-        objective=task.objective,
-        steps=[PlanStep(title="Use computer", description="Run computer-use.", tool_name="computer.use")],
+
+    assert not _postcondition_satisfied(task, PostconditionType.DESKTOP_OBSERVATION)
+
+
+def test_completed_run_goal_satisfies_desktop_observation() -> None:
+    task = TaskRecord(
+        objective="Use computer to open a folder",
+        metadata={
+            "last_tool_result": {
+                "output": {
+                    "operation": "run_goal",
+                    "completed": True,
+                    "final_summary": "Folder opened.",
+                }
+            }
+        },
     )
 
-    validation = validate_fulfillment(task, plan)
-
-    assert not validation.ok
-    assert validation.first_gap == "expected_desktop_observation_missing"
+    assert _postcondition_satisfied(task, PostconditionType.DESKTOP_OBSERVATION)
 
 
 def test_running_coding_agent_session_does_not_satisfy_postcondition() -> None:
@@ -171,18 +138,38 @@ def test_running_coding_agent_session_does_not_satisfy_postcondition() -> None:
             }
         },
     )
-    plan = PlanModel(
-        objective=task.objective,
-        steps=[PlanStep(title="Run Codex", description="Run coding agent.", tool_name="coding.agent")],
-        postconditions=[
-            PlanPostcondition(
-                type=PostconditionType.CODING_AGENT_STEP,
-                description="Coding agent reaches a terminal result.",
-            )
-        ],
+
+    assert not _postcondition_satisfied(task, PostconditionType.CODING_AGENT_STEP)
+
+
+def test_completed_coding_agent_session_satisfies_postcondition() -> None:
+    task = TaskRecord(
+        objective="Use Codex to fix tests",
+        metadata={
+            "last_tool_result": {
+                "output": {
+                    "provider": "codex",
+                    "status": "completed",
+                    "session_id": "codex_abc",
+                    "returncode": 0,
+                }
+            }
+        },
     )
 
-    validation = validate_fulfillment(task, plan)
+    assert _postcondition_satisfied(task, PostconditionType.CODING_AGENT_STEP)
 
-    assert not validation.ok
-    assert validation.first_gap == "expected_coding_agent_step_missing"
+
+def test_embedded_filesystem_path_does_not_fabricate_a_postcondition() -> None:
+    """Regression guard (docs/HISTORY.md): objectives routinely embed a literal
+    path whose last segment contains a trigger word. A folder named
+    '..._search' must not infer a BROWSER_STATE expectation nothing can
+    satisfy - that produced a gap the loop could never close."""
+    task = TaskRecord(
+        objective=r"look in the folder C:\Users\me\AppData\Local\Temp\operator_loop_filesystem_search and read the file",
+        metadata={},
+    )
+
+    validation = validate_fulfillment(task)
+
+    assert PostconditionType.BROWSER_STATE not in {item.type for item in validation.expected}

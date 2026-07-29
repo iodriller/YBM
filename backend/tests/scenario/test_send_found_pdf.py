@@ -1,7 +1,7 @@
 """Scenario: "send me the PDF at this path" through the real LLM planner ->
 a single artifact.deliver send_file call -> the fake Telegram client. Ports
 e2e/all_cases.json's `send_found_pdf` case down to the deterministic tier
-(docs/ROADMAP.md P2) - the simplest possible delivery-only case (single
+(docs/HISTORY.md P2) - the simplest possible delivery-only case (single
 step, a known literal path, no filesystem search first), chosen deliberately
 after `output_delivery` turned out to need an unusually flaky multi-attempt
 plan; this one locks in the harness's FakeTelegramClient path with minimal
@@ -10,6 +10,8 @@ surface area for planner non-determinism.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from agent_control.config import AppSettings, CapabilityPolicy, default_capability_policies
@@ -17,8 +19,9 @@ from agent_control.schemas import Capability, RiskLevel, TaskStatus
 
 from .harness import build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
 
-pytestmark = pytest.mark.skip(
-    reason="fixture recorded against the deleted plan-once path (PlannerService/ResponseSynthesizer/AnswerValidator prompts); the Operator loop (docs/ROADMAP.md P3 "
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("YBM_SCENARIO_RECORD"),
+    reason="fixture recorded against the deleted plan-once path (PlannerService/ResponseSynthesizer/AnswerValidator prompts); the Operator loop (docs/HISTORY.md P3 "
     "\u00a72.2) is now the sole execution path and needs its own fixture, recorded fresh "
     "against a live LLM - see orchestration/operator.py and test_operator_loop.py for the "
     "pattern. Left in place (not deleted) so the scenario this file documents survives as "

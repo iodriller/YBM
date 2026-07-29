@@ -1,7 +1,7 @@
 """Scenario: "check what MCP tools are available" through the real LLM
 planner -> mcp.client list_tools -> a real fake MCP server subprocess over
 stdio. Ports e2e/all_cases.json's `mcp_discover_tools` case down to the
-deterministic tier (docs/ROADMAP.md P2) - the list_tools counterpart to
+deterministic tier (docs/HISTORY.md P2) - the list_tools counterpart to
 test_mcp_call_fake_echo.py's call_tool case.
 
 Confirms the known fulfillment-gap bug documented in
@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import sys
 
+import os
+
 import pytest
 
 from agent_control.config import CapabilityPolicy, MCPConfig, MCPServerConfig, default_capability_policies
@@ -27,8 +29,9 @@ from agent_control.schemas import Capability, RiskLevel, TaskStatus
 from .harness import build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
 from .test_mcp_call_fake_echo import _write_fake_mcp_server
 
-pytestmark = pytest.mark.skip(
-    reason="fixture recorded against the deleted plan-once path (PlannerService/ResponseSynthesizer/AnswerValidator prompts); the Operator loop (docs/ROADMAP.md P3 "
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("YBM_SCENARIO_RECORD"),
+    reason="fixture recorded against the deleted plan-once path (PlannerService/ResponseSynthesizer/AnswerValidator prompts); the Operator loop (docs/HISTORY.md P3 "
     "\u00a72.2) is now the sole execution path and needs its own fixture, recorded fresh "
     "against a live LLM - see orchestration/operator.py and test_operator_loop.py for the "
     "pattern. Left in place (not deleted) so the scenario this file documents survives as "
