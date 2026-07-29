@@ -43,9 +43,10 @@ async def test_operator_loop_finds_and_reads_resume_file(tmp_path, monkeypatch) 
     )
 
     audit_events = scenario.repositories.audit.list_for_task(task.id)
-    assert task.status == TaskStatus.COMPLETED, [
-        event.model_dump(mode="json") for event in audit_events
+    failure_details = [
+        event.payload for event in audit_events if event.type.value == "error"
     ]
+    assert task.status == TaskStatus.COMPLETED, failure_details
     assert "resume.txt" in task.metadata["synthesized_answer"]
     history = task.metadata["operator_history"]
     assert [entry["tool_name"] for entry in history] == ["filesystem.manage", "filesystem.manage"]
