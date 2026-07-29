@@ -18,6 +18,7 @@ import hashlib
 import json
 import re
 import tempfile
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
 
@@ -139,6 +140,42 @@ def _rebase_scenario_paths(value: Any) -> Any:
     return value
 
 
+def _closest_prompt_difference(
+    entries: dict[str, dict[str, Any]],
+    method: str,
+    user_prompt: str,
+) -> str:
+    actual = _normalize(user_prompt)
+    candidates = [
+        (key, _normalize(str(entry["user_prompt"])))
+        for key, entry in entries.items()
+        if entry.get("method") == method
+        and isinstance(entry.get("user_prompt"), str)
+    ]
+    if not candidates:
+        return "no stored prompts use this method"
+
+    closest_key, expected = max(
+        candidates,
+        key=lambda item: SequenceMatcher(None, item[1], actual).ratio(),
+    )
+    matcher = SequenceMatcher(None, expected, actual)
+    difference = next(
+        (opcode for opcode in matcher.get_opcodes() if opcode[0] != "equal"),
+        None,
+    )
+    if difference is None:
+        return f"closest fixture {closest_key} has identical normalized user prompt"
+
+    _, expected_start, expected_end, actual_start, actual_end = difference
+    expected_excerpt = expected[max(0, expected_start - 80) : expected_end + 80]
+    actual_excerpt = actual[max(0, actual_start - 80) : actual_end + 80]
+    return (
+        f"closest fixture {closest_key} first difference: "
+        f"expected={expected_excerpt!r}; actual={actual_excerpt!r}"
+    )
+
+
 def _save(fixture_path: Path, entries: dict[str, dict[str, Any]]) -> None:
     fixture_path.parent.mkdir(parents=True, exist_ok=True)
     fixture_path.write_text(json.dumps(entries, indent=2, sort_keys=True), encoding="utf-8")
@@ -156,8 +193,12 @@ class ScriptedLLMProvider:
         key = fixture_key(method, system_prompt, user_prompt)
         entry = self._entries.get(key)
         if entry is None:
+            difference = _closest_prompt_difference(
+                self._entries, method, user_prompt
+            )
             raise ScriptedLLMError(
                 f"No recorded '{method}' fixture (key={key}) in {self.fixture_path}.\n"
+                f"{difference}\n"
                 f"system_prompt[:200]={system_prompt[:200]!r}\n"
                 f"user_prompt[:200]={user_prompt[:200]!r}\n"
                 "Record it with RecordingLLMProvider against a live LLM, or the prompt "
