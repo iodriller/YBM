@@ -15,8 +15,6 @@ from pydantic import Field
 from agent_control.config import VSCodeAdapterConfig, is_loopback_host
 from agent_control.config_sync import read_env_value
 
-
-logger = logging.getLogger(__name__)
 from agent_control.prompts import render_prompt
 from agent_control.schemas import (
     Capability,
@@ -34,6 +32,9 @@ from agent_control.tools.contracts import (
     VSCodeTerminalToolOutput,
 )
 from agent_control.tools.spec import Adapters, Definitions, RegistryDeps, ToolDefinition, capability_enabled
+
+
+logger = logging.getLogger(__name__)
 
 
 class VSCodeHeartbeat(StrictBaseModel):

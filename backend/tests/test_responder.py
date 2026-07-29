@@ -23,7 +23,7 @@ from agent_control.schemas import (
     MessageKind,
     RiskLevel,
 )
-from agent_control.storage import AuditLogger, Database, Repositories
+from agent_control.storage import Database, Repositories
 
 
 class _Provider:

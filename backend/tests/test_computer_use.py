@@ -8,7 +8,7 @@ import pytest
 
 from agent_control.config import AppSettings, CapabilityPolicy, ComputerUseAdapterConfig
 from agent_control.policy import PolicyEngine
-from agent_control.schemas import Capability, RiskLevel, TaskRecord, ToolCallRequest
+from agent_control.schemas import Capability, RiskLevel, ToolCallRequest
 from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.tools.computer_use import ComputerUseAdapter
 from agent_control.tools.computer_use import _clean_summary_text

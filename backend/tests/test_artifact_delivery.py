@@ -7,7 +7,7 @@ import pytest
 from agent_control.config import AppSettings, CapabilityPolicy
 from agent_control.orchestration import ToolExecutor
 from agent_control.policy import PolicyEngine
-from agent_control.schemas import Artifact, ArtifactType, Capability, RiskLevel, TaskRecord, ToolCallRequest, ToolResultStatus
+from agent_control.schemas import Artifact, ArtifactType, Capability, RiskLevel, ToolCallRequest, ToolResultStatus
 from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.tools.artifact_delivery import ArtifactDeliveryAdapter
 from agent_control.tools.registry import build_tool_registry

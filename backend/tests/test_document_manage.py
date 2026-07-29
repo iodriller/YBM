@@ -6,7 +6,7 @@ from zipfile import ZipFile
 import pytest
 
 from agent_control.config import AppSettings, CapabilityPolicy
-from agent_control.schemas import ArtifactType, Capability, RiskLevel, TaskRecord, ToolCallRequest
+from agent_control.schemas import ArtifactType, Capability, RiskLevel, ToolCallRequest
 from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.tools.document_manage import DocumentManageAdapter
 from agent_control.tools.registry import build_tool_registry

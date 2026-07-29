@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-tests:
+    name: backend (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v8
+        with:
+          python-version: "3.12"
+          working-directory: backend
+      - run: uv sync --frozen --extra test --extra dev
+      - run: uv run --frozen pytest
+
+  backend-quality:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v8
+        with:
+          python-version: "3.12"
+          working-directory: backend
+      - run: uv sync --frozen --extra test --extra dev
+      - run: uv run --frozen ruff check .
+      - run: uv run --frozen --with pip-audit pip-audit
+
+  vscode-extension:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vscode-extension
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: vscode-extension/package-lock.json
+      - run: npm ci
+      - run: npm run compile
+      - run: npm audit --audit-level=high
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Scan the current tree for leaked secrets
+        run: >-
+          docker run --rm -v "$PWD:/repo"
+          zricethezav/gitleaks:v8.30.1
+          detect --no-git --source /repo --redact --verbose

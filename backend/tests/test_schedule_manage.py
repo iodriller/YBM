@@ -5,7 +5,6 @@ from datetime import timedelta
 import pytest
 
 from agent_control.config import AppSettings, CapabilityPolicy
-from agent_control.orchestration.fulfillment import validate_fulfillment
 from agent_control.scheduler import objective_from_schedule_text, run_scheduler_once
 from agent_control.schemas import (
     AuditEventType,

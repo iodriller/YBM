@@ -6,7 +6,7 @@ import yaml
 
 from agent_control.admin import create_admin_router
 from agent_control.config import AppSettings, default_capability_policies
-from agent_control.main import app, vscode_store
+from agent_control.main import app
 from datetime import timedelta
 
 from agent_control.schemas import (
