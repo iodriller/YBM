@@ -77,6 +77,12 @@ _CURRENT_SCENARIO_SCRATCH_ROOT = str(
 
 
 def _normalize(text: str) -> str:
+    # Prompt history renders dict values with escaped Windows separators
+    # (``C:\\Users``), while objectives and tool output contain ordinary
+    # separators (``C:\Users``). Collapse the rendered form before replacing
+    # scenario roots so recordings replay across both users and platforms.
+    text = text.replace("\\\\", "\\")
+
     def replace_path(match: re.Match[str]) -> str:
         matched_path = match.group(0)
         root_match = _SCENARIO_SCRATCH_ROOT.match(matched_path)

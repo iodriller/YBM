@@ -113,6 +113,18 @@ def test_fixture_key_normalizes_scenario_scratch_root_across_platforms() -> None
     )
 
 
+def test_fixture_key_normalizes_escaped_scenario_paths_in_history() -> None:
+    recorded = (
+        r"input: {'root': 'C:\\Users\\recording-user\\AppData\\Local\\Temp"
+        r"\\ybm_scenario_scratch\\file_search'}"
+    )
+    linux = "input: {'root': '/tmp/ybm_scenario_scratch/file_search'}"
+
+    assert fixture_key("generate_structured", "sys", recorded) == fixture_key(
+        "generate_structured", "sys", linux
+    )
+
+
 @pytest.mark.asyncio
 async def test_replay_rebases_recorded_scenario_response_path(tmp_path) -> None:
     fixture = tmp_path / "fixture.json"
