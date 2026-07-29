@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from agent_control.config import BrowserAdapterConfig
-from agent_control.schemas import Capability, TaskRecord, ToolCallRequest
+from agent_control.schemas import Capability, ToolCallRequest
 from agent_control.tools.browser import BrowserAdapter, BrowserTarget
 
 class FakeClient:

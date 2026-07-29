@@ -345,7 +345,7 @@ async def test_multi_step_task_sends_a_progress_notification_per_step(tmp_path) 
     "running", so a 30-step task sent one "working on it" and then went
     silent."""
     repos, audit = _repos(tmp_path)
-    task = repos.tasks.create("do three things", metadata={"source_chat_id": "100"})
+    repos.tasks.create("do three things", metadata={"source_chat_id": "100"})
     settings = _settings()
     executor = _executor(settings, audit, repos, output={"text": "ok"})
     operator = QueueOperator([

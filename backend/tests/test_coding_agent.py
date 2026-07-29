@@ -6,10 +6,7 @@ from pathlib import Path
 import pytest
 
 from agent_control.config import AppSettings, CapabilityPolicy, CodingAgentAdapterConfig
-from agent_control.orchestration.executor import ToolExecutor
-from agent_control.policy import PolicyEngine
-from agent_control.schemas import Capability, RiskLevel, TaskRecord, TaskStatus, ToolCallRequest, ToolCallResult, ToolResultStatus
-from agent_control.storage import AuditLogger, Database, Repositories
+from agent_control.schemas import Capability, RiskLevel, ToolCallRequest, ToolResultStatus
 from agent_control.tools.coding_agent import CodingAgentAdapter, latest_session, load_session, scan_coding_sessions_once, terminal_session_result
 from agent_control.tools.registry import build_tool_registry
 

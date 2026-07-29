@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import datetime
 import json
 import logging
 from typing import Any, Protocol
