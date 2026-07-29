@@ -45,12 +45,16 @@ def validate_fulfillment(task: TaskRecord) -> FulfillmentValidation:
     return FulfillmentValidation(expected=expected, missing=missing)
 
 
-_EMBEDDED_PATH = re.compile(r"[a-z]:\\\S+|\\\\\S+", re.IGNORECASE)
+_EMBEDDED_PATH = re.compile(
+    r"[a-z]:\\\S+|(?<![:/])/\S+|\\\\\S+",
+    re.IGNORECASE,
+)
 
 
 def _strip_embedded_paths(text: str) -> str:
     """Objectives routinely embed a literal filesystem path ("look in the
-    folder C:\\Users\\...\\search_results"). Left in, a path segment that
+    folder C:\\Users\\...\\search_results" or
+    "/tmp/.../search_results"). Left in, a path segment that
     happens to contain a trigger word (a folder named "...search", "...app",
     "...schedule") produces a false-positive expected postcondition that
     nothing in the actual task run ever satisfies - this is the sole

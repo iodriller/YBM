@@ -173,3 +173,20 @@ def test_embedded_filesystem_path_does_not_fabricate_a_postcondition() -> None:
     validation = validate_fulfillment(task)
 
     assert PostconditionType.BROWSER_STATE not in {item.type for item in validation.expected}
+
+
+def test_embedded_posix_path_does_not_fabricate_a_postcondition() -> None:
+    task = TaskRecord(
+        objective=(
+            "look in the folder "
+            "/tmp/ybm_scenario_scratch/operator_loop_filesystem_search "
+            "and read the file"
+        ),
+        metadata={},
+    )
+
+    validation = validate_fulfillment(task)
+
+    assert PostconditionType.BROWSER_STATE not in {
+        item.type for item in validation.expected
+    }
