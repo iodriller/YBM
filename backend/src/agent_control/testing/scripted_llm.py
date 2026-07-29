@@ -197,8 +197,8 @@ class ScriptedLLMProvider:
                 self._entries, method, user_prompt
             )
             raise ScriptedLLMError(
-                f"No recorded '{method}' fixture (key={key}) in {self.fixture_path}.\n"
                 f"{difference}\n"
+                f"No recorded '{method}' fixture (key={key}) in {self.fixture_path}.\n"
                 f"system_prompt[:200]={system_prompt[:200]!r}\n"
                 f"user_prompt[:200]={user_prompt[:200]!r}\n"
                 "Record it with RecordingLLMProvider against a live LLM, or the prompt "
