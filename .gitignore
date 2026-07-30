@@ -10,6 +10,8 @@ config/config.yaml
 agent_control.db
 .agent_control/
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
+CLAUDE.local.md
 dist/
 node_modules/
 *.xlsx
