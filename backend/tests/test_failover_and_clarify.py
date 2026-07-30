@@ -11,7 +11,7 @@ from agent_control.schemas import (
     ChannelType,
     TaskStatus,
 )
-from agent_control.storage import AuditLogger, Database, Repositories
+from helpers import make_repos
 
 
 # --- FailoverLLMProvider ---
@@ -104,16 +104,11 @@ def test_build_default_provider_without_fallback_stays_plain() -> None:
 # --- CLARIFYING ask-user loop ---
 
 
-def _repos(tmp_path) -> tuple[Repositories, AuditLogger]:
-    database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
-    database.initialize()
-    repos = Repositories.for_database(database)
-    return repos, AuditLogger(repos.audit)
 
 
 @pytest.mark.asyncio
 async def test_clarifying_reply_resumes_the_same_task(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     config = TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100])
     adapter = TelegramAdapter(config, audit)
     service = TelegramIntakeService(adapter, repos, audit)
@@ -149,7 +144,7 @@ async def test_clarifying_reply_resumes_the_same_task(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_clarifying_cancel_reply_cancels_task(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     config = TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100])
     service = TelegramIntakeService(TelegramAdapter(config, audit), repos, audit)
 
@@ -195,7 +190,7 @@ async def test_codex_status_question_is_answered_from_session_files(tmp_path) ->
         encoding="utf-8",
     )
 
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     config = TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100])
     settings = AppSettings(
         _env_file=None,
@@ -216,7 +211,7 @@ async def test_codex_status_question_is_answered_from_session_files(tmp_path) ->
 
 @pytest.mark.asyncio
 async def test_provider_mention_without_status_intent_falls_through(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     config = TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100])
     settings = AppSettings(
         _env_file=None,

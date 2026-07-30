@@ -55,6 +55,25 @@ class SecretVault:
     def list_services(self) -> list[str]:
         return sorted(self._read())
 
+    def list_secrets(self) -> dict[str, list[str]]:
+        """Service -> sorted key names, never values. For a UI/API listing
+        that must not leak secret contents."""
+        data = self._read()
+        return {service: sorted(keys) for service, keys in sorted(data.items())}
+
+    def delete_secret(self, service: str, key: str) -> bool:
+        service = service.strip()
+        key = key.strip()
+        data = self._read()
+        service_values = data.get(service)
+        if not isinstance(service_values, dict) or key not in service_values:
+            return False
+        del service_values[key]
+        if not service_values:
+            del data[service]
+        self._write(data)
+        return True
+
     def _read(self) -> dict[str, dict[str, str]]:
         path = self._path()
         if not path.exists():

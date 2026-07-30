@@ -5,7 +5,7 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 from agent_control.channels.telegram import TelegramBotApi
-from agent_control.schemas import ApprovalStatus, TaskRecord, TaskStatus
+from agent_control.schemas import ApprovalStatus, TaskRecord, TaskStatus, task_chat_id
 from agent_control.storage.repositories import ApprovalRepository
 from agent_control.tools.mcp_client import mcp_output_text
 
@@ -30,7 +30,7 @@ class TelegramTaskNotifier:
         self.approvals = approvals
 
     async def notify(self, task: TaskRecord) -> None:
-        chat_id = _task_chat_id(task)
+        chat_id = task_chat_id(task)
         if not chat_id:
             return
 
@@ -65,13 +65,6 @@ class TelegramTaskNotifier:
         return _approval_inline_keyboard(pending[-1].id)
 
 
-def _task_chat_id(task: TaskRecord) -> str | None:
-    value = task.metadata.get("source_chat_id")
-    if value:
-        return str(value)
-    if task.conversation_id and task.conversation_id.startswith("conv_telegram_"):
-        return task.conversation_id.removeprefix("conv_telegram_")
-    return None
 
 
 def _task_message_without_screenshot(task: TaskRecord) -> str:
@@ -436,9 +429,6 @@ def _failure_lines(task: TaskRecord) -> list[str]:
     retry_count = task.metadata.get("retry_count") or task.metadata.get("fulfillment_retry_count")
     if retry_count:
         lines.append(f"Retries: {retry_count}")
-    intervention = task.metadata.get("intervention_summary")
-    if intervention:
-        lines.append(f"Next step: {_trim(str(intervention), 300)}")
     error = _last_error(task)
     if error:
         lines.append(f"Error: {_trim(error, 900)}")
@@ -474,18 +464,6 @@ def _latest_attempt_summary(task: TaskRecord) -> str | None:
     return _trim(line, 900)
 
 
-def _last_command_id(task: TaskRecord) -> str | None:
-    result = task.metadata.get("last_tool_result")
-    if not isinstance(result, dict):
-        return None
-    output = result.get("output")
-    if isinstance(output, dict):
-        command_id = output.get("command_id")
-        if command_id:
-            return str(command_id)
-    return None
-
-
 def _output_value(task: TaskRecord, key: str) -> str | None:
     result = task.metadata.get("last_tool_result")
     if not isinstance(result, dict):
@@ -513,26 +491,12 @@ def _last_output(task: TaskRecord) -> str | None:
     return None
 
 
-def _last_usage(task: TaskRecord) -> str | None:
-    result = task.metadata.get("last_tool_result")
-    usage = None
-    if isinstance(result, dict):
-        output = result.get("output")
-        if isinstance(output, dict):
-            usage = output.get("usage")
-    if not usage:
-        usage = task.metadata.get("last_copilot_usage") or task.metadata.get("last_tool_usage")
-    if not isinstance(usage, dict) or not usage:
-        return None
-    return " | ".join(str(value) for _, value in sorted(usage.items()))
-
-
 def _last_error(task: TaskRecord) -> str | None:
-    fallback = (
-        task.metadata.get("last_worker_error")
-        or task.metadata.get("planning_error")
-        or task.metadata.get("last_replan_reason")
-    )
+    # `planning_error` / `last_replan_reason` used to be chained in here as
+    # further fallbacks; both were plan-era keys with zero writers left after
+    # P3, so they could only ever contribute None (docs/HISTORY.md Part 2 §4
+    # item 10). Same for `intervention_summary` in _failure_lines() above.
+    fallback = task.metadata.get("last_worker_error")
     result = task.metadata.get("last_tool_result")
     if not isinstance(result, dict):
         return fallback

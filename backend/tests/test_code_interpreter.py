@@ -450,3 +450,208 @@ def test_import_validation_allows_openpyxl_and_third_party() -> None:
     # Should not raise — third-party imports are permitted by default
     _validate_python(code, allowed_imports=set(), blocked_imports=set())
 
+
+
+def _auto_workspace_request(operation: str, task_id: str = "task_chain", **payload) -> ToolCallRequest:
+    """Like _request() but deliberately omits workspace_dir, so the adapter's
+    own _workspace() resolution is what's under test."""
+    return ToolCallRequest(
+        task_id=task_id,
+        tool_name="code.interpreter",
+        capability=Capability.TERMINAL_RUN,
+        input={"operation": operation, **payload},
+    )
+
+
+@pytest.mark.asyncio
+async def test_code_interpreter_reuses_one_workspace_across_calls_in_a_task(tmp_path) -> None:
+    """Regression guard (docs/HISTORY.md Part 2 §4 item 7): _workspace() used
+    to append uuid4().hex[:8], so every call got a fresh empty directory and
+    no multi-step file workflow could ever work - step 2 could not see the
+    file step 1 created. Task ids are already unique, so the suffix only ever
+    separated calls within one task, which is precisely what must be shared.
+    """
+    adapter = CodeInterpreterAdapter(_settings(tmp_path).adapters.code_interpreter)
+
+    first = await adapter.execute(
+        _auto_workspace_request(
+            "run_python",
+            code="from pathlib import Path\nPath('step1.txt').write_text('from step one', encoding='utf-8')\nprint('wrote')\n",
+        )
+    )
+    second = await adapter.execute(
+        _auto_workspace_request(
+            "run_python",
+            code="from pathlib import Path\nprint(Path('step1.txt').read_text(encoding='utf-8'))\n",
+        )
+    )
+
+    assert first.status.value == "succeeded"
+    assert "step1.txt" in first.output["files_created"]
+    # The whole point: the second call lands in the same directory and can
+    # read what the first one wrote.
+    assert second.status.value == "succeeded"
+    assert "from step one" in second.output["stdout"]
+    assert first.output["workspace_dir"] == second.output["workspace_dir"]
+
+
+@pytest.mark.asyncio
+async def test_code_interpreter_inspect_state_sees_files_from_an_earlier_call(tmp_path) -> None:
+    """Same root cause, different symptom: inspect_state always got a brand
+    new empty directory, so it reported zero files no matter what the task
+    had just generated."""
+    adapter = CodeInterpreterAdapter(_settings(tmp_path).adapters.code_interpreter)
+
+    await adapter.execute(
+        _auto_workspace_request(
+            "run_python",
+            code="from pathlib import Path\nPath('generated.txt').write_text('x', encoding='utf-8')\n",
+        )
+    )
+    inspected = await adapter.execute(_auto_workspace_request("inspect_state"))
+
+    assert inspected.status.value == "succeeded"
+    assert "generated.txt" in inspected.output["files_after"]
+
+
+@pytest.mark.asyncio
+async def test_code_interpreter_keeps_separate_tasks_isolated(tmp_path) -> None:
+    """The flip side of sharing per task: two different tasks must NOT see
+    each other's files."""
+    adapter = CodeInterpreterAdapter(_settings(tmp_path).adapters.code_interpreter)
+
+    await adapter.execute(
+        _auto_workspace_request(
+            "run_python",
+            task_id="task_alpha",
+            code="from pathlib import Path\nPath('alpha.txt').write_text('a', encoding='utf-8')\n",
+        )
+    )
+    other = await adapter.execute(_auto_workspace_request("inspect_state", task_id="task_beta"))
+
+    assert other.status.value == "succeeded"
+    assert "alpha.txt" not in other.output["files_after"]
+
+
+class PromptCapturingProvider(FakeScriptProvider):
+    """Records the prompts generate_and_run actually sends, so the
+    relative-path instruction can be asserted on directly."""
+
+    def __init__(self) -> None:
+        self.system_prompts: list[str] = []
+        self.user_prompts: list[str] = []
+
+    async def generate_structured(self, system_prompt: str, user_prompt: str, output_model: type[T], **_ignored_kwargs) -> T:
+        self.system_prompts.append(system_prompt)
+        self.user_prompts.append(user_prompt)
+        return await super().generate_structured(system_prompt, user_prompt, output_model)
+
+
+@pytest.mark.asyncio
+async def test_code_interpreter_generation_prompt_demands_relative_paths(tmp_path) -> None:
+    """Generated scripts must never hardcode the workspace's absolute path.
+
+    Two real consequences, both observed (docs/HISTORY.md Part 2 §4 item 9):
+    the Docker backend bind-mounts the workspace at a DIFFERENT path inside
+    the container (`workspace_mount_target`, default /workspace), so a script
+    carrying an absolute host path fails outright under the sandbox backend -
+    the one that is supposed to be the secure default; and a recorded
+    scenario fixture becomes unreplayable, because the baked-in path contains
+    the recording run's task id.
+
+    Both backends already run the script with the workspace as cwd, so
+    relative paths are always correct and always portable.
+    """
+    provider = PromptCapturingProvider()
+    adapter = CodeInterpreterAdapter(_settings(tmp_path).adapters.code_interpreter, provider=provider)
+
+    result = await adapter.execute(
+        _request(tmp_path, "generate_and_run", objective="Create a result file.", approved=True)
+    )
+
+    assert result.status.value == "succeeded"
+    assert provider.system_prompts, "generate_and_run should have called the provider"
+    system_prompt = provider.system_prompts[0]
+    user_prompt = provider.user_prompts[0]
+    assert "relative path" in system_prompt.lower()
+    # The instruction must say the script already runs in the workspace -
+    # otherwise the absolute path shown for reference invites copying.
+    assert "current working directory" in system_prompt.lower()
+    assert "never" in system_prompt.lower()
+    # The user prompt still shows the path (useful context) but must label it
+    # as reference-only rather than as something to paste into the script.
+    assert "reference only" in user_prompt.lower()
+
+
+@pytest.mark.asyncio
+async def test_code_interpreter_previews_created_file_content_for_grounding(tmp_path) -> None:
+    """Regression guard (docs/HISTORY.md Part 3 W1): the Auditor grounds its
+    "did this actually answer the objective" check in terminal_output text.
+    Before this, that text listed only file NAMES plus stdout - a script
+    that computed the wrong number and wrote it to a file passed every check
+    because nothing downstream ever looked inside the file. A small text
+    preview of created/modified files must appear in both the structured
+    output and the rendered terminal_output content.
+    """
+    adapter = CodeInterpreterAdapter(_settings(tmp_path).adapters.code_interpreter)
+
+    result = await adapter.execute(
+        _request(
+            tmp_path,
+            "run_python",
+            code=(
+                "from pathlib import Path\n"
+                "Path('answer.json').write_text('{\"total\": 42}', encoding='utf-8')\n"
+                "print('done')\n"
+            ),
+        )
+    )
+
+    assert result.status.value == "succeeded"
+    previews = {p["path"]: p["content"] for p in result.output["file_previews"]}
+    assert previews.get("answer.json") == '{"total": 42}'
+    terminal_content = result.output["terminal_output"][0]["content"]
+    assert "Content of answer.json:" in terminal_content
+    assert '"total": 42' in terminal_content
+
+
+@pytest.mark.asyncio
+async def test_code_interpreter_skips_binary_files_in_previews(tmp_path) -> None:
+    adapter = CodeInterpreterAdapter(_settings(tmp_path).adapters.code_interpreter)
+
+    result = await adapter.execute(
+        _request(
+            tmp_path,
+            "run_python",
+            code=(
+                "from pathlib import Path\n"
+                "Path('image.bin').write_bytes(bytes([0x89, 0x50, 0x4e, 0x47, 0xff, 0xd8, 0x00, 0x01]))\n"
+            ),
+        )
+    )
+
+    assert result.status.value == "succeeded"
+    assert "image.bin" in result.output["files_created"]
+    assert result.output["file_previews"] == []
+    assert "Content of image.bin:" not in result.output["terminal_output"][0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_code_interpreter_preview_caps_large_file_content(tmp_path) -> None:
+    adapter = CodeInterpreterAdapter(_settings(tmp_path).adapters.code_interpreter)
+
+    result = await adapter.execute(
+        _request(
+            tmp_path,
+            "run_python",
+            code=(
+                "from pathlib import Path\n"
+                "Path('big.txt').write_text('x' * 5000, encoding='utf-8')\n"
+            ),
+        )
+    )
+
+    assert result.status.value == "succeeded"
+    preview = next(p for p in result.output["file_previews"] if p["path"] == "big.txt")
+    assert len(preview["content"]) <= 601  # cap + ellipsis
+    assert preview["content"].endswith("…")

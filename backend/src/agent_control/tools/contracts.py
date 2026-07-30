@@ -652,6 +652,7 @@ class CodeInterpreterOutput(ToolOutputModel):
     files_created: list[str] = Field(default_factory=list)
     files_modified: list[str] = Field(default_factory=list)
     files_deleted: list[str] = Field(default_factory=list)
+    file_previews: list[dict[str, str]] = Field(default_factory=list)
     stdout: str = ""
     stderr: str = ""
     returncode: int | None = None

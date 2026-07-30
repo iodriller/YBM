@@ -1,40 +1,22 @@
 """Scenario: "find this file on my desktop and send it to me" through the
-real LLM planner -> filesystem.manage search -> artifact.deliver -> the fake
-Telegram client. Ports e2e/all_cases.json's `desktop_file_search_then_delivery`
-case down to the deterministic tier (docs/HISTORY.md P2) - combines
-test_file_find_and_read.py's search step with test_send_found_pdf.py's
-delivery step, this time chained from a name only (no literal path given).
+real Operator loop - filesystem.manage search then artifact.deliver, chosen
+one at a time -> the fake Telegram client. Ports e2e/all_cases.json's
+`desktop_file_search_then_delivery` case down to the deterministic tier
+(docs/HISTORY.md P2) - combines test_file_find_and_read.py's search step
+with test_send_found_pdf.py's delivery step, this time chained from a name
+only (no literal path given). Fixture re-recorded 2026-07-28
+(`ybm scenario record desktop_file_search_then_delivery`,
+localdeploy_qwen3vl_8b).
 """
 
 from __future__ import annotations
 
-import os
-
+from agent_control.schemas import TaskStatus
 import pytest
 
-from agent_control.config import AppSettings, CapabilityPolicy, default_capability_policies
-from agent_control.schemas import Capability, RiskLevel, TaskStatus
-
-from .harness import build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
-
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("YBM_SCENARIO_RECORD"),
-    reason="fixture recorded against the deleted plan-once path (PlannerService/ResponseSynthesizer/AnswerValidator prompts); the Operator loop (docs/HISTORY.md P3 "
-    "\u00a72.2) is now the sole execution path and needs its own fixture, recorded fresh "
-    "against a live LLM - see orchestration/operator.py and test_operator_loop.py for the "
-    "pattern. Left in place (not deleted) so the scenario this file documents survives as "
-    "a checklist for that re-recording pass."
-)
+from .harness import build_scenario, filesystem_settings, run_task_to_completion, scenario_scratch_dir
 
 
-def _settings(monkeypatch, tmp_path, allowed_root: str) -> AppSettings:
-    caps = default_capability_policies()
-    caps[Capability.FILESYSTEM_WRITE] = CapabilityPolicy(enabled=True, requires_approval=False, max_risk_level=RiskLevel.HIGH)
-    return isolated_settings(
-        monkeypatch, tmp_path,
-        capabilities=caps,
-        adapters={"computer_use": {"enabled": True, "allowed_roots": [allowed_root]}},
-    )
 
 
 @pytest.mark.asyncio
@@ -43,7 +25,7 @@ async def test_desktop_file_search_then_delivery_finds_and_sends(tmp_path, monke
     (desktop_dir / "agent-control-sample.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
     (desktop_dir / "unrelated.txt").write_text("not the file we want", encoding="utf-8")
 
-    settings = _settings(monkeypatch, tmp_path, str(desktop_dir))
+    settings = filesystem_settings(monkeypatch, tmp_path, str(desktop_dir))
     scenario = build_scenario(settings, tmp_path=tmp_path, fixture_name="desktop_file_search_then_delivery")
 
     task = await run_task_to_completion(
@@ -64,7 +46,7 @@ async def test_desktop_file_search_then_delivery_rejects_path_outside_allowed_ro
     (desktop_dir / "agent-control-sample.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
     (desktop_dir / "unrelated.txt").write_text("not the file we want", encoding="utf-8")
 
-    settings = _settings(monkeypatch, tmp_path, str(tmp_path / "somewhere_else"))
+    settings = filesystem_settings(monkeypatch, tmp_path, str(tmp_path / "somewhere_else"))
     scenario = build_scenario(settings, tmp_path=tmp_path, fixture_name="desktop_file_search_then_delivery")
 
     task = await run_task_to_completion(

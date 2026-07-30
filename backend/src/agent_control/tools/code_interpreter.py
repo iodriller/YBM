@@ -19,7 +19,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from agent_control.config import CodeInterpreterAdapterConfig
-from agent_control.llm.providers import LLMProvider
+from agent_control.llm.providers import LLMProvider, strip_code_fences
 from agent_control.prompts import prompt_text, render_prompt
 from agent_control.schemas import (
     Artifact,
@@ -40,7 +40,7 @@ from agent_control.tools.contracts import (
     CodeInterpreterRunPythonInput,
     CodeInterpreterSolveOnceInput,
 )
-from agent_control.tools.spec import Adapters, Definitions, RegistryDeps, ToolDefinition, capability_enabled
+from agent_control.tools.spec import Adapters, Definitions, RegistryDeps, ToolDefinition, capability_enabled, failed_result
 
 
 logger = logging.getLogger(__name__)
@@ -331,7 +331,7 @@ class CodeInterpreterAdapter:
 
     async def execute(self, request: ToolCallRequest) -> ToolCallResult:
         if not self.config.enabled:
-            return _failed(request, "code interpreter adapter is disabled")
+            return failed_result(request, "code interpreter adapter is disabled")
         operation = str(request.input.get("operation") or "run_python")
         try:
             if operation == "run_python":
@@ -343,7 +343,7 @@ class CodeInterpreterAdapter:
             elif operation == "health":
                 output = await self._health(request)
             else:
-                return _failed(request, f"unsupported code interpreter operation: {operation}")
+                return failed_result(request, f"unsupported code interpreter operation: {operation}")
         except ApprovalRequired as exc:
             return ToolCallResult(
                 request_id=request.id,
@@ -359,7 +359,7 @@ class CodeInterpreterAdapter:
                 error_message="code interpreter command timed out",
             )
         except Exception as exc:
-            return _failed(request, f"code interpreter operation failed: {exc}")
+            return failed_result(request, f"code interpreter operation failed: {exc}")
 
         output["operation"] = operation
         output["terminal_output"] = [_terminal_output(operation, output)]
@@ -630,6 +630,10 @@ class CodeInterpreterAdapter:
         if backend_fallback_warning:
             summary = f"{summary}\nWarning: {backend_fallback_warning}"
         artifact_ids = self._register_created_artifacts(request.task_id, workspace, created)
+        # Same exclusion as _register_created_artifacts: script.py is the
+        # generator's own implementation detail, not a user-facing output.
+        preview_candidates = [name for name in created + modified if name != "script.py"]
+        file_previews = _file_content_previews(workspace, preview_candidates)
         return {
             "workspace_dir": str(workspace),
             "script_path": str(script_path),
@@ -638,6 +642,7 @@ class CodeInterpreterAdapter:
             "files_created": created,
             "files_modified": modified,
             "files_deleted": deleted,
+            "file_previews": [{"path": name, "content": text} for name, text in file_previews],
             "artifact_ids": artifact_ids,
             "stdout": stdout,
             "stderr": stderr,
@@ -780,11 +785,32 @@ class CodeInterpreterAdapter:
         return ids
 
     def _workspace(self, request: ToolCallRequest) -> Path:
+        """One stable workspace per TASK, not per call.
+
+        This used to append `uuid4().hex[:8]`, giving every individual
+        code.interpreter call its own fresh directory. Task ids are already
+        unique, so that suffix only ever distinguished repeated calls *within
+        one task* - and it silently broke every multi-step file workflow the
+        Operator loop is built to do:
+
+        - `generate_and_run` writes report.csv into dir A; the next
+          `generate_and_run` in the same task gets empty dir B and cannot see
+          it, so "make a file, then summarize it" can never work.
+        - `inspect_state` always got a brand-new empty directory, so it
+          reported zero files no matter what the task had just created.
+        - `run_python` could never read a file an earlier step generated.
+
+        Found 2026-07-29 re-recording the code_interpreter_csv_summary
+        scenario (docs/HISTORY.md Part 2 §4 item 7), which failed identically
+        on three independent live attempts. A caller can still pass an
+        explicit `workspace_dir` to opt out; the containment check below is
+        what keeps that from escaping the configured root.
+        """
         root = Path(self.config.workspace_root).expanduser().resolve()
         if request.input.get("workspace_dir"):
             workspace = Path(str(request.input["workspace_dir"])).expanduser().resolve()
         else:
-            workspace = root / f"task_{_safe_segment(request.task_id)}_{uuid4().hex[:8]}"
+            workspace = root / f"task_{_safe_segment(request.task_id)}"
         if root != workspace and root not in workspace.parents:
             raise ValueError(f"workspace is outside configured code interpreter root: {workspace}")
         return workspace
@@ -872,14 +898,7 @@ def _previous_attempt_block(prev_code: str, error_text: str, *, kind: str) -> st
 
 
 def _clean_generated_code(code: str) -> str:
-    text = str(code).strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
+    text = strip_code_fences(code)
     if "\\n" in text and "\n" not in text:
         try:
             text = text.encode("utf-8").decode("unicode_escape")
@@ -1180,6 +1199,44 @@ def _summary(returncode: int, stdout: str, stderr: str, created: list[str]) -> s
     return f"Python failed with exit code {returncode}." + (f" {text[:500]}" if text else "")
 
 
+# Bounds for the file-content previews added to created/modified files below.
+# Existed to close a real gap (docs/HISTORY.md Part 3 W1): the Auditor grounds
+# its "did this actually satisfy the objective" check in terminal_output text,
+# but that used to list only file NAMES plus stdout - a script that computed
+# the wrong number and wrote it to result.json passed every check because
+# nothing downstream ever looked inside the file. Kept deliberately small:
+# the Auditor's own raw_output budget is 6000 chars total
+# (orchestration/auditor.py), and this is meant to give it enough to check an
+# answer against the objective, not to replace filesystem.manage.read_file
+# for a task that actually needs the full file.
+_FILE_PREVIEW_MAX_FILES = 3
+_FILE_PREVIEW_MAX_CHARS_PER_FILE = 600
+
+
+def _file_content_previews(workspace: Path, names: list[str]) -> list[tuple[str, str]]:
+    """Best-effort small text previews of the given files, workspace-relative.
+
+    Silently skips anything that isn't decodable as UTF-8 text (binaries,
+    images) or that no longer exists - this is a preview for grounding an
+    answer, not a guarantee, so a skip here should never fail the tool call.
+    """
+    previews: list[tuple[str, str]] = []
+    for name in names[:_FILE_PREVIEW_MAX_FILES]:
+        path = workspace / name
+        try:
+            raw = path.read_bytes()[: _FILE_PREVIEW_MAX_CHARS_PER_FILE * 4]
+            text = raw.decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        text = text.strip()
+        if not text:
+            continue
+        if len(text) > _FILE_PREVIEW_MAX_CHARS_PER_FILE:
+            text = text[:_FILE_PREVIEW_MAX_CHARS_PER_FILE] + "…"
+        previews.append((name, text))
+    return previews
+
+
 def _terminal_output(operation: str, output: dict[str, Any]) -> dict[str, Any]:
     lines = [f"Code interpreter operation completed: {operation}"]
     lines.append(f"Workspace: {output.get('workspace_dir')}")
@@ -1198,6 +1255,9 @@ def _terminal_output(operation: str, output: dict[str, Any]) -> dict[str, Any]:
     if output.get("files_deleted"):
         lines.append("Deleted files:")
         lines.extend(f"- {path}" for path in output["files_deleted"])
+    for preview in output.get("file_previews") or []:
+        lines.append(f"Content of {preview['path']}:")
+        lines.append(str(preview["content"]))
     if output.get("stdout"):
         lines.append("Stdout:")
         lines.append(str(output["stdout"])[:2000])
@@ -1214,13 +1274,6 @@ def _terminal_output(operation: str, output: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _failed(request: ToolCallRequest, message: str) -> ToolCallResult:
-    return ToolCallResult(
-        request_id=request.id,
-        status=ToolResultStatus.FAILED,
-        error_class=ErrorClass.ADAPTER_FAILED,
-        error_message=message,
-    )
 
 
 def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -> None:

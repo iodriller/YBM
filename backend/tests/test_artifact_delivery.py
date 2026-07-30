@@ -8,9 +8,9 @@ from agent_control.config import AppSettings, CapabilityPolicy
 from agent_control.orchestration import ToolExecutor
 from agent_control.policy import PolicyEngine
 from agent_control.schemas import Artifact, ArtifactType, Capability, RiskLevel, ToolCallRequest, ToolResultStatus
-from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.tools.artifact_delivery import ArtifactDeliveryAdapter
 from agent_control.tools.registry import build_tool_registry
+from helpers import make_repos
 
 class FakeTelegramClient:
     def __init__(self) -> None:
@@ -25,14 +25,9 @@ class FakeTelegramClient:
         self.documents.append((chat_id, path, caption))
         return {"ok": True, "method": "sendDocument"}
 
-def _repos(tmp_path) -> tuple[Repositories, AuditLogger]:
-    database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
-    database.initialize()
-    repos = Repositories.for_database(database)
-    return repos, AuditLogger(repos.audit)
 
 def test_registry_exposes_artifact_delivery_when_telegram_send_is_enabled(tmp_path) -> None:
-    repos, _audit = _repos(tmp_path)
+    repos, _audit = make_repos(tmp_path)
     settings = AppSettings(
         _env_file=None,
         capabilities={
@@ -59,7 +54,7 @@ def test_registry_exposes_artifact_delivery_when_telegram_send_is_enabled(tmp_pa
 
 @pytest.mark.asyncio
 async def test_artifact_delivery_sends_screenshot_from_task_metadata(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     screenshot = tmp_path / "screen.png"
     screenshot.write_bytes(b"png")
     task = repos.tasks.create(
@@ -94,7 +89,7 @@ async def test_artifact_delivery_sends_screenshot_from_task_metadata(tmp_path) -
 
 @pytest.mark.asyncio
 async def test_artifact_delivery_does_not_send_recent_artifact_by_default(tmp_path) -> None:
-    repos, _audit = _repos(tmp_path)
+    repos, _audit = make_repos(tmp_path)
     document = tmp_path / "report.txt"
     document.write_text("latest output", encoding="utf-8")
     previous = repos.tasks.create("previous", metadata={"source_chat_id": "100"})
@@ -124,7 +119,7 @@ async def test_artifact_delivery_does_not_send_recent_artifact_by_default(tmp_pa
 
 @pytest.mark.asyncio
 async def test_artifact_delivery_sends_recent_artifact_when_cache_fallback_enabled(tmp_path) -> None:
-    repos, _audit = _repos(tmp_path)
+    repos, _audit = make_repos(tmp_path)
     document = tmp_path / "report.txt"
     document.write_text("latest output", encoding="utf-8")
     previous = repos.tasks.create("previous", metadata={"source_chat_id": "100"})
@@ -155,7 +150,7 @@ async def test_artifact_delivery_sends_recent_artifact_when_cache_fallback_enabl
 
 @pytest.mark.asyncio
 async def test_artifact_delivery_materializes_latest_tool_text_when_no_file_exists(tmp_path) -> None:
-    repos, _audit = _repos(tmp_path)
+    repos, _audit = make_repos(tmp_path)
     task = repos.tasks.create(
         "send latest output",
         metadata={
@@ -187,7 +182,7 @@ async def test_artifact_delivery_materializes_latest_tool_text_when_no_file_exis
 
 @pytest.mark.asyncio
 async def test_artifact_delivery_sends_latest_document_artifact(tmp_path) -> None:
-    repos, _audit = _repos(tmp_path)
+    repos, _audit = make_repos(tmp_path)
     document = tmp_path / "report.pdf"
     document.write_bytes(b"%PDF-1.4")
     task = repos.tasks.create("send me the PDF file", metadata={"source_chat_id": "100"})
@@ -224,7 +219,7 @@ async def test_artifact_delivery_sends_latest_document_artifact(tmp_path) -> Non
 
 @pytest.mark.asyncio
 async def test_artifact_delivery_direct_path_rejects_root_escape(tmp_path) -> None:
-    repos, _audit = _repos(tmp_path)
+    repos, _audit = make_repos(tmp_path)
     task = repos.tasks.create("send a file", metadata={"source_chat_id": "100"})
     outside = tmp_path.parent / "outside.txt"
     outside.write_text("nope", encoding="utf-8")
@@ -256,7 +251,7 @@ async def test_artifact_delivery_resolves_desktop_alias_under_allowed_home(monke
     document = desktop / "report.txt"
     document.write_text("desktop report", encoding="utf-8")
     monkeypatch.setattr(Path, "home", lambda: fake_home)
-    repos, _audit = _repos(tmp_path)
+    repos, _audit = make_repos(tmp_path)
     task = repos.tasks.create("send file from desktop", metadata={"source_chat_id": "100"})
     client = FakeTelegramClient()
     adapter = ArtifactDeliveryAdapter(
@@ -281,7 +276,7 @@ async def test_artifact_delivery_resolves_desktop_alias_under_allowed_home(monke
 
 @pytest.mark.asyncio
 async def test_executor_records_artifact_delivery_output(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     screenshot = tmp_path / "screen.png"
     screenshot.write_bytes(b"png")
     task = repos.tasks.create("send a screenshot", metadata={"source_chat_id": "100", "screenshot_path": str(screenshot)})

@@ -18,7 +18,24 @@ from dataclasses import dataclass
 from pydantic import BaseModel, ValidationError
 
 from agent_control.config import AppSettings
-from agent_control.schemas import Capability
+from agent_control.schemas import Capability, ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+
+
+def failed_result(request: ToolCallRequest, message: str) -> ToolCallResult:
+    """Standard adapter failure result.
+
+    Every tool adapter needs this and, until 2026-07-29, every one of the 13
+    of them carried a byte-identical private `_failed()` copy. Same shape, so
+    a change to the failure contract (a new field, a different ErrorClass)
+    meant editing 13 files or - far more likely - editing one and leaving the
+    others silently inconsistent.
+    """
+    return ToolCallResult(
+        request_id=request.id,
+        status=ToolResultStatus.FAILED,
+        error_class=ErrorClass.ADAPTER_FAILED,
+        error_message=message,
+    )
 
 
 @dataclass(frozen=True)

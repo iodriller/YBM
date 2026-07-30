@@ -11,6 +11,12 @@ from agent_control.schemas import Capability, RiskLevel, ToolCallRequest, ToolRe
 from agent_control.tools.mcp_client import MCPClientAdapter, load_mcp_catalog, mcp_catalog_summary, write_mcp_catalog
 from agent_control.tools.registry import build_tool_registry
 
+# Spawning a Python subprocess and completing the MCP initialize() round
+# trip measured 11.5s on a loaded Windows machine, so the previous 10s was
+# marginal and failed as an opaque anyio WouldBlock rather than a timeout.
+# Mirrors tests/scenario/harness.py's constant of the same name.
+MCP_HANDSHAKE_TIMEOUT_SECONDS = 30
+
 
 def test_mcp_config_and_registry_expose_client_when_enabled(tmp_path) -> None:
     settings = AppSettings(
@@ -67,7 +73,10 @@ def test_registry_context_reads_mcp_catalog_dynamically(tmp_path) -> None:
     )
 
     context = registry.context()
-    assert "fake.echo" in context
+    # server and tool are advertised as separate labelled fields, never a
+    # dotted "fake.echo" - see mcp_catalog_summary() for why.
+    assert 'server="fake" tool="echo"' in context
+    assert "fake.echo" not in context
     assert "catalog not built yet" not in context
 
 
@@ -83,7 +92,7 @@ async def test_mcp_client_discovers_and_calls_fake_stdio_server(tmp_path) -> Non
                 "fake": MCPServerConfig(
                     command=sys.executable,
                     args=[str(server_path)],
-                    timeout_seconds=10,
+                    timeout_seconds=MCP_HANDSHAKE_TIMEOUT_SECONDS,
                 )
             },
         )
@@ -127,7 +136,7 @@ async def test_mcp_catalog_records_but_output_hides_disabled_tools(tmp_path) -> 
             "fake": MCPServerConfig(
                 command=sys.executable,
                 args=[str(server_path)],
-                timeout_seconds=10,
+                timeout_seconds=MCP_HANDSHAKE_TIMEOUT_SECONDS,
                 disabled_tools=["hidden"],
             )
         },
@@ -149,8 +158,8 @@ async def test_mcp_catalog_records_but_output_hides_disabled_tools(tmp_path) -> 
     hidden = [tool for tool in catalog["tools"] if tool["tool"] == "hidden"]
     assert hidden and hidden[0]["disabled"] is True
     summary = mcp_catalog_summary(config)
-    assert "fake.echo" in summary
-    assert "fake.hidden" not in summary
+    assert 'server="fake" tool="echo"' in summary
+    assert 'tool="hidden"' not in summary
     settings = AppSettings(
         _env_file=None,
         capabilities={Capability.TERMINAL_RUN: CapabilityPolicy(enabled=True, requires_approval=False, max_risk_level=RiskLevel.HIGH)},
@@ -158,8 +167,8 @@ async def test_mcp_catalog_records_but_output_hides_disabled_tools(tmp_path) -> 
     )
     context = build_tool_registry(settings, "http://127.0.0.1:8765").context()
     assert "Configured MCP tools" in context
-    assert "fake.echo" in context
-    assert "fake.hidden" not in context
+    assert 'server="fake" tool="echo"' in context
+    assert 'tool="hidden"' not in context
 
 
 @pytest.mark.asyncio
@@ -169,8 +178,8 @@ async def test_mcp_selected_server_refresh_preserves_other_catalog_entries(tmp_p
         enabled=True,
         catalog_path=str(tmp_path / "tool_catalog.json"),
         servers={
-            "alpha": MCPServerConfig(command=sys.executable, args=[str(server_path)], timeout_seconds=10),
-            "beta": MCPServerConfig(command=sys.executable, args=[str(server_path)], timeout_seconds=10),
+            "alpha": MCPServerConfig(command=sys.executable, args=[str(server_path)], timeout_seconds=MCP_HANDSHAKE_TIMEOUT_SECONDS),
+            "beta": MCPServerConfig(command=sys.executable, args=[str(server_path)], timeout_seconds=MCP_HANDSHAKE_TIMEOUT_SECONDS),
         },
     )
     adapter = MCPClientAdapter(config)
@@ -212,7 +221,7 @@ async def test_mcp_call_tool_truncates_large_output(tmp_path) -> None:
                 "fake": MCPServerConfig(
                     command=sys.executable,
                     args=[str(server_path)],
-                    timeout_seconds=10,
+                    timeout_seconds=MCP_HANDSHAKE_TIMEOUT_SECONDS,
                     max_output_chars=300,
                 )
             },
@@ -354,3 +363,55 @@ if __name__ == "__main__":
         encoding="utf-8",
     )
     return server_path
+
+
+@pytest.mark.asyncio
+async def test_mcp_session_closes_subprocess_when_handshake_fails(monkeypatch, tmp_path) -> None:
+    """A failed handshake must not strand the spawned MCP server.
+
+    `_session.__aenter__` enters stdio_client (spawning the subprocess) and
+    only then calls `initialize()`. When initialize raised - a handshake
+    timeout is the easy way to hit it - the exception propagated out of
+    __aenter__, so the caller's `async with` never ran __aexit__ and the
+    already-entered stdio context was never closed. The orphaned async
+    generator was eventually finalized by the event loop at shutdown, in a
+    different task than had entered it, producing an unrelated-looking
+    "Attempted to exit cancel scope in a different task" RuntimeError.
+    """
+    from contextlib import asynccontextmanager
+
+    from agent_control.tools import mcp_client as mcp_client_module
+
+    closed: list[str] = []
+
+    @asynccontextmanager
+    async def fake_stdio_client(_params):
+        try:
+            yield ("read-stream", "write-stream")
+        finally:
+            closed.append("stdio")
+
+    class FakeSession:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc) -> None:
+            closed.append("session")
+
+        async def initialize(self):
+            raise TimeoutError("handshake timed out")
+
+    monkeypatch.setattr(mcp_client_module, "stdio_client", fake_stdio_client)
+    monkeypatch.setattr(mcp_client_module, "ClientSession", FakeSession)
+
+    server = MCPServerConfig(command=sys.executable, args=["-c", "pass"], timeout_seconds=5)
+
+    with pytest.raises(TimeoutError):
+        async with mcp_client_module._session(server):
+            pass  # pragma: no cover - __aenter__ raises before the body runs
+
+    # Both layers unwound despite __aenter__ failing partway through.
+    assert closed == ["session", "stdio"]

@@ -401,3 +401,121 @@ admin_streamlit.main()
     assert "Approve" in button_labels
     assert "Reject" in button_labels
     assert "Disable everything now" in button_labels
+
+
+def test_streamlit_admin_renders_secret_vault_section(tmp_path: Path) -> None:
+    app_file = tmp_path / "streamlit_secrets_smoke.py"
+    app_file.write_text(
+        '''
+from agent_control import admin_streamlit
+
+
+def fake_api_json(backend_url, path, token, method="GET", payload=None):
+    summary = {
+        "config": {
+            "identity": {"instance_name": "test-agent"},
+            "channels": {"telegram": {"enabled": True, "token_env": "TELEGRAM_BOT_TOKEN", "allowed_user_ids": [], "allowed_chat_ids": [], "polling": True}},
+            "llm": {"default_profile": "local", "profiles": {"local": {"provider": "openai_compatible", "model": "gemma", "timeout_seconds": 180, "max_tokens": 1024, "temperature": 0.2}}},
+            "adapters": {
+                "workspace": {"enabled": True, "root_dir": ".agent_control/workspaces", "web_host": "127.0.0.1", "web_port_start": 8890, "open_browser": True},
+                "vscode": {"enabled": True, "bridge_host": "127.0.0.1", "bridge_port": 8766, "auth_token_env": "VSCODE_BRIDGE_TOKEN"},
+                "adapter_factory": {"root_dir": ".agent_control/adapters"},
+                "computer_use": {"enabled": True, "max_steps": 8, "screenshot_dir": ".agent_control/computer_use/screenshots", "allowed_roots": [], "allowed_apps": []},
+            },
+            "server": {},
+            "storage": {},
+            "limits": {},
+        },
+        "tasks": [],
+        "task_pagination": {"total": 0, "has_more": False},
+        "audit": [],
+        "vscode": {"connected": False, "state": None, "heartbeat": None, "terminal_outputs": []},
+        "access_modes": {},
+        "warnings": [],
+        "database": {"path": "agent_control.db"},
+        "integrations": {"telegram": {"enabled": True, "allowed_user_count": 0}, "llm": {"presets": []}},
+        "admin": {"token_required": False, "config_file": "config/config.yaml"},
+    }
+    if path == "/admin/api/secrets":
+        return {"available": True, "key_env": "AGENT_SECRET_VAULT_KEY", "services": {"openai": ["api_key"]}}
+    if path.startswith("/admin/api/tasks"):
+        return {"tasks": [], "pagination": {"total": 0, "has_more": False}}
+    if path.startswith("/admin/api/audit"):
+        return {"events": []}
+    if path.startswith("/admin/api/config/effective"):
+        return {"config": summary["config"], "access_modes": summary["access_modes"], "warnings": []}
+    return summary
+
+
+admin_streamlit._api_json = fake_api_json
+admin_streamlit.main()
+''',
+        encoding="utf-8",
+    )
+
+    app = AppTest.from_file(str(app_file))
+    app.run(timeout=10)
+
+    assert not app.exception
+    assert any("Secret Vault" in item.value for item in app.markdown)
+    # Existing secret listed with no value anywhere in the rendered page.
+    assert any("openai.api_key" in item.value for item in app.markdown)
+    for item in app.markdown:
+        assert "sk-" not in item.value
+
+
+def test_streamlit_admin_secret_vault_shows_setup_hint_when_unavailable(tmp_path: Path) -> None:
+    app_file = tmp_path / "streamlit_secrets_unavailable_smoke.py"
+    app_file.write_text(
+        '''
+from agent_control import admin_streamlit
+
+
+def fake_api_json(backend_url, path, token, method="GET", payload=None):
+    summary = {
+        "config": {
+            "identity": {"instance_name": "test-agent"},
+            "channels": {"telegram": {"enabled": True, "token_env": "TELEGRAM_BOT_TOKEN", "allowed_user_ids": [], "allowed_chat_ids": [], "polling": True}},
+            "llm": {"default_profile": "local", "profiles": {"local": {"provider": "openai_compatible", "model": "gemma", "timeout_seconds": 180, "max_tokens": 1024, "temperature": 0.2}}},
+            "adapters": {
+                "workspace": {"enabled": True, "root_dir": ".agent_control/workspaces", "web_host": "127.0.0.1", "web_port_start": 8890, "open_browser": True},
+                "vscode": {"enabled": True, "bridge_host": "127.0.0.1", "bridge_port": 8766, "auth_token_env": "VSCODE_BRIDGE_TOKEN"},
+                "adapter_factory": {"root_dir": ".agent_control/adapters"},
+                "computer_use": {"enabled": True, "max_steps": 8, "screenshot_dir": ".agent_control/computer_use/screenshots", "allowed_roots": [], "allowed_apps": []},
+            },
+            "server": {},
+            "storage": {},
+            "limits": {},
+        },
+        "tasks": [],
+        "task_pagination": {"total": 0, "has_more": False},
+        "audit": [],
+        "vscode": {"connected": False, "state": None, "heartbeat": None, "terminal_outputs": []},
+        "access_modes": {},
+        "warnings": [],
+        "database": {"path": "agent_control.db"},
+        "integrations": {"telegram": {"enabled": True, "allowed_user_count": 0}, "llm": {"presets": []}},
+        "admin": {"token_required": False, "config_file": "config/config.yaml"},
+    }
+    if path == "/admin/api/secrets":
+        return {"available": False, "key_env": "AGENT_SECRET_VAULT_KEY", "services": {}}
+    if path.startswith("/admin/api/tasks"):
+        return {"tasks": [], "pagination": {"total": 0, "has_more": False}}
+    if path.startswith("/admin/api/audit"):
+        return {"events": []}
+    if path.startswith("/admin/api/config/effective"):
+        return {"config": summary["config"], "access_modes": summary["access_modes"], "warnings": []}
+    return summary
+
+
+admin_streamlit._api_json = fake_api_json
+admin_streamlit.main()
+''',
+        encoding="utf-8",
+    )
+
+    app = AppTest.from_file(str(app_file))
+    app.run(timeout=10)
+
+    assert not app.exception
+    assert any("ybm setup" in item.value for item in app.warning)

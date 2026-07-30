@@ -127,7 +127,17 @@ def _check_ports() -> list[Check]:
     return checks
 
 
-def _http_ok(url: str, timeout: float = 2.0) -> bool:
+def _http_ok(url: str, timeout: float = 6.0) -> bool:
+    """Liveness probe for the doctor checks.
+
+    Was 2.0s, which is under how long a real reply takes: LocalDeploy's
+    /health enumerates Ollama's installed models before responding and
+    measured ~2.06s on this machine. Doctor therefore reported "LocalDeploy
+    not reachable ... fallback profile 'openai_saved' will be used" in the
+    same run where it reported port 8000 listening - telling the user their
+    local model was down and a paid API would be billed instead, when
+    neither was true.
+    """
     try:
         with urlopen(url, timeout=timeout) as resp:  # noqa: S310 - local health check only
             return 200 <= resp.status < 300

@@ -7,9 +7,9 @@ from uuid import uuid4
 import wave
 
 from agent_control.config import TTSAdapterConfig
-from agent_control.schemas import Capability, ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.schemas import Capability, ToolCallRequest, ToolCallResult, ToolResultStatus
 from agent_control.tools.contracts import TTSSynthesizeInput, TTSSynthesizeOutput
-from agent_control.tools.spec import Adapters, Definitions, RegistryDeps, ToolDefinition, capability_enabled
+from agent_control.tools.spec import Adapters, Definitions, RegistryDeps, ToolDefinition, capability_enabled, failed_result
 
 
 class TTSAdapter(Protocol):
@@ -25,7 +25,7 @@ class DisabledTTSAdapter:
         raise RuntimeError("TTS adapter is disabled")
 
     async def execute(self, request: ToolCallRequest) -> ToolCallResult:
-        return _failed(request, "TTS adapter is disabled")
+        return failed_result(request, "TTS adapter is disabled")
 
 
 class KokoroOnnxTTSAdapter:
@@ -41,7 +41,7 @@ class KokoroOnnxTTSAdapter:
                 output_name=request.input.get("output_name"),
             )
         except Exception as exc:
-            return _failed(request, str(exc))
+            return failed_result(request, str(exc))
         output["operation"] = "synthesize"
         output["terminal_output"] = [
             {
@@ -136,13 +136,6 @@ def _safe_wav_name(value: str) -> str:
     return "".join(char if char.isalnum() or char in {"-", "_", "."} else "_" for char in name)
 
 
-def _failed(request: ToolCallRequest, message: str) -> ToolCallResult:
-    return ToolCallResult(
-        request_id=request.id,
-        status=ToolResultStatus.FAILED,
-        error_class=ErrorClass.ADAPTER_FAILED,
-        error_message=message,
-    )
 
 
 def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -> None:

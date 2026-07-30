@@ -268,15 +268,26 @@ def _should_retry_structured_without_response_format(exc: ValueError) -> bool:
     return "HTTP 400" in message or "response_format" in message or "json_schema" in message
 
 
+def strip_code_fences(text: str) -> str:
+    """Drop a leading/trailing ``` fence from an LLM response.
+
+    Models wrap structured output in markdown fences constantly, regardless of
+    instructions. Both the JSON parser here and the generated-code cleaner in
+    `tools/code_interpreter.py` need this and had identical copies.
+    """
+    text = str(text).strip()
+    if not text.startswith("```"):
+        return text
+    lines = text.splitlines()
+    if lines and lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
 def _loads_json_object(content: str) -> dict:
-    text = content.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
+    text = strip_code_fences(content)
     # Tier 1: strict json
     try:
         payload = json.loads(text)

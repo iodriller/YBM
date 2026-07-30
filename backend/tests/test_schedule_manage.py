@@ -17,15 +17,10 @@ from agent_control.schemas import (
     ToolResultStatus,
     utc_now,
 )
-from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.tools.registry import build_tool_registry
 from agent_control.tools.schedule_manage import ScheduleManageAdapter
+from helpers import make_repos
 
-def _repos(tmp_path) -> tuple[Repositories, AuditLogger]:
-    database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
-    database.initialize()
-    repos = Repositories.for_database(database)
-    return repos, AuditLogger(repos.audit)
 
 def _settings(tmp_path, *, terminal: bool = False) -> AppSettings:
     capabilities = {
@@ -57,7 +52,7 @@ def test_objective_from_schedule_text_removes_scheduling_wrapper() -> None:
 
 @pytest.mark.asyncio
 async def test_schedule_manage_creates_lists_pauses_resumes_and_runs_now(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("set up scheduled job every day to check example.com", metadata={"source_chat_id": "100"})
     adapter = ScheduleManageAdapter(repos, audit)
 
@@ -119,7 +114,7 @@ async def test_schedule_manage_creates_lists_pauses_resumes_and_runs_now(tmp_pat
 
 @pytest.mark.asyncio
 async def test_due_schedule_creates_task_and_advances_next_run(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     due = utc_now() - timedelta(minutes=1)
     schedule = repos.schedules.create(
         ScheduleRecord(
@@ -140,7 +135,7 @@ async def test_due_schedule_creates_task_and_advances_next_run(tmp_path) -> None
 
 @pytest.mark.asyncio
 async def test_schedule_tracks_consecutive_failures_but_keeps_running_below_threshold(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     due = utc_now() - timedelta(minutes=1)
     schedule = repos.schedules.create(
         ScheduleRecord(
@@ -163,7 +158,7 @@ async def test_schedule_tracks_consecutive_failures_but_keeps_running_below_thre
 
 @pytest.mark.asyncio
 async def test_schedule_auto_pauses_after_reaching_consecutive_failure_threshold(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     due = utc_now() - timedelta(minutes=1)
     schedule = repos.schedules.create(
         ScheduleRecord(
@@ -192,7 +187,7 @@ async def test_schedule_auto_pauses_after_reaching_consecutive_failure_threshold
 
 @pytest.mark.asyncio
 async def test_schedule_failure_streak_resets_after_a_successful_run(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     due = utc_now() - timedelta(minutes=1)
     schedule = repos.schedules.create(
         ScheduleRecord(
@@ -216,7 +211,7 @@ async def test_schedule_failure_streak_resets_after_a_successful_run(tmp_path) -
 
 def test_schedule_manage_is_registered_under_schedule_capability(tmp_path) -> None:
     settings = _settings(tmp_path)
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     registry = build_tool_registry(settings, "http://127.0.0.1:8765", repositories=repos, audit_logger=audit)
     definition = next(item for item in registry.definitions if item.name == "schedule.manage")
 

@@ -26,8 +26,8 @@ from agent_control.schemas import (
     ToolCallResult,
     ToolResultStatus,
 )
-from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.tools.registry import ToolDefinition
+from helpers import make_repos
 
 
 class RateLimitedAdapter:
@@ -82,11 +82,6 @@ class BackgroundSessionAdapter:
         )
 
 
-def _repos(tmp_path) -> tuple[Repositories, AuditLogger]:
-    database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
-    database.initialize()
-    repos = Repositories.for_database(database)
-    return repos, AuditLogger(repos.audit)
 
 
 class QueueOperator:
@@ -152,7 +147,7 @@ def _executor_with_adapter(settings, audit, repos, adapter, *, tool_name="llm") 
 
 @pytest.mark.asyncio
 async def test_operator_loop_calls_tool_then_completes(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("Answer a question")
     settings = _settings()
     executor = _executor(settings, audit, repos, output={"answer": "42"})
@@ -176,7 +171,7 @@ async def test_operator_loop_calls_tool_then_completes(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_operator_loop_done_on_first_step_needs_no_tool(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("trivial question")
     settings = _settings()
     executor = _executor(settings, audit, repos)
@@ -191,7 +186,7 @@ async def test_operator_loop_done_on_first_step_needs_no_tool(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_operator_loop_ask_user_transitions_to_clarifying(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("ambiguous request")
     settings = _settings()
     executor = _executor(settings, audit, repos)
@@ -206,7 +201,7 @@ async def test_operator_loop_ask_user_transitions_to_clarifying(tmp_path) -> Non
 
 @pytest.mark.asyncio
 async def test_operator_loop_blocked_action_transitions_to_blocked(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("impossible request")
     settings = _settings()
     executor = _executor(settings, audit, repos)
@@ -220,7 +215,7 @@ async def test_operator_loop_blocked_action_transitions_to_blocked(tmp_path) -> 
 
 @pytest.mark.asyncio
 async def test_operator_loop_exhausts_step_budget(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("endless task")
     settings = _settings()
     executor = _executor(settings, audit, repos)
@@ -255,7 +250,7 @@ async def test_gap_check_entries_do_not_consume_the_tool_call_budget(tmp_path) -
     operator_max_steps meant every gap stole a slot from the tool calls the
     model needs to close that gap, and a task could exhaust its whole budget
     having called zero tools."""
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("summarize the report")
     settings = _settings()
     executor = _executor(settings, audit, repos, tool_name="filesystem.manage", output={"text": "content"})
@@ -309,7 +304,7 @@ async def test_auditor_receives_full_output_not_the_truncated_history_summary(tm
     2000-char display summary. The Auditor judges count/section sufficiency,
     so handing it a truncation produces false INSUFFICIENT verdicts on exactly
     the long-content objectives it exists for."""
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("list every line")
     settings = _settings()
     long_text = "EPISODE-LINE " * 900  # ~11.7k chars, well past the 2000 summary cut
@@ -344,7 +339,7 @@ async def test_multi_step_task_sends_a_progress_notification_per_step(tmp_path) 
     fields with zero writers since P3. That collapsed the key to the constant
     "running", so a 30-step task sent one "working on it" and then went
     silent."""
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     repos.tasks.create("do three things", metadata={"source_chat_id": "100"})
     settings = _settings()
     executor = _executor(settings, audit, repos, output={"text": "ok"})
@@ -375,7 +370,7 @@ async def test_multi_step_task_sends_a_progress_notification_per_step(tmp_path) 
 
 @pytest.mark.asyncio
 async def test_operator_loop_unregistered_tool_does_not_crash(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("uses a nonexistent tool")
     settings = _settings()
     executor = _executor(settings, audit, repos)
@@ -401,7 +396,7 @@ def _approval_settings() -> AppSettings:
 
 @pytest.mark.asyncio
 async def test_operator_loop_needs_approval_creates_request_and_awaits(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("needs approval")
     executor = _executor(_approval_settings(), audit, repos, output={"answer": "42"})
     operator = QueueOperator([
@@ -423,7 +418,7 @@ async def test_operator_loop_needs_approval_creates_request_and_awaits(tmp_path)
 
 @pytest.mark.asyncio
 async def test_operator_loop_awaiting_approval_stays_put_while_pending(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("needs approval")
     executor = _executor(_approval_settings(), audit, repos, output={"answer": "42"})
     operator = QueueOperator([
@@ -441,7 +436,7 @@ async def test_operator_loop_awaiting_approval_stays_put_while_pending(tmp_path)
 
 @pytest.mark.asyncio
 async def test_operator_loop_resumes_and_executes_after_approval_granted(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("needs approval")
     executor = _executor(_approval_settings(), audit, repos, output={"answer": "42"})
     operator = QueueOperator([
@@ -470,7 +465,7 @@ async def test_operator_loop_resumes_and_executes_after_approval_granted(tmp_pat
 
 @pytest.mark.asyncio
 async def test_operator_loop_blocked_when_approval_rejected(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("needs approval")
     executor = _executor(_approval_settings(), audit, repos)
     operator = QueueOperator([
@@ -489,7 +484,7 @@ async def test_operator_loop_blocked_when_approval_rejected(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_operator_loop_done_with_fulfillment_gap_continues_instead_of_completing(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("create a script that prints hello")
     settings = _settings()
     executor = _executor(settings, audit, repos)
@@ -508,7 +503,7 @@ async def test_operator_loop_done_with_fulfillment_gap_continues_instead_of_comp
 
 @pytest.mark.asyncio
 async def test_operator_loop_fulfillment_gap_resolves_once_postcondition_met(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("create a script that prints hello")
     settings = _settings()
     executor = _executor(settings, audit, repos, output={"workspace_dir": "/tmp/ws"})
@@ -528,7 +523,7 @@ async def test_operator_loop_fulfillment_gap_resolves_once_postcondition_met(tmp
 
 @pytest.mark.asyncio
 async def test_operator_loop_fulfillment_gap_exhausts_and_completes_with_gap_flagged(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("create a script that prints hello")
     settings = _settings()
     executor = _executor(settings, audit, repos)
@@ -550,7 +545,7 @@ async def test_operator_loop_fulfillment_gap_exhausts_and_completes_with_gap_fla
 
 @pytest.mark.asyncio
 async def test_operator_loop_audit_replaces_final_answer_with_grounded_synthesis(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("what is the invoice total?")
     settings = _settings()
     executor = _executor(settings, audit, repos, tool_name="filesystem.manage", output={"text": "Invoice #4471 - $250.00"})
@@ -572,7 +567,7 @@ async def test_operator_loop_audit_replaces_final_answer_with_grounded_synthesis
 
 @pytest.mark.asyncio
 async def test_operator_loop_audit_gap_continues_loop_instead_of_completing(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("list the first 5 episodes")
     settings = _settings()
     executor = _executor(settings, audit, repos, tool_name="filesystem.manage", output={"text": "1. Pilot\n2. Second"})
@@ -595,7 +590,7 @@ async def test_operator_loop_audit_gap_continues_loop_instead_of_completing(tmp_
 
 @pytest.mark.asyncio
 async def test_operator_loop_audit_gap_exhausts_and_completes_with_operator_answer(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("list the first 5 episodes")
     settings = _settings()
     executor = _executor(settings, audit, repos, tool_name="filesystem.manage", output={"text": "1. Pilot"})
@@ -628,7 +623,7 @@ async def test_operator_loop_audit_gap_exhausts_and_completes_with_operator_answ
 
 @pytest.mark.asyncio
 async def test_operator_loop_skips_audit_when_no_content_tool_was_called(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("trivial question")
     settings = _settings()
     executor = _executor(settings, audit, repos)
@@ -645,7 +640,7 @@ async def test_operator_loop_skips_audit_when_no_content_tool_was_called(tmp_pat
 
 @pytest.mark.asyncio
 async def test_operator_loop_rate_limited_result_backs_off_instead_of_hot_looping(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("rate limited task")
     settings = _settings()
     executor = _executor_with_adapter(settings, audit, repos, RateLimitedAdapter())
@@ -667,7 +662,7 @@ async def test_operator_loop_rate_limited_result_backs_off_instead_of_hot_loopin
 
 @pytest.mark.asyncio
 async def test_operator_loop_retrying_stays_put_before_backoff_elapses(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("rate limited task")
     settings = _settings()
     executor = _executor_with_adapter(settings, audit, repos, RateLimitedAdapter())
@@ -688,7 +683,7 @@ async def test_operator_loop_retrying_stays_put_before_backoff_elapses(tmp_path)
 
 @pytest.mark.asyncio
 async def test_operator_loop_retrying_resumes_and_retries_after_backoff_elapses(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("rate limited task")
     settings = _settings()
     executor = _executor_with_adapter(settings, audit, repos, FailsOnceThenSucceedsAdapter(output={"answer": "ok"}))
@@ -720,7 +715,7 @@ async def test_operator_loop_retrying_resumes_and_retries_after_backoff_elapses(
 
 @pytest.mark.asyncio
 async def test_operator_loop_usage_limited_asks_user_instead_of_retrying(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("usage limited task")
     settings = _settings()
     executor = _executor_with_adapter(settings, audit, repos, UsageLimitedAdapter())
@@ -741,7 +736,7 @@ async def test_operator_loop_usage_limited_asks_user_instead_of_retrying(tmp_pat
 
 @pytest.mark.asyncio
 async def test_operator_loop_background_session_awaits_external_completion(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("kick off a coding session")
     settings = _settings()
     executor = _executor_with_adapter(settings, audit, repos, BackgroundSessionAdapter(), tool_name="coding.agent")
@@ -760,7 +755,7 @@ async def test_operator_loop_background_session_awaits_external_completion(tmp_p
 
 @pytest.mark.asyncio
 async def test_operator_loop_awaiting_external_is_a_no_op_tick_until_callback_resolves(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("kick off a coding session")
     settings = _settings()
     executor = _executor_with_adapter(settings, audit, repos, BackgroundSessionAdapter(), tool_name="coding.agent")
@@ -782,7 +777,7 @@ async def test_operator_loop_resumes_after_external_completion_callback(tmp_path
     pending_tool_result and flips AWAITING_EXTERNAL back to RUNNING - that
     callback only checks task.status, so it works unchanged for an
     operator-loop task."""
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("kick off a coding session")
     settings = _settings()
     executor = _executor_with_adapter(settings, audit, repos, BackgroundSessionAdapter(), tool_name="coding.agent")
@@ -823,7 +818,7 @@ async def test_worker_without_operator_or_executor_blocks_instead_of_crashing(tm
     """A misconfigured worker (no LLM provider available to build an operator
     from, e.g.) fails safely and explicitly rather than raising or silently
     doing nothing."""
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("plain task, nothing configured")
     worker = TaskWorker(repos, audit)
 

@@ -17,13 +17,29 @@ file is "why it's built this way."**
 **The goal this repo exists to serve:** *I talk to my local computer, and agents on my local
 computer do whatever I ask.* Every decision below is judged against that sentence.
 
-**Status (2026-07-28, end of day):** P0–P3 and P6 done; P4/P5 partially done. N1–N5 done. N6
-(4-page console restructure) not started. A further cleanup pass the same day removed the
-plan-era code §1.1 had only flagged as dead (now physically deleted, not just unreachable),
-trimmed 3 duplicate admin API routes, cut the live E2E suite from 72 to 11 cases, cut
-`config/config.yaml` from 317 to 144 lines (verified redundant-with-default keys only), fixed
-a real bug in `ybm clean`'s flag handling, and confirmed the fallback chat responder is live
-code, not dead weight — see the closing note at the end of Part 2.
+**Status (2026-07-29):** P0–P3 and P6 done; P4/P5 partially done. **N1–N5 done, including
+N3's re-recording pass — the scenario tier is 33/33 green with zero skips, up from 2/18.**
+N6 (4-page console restructure) is the only unstarted item.
+
+A cleanup pass on 2026-07-28 removed the plan-era code §1.1 had only flagged as dead (now
+physically deleted), trimmed 3 duplicate admin API routes, cut the live E2E suite from 72 to
+11 cases, cut `config/config.yaml` from 317 to 144 lines (verified redundant-with-default
+keys only), fixed a real bug in `ybm clean`'s flag handling, and confirmed the fallback chat
+responder is live code, not dead weight — see the closing note at the end of Part 2.
+
+A follow-up pass on 2026-07-29 recorded the remaining scenario fixtures and, in doing so,
+found and fixed **five real product bugs** the deterministic tier had been too dark to catch:
+the code interpreter's per-call workspace isolation (item 7), generated code hardcoding
+absolute paths in a way that breaks the Docker sandbox (item 9), the MCP catalog's misleading
+dotted `server.tool` format (item 8), an MCP subprocess leak on handshake failure (item 12),
+and a marginal MCP timeout masquerading as a random anyio error (item 13). Items 6 and 11 in
+§4 also record a **correction to an earlier claim of mine** that turned out not to be a bug.
+
+A final pass the same day ran an AST-normalised duplicate detector over the whole repo and
+collapsed **seven groups of duplicated code** into one definition each - including `_failed()`,
+which had 13 byte-identical copies, one per tool adapter (item 16). It also fixed a
+misleading `ybm doctor` result (item 15) and removed the last orphaned prompt files (item 14).
+**Part 3 below is the prioritised way forward** from here.
 
 ---
 
@@ -403,8 +419,124 @@ pydantic-settings replaces rather than merges explicit YAML lists.
    `AGENT_SECRET_VAULT_KEY` is unset (doctor warns). **Still open.**
 5. ~~No retention for audit_events/tool_invocations.~~ **Fixed by N5** — orphaned
    (`task_id IS NULL`) audit events now covered by `db_clean`.
-6. **Auditor never runs on the delivery path.** `artifact.deliver` is not in `CONTENT_TOOLS`,
-   so a task whose last step is "send the file" is never audited. **Still open.**
+6. ~~Auditor never runs on the delivery path.~~ **Not a real gap - earlier claim was wrong.**
+   `artifact.deliver` is indeed absent from `CONTENT_TOOLS`, but
+   `_last_content_tool_history_entry()` scans history *backwards past* non-content tools, so
+   a search-then-deliver task audits the search results, which is the correct thing to ground
+   an answer in. Adding `artifact.deliver` would make the Auditor try to extract an answer
+   from a delivery receipt (`{delivered: true, path: ...}`) - meaningless at best. The real
+   (narrower, harder) gap is that nothing verifies the *delivered file's content* against the
+   objective; see item 11.
+7. ~~`code.interpreter` can't chain multi-step file work within one task.~~ **Fixed
+   2026-07-29.** `_workspace()` appended `uuid4().hex[:8]`, giving every call its own fresh
+   directory. Task ids are already unique, so that suffix only ever separated calls *within*
+   one task - exactly what must be shared. Step 2 landed in an empty directory and could never
+   see step 1's file; `inspect_state` always reported zero files. Reproduced on three
+   independent live recording attempts. Fixed by making the workspace stable per task
+   (`root / f"task_{task_id}"`), with three regression tests in `test_code_interpreter.py`
+   (verified failing against the old code, passing against the new) and the
+   `code_interpreter_csv_summary` scenario now green end to end - two real calls, one shared
+   workspace, second call reading back the first's file.
+8. ~~`mcp.client`'s tool catalog format misleads the model into malformed `call_tool` input.~~
+   **Fixed 2026-07-29.** `mcp_catalog_summary()` printed each tool as a single dotted string
+   (`"- fake.echo: Echo text; ..."`) while `MCPClientInput` requires `server` and `tool` as
+   separate fields; the model copied the dotted string wholesale into one field, reproducibly,
+   across two independent recording attempts with zero self-correction (`server="fake.echo"`
+   one run, `tool="fake.echo"` with `server` missing the next). Fixed by labelling the fields
+   the way the schema names them (`- server="fake" tool="echo" - Echo text; ...`) plus a
+   header line and a realistic worked example. Re-recording immediately produced the correct
+   split input, first try; `mcp_call_fake_echo` now asserts the split explicitly as a
+   regression guard.
+9. **Generated code must never hardcode the workspace's absolute path.** Found 2026-07-29
+   after fixing item 7, when a recorded fixture still failed on replay: the generated script
+   had baked in the *recording run's* absolute workspace path, which no longer exists on a
+   later run. The more serious consequence is not the fixture - it is that the Docker backend
+   bind-mounts the workspace at a **different path inside the container**
+   (`workspace_mount_target`, default `/workspace`), so any script carrying an absolute host
+   path fails outright under the sandbox backend, the one that is supposed to be the secure
+   default. Both backends already run the script with the workspace as cwd, so relative paths
+   are always correct and portable. **Fixed** by rewriting
+   `prompts/base/code_interpreter_system.md` and `prompts/tasks/code_interpreter_user.md` to
+   demand relative paths and label the shown path reference-only, with a regression test
+   asserting the instruction survives in the prompt actually sent.
+10. **Three dead metadata reads in failure messaging.** `intervention_summary`,
+    `planning_error`, and `last_replan_reason` were read in `telegram_notifications.py` with
+    zero writers anywhere - plan-era keys that could only ever contribute `None` to an `or`
+    chain. **Fixed** (removed), along with `_last_command_id()`/`_last_usage()`, two helpers
+    orphaned when the dead message formatters were deleted. Found by a systematic
+    read-vs-write sweep across all metadata keys, which also confirmed `computer_use_actions`
+    (written via `worker.py`'s dynamic copy map) and `task_budget_seconds` (a documented
+    per-task override) are **not** dead despite looking that way to a naive grep.
+11. **Content correctness of generated files is still unverified.** Nothing checks that a
+    script the code interpreter wrote actually did what the objective asked - only that it
+    ran and produced files. `generate_and_run` regenerates on `SyntaxError`/`ValueError`, not
+    on "valid Python that computes the wrong thing", and a delivery-ending task has no
+    Auditor pass over the delivered file's contents. **Still open**; this is the honest
+    residue of what item 6 was gesturing at.
+12. **A failed MCP handshake stranded the server subprocess.** Found 2026-07-29 while
+    diagnosing item 13. `_session.__aenter__` entered `stdio_client` (spawning the
+    subprocess), then called `initialize()`; when initialize raised, the exception propagated
+    out of `__aenter__`, so the caller's `async with` never ran `__aexit__` and the
+    already-entered stdio context was never closed. The orphaned async generator was
+    eventually finalized by the event loop at shutdown - in a different task than had entered
+    it - surfacing as a confusing `RuntimeError: Attempted to exit cancel scope in a different
+    task`. **Fixed** by rebuilding `_session` on `AsyncExitStack`, which unwinds whatever was
+    entered, in reverse order, in the same task, on both the failure and normal paths.
+    Regression test asserts both layers close when `initialize()` raises.
+13. **The MCP scenario tests' 10s handshake timeout was marginal, not generous.** Timed
+    directly: the Python-subprocess spawn plus MCP `initialize()` round trip takes **11.5s**
+    on this machine with LocalDeploy/Ollama also running (10s -> fails at 10.3s; 30s ->
+    succeeds at 11.5s). It presented as an opaque `anyio.WouldBlock`/`CancelledError` rather
+    than a clear timeout, and had been intermittently passing purely on machine load.
+    **Fixed** by a single shared `MCP_HANDSHAKE_TIMEOUT_SECONDS = 30` in the scenario harness,
+    with the measurement recorded next to it so the number isn't re-guessed later.
+14. **Four orphaned prompt files.** `tools/copilot_development.md`, `tools/copilot_web_app.md`,
+    `tools/adapter_factory_copilot.md`, `tasks/computer_use_validation.md` (47 lines) were
+    referenced by nothing - their only consumer was `default_plans.py`, deleted in P3.
+    `ARCHITECTURE.md` still listed two of them as live tool prompts. **Fixed** (deleted, doc
+    corrected). Found by diffing prompt files on disk against prompt paths referenced in
+    source.
+15. **`ybm doctor` reported LocalDeploy unreachable while it was running.** `_http_ok()`'s
+    liveness probe used a 2.0s timeout, but LocalDeploy's `/health` enumerates Ollama's
+    installed models before replying and measured ~2.06s here. Doctor printed
+    "LocalDeploy not reachable ... fallback profile 'openai_saved' will be used" in the same
+    run that printed "Port 8000 (LocalDeploy) listening" - actively misleading, since it tells
+    the user their free local model is down and a **paid** API is about to be billed when
+    neither is true. **Fixed** (6.0s, with the measurement recorded at the call site); doctor
+    now reports 23 ok / 4 warnings instead of 22 / 5.
+16. **Seven groups of duplicated code, found by AST-normalised structural comparison** (names
+    and literals stripped, so renamed copies still collide) rather than by reading. All
+    **fixed 2026-07-29** by extracting one definition each; the win is single-source-of-truth,
+    not line count - a change to any of these previously meant editing N files or, far more
+    likely, editing one and silently diverging the rest:
+    - `_failed()` - **13 byte-identical copies**, one in every tool adapter. Now
+      `tools/spec.py:failed_result()`, which every adapter already imports. This is the
+      adapter failure *contract*; having 13 copies meant a new field or a different
+      `ErrorClass` could be applied inconsistently across tools without any test noticing.
+    - `_repos(tmp_path)` - 8 identical copies across test files. Now
+      `tests/helpers.py:make_repos()`. This was flagged in the original audit (§2.5) and had
+      been open since.
+    - `_settings(...)` - 4 identical copies in scenario tests → `harness.filesystem_settings()`.
+    - `_mcp_settings(...)` - 2 copies → `harness.mcp_settings()`.
+    - `_task_chat_id()` - 2 copies in **src** (`channels/` and `tools/`, with no import
+      direction between them that would let one reuse the other) → `schemas.task_chat_id()`,
+      which is where it belongs since it is pure logic over `TaskRecord`'s own fields.
+    - `_backend_base_url()` - 2 copies in **src** → `config.backend_base_url()`.
+    - Markdown code-fence stripping - 2 copies in **src** (`llm/providers.py`,
+      `tools/code_interpreter.py`) → `providers.strip_code_fences()`.
+
+    A re-run of the same detector afterwards reports **1 remaining group**, and that one is a
+    false positive: two deliberately-different fake LLM providers in `test_code_interpreter.py`
+    that return different canned scripts but have the same shape.
+17. **The MCP stdio tests were genuinely flaky under CPU contention, not just marginally
+    timed.** Found 2026-07-29 running the full suite while LocalDeploy/Ollama were still up
+    from the W1 fixture re-recording pass: `test_mcp_client.py` failed 2 of 4 consecutive
+    full-suite runs at the 30s handshake timeout (item 13's fix), passed every time in
+    isolation or after LocalDeploy was stopped. Not a code bug - closed by stopping the
+    now-unneeded LocalDeploy process, confirmed with 3 consecutive clean full-suite runs
+    afterward. Worth remembering operationally: **don't leave LocalDeploy running during a
+    full test-suite pass** once a live-recording batch is done; nothing in the suite needs it
+    once fixtures are committed.
 
 ## 5. The plan — N1 through N6
 
@@ -420,13 +552,55 @@ plan-rendering functions deleted); `ybm trace <task_id> [--json]`.
 
 See Part 2 §3. Each got a regression test.
 
-### N3 — Restore the fast test loop *(tooling done, 2026-07-28; re-recording not done)*
+### N3 — Restore the fast test loop *(done, 2026-07-29 — all 16 fixtures recorded, 33/33 green)*
 
 `ybm scenario record <name> [--profile <name>]` resolves a fixture name to its test file(s),
 flips their skip marker, and runs them through pytest with a live provider built from this
-machine's real config. Verified mechanically (name resolution, error paths, profile lookup)
-**without spending on a live LLM call**, per the standing decision not to incur real API cost
-without a user check-in. Actually re-recording the 16 skipped fixtures is not done.
+machine's real config. Built and verified mechanically first (name resolution, error paths,
+profile lookup) without spending on a live call, per the standing decision not to incur real
+API cost without a user check-in — that check-in happened 2026-07-29 and the re-recording
+pass ran against `localdeploy_qwen3vl_8b` (free, local — LocalDeploy was started for this
+specifically to avoid the paid `openai_saved` fallback).
+
+**All 15 fixtures needing re-recording now succeed** (the 16th,
+`operator_loop_filesystem_search`, already had a valid one). The scenario tier went from
+**2 of 18 green to 33 of 33 green, with zero skips** - the first time every scenario case
+has passed since the P3 migration.
+
+The last two (`code_interpreter_csv_summary`, `mcp_call_fake_echo`) were initially left
+skipped because each hit a real, reproducible product bug rather than a recording problem.
+Both bugs were then fixed (§4 items 7, 8, 9, 12, 13) and both fixtures re-recorded green.
+Fixing them invalidated other fixtures too - the workspace-path change and the
+relative-path prompt rewrite both alter prompt text, and fixtures are keyed on exact prompt
+text - so all five `code_interpreter_*` fixtures were re-recorded a final time afterwards.
+That cascade is the system working as intended: a prompt or tool-schema change *should*
+fail its fixtures loudly rather than replay stale data.
+
+**Real findings surfaced along the way, not papered over:**
+- `RecordingLLMProvider` had no `.calls` tracking (unlike `ScriptedLLMProvider`), breaking any
+  test asserting call count while recording. Fixed - both providers now share the interface.
+- `status_request`'s "zero LLM calls" premise predated the plan-based path's deletion - the
+  Operator loop has no equivalent deterministic shortcut, so it now costs 2 real `decide()`
+  calls. Test updated to assert the real (correct, just not free) behavior; the missing
+  fast-path is a disclosed, not-yet-built optimization.
+- `test_code_interpreter_generate_file.py` had a real pre-existing bug: its own docstring said
+  "no-delivery" but its assertions checked for delivery anyway (copy-paste from the delivery
+  sibling test, never removed). Fixed - the Operator's actual (correct) behavior was right,
+  the assertion was wrong.
+- `test_mcp_discover_tools.py`'s original fulfillment-gap bug (self-declared `adapter_proposal`
+  postcondition a `mcp.client` call could never satisfy) is now structurally gone - the
+  Operator loop has no self-declared `plan.postconditions` left to reach for the wrong type.
+  Test updated from "documents the bug" to "confirms the fix." Its capability-disabled sibling
+  test also had a too-strict assertion (checking the call was never *attempted* instead of
+  correctly *denied*) - fixed to match the pattern used elsewhere for gated tools.
+- Two objectives were genuinely ambiguous English and were rewritten rather than worked
+  around: "echo hello from E2E" (echo `"hello"`, attributed to E2E? or echo the string
+  `"hello from E2E"`?) and the CSV two-step, which under-specified the intermediate file so
+  the model reasonably computed the total inline in one call. In both cases the model's
+  reading was defensible and the instructions were at fault.
+- `test_code_interpreter_csv_summary.py` also carried the same copy-pasted delivery
+  assertion as its sibling, asserting a Telegram send the objective never requested. Removed;
+  `artifact.deliver` is already covered end to end by two other scenario tests.
 
 ### N4 — Delete the dead weight *(done, 2026-07-28)*
 
@@ -442,6 +616,123 @@ green throughout.
 
 The 4-page Streamlit split is worth doing **after** N1/N2 (now done), because before that it
 would have been restructuring a UI that displayed the wrong data.
+
+---
+
+# Part 3 — The way forward
+
+Written 2026-07-29, after N1–N5 closed and the scenario tier reached 33/33. Ordered by value
+per hour, with the reasoning for the order rather than just the list.
+
+**The single most important change in posture:** the deterministic scenario tier is now
+trustworthy. Five real product bugs (§4 items 7, 8, 9, 12, 13) were found *by recording
+fixtures*, not by reading code — three of them invisible to a 464-test unit suite. Anything
+below that would benefit from scenario coverage should get it, because that is now where bugs
+actually surface.
+
+### W1 — Verify generated-file content, not just that files appeared *(done, 2026-07-29)*
+
+§4 item 11. A code-interpreter task used to pass if the script ran and produced files;
+nothing checked the file said what the objective asked for — `_terminal_output()` listed
+file NAMES and stdout only. A script that computed the wrong number, or wrote an empty file,
+sailed through, because nothing downstream ever looked inside the file.
+
+**Fixed** by adding a bounded content preview (`code_interpreter.py`'s
+`_file_content_previews()`: 3 files max, 600 chars each, text-decodable only, `script.py`
+excluded as an implementation detail) to every `run_python`/`generate_and_run` result. It
+flows through the existing pipe with no new mechanism: `_terminal_output()` renders it as
+`Content of <file>:` lines → `worker.py`'s `_tool_output_text()` picks it up from
+`terminal_output` → `last_tool_output_text` → the Auditor's `raw_output` argument. The
+Auditor can now actually check a created file's content against the objective, not just its
+existence.
+
+Verified three ways: unit tests proving the preview is text-only (binaries silently skipped),
+capped, and excludes `script.py`; one unit test that builds a `ToolCallResult` shaped exactly
+like a real code-interpreter output and confirms the content reaches `_tool_output_text()` -
+i.e. reaches the Auditor - with no LLM call needed; and full scenario-tier re-verification
+after the terminal_output text changed shape (see the fixture note below).
+
+**Deliberately not attempted:** the Auditor still doesn't verify *correctness* (that 16 is
+the right sum of 3+5+8, not just that a `total` key is present) - its prompt is a
+presence/count/topic checker, not a calculator. Doing that would mean either teaching the
+Auditor to reason about arithmetic (prompt-risk, hard to keep general) or giving it code
+execution of its own (a materially bigger change). Flagged, not built - the structural
+blindness (content invisible at all) was the dominant risk and is now closed; semantic
+correctness-checking is a separate, larger project.
+
+**Fixture fallout, expected and handled the same way as before:** changing what
+`_terminal_output()` renders changes the Operator's next-step prompt for any task with a
+second step after `code.interpreter`, so 4 fixtures (`code_interpreter_csv_summary`,
+`code_interpreter_generate_file`, `code_interpreter_json_transform`,
+`implicit_code_interpreter_numbers_report`) failed on replay until re-recorded against
+`localdeploy_qwen3vl_8b` - all 4 re-recorded clean, scenario tier back to 33/33.
+
+### W2 — Give the Access page and the secret vault a UI *(done, 2026-07-29)*
+
+§4 item 4. `storage/secrets.py` (Fernet) existed with zero way to populate it short of
+writing Python - no admin route, no UI, `set_secret`'s only caller was a test.
+
+**Fixed**: `SecretVault` gained `list_secrets()` (service → key names, **never values** - the
+one invariant the whole feature depends on) and `delete_secret()`. Three admin routes
+(`GET`/`POST`/`DELETE /admin/api/secrets`) all fail with a clear "run `ybm setup`" message
+when `AGENT_SECRET_VAULT_KEY` is unset rather than a raw vault exception. A "Secret Vault"
+section under Streamlit's Configuration panel lists `service.key` pairs with delete buttons
+and a form to add/replace one (password-masked input); `set`/`delete` are audited by
+service+key, deliberately never by value.
+
+Verified: 6 `SecretVault` unit tests (round-trip, empty-vault, delete-of-missing,
+value-never-in-listing), 4 admin-route tests including one that inspects the actual audit
+event payload to confirm the value never lands there, and 2 Streamlit `AppTest` smoke tests
+(renders the list, shows the setup hint when the key is unset, and asserts no `sk-`-shaped
+string appears anywhere in the rendered page).
+
+**Bug found and fixed along the way, unrelated to secrets:** `_render_kill_switch()`'s
+`already_off = access_modes and all(...)` returned the empty dict itself (not `False`) when
+`access_modes == {}`, and `st.checkbox(disabled=...)` raises `TypeError` on a non-bool -
+crashing the entire admin page for a genuinely reachable state (zero capabilities
+configured). Found because the new Streamlit smoke test used a minimal fixture with an empty
+`access_modes`, unlike every pre-existing fixture in that test file. Fixed with `bool(...)`.
+
+### W3 — Re-baseline the live E2E suite *(not attempted — needs a live sit-down)*
+
+11 cases, untouched since the 72→11 trim; the last real pass rate (49%) predates P3 entirely,
+so it measures a system that no longer exists. Needs a running stack and real Telegram/E2E
+credentials this session doesn't have queued up - a deliberate sit-down with the user, not
+something to do silently in the background. Until then the scenario tier (33/33, seconds to
+run, zero live cost) is the honest signal and is described that way in ARCHITECTURE.md.
+
+### W4 — P4's 4-page console restructure (N6) *(not attempted — large, scoped separately)*
+
+Genuinely unblocked now (the UI shows correct data, W2 added the last missing Configuration
+piece), but it's a multi-page UI redesign, not a bounded bug fix - the kind of larger,
+multi-session effort CLAUDE.md says to scope and propose separately rather than fold into a
+gap-closing pass. Ready to start whenever it's prioritized on its own.
+
+### W5 — A fast path for status requests *(considered, deliberately not built)*
+
+The deleted plan path had an LLM-free shortcut for status-shaped objectives, reached via a
+hardcoded keyword list (`"current status"`, `"what's happening"`, ...) checked *before* the
+LLM ever saw the objective. Rebuilding it would mean reintroducing exactly the brittle,
+keyword-matching, case-by-case routing that this codebase's own redesign deliberately moved
+away from in favor of the Operator loop always deciding via LLM judgment - and unlike the old
+plan-based version (which still went through plan validation), a bare pre-check would
+fully bypass that judgment. A message that merely mentions "status" for something unrelated
+("check on the status of my package delivery") would misroute silently, with nothing to catch
+it. The saved cost is one extra `decide()` call on a rare, cheap request type; the risk is a
+new, permanent, un-reviewed special case in the routing logic. Not a good trade - correctly
+declined, not silently skipped. If this is revisited, it should be an Operator-loop-level
+optimization (e.g. cheaper/faster model tier for single-tool objectives in general), not a
+keyword list for one request type.
+
+### Deliberately NOT on this list
+
+- **More scenario cases for their own sake.** 33 green cases cover every tool category. Add
+  one when it pins down a specific behaviour (W1 needs one); don't pad the count.
+- **Chasing the remaining "duplicate" the detector reports.** It is two intentionally
+  different fake providers (§4 item 16).
+- **Trimming docs further.** README/ARCHITECTURE/HISTORY now have distinct jobs — how to run
+  it, how it works, why it is this way. HISTORY is long because it is a ledger; that is its
+  purpose, and it is not loaded by anything at runtime.
 
 ## 6. What was not verified
 

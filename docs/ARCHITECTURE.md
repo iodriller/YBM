@@ -153,12 +153,15 @@ prompts/
 │   ├── conversation_memory_user.md
 │   ├── structured_retry.md        ← retry template for JSON parse failures
 │   └── ...
-│
-└── tools/                         ← tool-specific prompts (Copilot, adapter factory)
-    ├── copilot_development.md
-    ├── copilot_web_app.md
-    └── ...
 ```
+
+The `tools/` prompt directory still exists, holding the two prompts
+`vscode_bridge.py` uses to re-ask Copilot for a parseable answer
+(`copilot_plain_text_retry.md`, `copilot_file_blocks_retry.md`). Four *other* prompts that
+lived there (`copilot_development.md`, `copilot_web_app.md`, `adapter_factory_copilot.md`,
+and `tasks/computer_use_validation.md`) had `default_plans.py` as their only consumer; it was
+deleted in P3 and they were left behind referenced by nothing, until a zero-reference sweep
+on 2026-07-29 removed them.
 
 ## Gap-Handling Budgets
 
@@ -209,8 +212,7 @@ the Operator inventing an unregistered tool name. Generated adapters are cache a
 under `.agent_control/adapters` only — never imported or executed until reviewed, tested,
 and registered. Promotion is a manual step: review the proposal, add tests, move it into
 `backend/src/agent_control/tools/`, and register it via that module's own `register()`
-function (see `tools/spec.py`). If VS Code/Copilot is enabled, the default adapter plan can
-ask Copilot to refine the proposal in place first.
+function (see `tools/spec.py`).
 
 ## Telegram Gateway Behavior
 
@@ -341,20 +343,29 @@ HISTORY.md §6 and HISTORY.md P3 item 1's disclosed regression on the other 16 c
 
 ## Known Gaps
 
-What's actually still open, as of 2026-07-28 (everything else this document could plausibly
+What's actually still open, as of 2026-07-29 (everything else this document could plausibly
 be missing has already been closed — see [HISTORY.md](HISTORY.md) for the full evidence
 trail and how each item was fixed):
 
-- **Secret vault has no UI.** `storage/secrets.py` (Fernet) exists; nothing in Streamlit or
-  the admin API exposes it. `AGENT_SECRET_VAULT_KEY` is unset by default (`ybm doctor` warns).
-- **The Auditor never runs on the delivery path.** `artifact.deliver` is not in
-  `AuditorService.CONTENT_TOOLS`, so a task whose last real step is "send the file" is never
-  grounded against what was actually asked for.
-- **16 of 18 scenario test fixtures need re-recording** against the Operator loop's prompt
-  (`ybm scenario record <name>` exists and is verified; the actual re-recording needs a live
-  LLM call per case and is gated on a cost check-in, not yet done).
+- **The Auditor checks presence, not correctness, of generated content.** A code-interpreter
+  file's content now reaches the Auditor (fixed — see HISTORY.md Part 3 W1), so an empty file
+  or a missing expected field is caught. Whether a computed number is *right* — 16 instead of
+  the correct 42 — is not checked; that would need either arithmetic reasoning in the Auditor
+  prompt or giving it code execution, both materially bigger changes than closing the
+  structural blindness was.
 - **The live E2E suite (11 cases) hasn't been re-run** since being trimmed from 72; the last
-  real pass-rate measurement (49%) predates P3 entirely.
+  real pass-rate measurement (49%) predates P3 entirely. The deterministic scenario tier is
+  the trustworthy signal in the meantime: **33/33 green, zero skips**, runs in seconds, no
+  live LLM cost.
 - **The 4-page Streamlit console restructure is not started** (*Now* / *Tasks* / *Access* /
-  *Settings*) — deliberately sequenced after observability and safety-gap work landed, so it
-  wouldn't restructure a UI that was showing wrong data.
+  *Settings*) — genuinely unblocked now (the UI shows correct data, secret vault UI landed),
+  but it's a multi-page redesign, scoped as its own effort rather than folded into a gap pass.
+- **Status requests cost two LLM calls.** The deleted plan path had an LLM-free shortcut for
+  status-shaped objectives via hardcoded keyword matching; rebuilding that was considered and
+  declined — it would reintroduce exactly the brittle, silently-misroutable pattern the
+  Operator loop redesign moved away from, to save one cheap call on a rare request type. See
+  HISTORY.md Part 3 W5 for the full reasoning.
+
+Secret vault UI and generated-content grounding (the two items this list used to carry as
+open) were closed 2026-07-29 — see [HISTORY.md](HISTORY.md)'s **Part 3 — The way forward**
+for what changed, what was verified, and what was deliberately left out of scope.

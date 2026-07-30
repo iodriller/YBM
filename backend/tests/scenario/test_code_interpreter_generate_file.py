@@ -1,31 +1,28 @@
 """Scenario: "use the code interpreter to create a report file" through the
-real LLM planner -> a single code.interpreter generate_and_run call -> real
-local Python execution -> validator -> synthesizer. Ports
-e2e/all_cases.json's `code_interpreter_generate_file` case down to the
-deterministic tier (docs/HISTORY.md P2) - the single-step, no-delivery
-counterpart to test_code_interpreter_csv_summary.py's two-step,
-delivery-ending case.
+real Operator loop -> a single code.interpreter generate_and_run call -> real
+local Python execution -> Auditor. Ports e2e/all_cases.json's
+`code_interpreter_generate_file` case down to the deterministic tier
+(docs/HISTORY.md P2) - the single-step, no-delivery counterpart to
+test_code_interpreter_csv_summary.py's two-step, delivery-ending case (the
+objective only asks to be told the file's location, not for it to be sent).
+Fixture re-recorded 2026-07-28 (`ybm scenario record
+code_interpreter_generate_file`, localdeploy_qwen3vl_8b) - re-recording
+surfaced a real pre-existing bug in this file: despite the "no-delivery"
+docstring above, the test asserted `scenario.telegram.documents` was
+non-empty (copy-pasted from the delivery-ending sibling test and never
+removed). The Operator loop correctly does not call artifact.deliver for an
+objective that never asks to have the file sent - fixed by removing the
+incorrect delivery assertions rather than changing the objective or the
+model's (correct) behavior.
 """
 
 from __future__ import annotations
 
-import os
-
-import pytest
-
 from agent_control.config import CapabilityPolicy, default_capability_policies
 from agent_control.schemas import Capability, RiskLevel, TaskStatus
+import pytest
 
 from .harness import build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
-
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("YBM_SCENARIO_RECORD"),
-    reason="fixture recorded against the deleted plan-once path (PlannerService/ResponseSynthesizer/AnswerValidator prompts); the Operator loop (docs/HISTORY.md P3 "
-    "\u00a72.2) is now the sole execution path and needs its own fixture, recorded fresh "
-    "against a live LLM - see orchestration/operator.py and test_operator_loop.py for the "
-    "pattern. Left in place (not deleted) so the scenario this file documents survives as "
-    "a checklist for that re-recording pass."
-)
 
 
 @pytest.mark.asyncio
@@ -68,11 +65,9 @@ async def test_code_interpreter_generate_file_writes_report(tmp_path, monkeypatc
         for name in (call["result"] or {}).get("output", {}).get("files_created", [])
     ]
     assert any("interpreter-report.txt" in name for name in created_files)
-    # Ends via artifact.deliver, not a synthesized answer - matches
-    # test_code_interpreter_csv_summary.py's delivery-only completion path,
-    # not test_code_interpreter.py's synthesized-answer one.
-    assert scenario.telegram.documents
-    assert any("interpreter-report.txt" in path for _chat_id, path, _caption in scenario.telegram.documents)
+    # No artifact.deliver expected - the objective only asks to be told
+    # where the file is, not for it to be sent. See module docstring.
+    assert scenario.telegram.documents == []
 
 
 @pytest.mark.asyncio

@@ -9,7 +9,7 @@ from typing import Any
 
 from agent_control.llm.providers import LLMProvider
 from agent_control.prompts import prompt_text, render_prompt
-from agent_control.schemas import Capability, ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.schemas import Capability, ToolCallRequest, ToolCallResult, ToolResultStatus
 from agent_control.tools.contracts import (
     FilesystemApplyManifestInput,
     FilesystemCollectFolderSnapshotInput,
@@ -31,6 +31,7 @@ from agent_control.tools.spec import (
     RegistryDeps,
     ToolDefinition,
     capability_enabled,
+    failed_result,
     same_output_schema,
 )
 
@@ -73,9 +74,9 @@ class FilesystemManageAdapter:
             elif operation == "apply_manifest":
                 output = self._apply_manifest(request)
             else:
-                return _failed(request, f"unsupported filesystem operation: {operation}")
+                return failed_result(request, f"unsupported filesystem operation: {operation}")
         except Exception as exc:
-            return _failed(request, f"filesystem operation failed: {exc}")
+            return failed_result(request, f"filesystem operation failed: {exc}")
 
         output["operation"] = operation
         output["terminal_output"] = [_terminal_output(operation, output)]
@@ -721,13 +722,6 @@ def _human_filesystem_output(operation: str, output: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _failed(request: ToolCallRequest, message: str) -> ToolCallResult:
-    return ToolCallResult(
-        request_id=request.id,
-        status=ToolResultStatus.FAILED,
-        error_class=ErrorClass.ADAPTER_FAILED,
-        error_message=message,
-    )
 
 
 def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -> None:

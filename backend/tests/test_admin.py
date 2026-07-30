@@ -859,3 +859,92 @@ def test_admin_summary_includes_database_and_schedule_data(monkeypatch, tmp_path
     assert "schedules" in body["database"]["table_counts"]
     assert body["schedules"]["total"] == 1
     assert body["schedules"]["items"][0]["objective"] == "check example.com daily"
+
+
+def _secrets_app(monkeypatch, tmp_path) -> FastAPI:
+    monkeypatch.chdir(tmp_path)
+    repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
+    local_app = FastAPI()
+    local_app.include_router(
+        create_admin_router(
+            lambda: AppSettings(_env_file=None, secrets={"path": str(tmp_path / "vault.json")}),
+            lambda: repositories,
+            VSCodeBridgeStore(),
+        )
+    )
+    return local_app
+
+
+def test_admin_secrets_unavailable_without_vault_key(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("AGENT_SECRET_VAULT_KEY", raising=False)
+    client = TestClient(_secrets_app(monkeypatch, tmp_path))
+
+    listed = client.get("/admin/api/secrets")
+    assert listed.status_code == 200
+    assert listed.json() == {"available": False, "key_env": "AGENT_SECRET_VAULT_KEY", "services": {}}
+
+    # Setting a secret must fail clearly, not with a raw SecretVaultError leak.
+    set_response = client.post("/admin/api/secrets", json={"service": "openai", "key": "api_key", "value": "sk-1"})
+    assert set_response.status_code == 400
+    assert "ybm setup" in set_response.json()["detail"]
+
+
+def test_admin_secrets_set_list_and_delete_round_trip(monkeypatch, tmp_path) -> None:
+    from agent_control.storage.secrets import SecretVault
+
+    monkeypatch.setenv("AGENT_SECRET_VAULT_KEY", SecretVault.generate_key())
+    client = TestClient(_secrets_app(monkeypatch, tmp_path))
+
+    created = client.post("/admin/api/secrets", json={"service": "openai", "key": "api_key", "value": "sk-secret-value"})
+    assert created.status_code == 200
+    assert created.json() == {"service": "openai", "key": "api_key", "set": True}
+
+    listed = client.get("/admin/api/secrets")
+    body = listed.json()
+    assert body["available"] is True
+    assert body["services"] == {"openai": ["api_key"]}
+    # The listing endpoint must never leak the value.
+    assert "sk-secret-value" not in listed.text
+
+    deleted = client.delete("/admin/api/secrets/openai/api_key")
+    assert deleted.status_code == 200
+    assert deleted.json() == {"service": "openai", "key": "api_key", "deleted": True}
+
+    after = client.get("/admin/api/secrets")
+    assert after.json()["services"] == {}
+
+
+def test_admin_secrets_delete_missing_returns_404(monkeypatch, tmp_path) -> None:
+    from agent_control.storage.secrets import SecretVault
+
+    monkeypatch.setenv("AGENT_SECRET_VAULT_KEY", SecretVault.generate_key())
+    client = TestClient(_secrets_app(monkeypatch, tmp_path))
+
+    response = client.delete("/admin/api/secrets/nobody/nothing")
+
+    assert response.status_code == 404
+
+
+def test_admin_secrets_set_audits_service_and_key_but_not_value(monkeypatch, tmp_path) -> None:
+    from agent_control.storage.secrets import SecretVault
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AGENT_SECRET_VAULT_KEY", SecretVault.generate_key())
+    repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
+    local_app = FastAPI()
+    local_app.include_router(
+        create_admin_router(
+            lambda: AppSettings(_env_file=None, secrets={"path": str(tmp_path / "vault.json")}),
+            lambda: repositories,
+            VSCodeBridgeStore(),
+        )
+    )
+    client = TestClient(local_app)
+
+    client.post("/admin/api/secrets", json={"service": "openai", "key": "api_key", "value": "sk-must-not-be-logged"})
+
+    events = repositories.audit.list_recent(limit=20)
+    matching = [e for e in events if e.type == AuditEventType.CONFIG_UPDATED and e.payload.get("section") == "secrets"]
+    assert matching
+    assert matching[0].payload["patch"] == {"action": "set", "service": "openai", "key": "api_key"}
+    assert "sk-must-not-be-logged" not in str(matching[0].payload)

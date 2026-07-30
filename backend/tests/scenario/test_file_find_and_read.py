@@ -1,39 +1,20 @@
-"""Scenario: "find a .txt file and read it to me" through the real LLM
-planner -> a 2-step filesystem.manage plan (search, then read_file) ->
-validator -> synthesizer. Ports e2e/all_cases.json's `file_find_and_read`
+"""Scenario: "find a .txt file and read it to me" through the real Operator
+loop - a 2-step filesystem.manage sequence (search, then read_file) chosen
+one at a time -> Auditor. Ports e2e/all_cases.json's `file_find_and_read`
 case down to the deterministic tier (docs/HISTORY.md P2) - locks in
-multi-step planning within a single tool, not just multi-tool plans.
+multi-step tool use within a single tool, not just multi-tool sequences.
+Fixture re-recorded 2026-07-28 against the Operator loop
+(`ybm scenario record file_find_and_read`, localdeploy_qwen3vl_8b).
 """
 
 from __future__ import annotations
 
-import os
-
+from agent_control.schemas import TaskStatus
 import pytest
 
-from agent_control.config import AppSettings, CapabilityPolicy, default_capability_policies
-from agent_control.schemas import Capability, RiskLevel, TaskStatus
-
-from .harness import build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
-
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("YBM_SCENARIO_RECORD"),
-    reason="fixture recorded against the deleted plan-once path (PlannerService/ResponseSynthesizer/AnswerValidator prompts); the Operator loop (docs/HISTORY.md P3 "
-    "\u00a72.2) is now the sole execution path and needs its own fixture, recorded fresh "
-    "against a live LLM - see orchestration/operator.py and test_operator_loop.py for the "
-    "pattern. Left in place (not deleted) so the scenario this file documents survives as "
-    "a checklist for that re-recording pass."
-)
+from .harness import build_scenario, filesystem_settings, run_task_to_completion, scenario_scratch_dir
 
 
-def _settings(monkeypatch, tmp_path, allowed_root: str) -> AppSettings:
-    caps = default_capability_policies()
-    caps[Capability.FILESYSTEM_WRITE] = CapabilityPolicy(enabled=True, requires_approval=False, max_risk_level=RiskLevel.HIGH)
-    return isolated_settings(
-        monkeypatch, tmp_path,
-        capabilities=caps,
-        adapters={"computer_use": {"enabled": True, "allowed_roots": [allowed_root]}},
-    )
 
 
 @pytest.mark.asyncio
@@ -45,7 +26,7 @@ async def test_file_find_and_read_returns_file_contents(tmp_path, monkeypatch) -
     )
     (desktop_dir / "receipt.png").write_bytes(b"\x89PNG\r\n\x1a\n")
 
-    settings = _settings(monkeypatch, tmp_path, str(desktop_dir))
+    settings = filesystem_settings(monkeypatch, tmp_path, str(desktop_dir))
     scenario = build_scenario(settings, tmp_path=tmp_path, fixture_name="file_find_and_read")
 
     task = await run_task_to_completion(
@@ -75,7 +56,7 @@ async def test_file_find_and_read_rejects_path_outside_allowed_roots(tmp_path, m
     )
     (desktop_dir / "receipt.png").write_bytes(b"\x89PNG\r\n\x1a\n")
 
-    settings = _settings(monkeypatch, tmp_path, str(tmp_path / "somewhere_else"))
+    settings = filesystem_settings(monkeypatch, tmp_path, str(tmp_path / "somewhere_else"))
     scenario = build_scenario(settings, tmp_path=tmp_path, fixture_name="file_find_and_read")
 
     task = await run_task_to_completion(

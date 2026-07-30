@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 import httpx
 
 from agent_control.config import HttpRequestAdapterConfig, SecretVaultConfig
-from agent_control.schemas import Capability, ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.schemas import Capability, ToolCallRequest, ToolCallResult, ToolResultStatus
 from agent_control.storage.redaction import redact_payload
 from agent_control.storage.secrets import SecretVault, SecretVaultError
 from agent_control.tools.contracts import HttpRequestInput, HttpRequestOutput
@@ -19,6 +19,7 @@ from agent_control.tools.spec import (
     RegistryDeps,
     ToolDefinition,
     capability_enabled,
+    failed_result,
     same_output_schema,
 )
 
@@ -42,14 +43,14 @@ class HttpRequestAdapter:
 
     async def execute(self, request: ToolCallRequest) -> ToolCallResult:
         if not self.config.enabled:
-            return _failed(request, "http.request adapter is disabled")
+            return failed_result(request, "http.request adapter is disabled")
         operation = str(request.input.get("operation") or "request")
         if operation != "request":
-            return _failed(request, f"unsupported HTTP operation: {operation}")
+            return failed_result(request, f"unsupported HTTP operation: {operation}")
         try:
             output = await self._request(request)
         except Exception as exc:
-            return _failed(request, f"HTTP request failed: {exc}")
+            return failed_result(request, f"HTTP request failed: {exc}")
         output["operation"] = operation
         output["terminal_output"] = [_terminal_output(output)]
         return ToolCallResult(request_id=request.id, status=ToolResultStatus.SUCCEEDED, output=output)
@@ -244,13 +245,6 @@ def _terminal_output(output: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _failed(request: ToolCallRequest, message: str) -> ToolCallResult:
-    return ToolCallResult(
-        request_id=request.id,
-        status=ToolResultStatus.FAILED,
-        error_class=ErrorClass.ADAPTER_FAILED,
-        error_message=message,
-    )
 
 
 def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -> None:

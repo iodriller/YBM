@@ -22,14 +22,9 @@ from agent_control.schemas import (
     ToolCallResult,
     ToolResultStatus,
 )
-from agent_control.storage import AuditLogger, Database, Repositories
+from helpers import make_repos
 
 
-def _repos(tmp_path) -> tuple[Repositories, AuditLogger]:
-    database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
-    database.initialize()
-    repos = Repositories.for_database(database)
-    return repos, AuditLogger(repos.audit)
 
 
 def _settings_with(capability: Capability, **overrides: Any) -> AppSettings:
@@ -66,7 +61,7 @@ def _request(task_id: str, *, capability: Capability = Capability.LLM_GENERATE,
 
 @pytest.mark.asyncio
 async def test_executor_dispatches_to_registered_adapter(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("t")
     settings = _settings_with(Capability.LLM_GENERATE)
     adapter = StaticToolAdapter(output={"text": "hello"})
@@ -86,7 +81,7 @@ async def test_executor_dispatches_to_registered_adapter(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_executor_records_request_and_completion_in_audit(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("t")
     settings = _settings_with(Capability.LLM_GENERATE)
     executor = ToolExecutor(
@@ -106,7 +101,7 @@ async def test_executor_records_request_and_completion_in_audit(tmp_path) -> Non
 
 @pytest.mark.asyncio
 async def test_executor_denies_when_policy_blocks(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("t")
     # explicitly disable the capability so the policy denies it
     settings = _settings_with(Capability.LLM_GENERATE, enabled=False)
@@ -125,7 +120,7 @@ async def test_executor_denies_when_policy_blocks(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_executor_returns_needs_approval_and_creates_approval(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("t")
     settings = _settings_with(Capability.LLM_GENERATE, requires_approval=True)
     executor = ToolExecutor(
@@ -145,7 +140,7 @@ async def test_executor_returns_needs_approval_and_creates_approval(tmp_path) ->
 
 @pytest.mark.asyncio
 async def test_executor_runs_when_pre_approved(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("t")
     settings = _settings_with(Capability.LLM_GENERATE, requires_approval=True)
     executor = ToolExecutor(
@@ -162,7 +157,7 @@ async def test_executor_runs_when_pre_approved(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_executor_fails_when_no_adapter_registered(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("t")
     settings = _settings_with(Capability.LLM_GENERATE)
     executor = ToolExecutor(
@@ -181,7 +176,7 @@ async def test_executor_fails_when_no_adapter_registered(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_executor_converts_adapter_exception_to_failed(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("t")
     settings = _settings_with(Capability.LLM_GENERATE)
     executor = ToolExecutor(
@@ -200,7 +195,7 @@ async def test_executor_converts_adapter_exception_to_failed(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_executor_rejects_risk_above_policy(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("t")
     # policy caps at LOW; request asks for HIGH
     settings = _settings_with(Capability.LLM_GENERATE, max_risk_level=RiskLevel.LOW)

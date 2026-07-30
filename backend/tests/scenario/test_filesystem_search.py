@@ -1,28 +1,20 @@
-"""Scenario: "look in this folder for a file about X" through the real LLM
-planner -> filesystem.manage -> validator -> synthesizer pipeline, replayed
-from a fixture recorded against a live LLM (see harness.build_scenario's
-record_with= parameter to regenerate it).
+"""Scenario: "look in this folder for a file about X" through the real
+Operator loop -> filesystem.manage -> Auditor pipeline, replayed from a
+fixture recorded against a live LLM (see harness.build_scenario's
+record_with= parameter to regenerate it). Fixture re-recorded 2026-07-28
+(`ybm scenario record filesystem_search`, localdeploy_qwen3vl_8b). Similar
+in shape to test_operator_loop.py's resume-search case, kept separate since
+it locks in the single-tool-call happy path plus the allowed-roots rejection
+case specifically.
 """
 
 from __future__ import annotations
 
-import os
-
-import pytest
-
 from agent_control.config import AppSettings, CapabilityPolicy, default_capability_policies
 from agent_control.schemas import Capability, RiskLevel, TaskStatus
+import pytest
 
 from .harness import build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
-
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("YBM_SCENARIO_RECORD"),
-    reason="fixture recorded against the deleted plan-once path (PlannerService/ResponseSynthesizer/AnswerValidator prompts); the Operator loop (docs/HISTORY.md P3 "
-    "\u00a72.2) is now the sole execution path and needs its own fixture, recorded fresh "
-    "against a live LLM - see orchestration/operator.py and test_operator_loop.py for the "
-    "pattern. Left in place (not deleted) so the scenario this file documents survives as "
-    "a checklist for that re-recording pass."
-)
 
 
 def _settings(monkeypatch, tmp_path, allowed_root: str) -> AppSettings:

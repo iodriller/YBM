@@ -474,6 +474,9 @@ def _render_configuration(summary: dict[str, Any], state: dict[str, str]) -> Non
     st.divider()
     st.markdown("#### Computer Use")
     _render_computer_use_config(summary, state)
+    st.divider()
+    st.markdown("#### Secret Vault")
+    _render_secrets_config(state)
     with st.expander("Effective Config", expanded=False):
         try:
             effective = _api_json(state["backend_url"], "/admin/api/config/effective", state["token"])
@@ -533,7 +536,13 @@ def _render_access_config(summary: dict[str, Any], state: dict[str, str]) -> Non
 
 
 def _render_kill_switch(access_modes: dict[str, Any], state: dict[str, str]) -> None:
-    already_off = access_modes and all(str(item.get("mode") or "off") == "off" for item in access_modes.values())
+    # bool(...), not the bare `and` chain: when access_modes is {} (no
+    # capabilities configured at all - a real, if edge-case, state), the old
+    # `access_modes and all(...)` returned the empty dict itself rather than
+    # False, and st.checkbox's `disabled` param rejects a non-bool with a
+    # TypeError, crashing the whole page. Found while adding secret-vault
+    # smoke test coverage that used a minimal, empty access_modes fixture.
+    already_off = bool(access_modes) and all(str(item.get("mode") or "off") == "off" for item in access_modes.values())
     with st.container(border=True):
         st.markdown("**Kill switch**")
         st.caption("Sets every access group below to Off in one action. The worker keeps running but every gated capability stops being usable until you turn groups back on.")
@@ -776,6 +785,62 @@ def _render_computer_use_config(summary: dict[str, Any], state: dict[str, str]) 
             },
             "Computer use config saved. Restart worker to reload config.",
         )
+
+
+def _render_secrets_config(state: dict[str, str]) -> None:
+    """Secret vault: store credentials (API keys, tokens) so `http.request`
+    can inject them by reference (`secret_refs`) without the value ever
+    appearing in an LLM prompt. Was backend-only (storage/secrets.py) with no
+    way to actually populate it short of writing Python - see
+    docs/HISTORY.md Part 3 W2.
+    """
+    st.caption(
+        "Store credentials here so http.request can inject them by reference "
+        "(e.g. `{\"Authorization\": {\"ref\": \"my_api.token\"}}`) - the value never "
+        "appears in an LLM prompt or in this page's traffic log."
+    )
+    try:
+        listing = _api_json(state["backend_url"], "/admin/api/secrets", state["token"])
+    except ApiError as exc:
+        st.error(str(exc))
+        return
+
+    if not listing.get("available"):
+        st.warning(
+            f"{listing.get('key_env', 'AGENT_SECRET_VAULT_KEY')} is not set - run `ybm setup` "
+            "to generate it, then restart the backend."
+        )
+        return
+
+    services: dict[str, list[str]] = listing.get("services") or {}
+    if not services:
+        st.caption("No secrets stored yet.")
+    for service, keys in services.items():
+        for key in keys:
+            cols = st.columns([3, 1])
+            cols[0].markdown(f"`{service}.{key}`")
+            if cols[1].button("Delete", key=f"delete-secret-{service}-{key}"):
+                _delete_feedback(
+                    state, f"/admin/api/secrets/{service}/{key}", f"Deleted {service}.{key}."
+                )
+
+    with st.form("add-secret", clear_on_submit=True):
+        st.markdown("**Add / replace a secret**")
+        cols = st.columns(2)
+        service = cols[0].text_input("Service", placeholder="openai")
+        key = cols[1].text_input("Key", placeholder="api_key")
+        value = st.text_input("Value", type="password")
+        submitted = st.form_submit_button("Save secret")
+    if submitted:
+        if not service.strip() or not key.strip() or not value.strip():
+            st.error("Service, key, and value are all required.")
+        else:
+            _post_feedback(
+                state,
+                "/admin/api/secrets",
+                {"service": service.strip(), "key": key.strip(), "value": value},
+                f"Saved {service.strip()}.{key.strip()}.",
+            )
 
 
 def _render_audit(summary: dict[str, Any], state: dict[str, str]) -> None:

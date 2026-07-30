@@ -10,11 +10,11 @@ from agent_control.schemas import (
     Artifact,
     ArtifactType,
     Capability,
-    ErrorClass,
     TaskRecord,
     ToolCallRequest,
     ToolCallResult,
     ToolResultStatus,
+    task_chat_id,
 )
 from agent_control.storage.repositories import ArtifactRepository, TaskRepository
 from agent_control.tools.contracts import ArtifactDeliverInput, ArtifactDeliveryOutput
@@ -24,6 +24,7 @@ from agent_control.tools.spec import (
     RegistryDeps,
     ToolDefinition,
     capability_enabled,
+    failed_result,
     same_output_schema,
 )
 
@@ -60,9 +61,9 @@ class ArtifactDeliveryAdapter:
             elif operation in {"send_file", "send_latest", "send_screenshot"}:
                 output = await self._send(request, operation)
             else:
-                return _failed(request, f"unsupported artifact delivery operation: {operation}")
+                return failed_result(request, f"unsupported artifact delivery operation: {operation}")
         except Exception as exc:
-            return _failed(request, str(exc))
+            return failed_result(request, str(exc))
 
         output["operation"] = operation
         output["terminal_output"] = [
@@ -109,7 +110,7 @@ class ArtifactDeliveryAdapter:
                 )
             )
 
-        chat_id = str(request.input.get("chat_id") or _task_chat_id(task) or "")
+        chat_id = str(request.input.get("chat_id") or task_chat_id(task) or "")
         if not chat_id:
             raise ValueError("telegram chat_id is required and could not be inferred from the task")
         if self.telegram_client is None:
@@ -293,13 +294,6 @@ class ArtifactDeliveryAdapter:
         return None
 
 
-def _task_chat_id(task: TaskRecord) -> str | None:
-    value = task.metadata.get("source_chat_id")
-    if value:
-        return str(value)
-    if task.conversation_id and task.conversation_id.startswith("conv_telegram_"):
-        return task.conversation_id.removeprefix("conv_telegram_")
-    return None
 
 
 def _task_screenshot_values(task: TaskRecord) -> list[object]:
@@ -422,13 +416,6 @@ def _trim(value: str, limit: int) -> str:
     return value if len(value) <= limit else f"{value[: limit - 3]}..."
 
 
-def _failed(request: ToolCallRequest, message: str) -> ToolCallResult:
-    return ToolCallResult(
-        request_id=request.id,
-        status=ToolResultStatus.FAILED,
-        error_class=ErrorClass.ADAPTER_FAILED,
-        error_message=message,
-    )
 
 
 def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -> None:

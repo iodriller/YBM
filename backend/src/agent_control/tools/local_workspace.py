@@ -12,7 +12,7 @@ import webbrowser
 from typing import Any
 
 from agent_control.config import WorkspaceAdapterConfig
-from agent_control.schemas import Capability, ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.schemas import Capability, ToolCallRequest, ToolCallResult, ToolResultStatus
 from agent_control.tools.contracts import (
     WorkspaceLaunchStaticInput,
     WorkspaceLaunchStaticOutput,
@@ -25,7 +25,7 @@ from agent_control.tools.contracts import (
     WorkspaceWriteFilesInput,
     WorkspaceWriteFilesOutput,
 )
-from agent_control.tools.spec import Adapters, Definitions, RegistryDeps, ToolDefinition, capability_enabled
+from agent_control.tools.spec import Adapters, Definitions, RegistryDeps, ToolDefinition, capability_enabled, failed_result
 
 
 class LocalWorkspaceAdapter:
@@ -36,7 +36,7 @@ class LocalWorkspaceAdapter:
 
     async def execute(self, request: ToolCallRequest) -> ToolCallResult:
         if not self.config.enabled:
-            return _failed(request, "workspace adapter is disabled")
+            return failed_result(request, "workspace adapter is disabled")
 
         operation = str(request.input.get("operation") or _default_operation(request.tool_name))
         try:
@@ -51,9 +51,9 @@ class LocalWorkspaceAdapter:
             elif operation == "web_app_preview":
                 output = self._web_app_preview(request)
             else:
-                return _failed(request, f"unsupported workspace operation: {operation}")
+                return failed_result(request, f"unsupported workspace operation: {operation}")
         except Exception as exc:
-            return _failed(request, f"workspace operation failed: {exc}")
+            return failed_result(request, f"workspace operation failed: {exc}")
 
         output["operation"] = operation
         output["terminal_output"] = [_terminal_output(operation, output)]
@@ -583,13 +583,6 @@ def _terminal_output(operation: str, output: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _failed(request: ToolCallRequest, message: str) -> ToolCallResult:
-    return ToolCallResult(
-        request_id=request.id,
-        status=ToolResultStatus.FAILED,
-        error_class=ErrorClass.ADAPTER_FAILED,
-        error_message=message,
-    )
 
 
 def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -> None:

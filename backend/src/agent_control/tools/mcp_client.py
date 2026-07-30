@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from contextlib import AsyncExitStack
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -11,7 +12,7 @@ from mcp.client.stdio import stdio_client
 
 from agent_control.config import MCPConfig, MCPServerConfig
 from agent_control.config_sync import ConfigManager
-from agent_control.schemas import Capability, ErrorClass, RiskLevel, ToolCallRequest, ToolCallResult, ToolResultStatus, utc_now
+from agent_control.schemas import Capability, RiskLevel, ToolCallRequest, ToolCallResult, ToolResultStatus, utc_now
 from agent_control.tools.contracts import MCPClientInput, MCPClientOutput
 from agent_control.tools.spec import (
     Adapters,
@@ -19,6 +20,7 @@ from agent_control.tools.spec import (
     RegistryDeps,
     ToolDefinition,
     capability_enabled,
+    failed_result,
     same_output_schema,
 )
 
@@ -38,7 +40,7 @@ class MCPClientAdapter:
     async def execute(self, request: ToolCallRequest) -> ToolCallResult:
         operation = str(request.input.get("operation") or "list_tools")
         if not self.config.enabled and operation != "install_server":
-            return _failed(request, "MCP client is disabled")
+            return failed_result(request, "MCP client is disabled")
         try:
             if operation in {"discover", "list_tools"}:
                 output = await self._list_tools(request)
@@ -49,9 +51,9 @@ class MCPClientAdapter:
             elif operation == "install_server":
                 output = self._install_server(request)
             else:
-                return _failed(request, f"unsupported MCP operation: {operation}")
+                return failed_result(request, f"unsupported MCP operation: {operation}")
         except Exception as exc:
-            return _failed(request, f"MCP operation failed: {exc}")
+            return failed_result(request, f"MCP operation failed: {exc}")
 
         output["operation"] = operation
         output["terminal_output"] = [_terminal_output(operation, output)]
@@ -203,10 +205,27 @@ async def _call_server_tool(name: str, server: MCPServerConfig, tool_name: str, 
 
 
 class _session:
+    """One MCP stdio session (subprocess + ClientSession), opened and closed
+    as a unit.
+
+    Uses AsyncExitStack rather than driving each context manager's
+    __aenter__/__aexit__ by hand. The hand-rolled version leaked on any
+    partial-enter failure: `stdio_client` was already entered when
+    `initialize()` raised (a handshake timeout is the easy way to hit this),
+    and because `__aenter__` propagated that exception the surrounding
+    `async with` never called `__aexit__` - so the spawned MCP server
+    subprocess and its streams were never closed. It surfaced as an
+    "Attempted to exit cancel scope in a different task than it was entered
+    in" RuntimeError once the event loop finally finalized the orphaned async
+    generator at shutdown, in a different task than had entered it.
+
+    AsyncExitStack unwinds whatever was entered, in reverse order, in this
+    same task - both on the failure path below and on normal exit.
+    """
+
     def __init__(self, server: MCPServerConfig) -> None:
         self.server = server
-        self._stdio_cm = None
-        self._session_cm = None
+        self._stack: AsyncExitStack | None = None
         self.session: ClientSession | None = None
 
     async def __aenter__(self) -> ClientSession:
@@ -216,22 +235,31 @@ class _session:
             env=dict(self.server.env) or None,
             cwd=self.server.cwd,
         )
-        self._stdio_cm = stdio_client(params)
-        read, write = await self._stdio_cm.__aenter__()
-        self._session_cm = ClientSession(
-            read,
-            write,
-            read_timeout_seconds=timedelta(seconds=self.server.timeout_seconds),
-        )
-        self.session = await self._session_cm.__aenter__()
-        await self.session.initialize()
+        stack = AsyncExitStack()
+        try:
+            read, write = await stack.enter_async_context(stdio_client(params))
+            self.session = await stack.enter_async_context(
+                ClientSession(
+                    read,
+                    write,
+                    read_timeout_seconds=timedelta(seconds=self.server.timeout_seconds),
+                )
+            )
+            await self.session.initialize()
+        except BaseException:
+            # Partial enter: close whatever did open before re-raising, so a
+            # handshake failure doesn't strand the server subprocess.
+            await stack.aclose()
+            self.session = None
+            raise
+        self._stack = stack
         return self.session
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
-        if self._session_cm is not None:
-            await self._session_cm.__aexit__(exc_type, exc, tb)
-        if self._stdio_cm is not None:
-            await self._stdio_cm.__aexit__(exc_type, exc, tb)
+        if self._stack is not None:
+            await self._stack.aclose()
+            self._stack = None
+        self.session = None
 
 
 def _health_summary(servers: list[dict[str, Any]]) -> str:
@@ -309,15 +337,28 @@ def mcp_catalog_summary(config: MCPConfig, *, max_tools: int = 20) -> str:
             for server in servers[:8]
         )
         return f"Configured MCP tools: none currently available. Servers: {server_bits or 'none'}."
-    lines = [f"Configured MCP tools from {config.catalog_path}:"]
+    # Each tool is printed as two explicitly labelled fields, NOT as a dotted
+    # "server.tool" string. The dotted form reads naturally but is actively
+    # misleading here: MCPClientInput requires `server` and `tool` as separate
+    # fields, and a model shown "- fake.echo: ..." copies that whole string
+    # into one of them - observed reproducibly (docs/HISTORY.md Part 2 §4
+    # item 8), landing on `server="fake.echo"` one run and `tool="fake.echo"`
+    # with `server` missing the next. Labelling the fields the same way the
+    # schema names them removes the ambiguity at the source.
+    lines = [
+        f"Configured MCP tools from {config.catalog_path}",
+        '(call with operation="call_tool" and BOTH the server and tool values shown below):',
+    ]
     for tool in tools[:max_tools]:
         name = tool.get("name") or tool.get("tool")
         server = tool.get("server")
         description = str(tool.get("description") or "").strip()
         capability = tool.get("capability") or "terminal.run"
         risk_level = tool.get("risk_level") or "high"
-        desc = f": {description[:160]}" if description else ""
-        lines.append(f"- {server}.{name}{desc}; capability={capability}; risk={risk_level}")
+        desc = f" - {description[:160]}" if description else ""
+        lines.append(
+            f'- server="{server}" tool="{name}"{desc}; capability={capability}; risk={risk_level}'
+        )
     if len(tools) > max_tools:
         lines.append(f"- ... {len(tools) - max_tools} more MCP tool(s) omitted")
     return "\n".join(lines)
@@ -362,13 +403,6 @@ def _terminal_output(operation: str, output: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _failed(request: ToolCallRequest, message: str) -> ToolCallResult:
-    return ToolCallResult(
-        request_id=request.id,
-        status=ToolResultStatus.FAILED,
-        error_class=ErrorClass.ADAPTER_FAILED,
-        error_message=message,
-    )
 
 
 def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -> None:
@@ -393,7 +427,11 @@ def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -
             default_operation="list_tools",
             examples=(
                 {"operation": "list_tools"},
-                {"operation": "call_tool", "server": "example", "tool": "search", "arguments": {"query": "docs"}},
+                # `server` and `tool` are separate fields - never a single
+                # dotted "server.tool" string. The catalog summary prints them
+                # as server="..." tool="..." for the same reason; see
+                # mcp_catalog_summary() and docs/HISTORY.md Part 2 §4 item 8.
+                {"operation": "call_tool", "server": "filesystem", "tool": "read_file", "arguments": {"path": "notes.txt"}},
                 {
                     "operation": "install_server",
                     "name": "filesystem",

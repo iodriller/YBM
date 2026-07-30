@@ -11,7 +11,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import Field
 
 from agent_control.config_sync import CONFIG_FILE_PATH, ConfigManager, read_env_value
-from agent_control.config import AppSettings, is_loopback_host
+from agent_control.config import AppSettings, backend_base_url, is_loopback_host
 from agent_control.llm.providers import OpenAICompatibleProvider
 from agent_control.orchestration.signals import apply_task_signal
 from agent_control.policy import apply_access_modes_to_config, summarize_access_modes
@@ -22,6 +22,7 @@ from agent_control.storage.audit import AuditLogger
 from agent_control.storage.audit_view import format_audit_event
 from agent_control.storage.database import Database
 from agent_control.storage.repositories import Repositories
+from agent_control.storage.secrets import SecretVault, SecretVaultError
 from agent_control.tools.registry import build_tool_registry
 from agent_control.tools.vscode_bridge import VSCodeBridgeStore, VSCodeTerminalCommand
 
@@ -96,6 +97,12 @@ class AdminAccessModesRequest(StrictBaseModel):
 
 class AdminApprovalDecisionRequest(StrictBaseModel):
     decision: str = Field(pattern="^(approve|reject)$")
+
+
+class AdminSecretSetRequest(StrictBaseModel):
+    service: str = Field(min_length=1, max_length=80)
+    key: str = Field(min_length=1, max_length=80)
+    value: str = Field(min_length=1, max_length=8000)
 
 
 SettingsLoader = Callable[[], AppSettings]
@@ -620,6 +627,53 @@ def create_admin_router(
             },
         }
 
+    @router.get("/api/secrets")
+    def admin_list_secrets(request: Request) -> dict[str, Any]:
+        loaded = require_admin(request)
+        if not read_env_value(loaded.secrets.key_env):
+            return {"available": False, "key_env": loaded.secrets.key_env, "services": {}}
+        try:
+            services = SecretVault(loaded.secrets).list_secrets()
+        except SecretVaultError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return {"available": True, "key_env": loaded.secrets.key_env, "services": services}
+
+    @router.post("/api/secrets")
+    def admin_set_secret(request: Request, payload: AdminSecretSetRequest) -> dict[str, Any]:
+        loaded = require_admin(request)
+        if not read_env_value(loaded.secrets.key_env):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{loaded.secrets.key_env} is not set - run `ybm setup` to generate it first",
+            )
+        try:
+            SecretVault(loaded.secrets).set_secret(payload.service, payload.key, payload.value)
+        except SecretVaultError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # Service/key are audited so changes are traceable; the value never is.
+        _audit_config_update(
+            repositories_loader(), loaded, "secrets",
+            {"action": "set", "service": payload.service, "key": payload.key},
+        )
+        return {"service": payload.service, "key": payload.key, "set": True}
+
+    @router.delete("/api/secrets/{service}/{key}")
+    def admin_delete_secret(request: Request, service: str, key: str) -> dict[str, Any]:
+        loaded = require_admin(request)
+        if not read_env_value(loaded.secrets.key_env):
+            raise HTTPException(status_code=400, detail=f"{loaded.secrets.key_env} is not set")
+        try:
+            deleted = SecretVault(loaded.secrets).delete_secret(service, key)
+        except SecretVaultError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"secret not found: {service}.{key}")
+        _audit_config_update(
+            repositories_loader(), loaded, "secrets",
+            {"action": "delete", "service": service, "key": key},
+        )
+        return {"service": service, "key": key, "deleted": True}
+
     @router.post("/api/llm/test")
     async def admin_test_llm(request: Request) -> dict[str, Any]:
         loaded = require_admin(request)
@@ -969,7 +1023,7 @@ def _database_summary(settings: AppSettings) -> dict[str, Any]:
 def _tool_registry_summary(settings: AppSettings, repositories: Repositories, audit: AuditLogger) -> dict[str, Any]:
     registry = build_tool_registry(
         settings,
-        _backend_base_url(settings),
+        backend_base_url(settings),
         artifact_repository=repositories.artifacts,
         task_repository=repositories.tasks,
         repositories=repositories,
@@ -1005,12 +1059,6 @@ def _tool_registry_summary(settings: AppSettings, repositories: Repositories, au
         "tools": tools,
     }
 
-
-def _backend_base_url(settings: AppSettings) -> str:
-    if settings.server.public_base_url:
-        return settings.server.public_base_url
-    host = "127.0.0.1" if settings.server.host in {"0.0.0.0", "::"} else settings.server.host
-    return f"http://{host}:{settings.server.port}"
 
 
 def _tool_group(name: str) -> str:

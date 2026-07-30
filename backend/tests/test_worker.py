@@ -13,14 +13,9 @@ from agent_control.schemas import (
     RiskLevel,
     TaskStatus,
 )
-from agent_control.storage import AuditLogger, Database, Repositories
+from helpers import make_repos
 
 
-def _repos(tmp_path) -> tuple[Repositories, AuditLogger]:
-    database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
-    database.initialize()
-    repos = Repositories.for_database(database)
-    return repos, AuditLogger(repos.audit)
 
 
 class QueueOperator:
@@ -43,7 +38,7 @@ class RecordingNotifier:
 
 @pytest.mark.asyncio
 async def test_worker_notifies_once_on_completion(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("Run safe step", metadata={"source_chat_id": "100"})
     settings = AppSettings(
         _env_file=None,
@@ -81,7 +76,7 @@ async def test_worker_notifies_once_on_completion(tmp_path) -> None:
 
 
 def test_reconcile_orphaned_tasks_fails_running_and_interpreting_tasks(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     running = repos.tasks.create("was mid-execution when the worker died")
     repos.tasks.update_status(running.id, TaskStatus.RUNNING)
     interpreting = repos.tasks.create("was mid-planning when the worker died")
@@ -102,7 +97,7 @@ def test_reconcile_orphaned_tasks_fails_running_and_interpreting_tasks(tmp_path)
 
 
 def test_reconcile_orphaned_tasks_releases_claim_and_writes_audit_trail(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("claimed by a worker that then crashed")
     repos.tasks.update_status(task.id, TaskStatus.RUNNING)
     repos.tasks.claim_next([TaskStatus.RUNNING], worker_id="worker-that-died", claim_expiry_seconds=1200)
@@ -123,7 +118,56 @@ def test_reconcile_orphaned_tasks_releases_claim_and_writes_audit_trail(tmp_path
 
 
 def test_reconcile_orphaned_tasks_returns_zero_when_nothing_to_do(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     repos.tasks.create("normal queued task")
 
     assert reconcile_orphaned_tasks(repos, audit) == 0
+
+
+def test_tool_output_text_grounds_auditor_in_code_interpreter_file_content() -> None:
+    """Regression guard (docs/HISTORY.md Part 3 W1): before code.interpreter
+    added file_previews to its terminal_output, `_tool_output_text()` - the
+    function that feeds `last_tool_output_text`, which is exactly what the
+    Auditor's raw_output argument is built from (see worker.py's audit gate
+    right before a `done` decision is accepted) - only ever saw file NAMES
+    and stdout for a code.interpreter result, never what was actually inside
+    a created file. A script that silently wrote the wrong answer, or an
+    empty file, passed the audit because nothing downstream ever looked. This
+    proves the wiring end-to-end without a live LLM call: build a
+    ToolCallResult shaped exactly like code.interpreter's real output and
+    confirm the file's content text makes it into what the Auditor sees.
+    """
+    from agent_control.orchestration.worker import _tool_output_text
+    from agent_control.schemas import ToolCallResult, ToolResultStatus
+
+    result = ToolCallResult(
+        request_id="req_1",
+        status=ToolResultStatus.SUCCEEDED,
+        output={
+            "operation": "run_python",
+            "workspace_dir": "/tmp/workspace",
+            "files_created": ["answer.json"],
+            "file_previews": [{"path": "answer.json", "content": '{"total": 16, "count": 3}'}],
+            "stdout": "wrote answer.json",
+            "terminal_output": [
+                {
+                    "instance_id": "local-worker",
+                    "terminal_id": "code-interpreter",
+                    "content": (
+                        "Code interpreter operation completed: run_python\n"
+                        "Created files:\n- answer.json\n"
+                        'Content of answer.json:\n{"total": 16, "count": 3}\n'
+                        "Stdout:\nwrote answer.json"
+                    ),
+                    "is_final": True,
+                    "exit_code": 0,
+                    "source": "code_interpreter",
+                }
+            ],
+        },
+    )
+
+    raw_output = _tool_output_text(result)
+
+    assert "Content of answer.json:" in raw_output
+    assert '"total": 16' in raw_output

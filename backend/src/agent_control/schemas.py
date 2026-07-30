@@ -477,6 +477,23 @@ class TaskRecord(StrictBaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+def task_chat_id(task: TaskRecord) -> str | None:
+    """Which Telegram chat a task's output belongs to.
+
+    Lives here, next to TaskRecord, because it is pure logic over the record's
+    own fields and both the notifier (`channels/`) and the delivery tool
+    (`tools/`) need it - previously as two byte-identical private copies, with
+    no import direction between those packages that would let one reuse the
+    other's.
+    """
+    value = task.metadata.get("source_chat_id")
+    if value:
+        return str(value)
+    if task.conversation_id and task.conversation_id.startswith("conv_telegram_"):
+        return task.conversation_id.removeprefix("conv_telegram_")
+    return None
+
+
 class ScheduleRecord(StrictBaseModel):
     id: str = Field(default_factory=lambda: new_id("schedule"))
     source_channel: ChannelType = ChannelType.TELEGRAM

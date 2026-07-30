@@ -20,7 +20,7 @@ from agent_control.channels.telegram import (
 from agent_control.channels.memory import ConversationMemoryService
 from agent_control.channels.responder import LLMTelegramResponder
 from agent_control.channels.telegram_notifications import TelegramTaskNotifier
-from agent_control.config import load_settings
+from agent_control.config import backend_base_url, load_settings
 from agent_control.llm import LLMMessageClassifier, build_default_llm_provider
 from agent_control.llm.providers import build_major_llm_provider
 from agent_control.observation import ArtifactService, ScreenshotService
@@ -166,7 +166,7 @@ async def run_worker() -> None:
     policy = PolicyEngine(settings, audit)
     registry = build_tool_registry(
         settings,
-        _backend_base_url(settings),
+        backend_base_url(settings),
         provider=provider,
         should_continue=lambda task_id: _task_allows_tool_continue(repositories, task_id),
         artifact_repository=repositories.artifacts,
@@ -317,12 +317,6 @@ def _screenshot_service(settings, repositories: Repositories) -> ScreenshotServi
         ArtifactService(settings.storage, repositories.artifacts),
     )
 
-
-def _backend_base_url(settings) -> str:
-    if settings.server.public_base_url:
-        return settings.server.public_base_url
-    host = "127.0.0.1" if settings.server.host in {"0.0.0.0", "::"} else settings.server.host
-    return f"http://{host}:{settings.server.port}"
 
 
 def _worker_config_context(registry) -> str:

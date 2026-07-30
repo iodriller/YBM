@@ -1,33 +1,23 @@
 """Scenario: "write and run a small local Python script" through the real
-LLM planner -> code.interpreter, WITHOUT the objective naming the adapter.
+Operator loop -> code.interpreter, WITHOUT the objective naming the adapter.
 Ports e2e/all_cases.json's `implicit_code_interpreter_numbers_report` case
 down to the deterministic tier (docs/HISTORY.md P2) - unlike
 test_code_interpreter_csv_summary.py/test_code_interpreter_generate_file.py
 (which both say "use the local code interpreter" explicitly), this locks in
-implicit routing: the planner has to recognize a bounded local script task
+implicit routing: the Operator has to recognize a bounded local script task
 from context alone and NOT send it to coding.agent (Codex/Copilot), which is
-also in the registry and could plausibly be chosen instead.
+also in the registry and could plausibly be chosen instead. Fixture
+re-recorded 2026-07-29 (`ybm scenario record
+implicit_code_interpreter_numbers_report`, localdeploy_qwen3vl_8b).
 """
 
 from __future__ import annotations
 
-import os
-
-import pytest
-
 from agent_control.config import CapabilityPolicy, default_capability_policies
 from agent_control.schemas import Capability, RiskLevel, TaskStatus
+import pytest
 
 from .harness import build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
-
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("YBM_SCENARIO_RECORD"),
-    reason="fixture recorded against the deleted plan-once path (PlannerService/ResponseSynthesizer/AnswerValidator prompts); the Operator loop (docs/HISTORY.md P3 "
-    "\u00a72.2) is now the sole execution path and needs its own fixture, recorded fresh "
-    "against a live LLM - see orchestration/operator.py and test_operator_loop.py for the "
-    "pattern. Left in place (not deleted) so the scenario this file documents survives as "
-    "a checklist for that re-recording pass."
-)
 
 
 @pytest.mark.asyncio

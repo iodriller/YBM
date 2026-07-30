@@ -1,32 +1,21 @@
-"""Scenario: "send me the PDF at this path" through the real LLM planner ->
+"""Scenario: "send me the PDF at this path" through the real Operator loop -
 a single artifact.deliver send_file call -> the fake Telegram client. Ports
 e2e/all_cases.json's `send_found_pdf` case down to the deterministic tier
 (docs/HISTORY.md P2) - the simplest possible delivery-only case (single
 step, a known literal path, no filesystem search first), chosen deliberately
 after `output_delivery` turned out to need an unusually flaky multi-attempt
-plan; this one locks in the harness's FakeTelegramClient path with minimal
-surface area for planner non-determinism.
+plan under the old plan-based path; this one locks in the harness's
+FakeTelegramClient path with minimal surface area for LLM non-determinism.
+Fixture re-recorded 2026-07-28 (`ybm scenario record send_found_pdf`,
+localdeploy_qwen3vl_8b).
 """
 
 from __future__ import annotations
 
-import os
-
+from agent_control.schemas import TaskStatus
 import pytest
 
-from agent_control.config import AppSettings, CapabilityPolicy, default_capability_policies
-from agent_control.schemas import Capability, RiskLevel, TaskStatus
-
-from .harness import build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
-
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("YBM_SCENARIO_RECORD"),
-    reason="fixture recorded against the deleted plan-once path (PlannerService/ResponseSynthesizer/AnswerValidator prompts); the Operator loop (docs/HISTORY.md P3 "
-    "\u00a72.2) is now the sole execution path and needs its own fixture, recorded fresh "
-    "against a live LLM - see orchestration/operator.py and test_operator_loop.py for the "
-    "pattern. Left in place (not deleted) so the scenario this file documents survives as "
-    "a checklist for that re-recording pass."
-)
+from .harness import build_scenario, filesystem_settings, run_task_to_completion, scenario_scratch_dir
 
 
 def _write_minimal_pdf(path, text: str) -> None:
@@ -55,14 +44,6 @@ def _write_minimal_pdf(path, text: str) -> None:
     path.write_bytes(output)
 
 
-def _settings(monkeypatch, tmp_path, allowed_root: str) -> AppSettings:
-    caps = default_capability_policies()
-    caps[Capability.FILESYSTEM_WRITE] = CapabilityPolicy(enabled=True, requires_approval=False, max_risk_level=RiskLevel.HIGH)
-    return isolated_settings(
-        monkeypatch, tmp_path,
-        capabilities=caps,
-        adapters={"computer_use": {"enabled": True, "allowed_roots": [allowed_root]}},
-    )
 
 
 @pytest.mark.asyncio
@@ -71,7 +52,7 @@ async def test_send_found_pdf_delivers_the_file(tmp_path, monkeypatch) -> None:
     pdf_path = desktop_dir / "agent-control-sample.pdf"
     _write_minimal_pdf(pdf_path, "Agent Control E2E PDF sample content.")
 
-    settings = _settings(monkeypatch, tmp_path, str(desktop_dir))
+    settings = filesystem_settings(monkeypatch, tmp_path, str(desktop_dir))
     scenario = build_scenario(settings, tmp_path=tmp_path, fixture_name="send_found_pdf")
 
     task = await run_task_to_completion(scenario, f"Send me the PDF file at {pdf_path}.")
@@ -89,7 +70,7 @@ async def test_send_found_pdf_rejects_path_outside_allowed_roots(tmp_path, monke
     pdf_path = desktop_dir / "agent-control-sample.pdf"
     _write_minimal_pdf(pdf_path, "Agent Control E2E PDF sample content.")
 
-    settings = _settings(monkeypatch, tmp_path, str(tmp_path / "somewhere_else"))
+    settings = filesystem_settings(monkeypatch, tmp_path, str(tmp_path / "somewhere_else"))
     scenario = build_scenario(settings, tmp_path=tmp_path, fixture_name="send_found_pdf")
 
     task = await run_task_to_completion(scenario, f"Send me the PDF file at {pdf_path}.")

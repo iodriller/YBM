@@ -237,6 +237,10 @@ class RecordingLLMProvider:
         self.live_provider = live_provider
         self.fixture_path = Path(fixture_path)
         self._entries = _reindex(_load(self.fixture_path))
+        # Same interface as ScriptedLLMProvider.calls - scenario tests that
+        # assert on call count/order (e.g. "this objective needs zero LLM
+        # calls") should work identically whether replaying or recording.
+        self.calls: list[dict[str, str]] = []
 
     def _store(self, method: str, system_prompt: str, user_prompt: str, response: Any) -> None:
         key = fixture_key(method, system_prompt, user_prompt)
@@ -247,6 +251,7 @@ class RecordingLLMProvider:
             "response": response,
         }
         _save(self.fixture_path, self._entries)
+        self.calls.append({"method": method, "key": key})
 
     async def generate_text(self, system_prompt: str, user_prompt: str) -> str:
         response = await self.live_provider.generate_text(system_prompt, user_prompt)

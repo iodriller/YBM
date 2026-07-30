@@ -1,7 +1,8 @@
 Objective:
 $objective
 
-Workspace:
+Working directory (shown for reference only - the script already runs here,
+so use relative paths and never paste this path into the code):
 $workspace_dir
 
 Context:

@@ -6,19 +6,14 @@ from agent_control.config import AppSettings, CapabilityPolicy, default_capabili
 from agent_control.orchestration import StaticToolAdapter, ToolExecutor
 from agent_control.policy import PolicyEngine
 from agent_control.schemas import Capability, RiskLevel, ToolCallRequest, ToolResultStatus
-from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.tools.registry import build_tool_registry
+from helpers import make_repos
 
 
-def _repos(tmp_path) -> tuple[Repositories, AuditLogger]:
-    database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
-    database.initialize()
-    repos = Repositories.for_database(database)
-    return repos, AuditLogger(repos.audit)
 
 
 def test_disabled_capability_is_denied(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("Run command")
     settings = AppSettings(_env_file=None, capabilities=default_capability_policies())
     policy = PolicyEngine(settings, audit)
@@ -37,7 +32,7 @@ def test_disabled_capability_is_denied(tmp_path) -> None:
 
 
 def test_scope_check_does_not_allow_prefix_escape(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("Read file")
     settings = AppSettings(
         _env_file=None,
@@ -78,7 +73,7 @@ def test_scope_check_does_not_allow_prefix_escape(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_executor_creates_approval_before_tool_call(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("Run command")
     settings = AppSettings(
         _env_file=None,
@@ -114,7 +109,7 @@ async def test_executor_creates_approval_before_tool_call(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_executor_runs_allowed_tool(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("Summarize")
     settings = AppSettings(
         _env_file=None,
@@ -153,7 +148,7 @@ async def test_executor_runs_allowed_tool(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_executor_rejects_invalid_registered_tool_input_before_adapter(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("Launch app")
     settings = AppSettings(
         _env_file=None,
@@ -194,7 +189,7 @@ async def test_executor_rejects_invalid_registered_tool_input_before_adapter(tmp
 
 @pytest.mark.asyncio
 async def test_executor_normalizes_registered_tool_defaults(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("Prepare workspace")
     settings = AppSettings(
         _env_file=None,
@@ -233,7 +228,7 @@ async def test_executor_normalizes_registered_tool_defaults(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_executor_rejects_invalid_registered_tool_output(tmp_path) -> None:
-    repos, audit = _repos(tmp_path)
+    repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("Launch app")
     settings = AppSettings(
         _env_file=None,

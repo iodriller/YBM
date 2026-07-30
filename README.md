@@ -164,7 +164,27 @@ Docs:
 - [Minimal end-to-end test](docs/MINIMAL_END_TO_END_TEST.md)
 - [Database inspection](docs/DATABASE_INSPECTION.md)
 
-Per-service launchers used internally by `ybm.ps1` live under `scripts/services/` if you need to run one directly for debugging. Everything else is available through `ybm` too: `ybm clean` wipes generated caches/workspaces/adapter proposals, `ybm e2e-login` bootstraps the Telethon user session needed for live E2E checks, `ybm send "<message>"` traces one ad-hoc message through the full pipeline, `ybm trace <task_id>` prints a full post-mortem for a task straight from the DB, and `ybm package-extension` builds the VS Code bridge `.vsix`. Run `.\scripts\ybm.ps1 help` for the full list.
+Per-service launchers used internally by `ybm.ps1` live under `scripts/services/` if you need to run one directly for debugging. Everything else is available through `ybm` too: `ybm clean` wipes generated caches/workspaces/adapter proposals, `ybm e2e-login` bootstraps the Telethon user session needed for live E2E checks, `ybm send "<message>"` traces one ad-hoc message through the full pipeline, `ybm trace <task_id>` prints a full post-mortem for a task straight from the DB, `ybm scenario record <name>` re-records one deterministic scenario fixture against a live LLM (see below), and `ybm package-extension` builds the VS Code bridge `.vsix`. Run `.\scripts\ybm.ps1 help` for the full list.
+
+### Scenario tests
+
+`backend/tests/scenario/` is the fast deterministic tier: the real
+worker/registry/policy/executor stack against a temp filesystem, with recorded LLM responses
+replayed from `backend/tests/scenario/fixtures/`. The whole tier runs in seconds with no
+network, no GPU, and no API spend, and is included in `ybm test`.
+
+When a change alters a prompt, a tool's advertised schema, or the workspace layout, the
+affected fixtures stop matching (they are keyed on exact prompt text) and their tests fail
+loudly rather than replaying stale data. Re-record just those:
+
+```powershell
+.\scripts\ybm.ps1 scenario record folder_open_inspection
+.\scripts\ybm.ps1 scenario record folder_open_inspection --profile openai_saved
+```
+
+This makes **real LLM calls**. It defaults to `llm.default_profile`, so with LocalDeploy
+running it costs nothing; `--profile` overrides that. Review the regenerated fixture before
+committing it.
 
 ## Safety Defaults
 

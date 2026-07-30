@@ -529,6 +529,20 @@ class AppSettings(BaseSettings):
         }
 
 
+def backend_base_url(settings: AppSettings) -> str:
+    """The URL other local components should use to reach this backend.
+
+    Falls back from an explicit `public_base_url` to host:port, rewriting a
+    wildcard bind (`0.0.0.0` / `::`) to loopback since a wildcard is an
+    accept-on-any-interface instruction, not a dialable address. Shared by
+    `admin.py` and `cli.py`, which each carried an identical private copy.
+    """
+    if settings.server.public_base_url:
+        return settings.server.public_base_url
+    host = "127.0.0.1" if settings.server.host in {"0.0.0.0", "::"} else settings.server.host
+    return f"http://{host}:{settings.server.port}"
+
+
 def load_settings(config_path: str | Path | None = None, **overrides: Any) -> AppSettings:
     if config_path is not None:
         config_file = str(Path(config_path))

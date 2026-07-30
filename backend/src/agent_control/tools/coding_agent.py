@@ -22,6 +22,7 @@ from agent_control.tools.spec import (
     RegistryDeps,
     ToolDefinition,
     capability_enabled,
+    failed_result,
     same_output_schema,
 )
 
@@ -108,7 +109,7 @@ class CodingAgentAdapter:
 
     async def execute(self, request: ToolCallRequest) -> ToolCallResult:
         if not self.config.enabled:
-            return _failed(request, "coding agent adapter is disabled")
+            return failed_result(request, "coding agent adapter is disabled")
         operation = str(request.input.get("operation") or "run_goal")
         provider = str(request.input.get("provider") or "")
         try:
@@ -123,9 +124,9 @@ class CodingAgentAdapter:
             elif operation == "limits":
                 output = self._probe(request, provider)
             else:
-                return _failed(request, f"unsupported coding agent operation: {operation}")
+                return failed_result(request, f"unsupported coding agent operation: {operation}")
         except Exception as exc:
-            return _failed(request, f"coding agent operation failed: {exc}")
+            return failed_result(request, f"coding agent operation failed: {exc}")
         output.setdefault("operation", operation)
         output.setdefault("provider", provider or str(output.get("provider") or ""))
         output["terminal_output"] = [_terminal_output(operation, output)]
@@ -133,13 +134,13 @@ class CodingAgentAdapter:
 
     async def _start(self, request: ToolCallRequest, operation: str, provider: str) -> ToolCallResult:
         if provider not in PROVIDERS:
-            return _failed(request, f"unsupported coding provider: {provider or '<missing>'}")
+            return failed_result(request, f"unsupported coding provider: {provider or '<missing>'}")
         prompt = str(request.input.get("prompt") or request.input.get("objective") or "").strip()
         if not prompt:
-            return _failed(request, "prompt or objective is required")
+            return failed_result(request, "prompt or objective is required")
         executable = self._executable(provider)
         if executable is None:
-            return _failed(request, f"{provider} CLI was not found on PATH or config")
+            return failed_result(request, f"{provider} CLI was not found on PATH or config")
 
         workspace = self._workspace(request)
         workspace.mkdir(parents=True, exist_ok=True)
@@ -823,13 +824,6 @@ def _terminal_output(operation: str, output: dict) -> dict:
     }
 
 
-def _failed(request: ToolCallRequest, message: str) -> ToolCallResult:
-    return ToolCallResult(
-        request_id=request.id,
-        status=ToolResultStatus.FAILED,
-        error_class=ErrorClass.ADAPTER_FAILED,
-        error_message=message,
-    )
 
 
 def _now() -> str:

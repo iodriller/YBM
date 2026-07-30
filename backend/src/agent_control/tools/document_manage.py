@@ -12,7 +12,6 @@ from agent_control.schemas import (
     Artifact,
     ArtifactType,
     Capability,
-    ErrorClass,
     ToolCallRequest,
     ToolCallResult,
     ToolResultStatus,
@@ -25,6 +24,7 @@ from agent_control.tools.spec import (
     RegistryDeps,
     ToolDefinition,
     capability_enabled,
+    failed_result,
     same_output_schema,
 )
 
@@ -58,9 +58,9 @@ class DocumentManageAdapter:
             elif operation == "update_presentation":
                 output = self._update_presentation(request)
             else:
-                return _failed(request, f"unsupported document operation: {operation}")
+                return failed_result(request, f"unsupported document operation: {operation}")
         except Exception as exc:
-            return _failed(request, f"document operation failed: {exc}")
+            return failed_result(request, f"document operation failed: {exc}")
 
         output["operation"] = operation
         output["terminal_output"] = [_terminal_output(operation, output)]
@@ -322,13 +322,6 @@ def _terminal_output(operation: str, output: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _failed(request: ToolCallRequest, message: str) -> ToolCallResult:
-    return ToolCallResult(
-        request_id=request.id,
-        status=ToolResultStatus.FAILED,
-        error_class=ErrorClass.ADAPTER_FAILED,
-        error_message=message,
-    )
 
 
 def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -> None:

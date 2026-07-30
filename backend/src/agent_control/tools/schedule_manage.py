@@ -4,7 +4,6 @@ from agent_control.scheduler import cadence_from_text, create_due_task, next_run
 from agent_control.schemas import (
     Capability,
     ChannelType,
-    ErrorClass,
     ScheduleRecord,
     ScheduleStatus,
     ToolCallRequest,
@@ -21,6 +20,7 @@ from agent_control.tools.spec import (
     RegistryDeps,
     ToolDefinition,
     capability_enabled,
+    failed_result,
     same_output_schema,
 )
 
@@ -47,9 +47,9 @@ class ScheduleManageAdapter:
             elif operation == "run_now":
                 output = self._run_now(request)
             else:
-                return _failed(request, f"unsupported schedule operation: {operation}")
+                return failed_result(request, f"unsupported schedule operation: {operation}")
         except Exception as exc:
-            return _failed(request, f"schedule operation failed: {exc}")
+            return failed_result(request, f"schedule operation failed: {exc}")
         output["operation"] = operation
         output["terminal_output"] = [_terminal_output(operation, output)]
         return ToolCallResult(request_id=request.id, status=ToolResultStatus.SUCCEEDED, output=output)
@@ -123,13 +123,6 @@ def _terminal_output(operation: str, output: dict) -> dict:
     }
 
 
-def _failed(request: ToolCallRequest, message: str) -> ToolCallResult:
-    return ToolCallResult(
-        request_id=request.id,
-        status=ToolResultStatus.FAILED,
-        error_class=ErrorClass.ADAPTER_FAILED,
-        error_message=message,
-    )
 
 
 def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -> None:

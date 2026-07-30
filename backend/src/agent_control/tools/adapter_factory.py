@@ -13,7 +13,7 @@ import sys
 from typing import Any, Callable
 
 from agent_control.config import AdapterFactoryConfig
-from agent_control.schemas import Capability, ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.schemas import Capability, ToolCallRequest, ToolCallResult, ToolResultStatus
 from agent_control.tools.contracts import (
     AdapterFactoryAssessInput,
     AdapterFactoryAssessOutput,
@@ -24,7 +24,7 @@ from agent_control.tools.contracts import (
     AdapterFactoryScaffoldOutput,
     AdapterFactoryTestConnectorInput,
 )
-from agent_control.tools.spec import Adapters, Definitions, RegistryDeps, ToolDefinition, capability_enabled
+from agent_control.tools.spec import Adapters, Definitions, RegistryDeps, ToolDefinition, capability_enabled, failed_result
 
 
 @dataclass(frozen=True)
@@ -47,7 +47,7 @@ class AdapterFactoryAdapter:
 
     async def execute(self, request: ToolCallRequest) -> ToolCallResult:
         if not self.config.enabled:
-            return _failed(request, "adapter factory is disabled")
+            return failed_result(request, "adapter factory is disabled")
         operation = str(request.input.get("operation") or "scaffold")
         try:
             if operation == "scaffold":
@@ -61,9 +61,9 @@ class AdapterFactoryAdapter:
             elif operation == "promote_after_approval":
                 output = self._promote_after_approval(request)
             else:
-                return _failed(request, f"unsupported adapter factory operation: {operation}")
+                return failed_result(request, f"unsupported adapter factory operation: {operation}")
         except Exception as exc:
-            return _failed(request, f"adapter factory operation failed: {exc}")
+            return failed_result(request, f"adapter factory operation failed: {exc}")
 
         output["operation"] = operation
         output["terminal_output"] = [_terminal_output(operation, output)]
@@ -471,13 +471,6 @@ def _terminal_output(operation: str, output: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _failed(request: ToolCallRequest, message: str) -> ToolCallResult:
-    return ToolCallResult(
-        request_id=request.id,
-        status=ToolResultStatus.FAILED,
-        error_class=ErrorClass.ADAPTER_FAILED,
-        error_message=message,
-    )
 
 
 def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -> None:

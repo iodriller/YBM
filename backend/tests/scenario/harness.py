@@ -11,9 +11,17 @@ from dataclasses import dataclass
 from pathlib import Path
 import os
 import shutil
+import sys
 import tempfile
 
-from agent_control.config import AppSettings, load_settings
+from agent_control.config import (
+    AppSettings,
+    CapabilityPolicy,
+    MCPConfig,
+    MCPServerConfig,
+    default_capability_policies,
+    load_settings,
+)
 from agent_control.llm.providers import OpenAICompatibleProvider
 from agent_control.orchestration.auditor import AuditorService
 from agent_control.orchestration.executor import ToolExecutor
@@ -21,7 +29,7 @@ from agent_control.orchestration.operator import OperatorLoopService
 from agent_control.orchestration.worker import TaskWorker
 from agent_control.policy.engine import PolicyEngine
 from agent_control.recovery.retry import RetryPolicy
-from agent_control.schemas import TaskRecord, TaskStatus
+from agent_control.schemas import Capability, RiskLevel, TaskRecord, TaskStatus
 from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.testing.scripted_llm import RecordingLLMProvider, ScriptedLLMProvider
 from agent_control.tools.registry import build_tool_registry
@@ -84,6 +92,15 @@ class FakeTelegramClient:
 
 
 SCENARIO_CHAT_ID = "scenario_test_chat"
+
+# MCP stdio handshake budget for the fake-server scenario tests. Was 10s,
+# which is genuinely marginal: spawning a Python subprocess on Windows and
+# completing the MCP initialize() round trip measured 11.5s on this machine
+# while LocalDeploy/Ollama were also running, so the tests failed with an
+# opaque anyio WouldBlock/CancelledError rather than a clear timeout. Timed
+# directly before picking this number (10s -> fail at 10.3s, 30s -> succeed
+# at 11.5s); the headroom is for machine load, not for a slow server.
+MCP_HANDSHAKE_TIMEOUT_SECONDS = 30
 
 TERMINAL_STATUSES = {
     TaskStatus.COMPLETED,
@@ -245,4 +262,48 @@ async def run_task_to_completion(
         f"task {task.id} did not reach a terminal status within {max_ticks} ticks "
         f"(stuck at {task.status}); either the fixture is missing a replan-cycle "
         f"response or this is a real non-terminating loop"
+    )
+
+
+def filesystem_settings(monkeypatch, tmp_path, allowed_root: str) -> AppSettings:
+    """Scenario settings for a filesystem-scoped task: filesystem write on,
+    one allowed root.
+
+    Four scenario tests carried a byte-identical private `_settings` doing
+    exactly this (docs/HISTORY.md Part 2 §4 item 16).
+    """
+    caps = default_capability_policies()
+    caps[Capability.FILESYSTEM_WRITE] = CapabilityPolicy(
+        enabled=True, requires_approval=False, max_risk_level=RiskLevel.HIGH
+    )
+    return isolated_settings(
+        monkeypatch, tmp_path,
+        capabilities=caps,
+        adapters={"computer_use": {"enabled": True, "allowed_roots": [allowed_root]}},
+    )
+
+
+def mcp_settings(monkeypatch, tmp_path, server_path, catalog_path) -> AppSettings:
+    """Scenario settings for an MCP task: terminal.run on, one stdio server.
+
+    Shared by the two MCP scenario tests, which held identical copies.
+    """
+    caps = default_capability_policies()
+    caps[Capability.TERMINAL_RUN] = CapabilityPolicy(
+        enabled=True, requires_approval=False, max_risk_level=RiskLevel.HIGH
+    )
+    return isolated_settings(
+        monkeypatch, tmp_path,
+        capabilities=caps,
+        mcp=MCPConfig(
+            enabled=True,
+            catalog_path=str(catalog_path),
+            servers={
+                "fake": MCPServerConfig(
+                    command=sys.executable,
+                    args=[str(server_path)],
+                    timeout_seconds=MCP_HANDSHAKE_TIMEOUT_SECONDS,
+                )
+            },
+        ),
     )

@@ -7,18 +7,13 @@ import pytest
 
 from agent_control.config import AppSettings, CapabilityPolicy
 from agent_control.schemas import ArtifactType, Capability, RiskLevel, ToolCallRequest
-from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.tools.document_manage import DocumentManageAdapter
 from agent_control.tools.registry import build_tool_registry
+from helpers import make_repos
 
-def _repos(tmp_path) -> tuple[Repositories, AuditLogger]:
-    database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
-    database.initialize()
-    repos = Repositories.for_database(database)
-    return repos, AuditLogger(repos.audit)
 
 def test_registry_exposes_document_manage_when_filesystem_write_is_enabled(tmp_path) -> None:
-    repos, _audit = _repos(tmp_path)
+    repos, _audit = make_repos(tmp_path)
     settings = AppSettings(
         _env_file=None,
         adapters={"computer_use": {"allowed_roots": [str(tmp_path)]}},
@@ -46,7 +41,7 @@ def test_registry_exposes_document_manage_when_filesystem_write_is_enabled(tmp_p
 
 @pytest.mark.asyncio
 async def test_document_manage_summarizes_pdf_text_and_records_artifact(tmp_path) -> None:
-    repos, _audit = _repos(tmp_path)
+    repos, _audit = make_repos(tmp_path)
     task = repos.tasks.create("summarize pdf")
     pdf = tmp_path / "notes.pdf"
     pdf.write_text("Ferrets are curious animals. They sleep often. This document is about care.", encoding="utf-8")
@@ -69,7 +64,7 @@ async def test_document_manage_summarizes_pdf_text_and_records_artifact(tmp_path
 
 @pytest.mark.asyncio
 async def test_document_manage_creates_and_updates_powerpoint_artifacts(tmp_path) -> None:
-    repos, _audit = _repos(tmp_path)
+    repos, _audit = make_repos(tmp_path)
     task = repos.tasks.create("create powerpoint")
     adapter = DocumentManageAdapter(repos.artifacts, allowed_roots=[str(tmp_path)])
 
