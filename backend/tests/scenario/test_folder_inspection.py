@@ -22,7 +22,7 @@ from .harness import build_scenario, filesystem_settings, run_task_to_completion
 async def test_folder_inspection_reports_files_and_subfolders(tmp_path, monkeypatch) -> None:
     docs_dir = scenario_scratch_dir("folder_open_inspection")
     (docs_dir / "notes.txt").write_text("notes for e2e organization", encoding="utf-8")
-    (docs_dir / "budget.csv").write_text("name,amount\nsample,10\n", encoding="utf-8")
+    (docs_dir / "budget.csv").write_bytes(b"name,amount\r\nsample,10\r\n")
     (docs_dir / "archive").mkdir()
 
     settings = filesystem_settings(monkeypatch, tmp_path, str(docs_dir))
@@ -44,7 +44,7 @@ async def test_folder_inspection_reports_files_and_subfolders(tmp_path, monkeypa
 async def test_folder_inspection_rejects_path_outside_allowed_roots(tmp_path, monkeypatch) -> None:
     docs_dir = scenario_scratch_dir("folder_open_inspection")
     (docs_dir / "notes.txt").write_text("notes for e2e organization", encoding="utf-8")
-    (docs_dir / "budget.csv").write_text("name,amount\nsample,10\n", encoding="utf-8")
+    (docs_dir / "budget.csv").write_bytes(b"name,amount\r\nsample,10\r\n")
     (docs_dir / "archive").mkdir()
 
     # allowed_roots does NOT include docs_dir - the same recorded plan should

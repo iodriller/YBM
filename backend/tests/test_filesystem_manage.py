@@ -62,6 +62,21 @@ async def test_filesystem_manage_inspect_search_plan_and_apply(tmp_path) -> None
 
 
 @pytest.mark.asyncio
+async def test_filesystem_manage_inspection_order_is_deterministic(tmp_path) -> None:
+    root = tmp_path / "downloads"
+    root.mkdir()
+    for name in ("resume.txt", "invoice_2026.txt", "notes.txt"):
+        (root / name).write_text(name, encoding="utf-8")
+    adapter = FilesystemManageAdapter([str(tmp_path)])
+
+    result = await adapter.execute(_request(root, "inspect_folder"))
+
+    assert [
+        entry["relative_path"] for entry in result.output["entries"]
+    ] == ["invoice_2026.txt", "notes.txt", "resume.txt"]
+
+
+@pytest.mark.asyncio
 async def test_filesystem_manage_rename_plan_and_apply(tmp_path) -> None:
     root = tmp_path / "docs"
     root.mkdir()

@@ -78,6 +78,11 @@ _CURRENT_SCENARIO_SCRATCH_ROOT = str(
 
 
 def _normalize(text: str) -> str:
+    # Tool output uses the host platform's native line endings. Recordings
+    # made on Windows therefore contain CRLF while Linux CI produces LF for
+    # the same successful command. Treat those prompts as identical.
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
     # Prompt history renders dict values with escaped Windows separators
     # (``C:\\Users``), while objectives and tool output contain ordinary
     # separators (``C:\Users``). Collapse the rendered form before replacing

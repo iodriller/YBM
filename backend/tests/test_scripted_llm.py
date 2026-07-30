@@ -101,6 +101,15 @@ def test_fixture_key_normalizes_embedded_tempdir_names() -> None:
     )
 
 
+def test_fixture_key_normalizes_cross_platform_line_endings() -> None:
+    windows = "Stdout:\r\n6765\r\n\r\nAvailable tools:"
+    linux = "Stdout:\n6765\n\nAvailable tools:"
+
+    assert fixture_key("generate_structured", "sys", windows) == fixture_key(
+        "generate_structured", "sys", linux
+    )
+
+
 def test_fixture_key_normalizes_scenario_scratch_root_across_platforms() -> None:
     windows = (
         r"search C:\Users\recording-user\AppData\Local\Temp"
