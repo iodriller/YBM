@@ -27,11 +27,12 @@ async def test_code_interpreter_json_transform_normalizes_task_list(tmp_path, mo
     settings = isolated_settings(
         monkeypatch, tmp_path,
         capabilities=caps,
-        # require_approval_for_untrusted_run_python: False - this test is
-        # about execution correctness, not the approval gate; see
+        # require_approval_for_untrusted_run_python: False - the
+        # code.interpreter-specific "would run unsandboxed" gate; see
         # test_code_interpreter.py's
-        # test_code_interpreter_generated_run_needs_approval_on_silent_docker_fallback
-        # for that gate's own coverage.
+        # test_code_interpreter_generated_run_needs_approval_on_silent_docker_fallback.
+        # Does NOT disable generate_and_run's OWN separate, unconditional
+        # approval requirement - see run_task_to_completion's auto_approve.
         adapters={
             "code_interpreter": {
                 "enabled": True,
@@ -46,6 +47,10 @@ async def test_code_interpreter_json_transform_normalizes_task_list(tmp_path, mo
         scenario,
         "Use the local code interpreter to normalize this task list into tasks-normalized.json: "
         "task A priority high owner Oney; task B priority low owner Agent; task C priority medium owner Oney.",
+        # generate_and_run is unconditionally approval-gated by design
+        # (code_interpreter.py's ToolDefinition, approval_required_operations).
+        # This test is about execution correctness, not the gate itself.
+        auto_approve=True,
     )
 
     assert task.status == TaskStatus.COMPLETED

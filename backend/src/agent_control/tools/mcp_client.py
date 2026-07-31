@@ -425,6 +425,11 @@ def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -
                 MCPClientOutput,
             ),
             default_operation="list_tools",
+            risk_resolver=lambda value: _mcp_required_risk(settings.mcp, value),
+            approval_required_operations=("install_server",),
+            approval_reasons={
+                "install_server": "persists a new MCP server config that will run its own command/process on future calls",
+            },
             examples=(
                 {"operation": "list_tools"},
                 # `server` and `tool` are separate fields - never a single
@@ -443,3 +448,13 @@ def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -
     )
     if settings.mcp.enabled:
         adapters["mcp.client"] = MCPClientAdapter(settings.mcp)
+
+
+def _mcp_required_risk(config: MCPConfig, value: dict[str, Any]) -> RiskLevel:
+    operation = str(value.get("operation") or "list_tools")
+    if operation in {"discover", "list_tools", "health"}:
+        return RiskLevel.LOW
+    if operation == "install_server":
+        return RiskLevel.CRITICAL
+    server = config.servers.get(str(value.get("server") or ""))
+    return server.risk_level if server is not None else RiskLevel.HIGH

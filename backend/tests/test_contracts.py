@@ -27,6 +27,7 @@ from agent_control.tools.contracts import (
     FilesystemReadFileInput,
     FilesystemSearchInput,
     HttpRequestInput,
+    MCPClientInput,
     ScheduleManageInput,
     VSCodeCopilotTerminalInput,
     VSCodeTerminalCommandInput,
@@ -222,3 +223,26 @@ def test_vscode_terminal_command_requires_non_empty_command() -> None:
     with pytest.raises(ValidationError):
         VSCodeTerminalCommandInput(command="")
     VSCodeTerminalCommandInput(command="ls")
+
+
+# ----- mcp.client -------------------------------------------------------
+
+
+def test_mcp_client_call_tool_requires_server_and_tool() -> None:
+    with pytest.raises(ValidationError):
+        MCPClientInput(operation="call_tool")
+    MCPClientInput(operation="call_tool", server="fake", tool="echo")
+
+
+def test_mcp_client_dict_args_rejected_with_actionable_message() -> None:
+    # docs/HISTORY.md Part 4's re-recording note: 'args' (install_server's
+    # list[str] of command-line arguments) and 'arguments' (call_tool's
+    # dict of tool arguments) are easy to conflate - reproduced live across
+    # three independent recordings of a local 8B model repeating the
+    # mistake with zero self-correction against Pydantic's raw "should be a
+    # valid list" message. This pins the clearer message in its place.
+    with pytest.raises(ValidationError) as excinfo:
+        MCPClientInput(operation="call_tool", server="fake", tool="echo", args={"text": "hi"})
+    assert "arguments" in str(excinfo.value)
+    # A real list (install_server's actual shape) is untouched.
+    MCPClientInput(operation="install_server", name="fake", command="python", args=["server.py"])

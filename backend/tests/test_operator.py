@@ -175,3 +175,44 @@ def test_format_history_truncates_to_recent_entries() -> None:
     assert "earlier step(s) omitted" in formatted
     assert "tool_0" not in formatted
     assert "tool_19" in formatted
+
+
+@pytest.mark.asyncio
+async def test_decide_prefer_major_uses_major_provider_from_the_start() -> None:
+    """docs/HISTORY.md Part 4 T2.6: prefer_major must select major_provider
+    BEFORE any call is made, not just as a post-failure escalation - the
+    default provider should never be invoked at all in this case."""
+    provider = QueueDecisionProvider([])  # would raise IndexError if ever called
+    major_provider = QueueDecisionProvider([OperatorDecision(action=OperatorAction.DONE, final_answer="ok")])
+    operator = OperatorLoopService(provider, major_provider=major_provider)
+
+    decision = await operator.decide("objective", "context", history=[], prefer_major=True)
+
+    assert decision.action == OperatorAction.DONE
+    assert provider.prompts == []
+    assert len(major_provider.prompts) == 1
+
+
+@pytest.mark.asyncio
+async def test_decide_prefer_major_with_no_major_provider_configured_uses_default() -> None:
+    """prefer_major is a preference, not a requirement - with no major_provider
+    at all, decide() must fall back to the default provider rather than fail."""
+    provider = QueueDecisionProvider([OperatorDecision(action=OperatorAction.DONE, final_answer="ok")])
+    operator = OperatorLoopService(provider, major_provider=None)
+
+    decision = await operator.decide("objective", "context", history=[], prefer_major=True)
+
+    assert decision.action == OperatorAction.DONE
+    assert len(provider.prompts) == 1
+
+
+@pytest.mark.asyncio
+async def test_decide_prefer_major_false_by_default_uses_default_provider() -> None:
+    provider = QueueDecisionProvider([OperatorDecision(action=OperatorAction.DONE, final_answer="ok")])
+    major_provider = QueueDecisionProvider([])
+    operator = OperatorLoopService(provider, major_provider=major_provider)
+
+    await operator.decide("objective", "context", history=[])
+
+    assert len(provider.prompts) == 1
+    assert major_provider.prompts == []

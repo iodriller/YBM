@@ -73,7 +73,7 @@ capabilities:
     enabled: false
     scopes: []
     requires_approval: true
-    max_risk_level: "medium"
+    max_risk_level: "critical"
   filesystem.read:
     enabled: false
     scopes: []
@@ -83,7 +83,7 @@ capabilities:
     enabled: false
     scopes: []
     requires_approval: true
-    max_risk_level: "high"
+    max_risk_level: "critical"
   vscode.read_state:
     enabled: false
     scopes: []
@@ -137,6 +137,8 @@ capabilities:
 
 approval_policy:
   default_timeout_seconds: 900
+  # Authoritative across every capability and access mode. A capability's
+  # requires_approval: false does not bypass this floor.
   require_approval_at_or_above: "medium"
   approval_token_ttl_seconds: 900
 
@@ -367,6 +369,32 @@ adapters:
     speed: 1.0
     output_dir: ".agent_control/tts"
     timeout_seconds: 120
+  skills:
+    # User-droppable capability packs - drop a .md file (YAML frontmatter
+    # with name/description, then instructions as the body) into root_dir
+    # and it's available via the skills.use tool on the worker's next call,
+    # no restart or code change needed. See docs/HISTORY.md Part 4 T1.3.
+    enabled: true
+    root_dir: ".agent_control/skills"
+    max_skills_listed: 50
+  persona:
+    # One global identity/preference document, injected into every Operator
+    # prompt - distinct from the per-conversation memory above. Edit the
+    # file directly, or let the model update it via persona.manage when it
+    # learns something durable. See docs/HISTORY.md Part 4 T2.5.
+    enabled: true
+    path: ".agent_control/persona.md"
+    max_chars: 4000
+  knowledge_base:
+    # Local, personal document search (notes, reference material) by
+    # keyword overlap, not embeddings - see docs/HISTORY.md Part 4 T2.7 for
+    # why. Drop files under root_dir; knowledge.search re-indexes fresh on
+    # every call, no separate indexing step.
+    enabled: true
+    root_dir: ".agent_control/knowledge"
+    max_files_indexed: 500
+    max_chars_per_file: 20000
+    max_results: 5
 
 mcp:
   enabled: false

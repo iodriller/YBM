@@ -85,26 +85,43 @@ class BackgroundSessionAdapter:
 
 
 class QueueOperator:
-    """Fake OperatorLoopService - returns decisions in order, one per decide() call."""
+    """Fake OperatorLoopService - returns decisions in order, one per decide() call.
 
-    def __init__(self, decisions: list[OperatorDecision]) -> None:
+    `usages`, if given, is a same-length list of usage dicts (or None) - one
+    per decide() call, mirroring how the real OperatorLoopService sets
+    self.last_usage after each call (docs/HISTORY.md Part 4 T1.4).
+    """
+
+    def __init__(self, decisions: list[OperatorDecision], usages: list[dict | None] | None = None) -> None:
         self.decisions = list(decisions)
+        self._usages = list(usages) if usages is not None else None
         self.calls = 0
+        self.last_usage: dict | None = None
+        # docs/HISTORY.md Part 4 T2.6: one entry per decide() call, so tests
+        # can assert exactly when the caller asked for the stronger model.
+        self.prefer_major_calls: list[bool] = []
 
-    async def decide(self, objective, config_context, history, *, memory_context=""):
+    async def decide(self, objective, config_context, history, *, memory_context="", prefer_major=False):
         self.calls += 1
+        self.prefer_major_calls.append(prefer_major)
+        if self._usages is not None:
+            self.last_usage = self._usages.pop(0)
         return self.decisions.pop(0)
 
 
 class QueueAuditor:
     """Fake AuditorService - returns results in order, one per audit() call."""
 
-    def __init__(self, results: list[AuditResult]) -> None:
+    def __init__(self, results: list[AuditResult], usages: list[dict | None] | None = None) -> None:
         self.results = list(results)
+        self._usages = list(usages) if usages is not None else None
         self.calls: list[tuple[str, str]] = []
+        self.last_usage: dict | None = None
 
     async def audit(self, objective, raw_output, *, original_message=None):
         self.calls.append((objective, raw_output))
+        if self._usages is not None:
+            self.last_usage = self._usages.pop(0)
         return self.results.pop(0)
 
 
@@ -267,7 +284,7 @@ async def test_gap_check_entries_do_not_consume_the_tool_call_budget(tmp_path) -
     class AlwaysCallTool:
         def __init__(self, prefix) -> None:
             self.prefix = list(prefix)
-        async def decide(self, objective, config_context, history, *, memory_context=""):
+        async def decide(self, objective, config_context, history, *, memory_context="", prefer_major=False):
             if self.prefix:
                 return self.prefix.pop(0)
             return OperatorDecision(
@@ -827,3 +844,99 @@ async def test_worker_without_operator_or_executor_blocks_instead_of_crashing(tm
     assert result.status == TaskStatus.BLOCKED
     events = repos.audit.list_for_task(task.id)
     assert any(event.payload.get("error") == "operator_loop_not_configured" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_worker_accumulates_token_usage_across_operator_and_auditor_calls(tmp_path) -> None:
+    """docs/HISTORY.md Part 4 T1.4: the worker used to discard LLM usage
+    entirely, so there was no way to see what a task cost. Two operator
+    decide() calls plus one auditor audit() call must accumulate into
+    task.metadata["token_usage"], split both as a running total and per
+    source (operator vs auditor), since they're typically different models
+    (major_provider escalation, or the Auditor using a smaller profile)."""
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("what is the invoice total?")
+    settings = _settings()
+    executor = _executor(settings, audit, repos, tool_name="filesystem.manage", output={"text": "Invoice #4471 - $250.00"})
+    operator = QueueOperator(
+        [
+            OperatorDecision(action=OperatorAction.CALL_TOOL, tool_name="filesystem.manage", tool_input={}, risk_level=RiskLevel.LOW),
+            OperatorDecision(action=OperatorAction.DONE, final_answer="I found an invoice."),
+        ],
+        usages=[
+            {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120, "model": "gpt-4.1"},
+            {"prompt_tokens": 150, "completion_tokens": 10, "total_tokens": 160, "model": "gpt-4.1"},
+        ],
+    )
+    auditor = QueueAuditor(
+        [AuditResult(sufficient=True, answer="The invoice total is $250.00.")],
+        usages=[{"prompt_tokens": 50, "completion_tokens": 15, "total_tokens": 65, "model": "gpt-4.1-mini"}],
+    )
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator, auditor=auditor)
+
+    running = await worker.process_task(task.id)
+    completed = await worker.process_task(running.id)
+
+    assert completed.status == TaskStatus.COMPLETED
+    usage = completed.metadata["token_usage"]
+    assert usage["calls"] == 3
+    assert usage["prompt_tokens"] == 100 + 150 + 50
+    assert usage["completion_tokens"] == 20 + 10 + 15
+    assert usage["total_tokens"] == 120 + 160 + 65
+    assert usage["by_source"]["operator"] == {
+        "calls": 2, "prompt_tokens": 250, "completion_tokens": 30, "total_tokens": 280,
+    }
+    assert usage["by_source"]["auditor"] == {
+        "calls": 1, "prompt_tokens": 50, "completion_tokens": 15, "total_tokens": 65,
+    }
+    assert usage["last_model"] == "gpt-4.1-mini"  # the auditor's model, since it ran last
+
+
+@pytest.mark.asyncio
+async def test_worker_does_not_record_token_usage_when_provider_reports_none(tmp_path) -> None:
+    """A ScriptedLLMProvider (scenario replay) or a server that omits usage
+    must leave token_usage entirely absent, not create a fabricated zero
+    entry - see the docstring on TaskWorker._record_llm_usage."""
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("plain status-ish task")
+    settings = _settings()
+    executor = _executor(settings, audit, repos)
+    operator = QueueOperator([OperatorDecision(action=OperatorAction.DONE, final_answer="Done.")])
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator)
+
+    completed = await worker.process_task(task.id)
+
+    assert completed.status == TaskStatus.COMPLETED
+    assert "token_usage" not in completed.metadata
+
+
+@pytest.mark.asyncio
+async def test_worker_prefers_major_provider_on_the_step_after_an_audit_gap(tmp_path) -> None:
+    """docs/HISTORY.md Part 4 T2.6: once a `done` has been rejected once
+    (an audit-gap or fulfillment-gap marker is in history), the NEXT
+    decide() call should prefer the major provider - a done-was-rejected
+    signal is exactly the kind of observed difficulty the escalation logic
+    was already designed to react to, just available before the call this
+    time instead of only from a caught parse exception."""
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("list the first 5 episodes")
+    settings = _settings()
+    executor = _executor(settings, audit, repos, tool_name="filesystem.manage", output={"text": "1. Pilot\n2. Second"})
+    operator = QueueOperator([
+        OperatorDecision(action=OperatorAction.CALL_TOOL, tool_name="filesystem.manage", tool_input={}, risk_level=RiskLevel.LOW),
+        OperatorDecision(action=OperatorAction.DONE, final_answer="Here are the episodes."),
+        OperatorDecision(action=OperatorAction.DONE, final_answer="Here are the (better) episodes."),
+    ])
+    auditor = QueueAuditor([
+        AuditResult(sufficient=False, reason="only 2 of 5 requested episodes present"),
+        AuditResult(sufficient=True, answer="grounded final answer"),
+    ])
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator, auditor=auditor)
+
+    running = await worker.process_task(task.id)  # step 1: call_tool
+    gapped = await worker.process_task(running.id)  # step 2: done -> audit gap
+    await worker.process_task(gapped.id)  # step 3: done again, now with the gap marker in history
+
+    # Steps 1 and 2 have no prior gap marker yet; step 3 runs after the
+    # audit-gap entry was appended to history, so only it should prefer major.
+    assert operator.prefer_major_calls == [False, False, True]

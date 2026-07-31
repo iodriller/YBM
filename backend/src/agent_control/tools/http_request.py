@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 import httpx
 
 from agent_control.config import HttpRequestAdapterConfig, SecretVaultConfig
-from agent_control.schemas import Capability, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.schemas import Capability, RiskLevel, ToolCallRequest, ToolCallResult, ToolResultStatus
 from agent_control.storage.redaction import redact_payload
 from agent_control.storage.secrets import SecretVault, SecretVaultError
 from agent_control.tools.contracts import HttpRequestInput, HttpRequestOutput
@@ -269,6 +269,8 @@ def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -
             output_schema=HttpRequestOutput,
             operation_output_schemas=same_output_schema(("request",), HttpRequestOutput),
             default_operation="request",
+            risk_resolver=_http_required_risk,
+            approval_resolver=lambda value: bool(value.get("secret_refs")),
             examples=(
                 {"operation": "request", "method": "GET", "url": "https://api.example.com/status"},
                 {
@@ -282,3 +284,10 @@ def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -
     )
     if settings.adapters.http_request.enabled:
         adapters["http.request"] = HttpRequestAdapter(settings.adapters.http_request, settings.secrets)
+
+
+def _http_required_risk(value: dict[str, Any]) -> RiskLevel:
+    if value.get("secret_refs"):
+        return RiskLevel.HIGH
+    method = str(value.get("method") or "GET").upper()
+    return RiskLevel.LOW if method in {"GET", "HEAD"} else RiskLevel.HIGH

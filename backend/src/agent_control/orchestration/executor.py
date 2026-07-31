@@ -7,6 +7,7 @@ from agent_control.policy import PolicyEngine
 from agent_control.schemas import (
     AuditEventType,
     ErrorClass,
+    RiskLevel,
     ToolCallRequest,
     ToolCallResult,
     ToolResultStatus,
@@ -52,7 +53,7 @@ class ToolExecutor:
         else:
             self.tool_definitions = {definition.name: definition for definition in (tool_definitions or [])}
 
-    async def execute(self, request: ToolCallRequest, approved: bool = False) -> ToolCallResult:
+    async def execute(self, request: ToolCallRequest, approval_id: str | None = None) -> ToolCallResult:
         request, validation_error = self._validated_request(request)
         self.repositories.tool_invocations.create(request)
         self.audit.append(
@@ -73,9 +74,23 @@ class ToolExecutor:
                 ),
             )
 
-        decision = self.policy.evaluate(request, approved=approved)
+        approval = self.repositories.approvals.get(approval_id) if approval_id else None
+        if approval_id and approval is None:
+            return self._complete(
+                request,
+                ToolCallResult(
+                    request_id=request.id,
+                    status=ToolResultStatus.DENIED,
+                    error_class=ErrorClass.POLICY_DENIED,
+                    error_message="approval_not_found",
+                ),
+            )
+        decision = self.policy.evaluate(request, approval=approval)
         if decision.needs_approval:
-            approval = self.policy.approval_request(request)
+            definition = self.tool_definitions.get(request.tool_name)
+            reason = definition.approval_reason(request.input) if definition else None
+            summary = f"Approve {request.tool_name} using {request.capability.value}: {reason}" if reason else None
+            approval = self.policy.approval_request(request, summary=summary)
             self.repositories.approvals.create(approval)
             self.audit.append(
                 AuditEventType.APPROVAL_REQUESTED,
@@ -115,9 +130,25 @@ class ToolExecutor:
                 )
             )
 
+        if approval is not None and not self.repositories.approvals.consume_approved(approval.id):
+            return self._complete(
+                request,
+                ToolCallResult(
+                    request_id=request.id,
+                    status=ToolResultStatus.DENIED,
+                    error_class=ErrorClass.POLICY_DENIED,
+                    error_message="approval_not_consumable",
+                ),
+            )
+
         try:
-            result = await adapter.execute(request)
-            result, output_validation_error = self._validated_result(request, result)
+            dispatch_request = request
+            if approval is not None and "approved" in request.input:
+                dispatch_request = request.model_copy(
+                    update={"input": {**request.input, "approved": True}}
+                )
+            result = await adapter.execute(dispatch_request)
+            result, output_validation_error = self._validated_result(dispatch_request, result)
             if output_validation_error:
                 return self._complete(
                     request,
@@ -145,16 +176,39 @@ class ToolExecutor:
         definition = self.tool_definitions.get(request.tool_name)
         if definition is None:
             return request, None
+        if request.capability != definition.capability:
+            return (
+                request,
+                (
+                    f"tool {request.tool_name} requires capability "
+                    f"{definition.capability.value}, not {request.capability.value}"
+                ),
+            )
         try:
             validated_input = definition.validate_input(request.input)
         except ValueError as exc:
             return request, str(exc)
+        required_risk = definition.required_risk(validated_input)
+        if _RISK_ORDER[request.risk_level] < _RISK_ORDER[required_risk]:
+            return (
+                request,
+                (
+                    f"risk level {request.risk_level.value} understates "
+                    f"{request.tool_name} operation "
+                    f"{validated_input.get('operation') or definition.default_operation or '<default>'}; "
+                    f"minimum is {required_risk.value}"
+                ),
+            )
         return (
             request.model_copy(
                 update={
                     "input": validated_input,
                     "scope_target": request.scope_target or validated_input.get("scope_target"),
                     "timeout_seconds": int(validated_input.get("timeout_seconds") or request.timeout_seconds),
+                    "requires_approval": (
+                        request.requires_approval
+                        or definition.requires_approval(validated_input)
+                    ),
                 }
             ),
             None,
@@ -188,3 +242,11 @@ class ToolExecutor:
             payload=result.model_dump(mode="json"),
         )
         return result
+
+
+_RISK_ORDER = {
+    RiskLevel.LOW: 1,
+    RiskLevel.MEDIUM: 2,
+    RiskLevel.HIGH: 3,
+    RiskLevel.CRITICAL: 4,
+}

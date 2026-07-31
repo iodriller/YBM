@@ -14,7 +14,7 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from agent_control.config import CodingAgentAdapterConfig
-from agent_control.schemas import Capability, ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.schemas import Capability, ErrorClass, RiskLevel, ToolCallRequest, ToolCallResult, ToolResultStatus
 from agent_control.tools.contracts import CodingAgentInput, CodingAgentOutput
 from agent_control.tools.spec import (
     Adapters,
@@ -858,6 +858,17 @@ def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -
             output_schema=CodingAgentOutput,
             operation_output_schemas=same_output_schema(operations, CodingAgentOutput),
             default_operation="run_goal",
+            operation_risks={
+                "status": RiskLevel.LOW,
+                "limits": RiskLevel.LOW,
+                "get_latest_output": RiskLevel.LOW,
+                "stop": RiskLevel.MEDIUM,
+                "start": RiskLevel.HIGH,
+                "plan": RiskLevel.HIGH,
+                "run_step": RiskLevel.HIGH,
+                "run_goal": RiskLevel.HIGH,
+                "resume": RiskLevel.HIGH,
+            },
             examples=(
                 {"operation": "start", "provider": "codex", "prompt": "fix the failing tests in this repo"},
                 {"operation": "status"},

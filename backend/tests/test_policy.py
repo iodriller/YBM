@@ -5,7 +5,7 @@ import pytest
 from agent_control.config import AppSettings, CapabilityPolicy, default_capability_policies
 from agent_control.orchestration import StaticToolAdapter, ToolExecutor
 from agent_control.policy import PolicyEngine
-from agent_control.schemas import Capability, RiskLevel, ToolCallRequest, ToolResultStatus
+from agent_control.schemas import ApprovalStatus, Capability, RiskLevel, ToolCallRequest, ToolResultStatus
 from agent_control.tools.registry import build_tool_registry
 from helpers import make_repos
 
@@ -69,6 +69,34 @@ def test_scope_check_does_not_allow_prefix_escape(tmp_path) -> None:
     assert denied.allowed is False
     assert denied.reason == "scope_not_allowed"
     assert allowed.allowed is True
+
+
+def test_global_approval_floor_cannot_be_disabled_per_capability(tmp_path) -> None:
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("Send network request")
+    settings = AppSettings(
+        _env_file=None,
+        approval_policy={"require_approval_at_or_above": RiskLevel.MEDIUM},
+        capabilities={
+            Capability.NETWORK_HTTP: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.HIGH,
+            )
+        },
+    )
+
+    decision = PolicyEngine(settings, audit).evaluate(
+        ToolCallRequest(
+            task_id=task.id,
+            tool_name="http.request",
+            capability=Capability.NETWORK_HTTP,
+            risk_level=RiskLevel.HIGH,
+        )
+    )
+
+    assert decision.needs_approval is True
+    assert decision.reason == "approval_required"
 
 
 @pytest.mark.asyncio
@@ -152,6 +180,7 @@ async def test_executor_rejects_invalid_registered_tool_input_before_adapter(tmp
     task = repos.tasks.create("Launch app")
     settings = AppSettings(
         _env_file=None,
+        approval_policy={"require_approval_at_or_above": RiskLevel.CRITICAL},
         adapters={"workspace": {"enabled": True, "root_dir": str(tmp_path / "workspaces")}},
         capabilities={
             Capability.FILESYSTEM_WRITE: CapabilityPolicy(
@@ -193,6 +222,7 @@ async def test_executor_normalizes_registered_tool_defaults(tmp_path) -> None:
     task = repos.tasks.create("Prepare workspace")
     settings = AppSettings(
         _env_file=None,
+        approval_policy={"require_approval_at_or_above": RiskLevel.CRITICAL},
         adapters={"workspace": {"enabled": True, "root_dir": str(tmp_path / "workspaces")}},
         capabilities={
             Capability.FILESYSTEM_WRITE: CapabilityPolicy(
@@ -232,6 +262,7 @@ async def test_executor_rejects_invalid_registered_tool_output(tmp_path) -> None
     task = repos.tasks.create("Launch app")
     settings = AppSettings(
         _env_file=None,
+        approval_policy={"require_approval_at_or_above": RiskLevel.MEDIUM},
         adapters={"workspace": {"enabled": True, "root_dir": str(tmp_path / "workspaces")}},
         capabilities={
             Capability.FILESYSTEM_WRITE: CapabilityPolicy(
@@ -251,15 +282,29 @@ async def test_executor_rejects_invalid_registered_tool_output(tmp_path) -> None
         tool_definitions=registry.definitions,
     )
 
-    result = await executor.execute(
-        ToolCallRequest(
+    def _launch_request() -> ToolCallRequest:
+        # A fresh request each call (own id -> own tool_invocations row);
+        # the approval binds on content (task/tool/capability/risk/input),
+        # not on request id, so two separately-built but identical requests
+        # still match the same approval.
+        return ToolCallRequest(
             task_id=task.id,
             tool_name="workspace.manage",
             capability=Capability.FILESYSTEM_WRITE,
             risk_level=RiskLevel.HIGH,
             input={"operation": "launch_static"},
         )
-    )
+
+    # HIGH is filesystem.write's minimum required risk (no per-operation
+    # override), and HIGH >= approval_policy.require_approval_at_or_above -
+    # this needs a real, consumed approval to reach output validation at
+    # all, same as any other HIGH-risk call.
+    gated = await executor.execute(_launch_request())
+    assert gated.status == ToolResultStatus.NEEDS_APPROVAL
+    approval_id = gated.output["approval_id"]
+    assert repos.approvals.decide_pending(approval_id, ApprovalStatus.APPROVED)
+
+    result = await executor.execute(_launch_request(), approval_id=approval_id)
 
     assert result.status == ToolResultStatus.FAILED
     assert result.error_class.value == "validation_failed"

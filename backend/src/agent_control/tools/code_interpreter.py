@@ -26,6 +26,7 @@ from agent_control.schemas import (
     ArtifactType,
     Capability,
     ErrorClass,
+    RiskLevel,
     ToolCallRequest,
     ToolCallResult,
     ToolResultStatus,
@@ -1316,6 +1317,32 @@ def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -
                 "health": CodeInterpreterOutput,
             },
             default_operation="run_python",
+            operation_risks={
+                "inspect_state": RiskLevel.LOW,
+                "health": RiskLevel.LOW,
+                "run_python": RiskLevel.HIGH,
+                "generate_and_run": RiskLevel.HIGH,
+                "solve_once": RiskLevel.HIGH,
+                "build_temp_helper": RiskLevel.HIGH,
+                "repair_script": RiskLevel.HIGH,
+            },
+            # Execution may fall back to a local unsandboxed process. This
+            # gate is runtime-owned and cannot be bypassed by Full Access or
+            # by setting input.approved in model output.
+            approval_required_operations=(
+                "run_python",
+                "generate_and_run",
+                "solve_once",
+                "build_temp_helper",
+                "repair_script",
+            ),
+            approval_reasons={
+                "run_python": "runs the given Python code, possibly unsandboxed if Docker is unavailable",
+                "generate_and_run": "generates Python code from your objective, then runs it - possibly unsandboxed if Docker is unavailable - review what it wrote before approving",
+                "solve_once": "generates and runs Python code to answer a one-off computation",
+                "build_temp_helper": "generates and runs a helper Python script",
+                "repair_script": "generates and runs a modified version of a previously failing script",
+            },
             examples=(
                 {"operation": "generate_and_run",
                  "objective": "compute the 20th Fibonacci number and print it"},

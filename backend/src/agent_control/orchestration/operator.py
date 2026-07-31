@@ -20,6 +20,10 @@ class OperatorLoopService:
     def __init__(self, provider: LLMProvider, major_provider: LLMProvider | None = None) -> None:
         self.provider = provider
         self.major_provider = major_provider
+        # Usage from the most recent decide() call, read by worker.py right
+        # after each call to accumulate per-task token/cost totals. See
+        # docs/HISTORY.md Part 4 T1.4.
+        self.last_usage: dict | None = None
 
     async def decide(
         self,
@@ -28,9 +32,28 @@ class OperatorLoopService:
         history: list[dict],
         *,
         memory_context: str = "",
+        prefer_major: bool = False,
     ) -> OperatorDecision:
+        """`prefer_major` (docs/HISTORY.md Part 4 T2.6): start this call on
+        major_provider instead of provider, when the caller already has a
+        concrete, local, zero-cost-to-check signal that the default model is
+        struggling on this task - worker.py sets it once history contains an
+        audit-gap or fulfillment-gap retry marker, meaning a `done` was
+        already rejected once. This extends, rather than replaces, the
+        parse-failure escalation below: both exist because guessing
+        complexity from objective text up front is worse than reacting to
+        observed difficulty (see that escalation's own comment) - this is
+        still reactive, just to a signal available before the call instead
+        of only from a caught exception during it.
+
+        Deliberately NOT applied to delegated sub-tasks (worker.py's
+        _run_delegate never sets this): a sub-task is the "worker" side of
+        the 2026 supervisor/worker cost pattern - it should default to the
+        cheaper model, the same as any other step, not inherit escalation
+        just because delegation itself is happening.
+        """
         user_prompt = self._prompt(objective, config_context, history, memory_context)
-        provider = self.provider
+        provider = self.major_provider if (prefer_major and self.major_provider is not None) else self.provider
         last_error: Exception | None = None
         current_prompt = user_prompt
         for _attempt in range(3):
@@ -38,6 +61,7 @@ class OperatorLoopService:
                 candidate = await provider.generate_structured(
                     OPERATOR_SYSTEM_PROMPT, current_prompt, OperatorDecision, temperature=0.1
                 )
+                self.last_usage = getattr(provider, "last_usage", None)
                 return candidate
             except (ValueError, ValidationError) as exc:
                 last_error = exc

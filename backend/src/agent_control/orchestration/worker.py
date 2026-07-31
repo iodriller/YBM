@@ -16,12 +16,12 @@ from agent_control.orchestration.fulfillment import validate_fulfillment
 from agent_control.orchestration.operator import OperatorLoopService
 from agent_control.recovery import RetryPolicy
 from agent_control.schemas import (
-    ApprovalRequest,
     ApprovalStatus,
     AuditEventType,
     ErrorClass,
     OperatorAction,
     OperatorDecision,
+    ParallelToolCall,
     RiskLevel,
     TaskRecord,
     TaskStatus,
@@ -113,6 +113,11 @@ class TaskWorker:
     # Override globally via ``settings.limits.task_budget_seconds`` (config) or
     # per-task via ``task.metadata["task_budget_seconds"]``.
     DEFAULT_TASK_BUDGET_SECONDS: float = 600.0
+    # A delegated sub-task (docs/HISTORY.md Part 4 T1.2) gets its own small,
+    # fixed step budget, independent of operator_max_steps - the whole point
+    # of delegation is bounding how much a sub-task can explore before it
+    # must report back, not inheriting the parent's full budget.
+    DELEGATE_MAX_STEPS: int = 6
 
     def __init__(
         self,
@@ -244,7 +249,7 @@ class TaskWorker:
         used) and transitions to AWAITING_APPROVAL with the pending call
         stashed in metadata["operator_pending_call"]; resuming is handled by
         _process_operator_awaiting_approval below, which replays that exact
-        call with approved=True once every approval on the task clears.
+        call with its one-shot, parameter-bound approval.
 
         Fulfillment: a `done` decision is checked against
         `validate_fulfillment` (objective-inferred postconditions - there is
@@ -298,10 +303,19 @@ class TaskWorker:
             )
 
         memory_context = str(latest.metadata.get("memory_context") or "")
+        # docs/HISTORY.md Part 4 T2.6: a done that was already rejected once
+        # (audit-gap or fulfillment-gap retry marker in history) is a
+        # concrete, local, zero-cost-to-check sign the default model is
+        # struggling on this task - worth the stronger model if one is
+        # configured, same reasoning as the existing parse-failure escalation
+        # in operator.py, just reacting to an earlier signal.
+        prefer_major = any(entry.get("tool_name") in CHECK_ENTRY_NAMES for entry in history)
         try:
             decision = await self.operator.decide(
-                latest.objective, self._planner_context(), history, memory_context=memory_context
+                latest.objective, self._planner_context(), history,
+                memory_context=memory_context, prefer_major=prefer_major,
             )
+            latest = self._record_llm_usage(latest, "operator", getattr(self.operator, "last_usage", None))
         except Exception as exc:
             self.audit.append(
                 AuditEventType.ERROR, actor="operator", task_id=latest.id,
@@ -339,6 +353,7 @@ class TaskWorker:
                         raw_output,
                         original_message=str(latest.metadata.get("original_message_text") or "") or None,
                     )
+                    latest = self._record_llm_usage(latest, "auditor", getattr(self.auditor, "last_usage", None))
                     if not audit_result.sufficient:
                         history.append({
                             "tool_name": CHECK_ENTRY_AUDIT,
@@ -392,6 +407,16 @@ class TaskWorker:
             metadata = {**latest.metadata, "operator_history": history}
             return self._transition_operator(latest, metadata, TaskStatus.BLOCKED, decision.reason or "operator_blocked")
 
+        if decision.action == OperatorAction.CALL_TOOLS_PARALLEL:
+            entries = await self._run_parallel_calls(latest.id, decision.parallel_calls)
+            history.extend(entries)
+            return self.repositories.tasks.update_metadata(latest.id, {**latest.metadata, "operator_history": history})
+
+        if decision.action == OperatorAction.DELEGATE:
+            latest, entry = await self._run_delegate(latest, decision)
+            history.append(entry)
+            return self.repositories.tasks.update_metadata(latest.id, {**latest.metadata, "operator_history": history})
+
         # CALL_TOOL
         tool_def = self.executor.tool_definitions.get(decision.tool_name)
         if tool_def is None:
@@ -408,10 +433,15 @@ class TaskWorker:
             risk_level=decision.risk_level,
             input=decision.tool_input,
         )
-        result = await self.executor.execute(request, approved=False)
+        result = await self.executor.execute(request)
 
         if result.status == ToolResultStatus.NEEDS_APPROVAL:
-            return self._await_operator_approval(latest, decision, history)
+            return self._await_operator_approval(
+                latest,
+                decision,
+                history,
+                approval_id=str(result.output.get("approval_id") or ""),
+            )
 
         recorded = self._record_tool_result(latest.id, decision.tool_name, result)
         if _is_background_external_tool_result(decision.tool_name, result):
@@ -429,6 +459,212 @@ class TaskWorker:
             "error": result.error_message,
         })
         return self.repositories.tasks.update_metadata(recorded.id, {**recorded.metadata, "operator_history": history})
+
+    async def _run_parallel_calls(self, task_id: str, calls: list[ParallelToolCall]) -> list[dict[str, Any]]:
+        """Execute independent tool calls concurrently (docs/HISTORY.md Part 3
+        T1.1) and return one history-entry dict per call, same shape as a
+        normal call_tool entry plus ``"parallel": True``.
+
+        Deliberately narrow, not a general CALL_TOOL replacement: skips the
+        approval/retry/background-wait machinery entirely, because none of
+        it generalizes cleanly to N calls at once (which one pauses the
+        whole task for approval? what does "retry" mean when 2 of 5
+        succeeded?). A call that needs approval or starts a background
+        session fails with a message telling the model to reissue it alone
+        via call_tool - a real, disclosed limitation. Intended for
+        independent reads/lookups only; operator_system.md tells the model
+        so directly.
+
+        Safe to run concurrently against the same task's metadata: each
+        call gets its own ToolCallRequest (its own id, so
+        tool_invocations.create() is an independent insert per call, not a
+        shared row), and _record_tool_result - a plain synchronous method
+        with no ``await`` inside it - runs atomically with respect to the
+        single-threaded asyncio event loop, so concurrent calls can't
+        interleave a read and a write against each other. Which call's
+        result ends up as last_tool_name/last_tool_output_text is simply
+        whichever finishes last - there is no single well-defined "last"
+        call when N ran at once, and that's an acceptable, disclosed
+        property of a parallel batch, not a bug.
+        """
+
+        async def _one(call: ParallelToolCall) -> dict[str, Any]:
+            tool_def = self.executor.tool_definitions.get(call.tool_name)
+            if tool_def is None:
+                return {
+                    "tool_name": call.tool_name, "input": call.tool_input,
+                    "status": "failed", "error": f"unregistered tool: {call.tool_name}",
+                    "parallel": True,
+                }
+            request = ToolCallRequest(
+                task_id=task_id, tool_name=call.tool_name, capability=tool_def.capability,
+                risk_level=call.risk_level, input=call.tool_input,
+            )
+            result = await self.executor.execute(request)
+            if result.status == ToolResultStatus.NEEDS_APPROVAL:
+                return {
+                    "tool_name": call.tool_name, "input": call.tool_input,
+                    "status": "failed",
+                    "error": (
+                        "this call needs approval, which call_tools_parallel does not support - "
+                        "reissue it alone via call_tool if it actually needs to run"
+                    ),
+                    "parallel": True,
+                }
+            if _is_background_external_tool_result(call.tool_name, result):
+                return {
+                    "tool_name": call.tool_name, "input": call.tool_input,
+                    "status": "failed",
+                    "error": (
+                        "this call started a background session, which call_tools_parallel does not "
+                        "support - reissue it alone via call_tool"
+                    ),
+                    "parallel": True,
+                }
+            self._record_tool_result(task_id, call.tool_name, result)
+            output_text = _tool_output_text(result) if result.status == ToolResultStatus.SUCCEEDED else None
+            return {
+                "tool_name": call.tool_name, "input": call.tool_input,
+                "status": result.status.value,
+                "output_summary": output_text[:2000] if output_text else None,
+                "error": result.error_message,
+                "parallel": True,
+            }
+
+        return list(await asyncio.gather(*[_one(call) for call in calls]))
+
+    async def _run_delegate(
+        self, task: TaskRecord, decision: OperatorDecision
+    ) -> tuple[TaskRecord, dict[str, Any]]:
+        """Run a delegated sub-task in an isolated context (docs/HISTORY.md
+        Part 3 T1.2): its own operator loop, its own history starting from
+        nothing, its own fixed step budget - only a compact summary crosses
+        back into the parent's history. That's the entire value: a
+        long/exploratory sub-task doesn't bloat the parent's context the way
+        inlining the same steps via plain call_tool would.
+
+        The parent task's own metadata (last_tool_name, last_tool_output_text,
+        etc.) IS updated by the sub-task's tool calls, deliberately, not as a
+        leak: it's what lets the audit gate ground a `done` that immediately
+        follows a delegate step in the sub-agent's real last tool output
+        (see CONTENT_TOOLS in orchestration/auditor.py, which lists
+        "delegate" for exactly this). Only the step-by-step history stays
+        isolated - the whole point of the isolation is a smaller prompt for
+        the parent's next decide() call, not hiding what happened.
+
+        Deliberately narrow, same reasoning as _run_parallel_calls: a
+        sub-task cannot pause for approval, wait on a background session,
+        ask the user, or delegate further - each needs task-level state a
+        synchronous, in-process sub-loop doesn't have. Hitting one of those
+        fails the sub-task with a clear reason instead of hanging; the
+        parent sees the reason in its own history and can handle that step
+        directly with a normal call_tool instead of delegating it.
+        """
+        objective = decision.delegate_objective or ""
+        allowed_tools = set(decision.delegate_tools) if decision.delegate_tools else None
+        extra_context = ""
+        if allowed_tools:
+            extra_context = (
+                "\n\nFor this delegated sub-task, you may ONLY use these tools: "
+                f"{', '.join(sorted(allowed_tools))}. Any other tool_name will be refused."
+            )
+        summary_input = {"objective": objective, "delegate_tools": decision.delegate_tools}
+        sub_history: list[dict[str, Any]] = []
+
+        for _step in range(self.DELEGATE_MAX_STEPS):
+            try:
+                sub_decision = await self.operator.decide(
+                    objective, self._planner_context(extra_context), sub_history, memory_context=""
+                )
+            except Exception as exc:
+                return task, {
+                    "tool_name": "delegate", "input": summary_input, "status": "failed",
+                    "output_summary": None, "error": f"sub-task decide() failed: {exc}",
+                }
+            task = self._record_llm_usage(task, "subagent", getattr(self.operator, "last_usage", None))
+
+            if sub_decision.action == OperatorAction.DONE:
+                return task, {
+                    "tool_name": "delegate", "input": summary_input, "status": "succeeded",
+                    "output_summary": (sub_decision.final_answer or "")[:2000], "error": None,
+                }
+            if sub_decision.action == OperatorAction.BLOCKED:
+                return task, {
+                    "tool_name": "delegate", "input": summary_input, "status": "failed",
+                    "output_summary": None,
+                    "error": f"sub-task blocked: {sub_decision.reason or 'no reason given'}",
+                }
+            if sub_decision.action == OperatorAction.ASK_USER:
+                return task, {
+                    "tool_name": "delegate", "input": summary_input, "status": "failed",
+                    "output_summary": None,
+                    "error": (
+                        "sub-task needs user input, which delegation does not support: "
+                        f"{sub_decision.question or ''}"
+                    ),
+                }
+            if sub_decision.action == OperatorAction.DELEGATE:
+                sub_history.append({
+                    "tool_name": "delegate", "input": None, "status": "failed",
+                    "error": "delegation is not available inside a delegated sub-task",
+                })
+                continue
+            if sub_decision.action == OperatorAction.CALL_TOOLS_PARALLEL:
+                calls = sub_decision.parallel_calls
+                if allowed_tools and any(call.tool_name not in allowed_tools for call in calls):
+                    sub_history.append({
+                        "tool_name": "call_tools_parallel", "input": None, "status": "failed",
+                        "error": f"one or more tools are not in this sub-task's allowed set: {sorted(allowed_tools)}",
+                    })
+                    continue
+                sub_history.extend(await self._run_parallel_calls(task.id, calls))
+                continue
+
+            # CALL_TOOL
+            if allowed_tools and sub_decision.tool_name not in allowed_tools:
+                sub_history.append({
+                    "tool_name": sub_decision.tool_name, "input": sub_decision.tool_input, "status": "failed",
+                    "error": f"tool not in this sub-task's allowed set: {sorted(allowed_tools)}",
+                })
+                continue
+            tool_def = self.executor.tool_definitions.get(sub_decision.tool_name)
+            if tool_def is None:
+                sub_history.append({
+                    "tool_name": sub_decision.tool_name, "input": sub_decision.tool_input, "status": "failed",
+                    "error": f"unregistered tool: {sub_decision.tool_name}",
+                })
+                continue
+            request = ToolCallRequest(
+                task_id=task.id, tool_name=sub_decision.tool_name, capability=tool_def.capability,
+                risk_level=sub_decision.risk_level, input=sub_decision.tool_input,
+            )
+            result = await self.executor.execute(request)
+            if result.status == ToolResultStatus.NEEDS_APPROVAL:
+                sub_history.append({
+                    "tool_name": sub_decision.tool_name, "input": sub_decision.tool_input, "status": "failed",
+                    "error": "this call needs approval, which delegation does not support",
+                })
+                continue
+            if _is_background_external_tool_result(sub_decision.tool_name, result):
+                sub_history.append({
+                    "tool_name": sub_decision.tool_name, "input": sub_decision.tool_input, "status": "failed",
+                    "error": "this call started a background session, which delegation does not support",
+                })
+                continue
+            task = self._record_tool_result(task.id, sub_decision.tool_name, result)
+            output_text = _tool_output_text(result) if result.status == ToolResultStatus.SUCCEEDED else None
+            sub_history.append({
+                "tool_name": sub_decision.tool_name, "input": sub_decision.tool_input,
+                "status": result.status.value,
+                "output_summary": output_text[:2000] if output_text else None,
+                "error": result.error_message,
+            })
+
+        return task, {
+            "tool_name": "delegate", "input": summary_input, "status": "failed",
+            "output_summary": None,
+            "error": f"sub-task step budget ({self.DELEGATE_MAX_STEPS}) exhausted without finishing",
+        }
 
     def _operator_retry_or_ask(
         self, task: TaskRecord, decision: OperatorDecision, result: ToolCallResult, history: list[dict[str, Any]]
@@ -550,13 +786,18 @@ class TaskWorker:
         return self._transition_operator(task, task.metadata, TaskStatus.RUNNING, "retry_due")
 
     def _await_operator_approval(
-        self, task: TaskRecord, decision: OperatorDecision, history: list[dict[str, Any]]
+        self,
+        task: TaskRecord,
+        decision: OperatorDecision,
+        history: list[dict[str, Any]],
+        *,
+        approval_id: str,
     ) -> TaskRecord:
         """self.executor.execute() above already created the ApprovalRequest
         (and its audit event) via the policy engine, same as the plan-based
         path - this only stashes what's needed to replay the exact call once
-        every approval on the task clears, and surfaces a preview the same
-        way _process_planned does.
+        that specific approval is granted, and surfaces a preview the same way
+        _process_planned does.
         """
         preview = f"- {decision.tool_name} (risk: {decision.risk_level.value}): {json.dumps(decision.tool_input, ensure_ascii=False)}"
         metadata = {
@@ -566,6 +807,7 @@ class TaskWorker:
                 "tool_name": decision.tool_name,
                 "tool_input": decision.tool_input,
                 "risk_level": decision.risk_level.value,
+                "approval_id": approval_id,
             },
             "pending_approval_preview": preview,
         }
@@ -578,35 +820,26 @@ class TaskWorker:
         instead of assuming a plan_id/current_step_id to advance to.
         """
         history: list[dict[str, Any]] = list(task.metadata.get("operator_history") or [])
-        approvals = self.repositories.approvals.list_for_task(task.id)
-        if not approvals:
-            return self._transition_operator(
-                task, {**task.metadata, "operator_history": history}, TaskStatus.BLOCKED,
-                "awaiting_approval_without_request",
-            )
-        terminal_denials = {ApprovalStatus.REJECTED, ApprovalStatus.CANCELLED, ApprovalStatus.EXPIRED}
-        if any(approval.status in terminal_denials for approval in approvals):
-            return self._transition_operator(
-                task, {**task.metadata, "operator_history": history}, TaskStatus.BLOCKED, "approval_not_granted",
-            )
-        pending = [approval for approval in approvals if approval.status == ApprovalStatus.PENDING]
-        if pending:
-            if not self._pending_approvals_auto_grantable(pending):
-                return task
-            for approval in pending:
-                self.repositories.approvals.set_status(approval.id, ApprovalStatus.APPROVED)
-                self.audit.append(
-                    AuditEventType.APPROVAL_DECIDED,
-                    actor="policy",
-                    task_id=task.id,
-                    payload={"approval_id": approval.id, "status": ApprovalStatus.APPROVED.value, "reason": "full_access_policy"},
-                )
-
         pending_call = task.metadata.get("operator_pending_call")
         if not isinstance(pending_call, dict) or not pending_call.get("tool_name"):
             return self._transition_operator(
                 task, {**task.metadata, "operator_history": history}, TaskStatus.BLOCKED,
                 "operator_pending_call_missing",
+            )
+        approval_id = str(pending_call.get("approval_id") or "")
+        approval = self.repositories.approvals.get(approval_id) if approval_id else None
+        if approval is None or approval.task_id != task.id:
+            return self._transition_operator(
+                task, {**task.metadata, "operator_history": history}, TaskStatus.BLOCKED, "approval_not_granted",
+            )
+        if approval.status == ApprovalStatus.PENDING:
+            return task
+        if approval.expires_at <= utc_now() and approval.status == ApprovalStatus.APPROVED:
+            self.repositories.approvals.set_status(approval.id, ApprovalStatus.EXPIRED)
+        if approval.status != ApprovalStatus.APPROVED or approval.expires_at <= utc_now():
+            return self._transition_operator(
+                task, {**task.metadata, "operator_history": history}, TaskStatus.BLOCKED,
+                "approval_not_granted",
             )
         tool_name = str(pending_call["tool_name"])
         tool_input = pending_call.get("tool_input") or {}
@@ -630,7 +863,7 @@ class TaskWorker:
             risk_level=RiskLevel(pending_call["risk_level"]) if pending_call.get("risk_level") else RiskLevel.LOW,
             input=tool_input,
         )
-        result = await self.executor.execute(request, approved=True)
+        result = await self.executor.execute(request, approval_id=approval.id)
         recorded = self._record_tool_result(task.id, tool_name, result)
         output_text = _tool_output_text(result) if result.status == ToolResultStatus.SUCCEEDED else None
         history.append({
@@ -692,16 +925,6 @@ class TaskWorker:
         )
         return updated
 
-    def _pending_approvals_auto_grantable(self, approvals: list[ApprovalRequest]) -> bool:
-        if self.executor is None:
-            return False
-        settings = self.executor.policy.settings
-        for approval in approvals:
-            policy = settings.capabilities.get(approval.capability)
-            if policy is None or not policy.enabled or policy.requires_approval:
-                return False
-        return True
-
     def _planner_context(self, extra: str = "") -> str:
         if self.config_context_factory is None:
             return self.config_context + extra
@@ -758,6 +981,40 @@ class TaskWorker:
                 task_id=task.id,
                 payload={"error": "task_memory_update_failed", "reason": str(exc)},
             )
+
+    def _record_llm_usage(self, task: TaskRecord, source: str, usage: dict[str, Any] | None) -> TaskRecord:
+        """Accumulate one LLM call's token usage into task.metadata["token_usage"].
+
+        `source` is "operator" or "auditor" - the two LLM calls the worker
+        itself makes per step (docs/HISTORY.md Part 4 T1.4). Deliberately
+        does NOT cover the Concierge/classifier/responder calls made before a
+        task exists, or coding-agent-reported usage (already tracked
+        separately as last_tool_usage/last_copilot_usage in
+        _record_tool_result - a different cost source with different
+        pricing, not merged with this one). `usage` is None whenever the
+        provider didn't report it (replay in tests, or a server that omits
+        the field) - a no-op, never a fabricated zero.
+        """
+        if not usage:
+            return task
+        current = dict(task.metadata.get("token_usage") or {})
+        current["calls"] = int(current.get("calls", 0)) + 1
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            value = usage.get(key)
+            if isinstance(value, int | float):
+                current[key] = int(current.get(key, 0)) + int(value)
+        by_source = dict(current.get("by_source") or {})
+        source_entry = dict(by_source.get(source) or {})
+        source_entry["calls"] = int(source_entry.get("calls", 0)) + 1
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            value = usage.get(key)
+            if isinstance(value, int | float):
+                source_entry[key] = int(source_entry.get(key, 0)) + int(value)
+        by_source[source] = source_entry
+        current["by_source"] = by_source
+        if usage.get("model"):
+            current["last_model"] = usage["model"]
+        return self.repositories.tasks.update_metadata(task.id, {**task.metadata, "token_usage": current})
 
     def _record_tool_result(self, task_id: str, tool_name: str, result: ToolCallResult) -> TaskRecord:
         latest = self.repositories.tasks.get(task_id)

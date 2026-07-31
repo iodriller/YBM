@@ -17,7 +17,7 @@ from agent_control.orchestration.signals import apply_task_signal
 from agent_control.policy import apply_access_modes_to_config, summarize_access_modes
 from agent_control.prompts import render_prompt
 from agent_control.runtime_status import service_summary
-from agent_control.schemas import ApprovalStatus, AuditEventType, Capability, CapabilityAccessMode, StrictBaseModel
+from agent_control.schemas import ApprovalStatus, AuditEventType, Capability, CapabilityAccessMode, ChannelType, StrictBaseModel
 from agent_control.storage.audit import AuditLogger
 from agent_control.storage.audit_view import format_audit_event
 from agent_control.storage.database import Database
@@ -103,6 +103,16 @@ class AdminSecretSetRequest(StrictBaseModel):
     service: str = Field(min_length=1, max_length=80)
     key: str = Field(min_length=1, max_length=80)
     value: str = Field(min_length=1, max_length=8000)
+
+
+class AdminChatMessageRequest(StrictBaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+
+
+# Single fixed local chat "chat_id" (docs/HISTORY.md Part 4 T2.8): this is a
+# personal, local-first, single-user system, not multi-tenant - one thread
+# is the right scope for v1, the same way there is one Telegram user.
+WEB_CHAT_ID = "local"
 
 
 SettingsLoader = Callable[[], AppSettings]
@@ -343,7 +353,10 @@ def create_admin_router(
             raise HTTPException(status_code=409, detail=f"approval is already {approval.status.value}, not pending")
 
         new_status = ApprovalStatus.APPROVED if payload.decision == "approve" else ApprovalStatus.REJECTED
-        repositories.approvals.set_status(approval_id, new_status)
+        if not repositories.approvals.decide_pending(approval_id, new_status):
+            updated = repositories.approvals.get(approval_id)
+            state = updated.status.value if updated is not None else "unavailable"
+            raise HTTPException(status_code=409, detail=f"approval could not be decided; current status is {state}")
         AuditLogger(repositories.audit, loaded.logging.redact_patterns).append(
             AuditEventType.APPROVAL_DECIDED,
             actor="admin",
@@ -673,6 +686,53 @@ def create_admin_router(
             {"action": "delete", "service": service, "key": key},
         )
         return {"service": service, "key": key, "deleted": True}
+
+    @router.get("/api/chat/messages")
+    def admin_list_chat_messages(
+        request: Request,
+        limit: int = Query(default=50, ge=1, le=200),
+    ) -> dict[str, Any]:
+        """docs/HISTORY.md Part 4 T2.8: the local web chat channel - lets the
+        admin console drive a task the same way Telegram does, without
+        needing Telegram configured or reachable. One fixed conversation
+        (WEB_CHAT_ID); each message is a normal task, so it goes through the
+        exact same policy/approval/worker pipeline as every other channel.
+
+        Deliberately does not support artifact.deliver-style file delivery -
+        that tool is Telegram-specific (tools/artifact_delivery.py's
+        telegram_client). Text answers and any preview_url/workspace_dir
+        already in task.metadata (the same fields Telegram's own
+        _with_result_links surfaces inline) work identically regardless of
+        channel; a file the user explicitly asked to have "sent" does not,
+        and a task ending that way will say so in its own error text rather
+        than silently pretending to have sent something.
+        """
+        require_admin(request)
+        repositories = repositories_loader()
+        conversation_id = repositories.conversations.get_or_create(ChannelType.WEB, WEB_CHAT_ID)
+        tasks = repositories.tasks.list_for_conversation(conversation_id, limit=limit)
+        return {
+            "conversation_id": conversation_id,
+            "tasks": [task.model_dump(mode="json") for task in tasks],
+        }
+
+    @router.post("/api/chat/messages")
+    def admin_send_chat_message(request: Request, payload: AdminChatMessageRequest) -> dict[str, Any]:
+        loaded = require_admin(request)
+        repositories = repositories_loader()
+        conversation_id = repositories.conversations.get_or_create(ChannelType.WEB, WEB_CHAT_ID)
+        task = repositories.tasks.create(
+            payload.text,
+            conversation_id=conversation_id,
+            metadata={"source_chat_id": WEB_CHAT_ID, "source_channel": ChannelType.WEB.value},
+        )
+        AuditLogger(repositories.audit, loaded.logging.redact_patterns).append(
+            AuditEventType.TASK_CREATED,
+            actor="admin_chat",
+            task_id=task.id,
+            payload={"conversation_id": conversation_id},
+        )
+        return {"conversation_id": conversation_id, "task": task.model_dump(mode="json")}
 
     @router.post("/api/llm/test")
     async def admin_test_llm(request: Request) -> dict[str, Any]:

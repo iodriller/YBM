@@ -37,7 +37,11 @@ class PolicyEngine:
         self.settings = settings
         self.audit = audit
 
-    def evaluate(self, request: ToolCallRequest, approved: bool = False) -> PolicyDecision:
+    def evaluate(
+        self,
+        request: ToolCallRequest,
+        approval: ApprovalRequest | None = None,
+    ) -> PolicyDecision:
         policy = self.settings.capabilities.get(request.capability)
         if policy is None or not policy.enabled:
             return self._decision(False, False, "capability_disabled", request)
@@ -51,7 +55,10 @@ class PolicyEngine:
         if not self._patterns_allowed(request, policy):
             return self._decision(False, False, "pattern_denied", request)
 
-        if not approved and self._requires_approval(request, policy):
+        if approval is not None and not self._approval_matches(request, approval):
+            return self._decision(False, False, "approval_invalid_or_mismatched", request)
+
+        if approval is None and self._requires_approval(request, policy):
             return self._decision(False, True, "approval_required", request)
 
         return self._decision(True, False, "allowed", request)
@@ -67,13 +74,43 @@ class PolicyEngine:
         )
 
     def _requires_approval(self, request: ToolCallRequest, policy: CapabilityPolicy) -> bool:
-        if not request.requires_approval and not policy.requires_approval:
-            return False
         return (
             request.requires_approval
             or policy.requires_approval
             or RISK_ORDER[request.risk_level] >= RISK_ORDER[self.settings.approval_policy.require_approval_at_or_above]
         )
+
+    @staticmethod
+    def _approval_matches(request: ToolCallRequest, approval: ApprovalRequest) -> bool:
+        if approval.status.value != "approved" or approval.expires_at <= utc_now():
+            return False
+        if approval.task_id != request.task_id:
+            return False
+        try:
+            approved_request = ToolCallRequest.model_validate(approval.action_payload)
+        except (TypeError, ValueError):
+            return False
+        return PolicyEngine._approval_binding(approved_request) == PolicyEngine._approval_binding(request)
+
+    @staticmethod
+    def _approval_binding(request: ToolCallRequest) -> dict:
+        """Security-relevant fields bound by a one-shot approval.
+
+        Request ids, timestamps, and idempotency keys are intentionally
+        excluded because the worker reconstructs the call after a human
+        decision. Tool identity, authority, and every validated parameter
+        must remain byte-for-byte equivalent after model normalization.
+        """
+        return {
+            "task_id": request.task_id,
+            "tool_name": request.tool_name,
+            "capability": request.capability.value,
+            "risk_level": request.risk_level.value,
+            "scope_target": request.scope_target,
+            "input": request.input,
+            "timeout_seconds": request.timeout_seconds,
+            "requires_approval": request.requires_approval,
+        }
 
     @staticmethod
     def _scope_allowed(request: ToolCallRequest, policy: CapabilityPolicy) -> bool:

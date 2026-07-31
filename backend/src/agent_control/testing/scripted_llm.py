@@ -193,6 +193,11 @@ class ScriptedLLMProvider:
         self.fixture_path = Path(fixture_path)
         self._entries = _reindex(_load(self.fixture_path))
         self.calls: list[dict[str, str]] = []  # for test assertions on call order/count
+        # No real API call happens on replay, so there is no real cost to
+        # report - always None, never a fabricated zero. Present so callers
+        # can use getattr(provider, "last_usage", None) uniformly across
+        # every provider type without an isinstance check.
+        self.last_usage: dict | None = None
 
     def _lookup(self, method: str, system_prompt: str, user_prompt: str) -> dict[str, Any]:
         key = fixture_key(method, system_prompt, user_prompt)
@@ -246,6 +251,9 @@ class RecordingLLMProvider:
         # assert on call count/order (e.g. "this objective needs zero LLM
         # calls") should work identically whether replaying or recording.
         self.calls: list[dict[str, str]] = []
+        # Unlike ScriptedLLMProvider, this DOES make real calls - forward the
+        # live provider's real usage so a recording session shows actual cost.
+        self.last_usage: dict | None = None
 
     def _store(self, method: str, system_prompt: str, user_prompt: str, response: Any) -> None:
         key = fixture_key(method, system_prompt, user_prompt)
@@ -260,11 +268,13 @@ class RecordingLLMProvider:
 
     async def generate_text(self, system_prompt: str, user_prompt: str) -> str:
         response = await self.live_provider.generate_text(system_prompt, user_prompt)
+        self.last_usage = getattr(self.live_provider, "last_usage", None)
         self._store("generate_text", system_prompt, user_prompt, response)
         return response
 
     async def generate_multimodal_text(self, system_prompt: str, user_prompt: str, image_paths: list[str]) -> str:
         response = await self.live_provider.generate_multimodal_text(system_prompt, user_prompt, image_paths)
+        self.last_usage = getattr(self.live_provider, "last_usage", None)
         self._store("generate_multimodal_text", system_prompt, user_prompt, response)
         return response
 
@@ -279,5 +289,6 @@ class RecordingLLMProvider:
         result = await self.live_provider.generate_structured(
             system_prompt, user_prompt, output_model, temperature=temperature
         )
+        self.last_usage = getattr(self.live_provider, "last_usage", None)
         self._store("generate_structured", system_prompt, user_prompt, result.model_dump(mode="json"))
         return result

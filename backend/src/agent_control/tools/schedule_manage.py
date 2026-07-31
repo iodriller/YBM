@@ -4,6 +4,7 @@ from agent_control.scheduler import cadence_from_text, create_due_task, next_run
 from agent_control.schemas import (
     Capability,
     ChannelType,
+    RiskLevel,
     ScheduleRecord,
     ScheduleStatus,
     ToolCallRequest,
@@ -142,6 +143,21 @@ def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -
                 ScheduleManageOutput,
             ),
             default_operation="create",
+            operation_risks={
+                "list": RiskLevel.LOW,
+                "create": RiskLevel.MEDIUM,
+                "pause": RiskLevel.MEDIUM,
+                "resume": RiskLevel.MEDIUM,
+                "delete": RiskLevel.MEDIUM,
+                "run_now": RiskLevel.MEDIUM,
+            },
+            approval_required_operations=("create", "pause", "resume", "delete"),
+            approval_reasons={
+                "create": "creates a recurring task that will run unattended on the schedule you set",
+                "pause": "changes a recurring schedule's active state",
+                "resume": "changes a recurring schedule's active state",
+                "delete": "permanently deletes a recurring schedule",
+            },
             # Without a worked example the planner has only the bare schema to
             # go on and reliably invents a nonexistent shape (a "frequency"
             # field, a nested "task" object) instead of using "objective" +

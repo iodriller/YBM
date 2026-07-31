@@ -1,6 +1,19 @@
 from __future__ import annotations
 
-from agent_control.schemas import AuditEventType, ChannelType, InboundMessage, MessageKind, TaskStatus
+from datetime import timedelta
+
+from agent_control.schemas import (
+    ApprovalRequest,
+    ApprovalStatus,
+    AuditEventType,
+    Capability,
+    ChannelType,
+    InboundMessage,
+    MessageKind,
+    RiskLevel,
+    TaskStatus,
+    utc_now,
+)
 from agent_control.storage import AuditLogger, Database, Repositories
 
 
@@ -120,3 +133,77 @@ def test_task_claim_recovers_after_expiry(tmp_path) -> None:
     claim_b = repos.tasks.claim_next([TaskStatus.RECEIVED], worker_id="B")
     assert claim_b is not None
     assert claim_b.id == task.id
+
+
+def test_approval_decision_and_consumption_are_atomic_and_expiry_aware(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
+    database.initialize()
+    repos = Repositories.for_database(database)
+    task = repos.tasks.create("approve one exact action")
+    live = repos.approvals.create(
+        ApprovalRequest(
+            task_id=task.id,
+            capability=Capability.TERMINAL_RUN,
+            risk_level=RiskLevel.HIGH,
+            summary="Approve command",
+            expires_at=utc_now() + timedelta(minutes=1),
+        )
+    )
+    expired = repos.approvals.create(
+        ApprovalRequest(
+            task_id=task.id,
+            capability=Capability.TERMINAL_RUN,
+            risk_level=RiskLevel.HIGH,
+            summary="Expired command",
+            expires_at=utc_now() - timedelta(seconds=1),
+        )
+    )
+
+    assert repos.approvals.decide_pending(live.id, ApprovalStatus.APPROVED) is True
+    assert repos.approvals.decide_pending(live.id, ApprovalStatus.REJECTED) is False
+    assert repos.approvals.consume_approved(live.id) is True
+    assert repos.approvals.consume_approved(live.id) is False
+    assert repos.approvals.get(live.id).status == ApprovalStatus.CONSUMED
+
+    assert repos.approvals.decide_pending(expired.id, ApprovalStatus.APPROVED) is False
+    assert repos.approvals.get(expired.id).status == ApprovalStatus.EXPIRED
+
+
+def test_task_list_for_conversation_is_oldest_first_and_scoped(tmp_path) -> None:
+    """docs/HISTORY.md Part 4 T2.8: the local web chat channel renders one
+    conversation's tasks as a transcript, oldest first - the opposite order
+    of list_recent - and must not leak another conversation's tasks in."""
+    database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
+    database.initialize()
+    repos = Repositories.for_database(database)
+
+    conv_a = repos.conversations.get_or_create(ChannelType.WEB, "local")
+    conv_b = repos.conversations.get_or_create(ChannelType.TELEGRAM, "999")
+    first = repos.tasks.create("first message", conversation_id=conv_a)
+    repos.tasks.create("unrelated conversation", conversation_id=conv_b)
+    second = repos.tasks.create("second message", conversation_id=conv_a)
+
+    tasks = repos.tasks.list_for_conversation(conv_a)
+
+    assert [task.id for task in tasks] == [first.id, second.id]
+
+
+def test_task_list_for_conversation_respects_limit(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
+    database.initialize()
+    repos = Repositories.for_database(database)
+    conv = repos.conversations.get_or_create(ChannelType.WEB, "local")
+    for i in range(5):
+        repos.tasks.create(f"message {i}", conversation_id=conv)
+
+    tasks = repos.tasks.list_for_conversation(conv, limit=2)
+
+    assert len(tasks) == 2
+
+
+def test_task_list_for_conversation_empty_when_none_exist(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
+    database.initialize()
+    repos = Repositories.for_database(database)
+
+    assert repos.tasks.list_for_conversation("conv_nonexistent") == []

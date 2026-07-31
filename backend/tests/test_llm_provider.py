@@ -156,3 +156,134 @@ async def test_openai_compatible_provider_retries_structured_without_response_fo
     assert result.route == "desktop.observe"
     assert "response_format" in payloads[0]
     assert "response_format" not in payloads[1]
+
+
+def _fake_client_returning(payload: dict):
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return payload
+
+    class FakeAsyncClient:
+        def __init__(self, timeout: int) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def post(self, url: str, *, headers: dict, json: dict):
+            return FakeResponse()
+
+    return FakeAsyncClient
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_provider_captures_usage_from_response(monkeypatch) -> None:
+    """docs/HISTORY.md Part 4 T1.4: every OpenAI-compatible response reports
+    a `usage` object and it used to be silently discarded - there was no way
+    to see what a task actually cost. `last_usage` must reflect it after a
+    successful call."""
+    profile = LLMProfileConfig(model="gpt-4.1", base_url="https://api.openai.com/v1", max_tokens=128)
+    provider = OpenAICompatibleProvider(profile)
+    monkeypatch.setattr(
+        "agent_control.llm.providers.httpx.AsyncClient",
+        _fake_client_returning(
+            {
+                "choices": [{"message": {"content": "hi"}}],
+                "usage": {"prompt_tokens": 120, "completion_tokens": 30, "total_tokens": 150},
+            }
+        ),
+    )
+
+    assert provider.last_usage is None
+    await provider.generate_text("system", "user")
+
+    assert provider.last_usage == {
+        "prompt_tokens": 120,
+        "completion_tokens": 30,
+        "total_tokens": 150,
+        "model": "gpt-4.1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_provider_usage_falls_back_to_ollama_style_keys(monkeypatch) -> None:
+    """Some Ollama-backed proxies (including LocalDeploy) report
+    prompt_eval_count/eval_count instead of the OpenAI-standard field names."""
+    profile = LLMProfileConfig(model="qwen3vl_8b_ollama", base_url="http://127.0.0.1:8000/v1", max_tokens=128)
+    provider = OpenAICompatibleProvider(profile)
+    monkeypatch.setattr(
+        "agent_control.llm.providers.httpx.AsyncClient",
+        _fake_client_returning(
+            {
+                "choices": [{"message": {"content": "hi"}}],
+                "usage": {"prompt_eval_count": 80, "eval_count": 20},
+            }
+        ),
+    )
+
+    await provider.generate_text("system", "user")
+
+    assert provider.last_usage == {
+        "prompt_tokens": 80,
+        "completion_tokens": 20,
+        "total_tokens": 100,
+        "model": "qwen3vl_8b_ollama",
+    }
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_provider_usage_is_none_when_server_omits_it(monkeypatch) -> None:
+    """Missing usage must stay None, never a fabricated zero - a caller that
+    treats None as "unknown" and 0 as "confirmed free" would otherwise be
+    silently lied to."""
+    profile = LLMProfileConfig(model="local", base_url="http://127.0.0.1:8000/v1", max_tokens=128)
+    provider = OpenAICompatibleProvider(profile)
+    monkeypatch.setattr(
+        "agent_control.llm.providers.httpx.AsyncClient",
+        _fake_client_returning({"choices": [{"message": {"content": "hi"}}]}),
+    )
+
+    await provider.generate_text("system", "user")
+
+    assert provider.last_usage is None
+
+
+@pytest.mark.asyncio
+async def test_failover_provider_proxies_usage_from_whichever_provider_served_the_call() -> None:
+    class FakeProvider:
+        def __init__(self, text: str, usage: dict, *, fails: bool = False) -> None:
+            self.text = text
+            self.last_usage = usage
+            self.fails = fails
+
+        async def generate_text(self, system_prompt: str, user_prompt: str) -> str:
+            if self.fails:
+                raise httpx.TimeoutException("primary down")
+            return self.text
+
+        async def generate_multimodal_text(self, *a, **k):  # pragma: no cover - unused here
+            raise NotImplementedError
+
+        async def generate_structured(self, *a, **k):  # pragma: no cover - unused here
+            raise NotImplementedError
+
+    from agent_control.llm.providers import FailoverLLMProvider
+
+    primary = FakeProvider("from primary", {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "model": "big"})
+    fallback = FakeProvider("from fallback", {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2, "model": "small"})
+    provider = FailoverLLMProvider(primary, fallback)
+
+    result = await provider.generate_text("s", "u")
+    assert result == "from primary"
+    assert provider.last_usage == primary.last_usage
+
+    primary.fails = True
+    result = await provider.generate_text("s", "u")
+    assert result == "from fallback"
+    assert provider.last_usage == fallback.last_usage

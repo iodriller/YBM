@@ -60,6 +60,46 @@ def test_trace_task_prints_operator_history_and_error(patched_repositories, caps
     assert "chat_id is required" in out
 
 
+def test_trace_task_prints_token_usage_breakdown(patched_repositories, capsys) -> None:
+    """docs/HISTORY.md Part 4 T1.4: ybm trace is the no-running-backend
+    post-mortem tool, so this is where cost visibility matters most."""
+    task = patched_repositories.tasks.create("what is the invoice total?")
+    patched_repositories.tasks.update_metadata(
+        task.id,
+        {
+            "token_usage": {
+                "calls": 3,
+                "prompt_tokens": 300,
+                "completion_tokens": 45,
+                "total_tokens": 345,
+                "by_source": {
+                    "operator": {"calls": 2, "prompt_tokens": 250, "completion_tokens": 30, "total_tokens": 280},
+                    "auditor": {"calls": 1, "prompt_tokens": 50, "completion_tokens": 15, "total_tokens": 65},
+                },
+                "last_model": "gpt-4.1-mini",
+            }
+        },
+    )
+
+    exit_code = cli.trace_task(task.id)
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "345 total over 3 call(s)" in out
+    assert "operator=280" in out
+    assert "auditor=65" in out
+
+
+def test_trace_task_omits_token_line_when_no_usage_recorded(patched_repositories, capsys) -> None:
+    task = patched_repositories.tasks.create("trivial task, no LLM usage recorded")
+
+    exit_code = cli.trace_task(task.id)
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "tokens" not in out
+
+
 def test_trace_task_json_mode_round_trips(patched_repositories, capsys) -> None:
     task = patched_repositories.tasks.create("trivial task")
 

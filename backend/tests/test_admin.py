@@ -948,3 +948,76 @@ def test_admin_secrets_set_audits_service_and_key_but_not_value(monkeypatch, tmp
     assert matching
     assert matching[0].payload["patch"] == {"action": "set", "service": "openai", "key": "api_key"}
     assert "sk-must-not-be-logged" not in str(matching[0].payload)
+
+
+def _chat_app(monkeypatch, tmp_path) -> FastAPI:
+    monkeypatch.chdir(tmp_path)
+    repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
+    local_app = FastAPI()
+    local_app.include_router(
+        create_admin_router(
+            lambda: AppSettings(_env_file=None),
+            lambda: repositories,
+            VSCodeBridgeStore(),
+        )
+    )
+    return local_app, repositories
+
+
+def test_admin_chat_send_creates_a_task_and_list_returns_it_oldest_first(monkeypatch, tmp_path) -> None:
+    """docs/HISTORY.md Part 4 T2.8: the local web chat channel - a message
+    becomes a normal task, going through the exact same worker/policy
+    pipeline as any other channel, with no Telegram dependency."""
+    app, repositories = _chat_app(monkeypatch, tmp_path)
+    client = TestClient(app)
+
+    first = client.post("/admin/api/chat/messages", json={"text": "what is the status?"})
+    second = client.post("/admin/api/chat/messages", json={"text": "thanks"})
+
+    assert first.status_code == 200
+    assert first.json()["task"]["objective"] == "what is the status?"
+    assert first.json()["task"]["metadata"]["source_chat_id"] == "local"
+    assert second.status_code == 200
+
+    listed = client.get("/admin/api/chat/messages")
+    body = listed.json()
+    assert [t["objective"] for t in body["tasks"]] == ["what is the status?", "thanks"]
+
+    # Both messages share the same conversation - a real conversation_id
+    # from the same fixed local web chat thread, not a fresh one per message.
+    assert first.json()["conversation_id"] == second.json()["conversation_id"] == body["conversation_id"]
+    real_task = repositories.tasks.get(first.json()["task"]["id"])
+    assert real_task.conversation_id == body["conversation_id"]
+
+
+def test_admin_chat_list_is_empty_before_any_message_sent(monkeypatch, tmp_path) -> None:
+    app, _repositories = _chat_app(monkeypatch, tmp_path)
+    client = TestClient(app)
+
+    listed = client.get("/admin/api/chat/messages")
+
+    assert listed.status_code == 200
+    assert listed.json()["tasks"] == []
+
+
+def test_admin_chat_send_rejects_empty_text(monkeypatch, tmp_path) -> None:
+    app, _repositories = _chat_app(monkeypatch, tmp_path)
+    client = TestClient(app)
+
+    response = client.post("/admin/api/chat/messages", json={"text": ""})
+
+    assert response.status_code == 422
+
+
+def test_admin_chat_send_audits_task_creation(monkeypatch, tmp_path) -> None:
+    app, repositories = _chat_app(monkeypatch, tmp_path)
+    client = TestClient(app)
+
+    response = client.post("/admin/api/chat/messages", json={"text": "hello"})
+
+    task_id = response.json()["task"]["id"]
+    events = repositories.audit.list_recent(limit=20)
+    assert any(
+        e.type == AuditEventType.TASK_CREATED and e.task_id == task_id and e.actor == "admin_chat"
+        for e in events
+    )

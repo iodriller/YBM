@@ -48,12 +48,30 @@ async def test_generated_code_needs_approval_under_true_default_settings(tmp_pat
 
     # Not COMPLETED: the code never ran, so no file was created and nothing
     # was delivered - the gate fires before any execution, not after.
-    assert task.status != TaskStatus.COMPLETED
+    # AWAITING_APPROVAL, specifically, and staying there: this scenario
+    # never approves the request (that's the point), so the harness treats
+    # it as settled rather than looping until its tick budget raises - see
+    # harness.py's TERMINAL_STATUSES.
+    assert task.status == TaskStatus.AWAITING_APPROVAL
     tool_calls = scenario.repositories.tool_invocations.list_for_task(task.id)
     interpreter_calls = [call for call in tool_calls if call["tool_name"] == "code.interpreter"]
     assert interpreter_calls
-    assert all(call["result"]["status"] == "needs_approval" for call in interpreter_calls)
-    assert all(
-        "unsandboxed" in (call["result"].get("error_message") or "") for call in interpreter_calls
-    )
+    # Not necessarily every call: the executor also enforces that a
+    # declared risk_level can't understate a tool's actual minimum (a
+    # separate, independently-added safety check - see
+    # orchestration/executor.py) - a first attempt that under-declares risk
+    # fails validation before the approval gate is even reached, and the
+    # model may retry with the correct risk_level before the gate does fire.
+    # The gate itself firing at least once is what this test is about.
+    needing_approval = [call for call in interpreter_calls if call["result"]["status"] == "needs_approval"]
+    assert needing_approval
+    # The NEEDS_APPROVAL result itself carries only {"approval_id": ...} -
+    # the human-facing "why" lives on the ApprovalRequest.summary instead,
+    # via ToolDefinition.approval_reasons (docs/HISTORY.md Part 4). Asserts
+    # both the record's identity (tool/capability/risk) and that a human
+    # reading it actually learns why - not just a generic "Approve X using Y".
+    approvals = scenario.repositories.approvals.list_for_task(task.id)
+    assert approvals
+    assert all(a.capability.value == "terminal.run" and a.risk_level.value == "high" for a in approvals)
+    assert any("unsandboxed" in a.summary for a in approvals)
     assert not scenario.telegram.documents

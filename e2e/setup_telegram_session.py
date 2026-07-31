@@ -16,8 +16,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SESSION = str(ROOT / ".agent_control" / "telegram_e2e_user")
 
-API_ID = int(os.getenv("TELEGRAM_API_ID") or "***REMOVED-TELEGRAM-API-ID***")
-API_HASH = os.getenv("TELEGRAM_API_HASH") or "***REMOVED-TELEGRAM-API-HASH***"
+_api_id_env = os.getenv("TELEGRAM_API_ID")
+_api_hash_env = os.getenv("TELEGRAM_API_HASH")
+if not _api_id_env or not _api_hash_env:
+    sys.exit(
+        "TELEGRAM_API_ID and TELEGRAM_API_HASH are required (get them from "
+        "https://my.telegram.org). Set them in your environment or .env, then re-run."
+    )
+API_ID = int(_api_id_env)
+API_HASH = _api_hash_env
 SESSION = os.getenv("TELEGRAM_USER_SESSION") or DEFAULT_SESSION
 
 

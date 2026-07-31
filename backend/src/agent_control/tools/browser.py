@@ -21,7 +21,7 @@ except ImportError:  # pragma: no cover - exercised only when optional dependenc
     websocket = None
 
 from agent_control.config import BrowserAdapterConfig
-from agent_control.schemas import Capability, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.schemas import Capability, RiskLevel, ToolCallRequest, ToolCallResult, ToolResultStatus
 from agent_control.tools.contracts import (
     BrowserCheckPageUpdateInput,
     BrowserClickInput,
@@ -1011,6 +1011,7 @@ def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -
                 BrowserToolOutput,
             ),
             default_operation="open",
+            minimum_risk=RiskLevel.LOW,
             examples=(
                 {"operation": "open", "url": "https://dizibox.com"},
                 {"operation": "summarize_page", "objective": "list the first 5 new episodes"},
@@ -1056,6 +1057,15 @@ def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -
                 BrowserToolOutput,
             ),
             default_operation="navigate",
+            operation_risks={
+                "check_page_update": RiskLevel.LOW,
+                "extract_page_state": RiskLevel.LOW,
+                "navigate": RiskLevel.CRITICAL,
+                "close_tab": RiskLevel.CRITICAL,
+                "click": RiskLevel.CRITICAL,
+                "fill_form": RiskLevel.CRITICAL,
+                "fill_form_step": RiskLevel.CRITICAL,
+            },
             examples=(
                 {"operation": "navigate", "url": "https://example.com/contact"},
                 {"operation": "fill_form",

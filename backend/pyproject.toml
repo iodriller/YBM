@@ -21,6 +21,9 @@ dependencies = [
   "websocket-client>=1.8",
 ]
 
+[project.scripts]
+ybm = "agent_control.cli:main"
+
 [project.optional-dependencies]
 # Desktop observation/control (computer.use, desktop.screenshot capabilities).
 # Windows-only today; every import site lazy-imports these, so the package

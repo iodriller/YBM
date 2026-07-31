@@ -13,7 +13,7 @@ import sys
 from typing import Any, Callable
 
 from agent_control.config import AdapterFactoryConfig
-from agent_control.schemas import Capability, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.schemas import Capability, RiskLevel, ToolCallRequest, ToolCallResult, ToolResultStatus
 from agent_control.tools.contracts import (
     AdapterFactoryAssessInput,
     AdapterFactoryAssessOutput,
@@ -350,6 +350,8 @@ def _definition_from_manifest(manifest: dict[str, Any], adapter_dir: Path) -> An
         operations=operations,
         lifecycle="dynamic",
         default_operation=str(manifest.get("default_operation") or "") or None,
+        minimum_risk=RiskLevel.HIGH,
+        approval_resolver=lambda _value: True,
         examples=examples,
     )
 
@@ -502,6 +504,17 @@ def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -
                 "promote_after_approval": AdapterFactorySandboxOutput,
             },
             default_operation="scaffold",
+            operation_risks={
+                "assess": RiskLevel.LOW,
+                "scaffold": RiskLevel.HIGH,
+                "sandbox_execute_once": RiskLevel.HIGH,
+                "test_connector": RiskLevel.HIGH,
+                "promote_after_approval": RiskLevel.CRITICAL,
+            },
+            approval_required_operations=("promote_after_approval",),
+            approval_reasons={
+                "promote_after_approval": "hot-registers a generated, LLM-written adapter into the live tool registry",
+            },
         )
     )
     if settings.adapters.adapter_factory.enabled:

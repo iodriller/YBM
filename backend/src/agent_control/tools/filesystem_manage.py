@@ -9,7 +9,7 @@ from typing import Any
 
 from agent_control.llm.providers import LLMProvider
 from agent_control.prompts import prompt_text, render_prompt
-from agent_control.schemas import Capability, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.schemas import Capability, RiskLevel, ToolCallRequest, ToolCallResult, ToolResultStatus
 from agent_control.tools.contracts import (
     FilesystemApplyManifestInput,
     FilesystemCollectFolderSnapshotInput,
@@ -796,6 +796,20 @@ def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -
                 FilesystemManageOutput,
             ),
             default_operation="inspect_folder",
+            operation_risks={
+                "inspect_folder": RiskLevel.LOW,
+                "search": RiskLevel.LOW,
+                "resolve_desktop_item": RiskLevel.LOW,
+                "find_by_description": RiskLevel.LOW,
+                "read_file": RiskLevel.LOW,
+                "collect_folder_snapshot": RiskLevel.LOW,
+                "describe_folder": RiskLevel.LOW,
+                "organize_plan": RiskLevel.LOW,
+                "open_file": RiskLevel.MEDIUM,
+                "write_text_file": RiskLevel.HIGH,
+                "rename_plan": RiskLevel.HIGH,
+                "apply_manifest": RiskLevel.HIGH,
+            },
             examples=(
                 {"operation": "inspect_folder", "root": "desktop"},
                 {"operation": "search", "root": "desktop", "query": "resume"},

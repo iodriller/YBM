@@ -125,6 +125,9 @@ flowchart TD
 | Fulfillment check | `orchestration/fulfillment.py` | Deterministic, objective-text-inferred postconditions (no LLM, no PlanModel - that path was deleted, see HISTORY.md §1.1) |
 | Notifications | `channels/telegram_notifications.py` | Formats and sends the Telegram reply; per-step progress dedup keys off `operator_history` length |
 | Structured logging | `logging_setup.py` | structlog → JSON file + console per service, `task_id` bound as a contextvar for the duration of each `process_task()` call (HISTORY.md §2.1) |
+| Local web chat | `admin.py`'s `/api/chat/messages` routes + `admin_streamlit.py`'s Chat expander | Second channel (HISTORY.md Part 4 T2.8): one fixed local conversation, same `repositories.tasks.create()` path as Telegram, no classifier/voice/approval-keyboard parity - text answers only, `artifact.deliver` (Telegram-specific) is out of scope |
+| Persona | `persona.py` + `tools/persona.py` | One global preference document injected into every Operator prompt via `cli.py`'s `_worker_config_context()`; distinct from per-conversation `channels/memory.py` |
+| Knowledge base | `knowledge_base.py` + `tools/knowledge_base.py` | Local keyword-overlap search over a folder of the user's own documents; reuses `filesystem_manage.py`'s text extraction, not embeddings |
 
 ## Prompt Files
 
@@ -184,12 +187,17 @@ decide() call sees the error in context.'"
 
 The Auditor only runs when the loop called a tool that returns human-readable content:
 `browser.open`, `browser.control`, `code.interpreter`, `filesystem.manage`,
-`document.manage`, `computer.use`, `http.request`, `mcp.client`
+`document.manage`, `computer.use`, `http.request`, `mcp.client`, and `delegate`
 (`AuditorService.CONTENT_TOOLS`). A task that never touches one of these (status checks,
 schedule management, a delivery-only step) skips the Auditor entirely and completes on the
-operator's own `final_answer` plus the fulfillment check. Note `artifact.deliver` is
-deliberately **not** in this list yet - a task whose last real step is "send the file" isn't
-audited (HISTORY.md §4 item 6, an open gap).
+operator's own `final_answer` plus the fulfillment check. `artifact.deliver` is deliberately
+**not** in this list — `_last_content_tool_history_entry()` scans backward past a delivery
+step to the content tool that produced what was delivered, so that IS what gets audited; adding
+`artifact.deliver` itself would instead try to ground an answer in a delivery receipt.
+`delegate` is included because a sub-task's own tool calls update the parent task's
+`last_tool_output_text` (deliberately, see `TaskWorker._run_delegate`'s docstring) — without
+this entry, a `done` immediately following a `delegate` step would skip the audit gate purely
+because `"delegate"` isn't itself a content-producing tool name.
 
 ## Tool Registry
 
@@ -198,9 +206,13 @@ single source of truth for what's enabled and what operations each tool supports
 tool count or list here as illustrative, not authoritative, since it drifts as tools are
 added. As of this writing: `workspace.manage`, `filesystem.manage`, `adapter.factory`,
 `code.interpreter`, `http.request`, `mcp.client`, `vscode.copilot_terminal`,
-`vscode.terminal_command`, `tts.synthesize`, `coding.agent`, `schedule.manage`,
-`task.status`, `artifact.deliver`, `document.manage`, `computer.use`, `browser.open`,
-`browser.control`.
+`vscode.terminal_command`, `tts.synthesize`, `coding.agent`, `knowledge.search`,
+`persona.manage`, `schedule.manage`, `skills.use`, `task.status`, `artifact.deliver`,
+`document.manage`, `computer.use`, `browser.open`, `browser.control`.
+
+`call_tools_parallel` and `delegate` are not tools — they are `OperatorAction` values
+alongside `call_tool`/`done`/`ask_user`/`blocked` (see "Multi-step Actions" below), handled
+entirely inside `orchestration/worker.py` rather than routed through the tool registry.
 
 Registered tools carry typed input/output contracts. The executor validates input before
 policy and adapter execution, and validates successful outputs before recording a result as
@@ -213,6 +225,28 @@ under `.agent_control/adapters` only — never imported or executed until review
 and registered. Promotion is a manual step: review the proposal, add tests, move it into
 `backend/src/agent_control/tools/`, and register it via that module's own `register()`
 function (see `tools/spec.py`).
+
+## Multi-step Actions
+
+Two `OperatorAction` values beyond the base five (`call_tool`/`done`/`ask_user`/`blocked`),
+added 2026-07-30 (HISTORY.md Part 4 T1.1/T1.2). Both are deliberately narrower than
+`call_tool`, not general replacements for it — `operator_system.md` tells the model directly
+when to prefer plain `call_tool` instead.
+
+- **`call_tools_parallel`** — 2+ independent calls (`OperatorDecision.parallel_calls`) run
+  concurrently via `asyncio.gather` in `TaskWorker._run_parallel_calls()`. No
+  approval/retry/background-wait support: a call that needs one fails cleanly inside the
+  batch (with a message to reissue it alone via `call_tool`), while the rest of the batch
+  still runs. Costs as many `operator_max_steps` budget slots as it has calls — not a free
+  unlimited fan-out.
+- **`delegate`** — hands a self-contained sub-task to an isolated inner operator loop
+  (`TaskWorker._run_delegate()`) with its own history (starts empty, never merges into the
+  parent's) and its own fixed step budget (`TaskWorker.DELEGATE_MAX_STEPS = 6`, independent
+  of the parent's `operator_max_steps`). Only a one-line summary crosses back into the
+  parent's history. Optionally restricted to a tool subset (`delegate_tools`), enforced in
+  code. Cannot recurse, request approval, wait on a background session, or ask the user a
+  question — each fails that sub-task cleanly with a reason the parent sees, rather than
+  hanging or silently bypassing the restriction it can't fulfill.
 
 ## Telegram Gateway Behavior
 
@@ -343,7 +377,7 @@ HISTORY.md §6 and HISTORY.md P3 item 1's disclosed regression on the other 16 c
 
 ## Known Gaps
 
-What's actually still open, as of 2026-07-29 (everything else this document could plausibly
+What's actually still open, as of 2026-07-30 (everything else this document could plausibly
 be missing has already been closed — see [HISTORY.md](HISTORY.md) for the full evidence
 trail and how each item was fixed):
 
@@ -368,4 +402,9 @@ trail and how each item was fixed):
 
 Secret vault UI and generated-content grounding (the two items this list used to carry as
 open) were closed 2026-07-29 — see [HISTORY.md](HISTORY.md)'s **Part 3 — The way forward**
-for what changed, what was verified, and what was deliberately left out of scope.
+for what changed, what was verified, and what was deliberately left out of scope. The
+multi-agent/feature-parity build (parallel calls, delegation, skills, persona, knowledge base,
+cost tracking, model tiering, local web chat) landed 2026-07-30 — see **Part 4**. The
+NEEDS_APPROVAL reason-text regression Part 4 introduced was closed the same way it started -
+`ToolDefinition.approval_reasons` restores a tool-specific "why" on the `ApprovalRequest` a
+human actually sees, without reintroducing the bypassable adapter-level exception it replaced.

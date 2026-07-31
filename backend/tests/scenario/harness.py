@@ -29,7 +29,7 @@ from agent_control.orchestration.operator import OperatorLoopService
 from agent_control.orchestration.worker import TaskWorker
 from agent_control.policy.engine import PolicyEngine
 from agent_control.recovery.retry import RetryPolicy
-from agent_control.schemas import Capability, RiskLevel, TaskRecord, TaskStatus
+from agent_control.schemas import ApprovalStatus, Capability, RiskLevel, TaskRecord, TaskStatus
 from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.testing.scripted_llm import RecordingLLMProvider, ScriptedLLMProvider
 from agent_control.tools.registry import build_tool_registry
@@ -109,6 +109,14 @@ TERMINAL_STATUSES = {
     TaskStatus.CANCELLED,
     TaskStatus.AWAITING_EXTERNAL,
     TaskStatus.CLARIFYING,
+    # "Settled, no further autonomous progress without external input" - the
+    # same category CLARIFYING is already in. Missing until 2026-07-30: a
+    # scenario proving an approval gate correctly fires (never approving it,
+    # by design) got stuck retrying process_task() on an unchanging
+    # AWAITING_APPROVAL task until run_task_to_completion's own tick budget
+    # raised, rather than the harness recognizing the task had genuinely
+    # settled.
+    TaskStatus.AWAITING_APPROVAL,
 }
 
 
@@ -243,6 +251,7 @@ async def run_task_to_completion(
     *,
     metadata: dict | None = None,
     max_ticks: int = 10,
+    auto_approve: bool = False,
 ) -> TaskRecord:
     """Creates a task and drives worker.process_task() until a terminal
     status. Raises (not hangs) if the task doesn't settle within max_ticks -
@@ -251,11 +260,29 @@ async def run_task_to_completion(
     Stamps ``source_chat_id`` by default, mirroring what the production
     Telegram message handler sets on every real task - without it, any plan
     step that delivers a file (``artifact.deliver``) fails with a synthetic
-    "chat_id is required" error that would never happen in production."""
+    "chat_id is required" error that would never happen in production.
+
+    ``auto_approve=True`` simulates a human clicking "approve" the instant a
+    task reaches AWAITING_APPROVAL, then keeps ticking - for a test whose
+    subject is execution correctness of an operation that is *always*
+    gated by design (e.g. code.interpreter's run_python/generate_and_run,
+    ``approval_required_operations`` in code_interpreter.py's ToolDefinition
+    - "runtime-owned... cannot be bypassed... by design", not a settings
+    knob). Without this, AWAITING_APPROVAL is terminal (see
+    TERMINAL_STATUSES) and such a test could never observe COMPLETED - which
+    is correct default behavior for a test whose actual subject *is* the
+    approval gate (it should stay AWAITING_APPROVAL and never call this with
+    auto_approve=True).
+    """
     task_metadata = {"source_chat_id": SCENARIO_CHAT_ID, **(metadata or {})}
     task = scenario.repositories.tasks.create(objective=objective, metadata=task_metadata)
     for _ in range(max_ticks):
         task = await scenario.worker.process_task(task.id)
+        if auto_approve and task.status == TaskStatus.AWAITING_APPROVAL:
+            for approval in scenario.repositories.approvals.list_for_task(task.id):
+                if approval.status == ApprovalStatus.PENDING:
+                    scenario.repositories.approvals.decide_pending(approval.id, ApprovalStatus.APPROVED)
+            continue
         if task.status in TERMINAL_STATUSES:
             return task
     raise AssertionError(
@@ -303,6 +330,16 @@ def mcp_settings(monkeypatch, tmp_path, server_path, catalog_path) -> AppSetting
                     command=sys.executable,
                     args=[str(server_path)],
                     timeout_seconds=MCP_HANDSHAKE_TIMEOUT_SECONDS,
+                    # MCPServerConfig.risk_level defaults to HIGH; the fake
+                    # echo server's own catalog entry (written separately by
+                    # each test via write_mcp_catalog) advertises LOW, which
+                    # is what the model reasonably imitates when declaring
+                    # risk_level for a call_tool request - a mismatch here
+                    # guarantees the request understates the *enforced*
+                    # per-server risk (_mcp_required_risk in
+                    # tools/mcp_client.py), rejected before it can even
+                    # reach the approval gate. Matching them is the fix.
+                    risk_level=RiskLevel.LOW,
                 )
             },
         ),

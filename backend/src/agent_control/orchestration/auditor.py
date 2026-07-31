@@ -33,6 +33,13 @@ CONTENT_TOOLS = frozenset({
     "computer.use",
     "http.request",
     "mcp.client",
+    # A delegated sub-task's own tool calls update the parent task's
+    # last_tool_output_text (worker.py's _run_delegate docstring explains
+    # why that's deliberate, not a leak) - recognizing "delegate" here lets
+    # a `done` that immediately follows one get grounded in that real
+    # output, instead of the audit gate being skipped just because
+    # "delegate" itself isn't a content-producing tool name.
+    "delegate",
 })
 
 
@@ -45,6 +52,9 @@ class AuditResult(StrictBaseModel):
 class AuditorService:
     def __init__(self, provider: LLMProvider) -> None:
         self.provider = provider
+        # Usage from the most recent audit() call - see
+        # docs/HISTORY.md Part 4 T1.4.
+        self.last_usage: dict | None = None
 
     @staticmethod
     def is_content_tool(tool_name: str | None) -> bool:
@@ -72,6 +82,7 @@ class AuditorService:
         )
         try:
             result = await self.provider.generate_text(AUDITOR_SYSTEM_PROMPT, user_prompt)
+            self.last_usage = getattr(self.provider, "last_usage", None)
         except Exception:
             logger.warning("auditor provider call failed; not blocking completion on it", exc_info=True)
             return AuditResult(sufficient=True, answer=None, reason="auditor_error")

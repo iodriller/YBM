@@ -14,7 +14,7 @@ from typing import Any, Protocol
 from agent_control.config import ComputerUseAdapterConfig
 from agent_control.llm.providers import LLMProvider
 from agent_control.prompts import prompt_text, render_prompt
-from agent_control.schemas import Capability, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.schemas import Capability, RiskLevel, ToolCallRequest, ToolCallResult, ToolResultStatus
 from agent_control.tools.contracts import (
     ComputerActInput,
     ComputerObserveInput,
@@ -543,6 +543,11 @@ def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -
             output_schema=ComputerUseOutput,
             operation_output_schemas=same_output_schema(("observe", "act", "run_goal"), ComputerUseOutput),
             default_operation="observe",
+            operation_risks={
+                "observe": RiskLevel.LOW,
+                "act": RiskLevel.CRITICAL,
+                "run_goal": RiskLevel.CRITICAL,
+            },
         )
     )
     if settings.adapters.computer_use.enabled:

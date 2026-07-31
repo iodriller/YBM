@@ -42,7 +42,15 @@ async def test_status_request_reports_recent_tasks(tmp_path, monkeypatch) -> Non
     scenario = build_scenario(settings, tmp_path=tmp_path, fixture_name="status_request")
     scenario.repositories.tasks.create(objective="an earlier task")
 
-    task = await run_task_to_completion(scenario, "current status")
+    # Not "current status" (bare, 2 words): reproduced live, twice, the
+    # local 8B model reading that as ambiguous between a status *query* and
+    # a status *update* request ("What is the current status you would
+    # like to check or update?" - an `ask_user`, ending the task at
+    # CLARIFYING rather than COMPLETED). "task status" removes the
+    # check-or-update reading while staying distinct from the sibling
+    # test's "give me the current status" above, so both phrasings stay
+    # covered.
+    task = await run_task_to_completion(scenario, "what's the current task status?")
 
     assert task.status == TaskStatus.COMPLETED
     tool_calls = scenario.repositories.tool_invocations.list_for_task(task.id)

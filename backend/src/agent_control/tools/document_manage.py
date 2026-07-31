@@ -12,6 +12,7 @@ from agent_control.schemas import (
     Artifact,
     ArtifactType,
     Capability,
+    RiskLevel,
     ToolCallRequest,
     ToolCallResult,
     ToolResultStatus,
@@ -341,6 +342,13 @@ def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -
                 DocumentManageOutput,
             ),
             default_operation="inspect_document",
+            operation_risks={
+                "inspect_document": RiskLevel.LOW,
+                "extract_text": RiskLevel.LOW,
+                "summarize_pdf": RiskLevel.LOW,
+                "create_presentation": RiskLevel.HIGH,
+                "update_presentation": RiskLevel.HIGH,
+            },
             examples=(
                 {"operation": "summarize_pdf", "path": "{{last_entry_path}}"},
                 {"operation": "create_presentation",

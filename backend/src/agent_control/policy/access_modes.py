@@ -30,7 +30,9 @@ ACCESS_GROUPS = {
         label="File system",
         read_capabilities=(Capability.FILESYSTEM_READ,),
         write_capabilities=(Capability.FILESYSTEM_WRITE,),
-        write_risk=RiskLevel.HIGH,
+        # Dynamic adapter promotion is a critical persistent operation under
+        # this capability; ordinary file writes remain HIGH in ToolDefinition.
+        write_risk=RiskLevel.CRITICAL,
         option_labels={
             CapabilityAccessMode.OFF: "Off",
             CapabilityAccessMode.READ_ONLY: "Read-only",
@@ -103,7 +105,10 @@ ACCESS_GROUPS = {
         name="terminal",
         label="Terminal",
         write_capabilities=(Capability.TERMINAL_RUN,),
-        write_risk=RiskLevel.MEDIUM,
+        # The capability must be able to represent critical sub-operations
+        # such as installing a persistent MCP server. Individual tools still
+        # own their authoritative per-operation minimum risk.
+        write_risk=RiskLevel.CRITICAL,
         options=(CapabilityAccessMode.OFF, CapabilityAccessMode.WRITE_ACCESS, CapabilityAccessMode.FULL_ACCESS),
         option_labels={
             CapabilityAccessMode.OFF: "Off",

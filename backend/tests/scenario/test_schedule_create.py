@@ -24,7 +24,12 @@ async def test_schedule_create_persists_a_schedule(tmp_path, monkeypatch) -> Non
     scenario = build_scenario(settings, tmp_path=tmp_path, fixture_name="schedule_create")
 
     task = await run_task_to_completion(
-        scenario, "create a daily schedule that checks https://example.com/status for updates"
+        scenario, "create a daily schedule that checks https://example.com/status for updates",
+        # schedule.manage's `create` operation is unconditionally
+        # approval-gated by design (schedule_manage.py's ToolDefinition,
+        # approval_required_operations). This test is about persistence,
+        # not the approval gate itself.
+        auto_approve=True,
     )
 
     assert task.status == TaskStatus.COMPLETED

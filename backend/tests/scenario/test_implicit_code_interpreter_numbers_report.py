@@ -29,11 +29,12 @@ async def test_implicit_routing_selects_code_interpreter_not_coding_agent(tmp_pa
     settings = isolated_settings(
         monkeypatch, tmp_path,
         capabilities=caps,
-        # require_approval_for_untrusted_run_python: False - this test is
-        # about routing correctness, not the approval gate; see
+        # require_approval_for_untrusted_run_python: False - the
+        # code.interpreter-specific "would run unsandboxed" gate; see
         # test_code_interpreter.py's
-        # test_code_interpreter_generated_run_needs_approval_on_silent_docker_fallback
-        # for that gate's own coverage.
+        # test_code_interpreter_generated_run_needs_approval_on_silent_docker_fallback.
+        # Does NOT disable generate_and_run's OWN separate, unconditional
+        # approval requirement - see run_task_to_completion's auto_approve.
         adapters={
             "code_interpreter": {
                 "enabled": True,
@@ -48,6 +49,10 @@ async def test_implicit_routing_selects_code_interpreter_not_coding_agent(tmp_pa
         scenario,
         "Write and run a small local Python script that creates numbers-summary.json for the "
         "numbers 3, 5, and 8. Include the count, total, and average, then tell me where the file is.",
+        # generate_and_run is unconditionally approval-gated by design
+        # (code_interpreter.py's ToolDefinition, approval_required_operations).
+        # This test is about routing correctness, not the gate itself.
+        auto_approve=True,
     )
 
     assert task.status == TaskStatus.COMPLETED

@@ -519,3 +519,81 @@ admin_streamlit.main()
 
     assert not app.exception
     assert any("ybm setup" in item.value for item in app.warning)
+
+
+def test_streamlit_admin_renders_local_chat_section(tmp_path: Path) -> None:
+    app_file = tmp_path / "streamlit_chat_smoke.py"
+    app_file.write_text(
+        '''
+from agent_control import admin_streamlit
+
+
+def fake_api_json(backend_url, path, token, method="GET", payload=None):
+    summary = {
+        "config": {
+            "identity": {"instance_name": "test-agent"},
+            "channels": {"telegram": {"enabled": True, "token_env": "TELEGRAM_BOT_TOKEN", "allowed_user_ids": [], "allowed_chat_ids": [], "polling": True}},
+            "llm": {"default_profile": "local", "profiles": {"local": {"provider": "openai_compatible", "model": "gemma", "timeout_seconds": 180, "max_tokens": 1024, "temperature": 0.2}}},
+            "adapters": {
+                "workspace": {"enabled": True, "root_dir": ".agent_control/workspaces", "web_host": "127.0.0.1", "web_port_start": 8890, "open_browser": True},
+                "vscode": {"enabled": True, "bridge_host": "127.0.0.1", "bridge_port": 8766, "auth_token_env": "VSCODE_BRIDGE_TOKEN"},
+                "adapter_factory": {"root_dir": ".agent_control/adapters"},
+                "computer_use": {"enabled": True, "max_steps": 8, "screenshot_dir": ".agent_control/computer_use/screenshots", "allowed_roots": [], "allowed_apps": []},
+            },
+            "server": {},
+            "storage": {},
+            "limits": {},
+        },
+        "tasks": [],
+        "task_pagination": {"total": 0, "has_more": False},
+        "audit": [],
+        "vscode": {"connected": False, "state": None, "heartbeat": None, "terminal_outputs": []},
+        "access_modes": {},
+        "warnings": [],
+        "database": {"path": "agent_control.db"},
+        "integrations": {"telegram": {"enabled": True, "allowed_user_count": 0}, "llm": {"presets": []}},
+        "admin": {"token_required": False, "config_file": "config/config.yaml"},
+    }
+    if path == "/admin/api/chat/messages":
+        return {
+            "conversation_id": "conv_web_local",
+            "tasks": [
+                {
+                    "id": "task_1", "status": "completed", "objective": "what is 2+2?",
+                    "metadata": {"synthesized_answer": "4"},
+                },
+                {
+                    "id": "task_2", "status": "running", "objective": "still working on this",
+                    "metadata": {},
+                },
+            ],
+        }
+    if path.startswith("/admin/api/tasks"):
+        return {"tasks": [], "pagination": {"total": 0, "has_more": False}}
+    if path.startswith("/admin/api/audit"):
+        return {"events": []}
+    if path.startswith("/admin/api/config/effective"):
+        return {"config": summary["config"], "access_modes": summary["access_modes"], "warnings": []}
+    return summary
+
+
+admin_streamlit._api_json = fake_api_json
+admin_streamlit.main()
+''',
+        encoding="utf-8",
+    )
+
+    app = AppTest.from_file(str(app_file))
+    app.run(timeout=10)
+
+    assert not app.exception
+    assert any("Chat" in item.label for item in app.expander)
+    # Two chat_message blocks per task (user question + assistant answer) -
+    # st.chat_input works inside st.expander in this Streamlit version, and
+    # both the question and the synthesized answer rendered as markdown
+    # somewhere inside those blocks.
+    assert len(app.chat_message) == 4
+    all_markdown_text = " ".join(md.value for md in app.markdown)
+    assert "what is 2+2?" in all_markdown_text
+    assert "4" in all_markdown_text
+    assert "still working on this" in all_markdown_text

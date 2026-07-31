@@ -13,12 +13,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from pydantic import BaseModel, ValidationError
 
 from agent_control.config import AppSettings
-from agent_control.schemas import Capability, ErrorClass, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.schemas import Capability, ErrorClass, RiskLevel, ToolCallRequest, ToolCallResult, ToolResultStatus
 
 
 def failed_result(request: ToolCallRequest, message: str) -> ToolCallResult:
@@ -38,6 +38,29 @@ def failed_result(request: ToolCallRequest, message: str) -> ToolCallResult:
     )
 
 
+CAPABILITY_MINIMUM_RISKS: dict[Capability, RiskLevel] = {
+    Capability.TELEGRAM_RECEIVE: RiskLevel.LOW,
+    Capability.TELEGRAM_SEND: RiskLevel.LOW,
+    Capability.LLM_GENERATE: RiskLevel.LOW,
+    Capability.STT_TRANSCRIBE: RiskLevel.LOW,
+    Capability.TTS_SYNTHESIZE: RiskLevel.LOW,
+    Capability.VSCODE_READ_STATE: RiskLevel.LOW,
+    Capability.VSCODE_WRITE_FILES: RiskLevel.HIGH,
+    Capability.TERMINAL_RUN: RiskLevel.HIGH,
+    Capability.FILESYSTEM_READ: RiskLevel.LOW,
+    Capability.FILESYSTEM_WRITE: RiskLevel.HIGH,
+    Capability.DESKTOP_SCREENSHOT: RiskLevel.LOW,
+    Capability.DESKTOP_CONTROL: RiskLevel.CRITICAL,
+    Capability.BROWSER_OPEN: RiskLevel.LOW,
+    Capability.BROWSER_CONTROL: RiskLevel.CRITICAL,
+    Capability.NETWORK_HTTP: RiskLevel.HIGH,
+    Capability.SCHEDULE_MANAGE: RiskLevel.MEDIUM,
+    Capability.GITHUB_READ: RiskLevel.LOW,
+    Capability.GITHUB_PUSH: RiskLevel.CRITICAL,
+    Capability.DEPENDENCIES_INSTALL: RiskLevel.HIGH,
+}
+
+
 @dataclass(frozen=True)
 class ToolDefinition:
     name: str
@@ -51,11 +74,45 @@ class ToolDefinition:
     output_schema: type[BaseModel] | None = None
     operation_output_schemas: dict[str, type[BaseModel]] | None = None
     default_operation: str | None = None
+    # Authorization metadata is owned by the runtime definition, never by the
+    # model. A mixed read/write tool can lower or raise individual operations;
+    # otherwise the capability's conservative minimum above applies.
+    minimum_risk: RiskLevel | None = None
+    operation_risks: dict[str, RiskLevel] = field(default_factory=dict)
+    approval_required_operations: tuple[str, ...] = ()
+    # Human-readable "why" for an approval_required_operations entry, shown
+    # on the ApprovalRequest a human actually sees. Restores the specific
+    # reasoning that ToolAdapter-raised exceptions used to carry before the
+    # runtime-owned approval gate replaced them (docs/HISTORY.md Part 4's
+    # concurrent-hardening note) - optional; operations not listed here still
+    # get PolicyEngine.approval_request()'s generic "Approve X using Y".
+    approval_reasons: dict[str, str] = field(default_factory=dict)
+    risk_resolver: Callable[[dict], RiskLevel] | None = None
+    approval_resolver: Callable[[dict], bool] | None = None
     # Worked usage examples shown to the Operator's decide() call. Each entry
     # is a `tool_input` dict the model can imitate - the 8B local model
     # imitates concrete examples much more reliably than it follows abstract
     # descriptions.
     examples: tuple[dict, ...] = ()
+
+    def required_risk(self, value: dict) -> RiskLevel:
+        if self.risk_resolver is not None:
+            return self.risk_resolver(value)
+        operation = str(value.get("operation") or self.default_operation or "")
+        return self.operation_risks.get(
+            operation,
+            self.minimum_risk or CAPABILITY_MINIMUM_RISKS[self.capability],
+        )
+
+    def requires_approval(self, value: dict) -> bool:
+        operation = str(value.get("operation") or self.default_operation or "")
+        if operation in self.approval_required_operations:
+            return True
+        return bool(self.approval_resolver and self.approval_resolver(value))
+
+    def approval_reason(self, value: dict) -> str | None:
+        operation = str(value.get("operation") or self.default_operation or "")
+        return self.approval_reasons.get(operation)
 
     def validate_input(self, value: dict) -> dict:
         return self._validate_schema(value, self.input_schema, self.operation_schemas, "input")

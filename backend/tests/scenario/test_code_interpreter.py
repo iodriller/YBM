@@ -23,14 +23,13 @@ async def test_code_interpreter_computes_fibonacci(tmp_path, monkeypatch) -> Non
     settings = isolated_settings(
         monkeypatch, tmp_path,
         capabilities=caps,
-        # require_approval_for_untrusted_run_python: False - this test is
-        # about execution correctness (right tool, right file, right
-        # answer), not the approval gate itself (see
-        # test_code_interpreter.py's
+        # require_approval_for_untrusted_run_python: False - the
+        # code.interpreter-specific "would run unsandboxed" gate this test
+        # isn't about (see
         # test_code_interpreter_generated_run_needs_approval_on_silent_docker_fallback
-        # for that, and test_code_interpreter_default_settings_need_approval_without_docker.py
-        # for this same objective proven to correctly require approval
-        # under the real default config, with no opt-out).
+        # for that one). Does NOT disable generate_and_run's OWN separate,
+        # unconditional approval requirement - see run_task_to_completion's
+        # auto_approve below for that.
         adapters={
             "code_interpreter": {
                 "enabled": True,
@@ -42,7 +41,15 @@ async def test_code_interpreter_computes_fibonacci(tmp_path, monkeypatch) -> Non
     scenario = build_scenario(settings, tmp_path=tmp_path, fixture_name="code_interpreter_fibonacci")
 
     task = await run_task_to_completion(
-        scenario, "use python to compute the 20th fibonacci number and tell me the result"
+        scenario, "use python to compute the 20th fibonacci number and tell me the result",
+        # generate_and_run is unconditionally approval-gated by design
+        # (code_interpreter.py's ToolDefinition, approval_required_operations
+        # - "cannot be bypassed... by design", not a settings knob). Simulate
+        # a human approving it, same as production: this test is about
+        # execution correctness, not the approval gate itself -
+        # test_code_interpreter_default_settings_need_approval_without_docker.py
+        # is what proves the gate fires correctly.
+        auto_approve=True,
     )
 
     assert task.status == TaskStatus.COMPLETED

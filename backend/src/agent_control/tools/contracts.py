@@ -235,6 +235,44 @@ class ScheduleManageInput(ToolInputModel):
         return self
 
 
+class KnowledgeBaseInput(ToolInputModel):
+    operation: Literal["list_sources", "search"] = "search"
+    # Required for operation=search - the search query.
+    query: str | None = None
+
+    @model_validator(mode="after")
+    def search_requires_query(self) -> "KnowledgeBaseInput":
+        if self.operation == "search" and not (self.query or "").strip():
+            raise ValueError("operation=search requires 'query'")
+        return self
+
+
+class PersonaInput(ToolInputModel):
+    operation: Literal["get", "update"] = "get"
+    # Required for operation=update - the complete new persona content,
+    # replacing what's there now (read it first via operation=get).
+    content: str | None = None
+
+    @model_validator(mode="after")
+    def update_requires_content(self) -> "PersonaInput":
+        if self.operation == "update" and not (self.content or "").strip():
+            raise ValueError("operation=update requires 'content'")
+        return self
+
+
+class SkillsInput(ToolInputModel):
+    operation: Literal["list", "read"] = "list"
+    # Required for operation=read - which skill's full body to load. Optional
+    # for operation=list, which never needs one (docs/HISTORY.md Part 4 T1.3).
+    name: str | None = None
+
+    @model_validator(mode="after")
+    def read_requires_name(self) -> "SkillsInput":
+        if self.operation == "read" and not (self.name or "").strip():
+            raise ValueError("operation=read requires 'name'")
+        return self
+
+
 class TaskStatusInput(ToolInputModel):
     operation: Literal["status"] = "status"
     limit: int = Field(default=10, ge=1, le=50)
@@ -604,6 +642,24 @@ class MCPClientInput(ToolInputModel):
     risk_level: str | None = None
     max_output_chars: int | None = Field(default=None, ge=100, le=200000)
 
+    @field_validator("args", mode="before")
+    @classmethod
+    def _reject_dict_args(cls, value: Any) -> Any:
+        # 'args' (install_server's command-line arguments, a list of
+        # strings) and 'arguments' (call_tool's key-value tool arguments,
+        # a dict) are easy to conflate - the local 8B model reliably does,
+        # reproduced across three independent live recordings with zero
+        # self-correction against the raw Pydantic "should be a valid
+        # list" message (docs/HISTORY.md Part 4's re-recording note).
+        # Naming the correct field explicitly here gives it something
+        # actionable to react to instead.
+        if isinstance(value, dict):
+            raise ValueError(
+                "'args' must be a list of command-line strings (install_server only) - "
+                "key-value tool arguments for call_tool belong in 'arguments' instead"
+            )
+        return value
+
     @model_validator(mode="after")
     def _require_inputs_per_operation(self) -> "MCPClientInput":
         if self.operation == "call_tool":
@@ -798,6 +854,28 @@ class TaskStatusOutput(ToolOutputModel):
     summary: str = Field(min_length=1)
     task_status: dict[str, Any] = Field(default_factory=dict)
     plan: dict[str, Any] | None = None
+
+
+class KnowledgeBaseOutput(ToolOutputModel):
+    operation: Literal["list_sources", "search"] = "search"
+    summary: str = Field(min_length=1)
+    sources: list[str] = Field(default_factory=list)
+    results: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class PersonaOutput(ToolOutputModel):
+    operation: Literal["get", "update"] = "get"
+    summary: str = Field(min_length=1)
+    content: str = ""
+
+
+class SkillsOutput(ToolOutputModel):
+    operation: Literal["list", "read"] = "list"
+    summary: str = Field(min_length=1)
+    # operation=list: name+description only (progressive disclosure - the
+    # full body is never in this response). operation=read: exactly one
+    # entry, with "body" populated.
+    skills: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class BrowserToolOutput(ToolOutputModel):

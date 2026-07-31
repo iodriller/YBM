@@ -8,6 +8,7 @@ import sys
 
 from agent_control.bootstrap import run_doctor, run_setup
 from agent_control.config_sync import set_config_path
+from agent_control.onboarding import run_onboard
 from agent_control.db_tools import db_clean, db_inspect, db_reset
 from agent_control.logging_setup import configure_logging
 from agent_control.channels.telegram import (
@@ -20,10 +21,11 @@ from agent_control.channels.telegram import (
 from agent_control.channels.memory import ConversationMemoryService
 from agent_control.channels.responder import LLMTelegramResponder
 from agent_control.channels.telegram_notifications import TelegramTaskNotifier
-from agent_control.config import backend_base_url, load_settings
+from agent_control.config import AppSettings, backend_base_url, load_settings
 from agent_control.llm import LLMMessageClassifier, build_default_llm_provider
 from agent_control.llm.providers import build_major_llm_provider
 from agent_control.observation import ArtifactService, ScreenshotService
+from agent_control.persona import persona_prompt_section
 from agent_control.orchestration import AuditorService, OperatorLoopService, TaskWorker, ToolExecutor, reconcile_orphaned_tasks
 from agent_control.policy import PolicyEngine
 from agent_control.recovery import RetryPolicy
@@ -88,6 +90,14 @@ def trace_task(task_id: str, *, as_json: bool = False) -> int:
         print(f"answer  {metadata['synthesized_answer']}")
     if metadata.get("last_worker_error"):
         print(f"error   {metadata['last_worker_error']}")
+    usage = metadata.get("token_usage")
+    if usage:
+        by_source = usage.get("by_source") or {}
+        breakdown = ", ".join(f"{name}={entry.get('total_tokens', 0)}" for name, entry in by_source.items())
+        print(
+            f"tokens  {usage.get('total_tokens', 0)} total over {usage.get('calls', 0)} call(s)"
+            f"{f' ({breakdown})' if breakdown else ''}"
+        )
 
     history = trace.get("operator_history") or []
     print(f"\noperator steps ({len(history)}):")
@@ -195,8 +205,8 @@ async def run_worker() -> None:
             audit,
             executor=executor,
             retry_policy=RetryPolicy(settings.limits),
-            config_context=_worker_config_context(registry),
-            config_context_factory=lambda registry=registry: _worker_config_context(registry),
+            config_context=_worker_config_context(registry, settings),
+            config_context_factory=lambda registry=registry, settings=settings: _worker_config_context(registry, settings),
             notification_sink=notifier,
             task_budget_seconds=float(settings.limits.task_budget_seconds),
             operator=operator,
@@ -319,10 +329,13 @@ def _screenshot_service(settings, repositories: Repositories) -> ScreenshotServi
 
 
 
-def _worker_config_context(registry) -> str:
+def _worker_config_context(registry, settings: AppSettings) -> str:
+    persona_section = persona_prompt_section(settings.adapters.persona)
     return f"""{registry.context()}
 
 {registry.vault_summary()}
+
+{persona_section}
 
 Prefer conservative plans. Use registered tool names exactly and include explicit operations when a tool supports them. For exact JSON/REST APIs, prefer http.request when the target is allowlisted. If a needed connector is missing, refresh or install MCP when a matching server is known; otherwise use adapter.factory to scaffold and test a proposal instead of inventing unregistered tool names."""
 
@@ -361,6 +374,11 @@ def main() -> None:
         choices=[
             "doctor",
             "setup",
+            "onboard",
+            "start",
+            "stop",
+            "status",
+            "logs",
             "init-db",
             "config-summary",
             "config-set",
@@ -379,11 +397,19 @@ def main() -> None:
     parser.add_argument("--session-id", default=None)
     parser.add_argument("--poll-interval-seconds", type=float, default=5.0)
     parser.add_argument("--telegram-token", default=None, help="used by `setup` to save TELEGRAM_BOT_TOKEN")
-    parser.add_argument("path", nargs="?", default=None, help="dotted config path, for `config-set` / task id, for `trace-task`")
+    parser.add_argument("path", nargs="?", default=None,
+                         help="dotted config path (config-set) / task id (trace-task) / service name (logs)")
     parser.add_argument("value", nargs="?", default=None, help="new value, for `config-set`")
     parser.add_argument("--days", type=int, default=30, help="retention window for `db-clean`")
     parser.add_argument("--yes", action="store_true", help="required to confirm `db-reset`")
     parser.add_argument("--json", action="store_true", help="raw JSON output for `trace-task`")
+    parser.add_argument("--follow", "-f", action="store_true", help="follow log output, for `logs`")
+    parser.add_argument("--lines", type=int, default=60, help="tail line count, for `logs`")
+    parser.add_argument("--no-telegram", action="store_true", help="for `start`: skip the Telegram polling service")
+    parser.add_argument("--no-worker", action="store_true", help="for `start`: skip the worker + coding session watcher")
+    parser.add_argument("--no-scheduler", action="store_true", help="for `start`: skip the scheduler")
+    parser.add_argument("--no-admin-ui", action="store_true", help="for `start`: skip the Streamlit admin UI")
+    parser.add_argument("--no-localdeploy", action="store_true", help="for `start`: skip launching LocalDeploy")
     args = parser.parse_args()
 
     _configure_logging_for_command(args.command)
@@ -392,6 +418,26 @@ def main() -> None:
         raise SystemExit(run_doctor())
     elif args.command == "setup":
         raise SystemExit(run_setup(telegram_token=args.telegram_token))
+    elif args.command == "onboard":
+        raise SystemExit(run_onboard())
+    elif args.command == "start":
+        from agent_control.supervisor import start_all
+        raise SystemExit(start_all(
+            no_telegram=args.no_telegram, no_worker=args.no_worker,
+            no_scheduler=args.no_scheduler, no_admin_ui=args.no_admin_ui,
+            no_localdeploy=args.no_localdeploy,
+        ))
+    elif args.command == "stop":
+        from agent_control.supervisor import stop_all
+        raise SystemExit(stop_all())
+    elif args.command == "status":
+        from agent_control.supervisor import status_all
+        raise SystemExit(status_all())
+    elif args.command == "logs":
+        from agent_control.supervisor import tail_log
+        if not args.path:
+            raise SystemExit("usage: ybm logs <service> [--follow] [--lines N]")
+        raise SystemExit(tail_log(args.path, follow=args.follow, lines=args.lines))
     elif args.command == "init-db":
         init_db()
     elif args.command == "config-summary":

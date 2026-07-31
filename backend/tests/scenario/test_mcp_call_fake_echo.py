@@ -136,7 +136,16 @@ async def test_mcp_call_fake_echo_disabled_by_capability_policy(tmp_path, monkey
         mcp=MCPConfig(
             enabled=True,
             catalog_path=str(catalog_path),
-            servers={"fake": MCPServerConfig(command=sys.executable, args=[str(server_path)], timeout_seconds=MCP_HANDSHAKE_TIMEOUT_SECONDS)},
+            servers={
+                "fake": MCPServerConfig(
+                    command=sys.executable, args=[str(server_path)],
+                    timeout_seconds=MCP_HANDSHAKE_TIMEOUT_SECONDS,
+                    # Matches this test's own catalog entry below (LOW) -
+                    # see harness.mcp_settings()'s comment for why the
+                    # default (HIGH) would be a self-inconsistent config.
+                    risk_level=RiskLevel.LOW,
+                )
+            },
         ),
     )
     write_mcp_catalog(
@@ -166,5 +175,18 @@ async def test_mcp_call_fake_echo_disabled_by_capability_policy(tmp_path, monkey
     tool_calls = scenario.repositories.tool_invocations.list_for_task(task.id)
     mcp_calls = [call for call in tool_calls if call["tool_name"] == "mcp.client"]
     assert mcp_calls
-    assert all(call["result"]["status"] == "denied" for call in mcp_calls)
-    assert all(call["result"].get("error_message") == "capability_disabled" for call in mcp_calls)
+    # Not necessarily every call: mcp.client's `arguments` field is easy to
+    # confuse with the unrelated, list-typed `args` field on the same
+    # contract (install_server's command-line args) - a first attempt using
+    # the wrong one fails input validation before ever reaching the policy
+    # engine's capability check, and the model may retry several times
+    # before it (or doesn't) get the shape right. Reproduced live: one
+    # recording had the model repeat the `args` mistake for 7 consecutive
+    # retries with zero self-correction, so every one of that run's calls
+    # was "failed" (validation), never "denied" - see
+    # test_code_interpreter_default_settings_need_approval_without_docker.py
+    # for the same class of fragility already fixed the same way there. The
+    # policy gate firing at least once is what this test is about.
+    denied_calls = [call for call in mcp_calls if call["result"]["status"] == "denied"]
+    assert denied_calls
+    assert all(call["result"].get("error_message") == "capability_disabled" for call in denied_calls)

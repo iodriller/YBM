@@ -15,6 +15,7 @@ from agent_control.config import AppSettings, CapabilityPolicy
 from agent_control.orchestration.executor import StaticToolAdapter, ToolExecutor
 from agent_control.policy import PolicyEngine
 from agent_control.schemas import (
+    ApprovalStatus,
     Capability,
     ErrorClass,
     RiskLevel,
@@ -22,6 +23,7 @@ from agent_control.schemas import (
     ToolCallResult,
     ToolResultStatus,
 )
+from agent_control.tools.spec import ToolDefinition
 from helpers import make_repos
 
 
@@ -150,9 +152,228 @@ async def test_executor_runs_when_pre_approved(tmp_path) -> None:
         adapters={"llm": StaticToolAdapter()},
     )
 
-    result = await executor.execute(_request(task.id), approved=True)
+    pending = await executor.execute(_request(task.id))
+    approval_id = pending.output["approval_id"]
+    assert repos.approvals.decide_pending(approval_id, ApprovalStatus.APPROVED)
+
+    result = await executor.execute(_request(task.id), approval_id=approval_id)
 
     assert result.status == ToolResultStatus.SUCCEEDED
+    assert repos.approvals.get(approval_id).status == ApprovalStatus.CONSUMED
+
+
+@pytest.mark.asyncio
+async def test_executor_approval_is_exact_and_one_shot(tmp_path) -> None:
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("t")
+    settings = _settings_with(Capability.LLM_GENERATE, requires_approval=True)
+    adapter = StaticToolAdapter()
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"llm": adapter},
+    )
+
+    pending = await executor.execute(_request(task.id))
+    approval_id = pending.output["approval_id"]
+    assert repos.approvals.decide_pending(approval_id, ApprovalStatus.APPROVED)
+
+    changed = _request(task.id).model_copy(update={"input": {"prompt": "different"}})
+    mismatched = await executor.execute(changed, approval_id=approval_id)
+    allowed = await executor.execute(_request(task.id), approval_id=approval_id)
+    replayed = await executor.execute(_request(task.id), approval_id=approval_id)
+
+    assert mismatched.status == ToolResultStatus.DENIED
+    assert mismatched.error_message == "approval_invalid_or_mismatched"
+    assert allowed.status == ToolResultStatus.SUCCEEDED
+    assert replayed.status == ToolResultStatus.DENIED
+    assert replayed.error_message == "approval_invalid_or_mismatched"
+    assert len(adapter.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_executor_rejects_model_risk_understatement(tmp_path) -> None:
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("t")
+    settings = _settings_with(
+        Capability.TERMINAL_RUN,
+        max_risk_level=RiskLevel.CRITICAL,
+    )
+    adapter = StaticToolAdapter()
+    definition = ToolDefinition(
+        name="danger",
+        capability=Capability.TERMINAL_RUN,
+        enabled=True,
+        description="dangerous operation",
+        minimum_risk=RiskLevel.HIGH,
+    )
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"danger": adapter},
+        tool_definitions=[definition],
+    )
+
+    result = await executor.execute(
+        _request(
+            task.id,
+            capability=Capability.TERMINAL_RUN,
+            tool_name="danger",
+            risk=RiskLevel.LOW,
+        )
+    )
+
+    assert result.status == ToolResultStatus.FAILED
+    assert result.error_class == ErrorClass.VALIDATION_FAILED
+    assert "understates" in (result.error_message or "")
+    assert adapter.requests == []
+
+
+@pytest.mark.asyncio
+async def test_executor_rejects_model_capability_substitution(tmp_path) -> None:
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("t")
+    settings = _settings_with(Capability.LLM_GENERATE)
+    adapter = StaticToolAdapter()
+    definition = ToolDefinition(
+        name="terminal",
+        capability=Capability.TERMINAL_RUN,
+        enabled=True,
+        description="terminal operation",
+    )
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"terminal": adapter},
+        tool_definitions=[definition],
+    )
+
+    result = await executor.execute(
+        _request(task.id, capability=Capability.LLM_GENERATE, tool_name="terminal")
+    )
+
+    assert result.status == ToolResultStatus.FAILED
+    assert result.error_class == ErrorClass.VALIDATION_FAILED
+    assert "requires capability terminal.run" in (result.error_message or "")
+    assert adapter.requests == []
+
+
+@pytest.mark.asyncio
+async def test_tool_definition_approval_cannot_be_disabled_by_capability_setting(tmp_path) -> None:
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("persist configuration")
+    settings = _settings_with(
+        Capability.TERMINAL_RUN,
+        requires_approval=False,
+        max_risk_level=RiskLevel.CRITICAL,
+    )
+    settings.approval_policy.require_approval_at_or_above = RiskLevel.CRITICAL
+    definition = ToolDefinition(
+        name="persistent.tool",
+        capability=Capability.TERMINAL_RUN,
+        enabled=True,
+        description="persistent configuration operation",
+        minimum_risk=RiskLevel.HIGH,
+        approval_required_operations=("persist",),
+    )
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"persistent.tool": StaticToolAdapter()},
+        tool_definitions=[definition],
+    )
+
+    result = await executor.execute(
+        ToolCallRequest(
+            task_id=task.id,
+            tool_name="persistent.tool",
+            capability=Capability.TERMINAL_RUN,
+            risk_level=RiskLevel.HIGH,
+            input={"operation": "persist"},
+        )
+    )
+
+    assert result.status == ToolResultStatus.NEEDS_APPROVAL
+
+
+@pytest.mark.asyncio
+async def test_approval_required_operation_carries_its_specific_reason(tmp_path) -> None:
+    # docs/HISTORY.md Part 4's concurrent-hardening note: NEEDS_APPROVAL used
+    # to lose the tool-specific "why" (a generic "Approve X using Y" summary
+    # only). ToolDefinition.approval_reasons restores it - this pins the
+    # restored behavior so it can't silently regress again.
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("persist configuration")
+    settings = _settings_with(
+        Capability.TERMINAL_RUN,
+        requires_approval=False,
+        max_risk_level=RiskLevel.CRITICAL,
+    )
+    settings.approval_policy.require_approval_at_or_above = RiskLevel.CRITICAL
+    definition = ToolDefinition(
+        name="persistent.tool",
+        capability=Capability.TERMINAL_RUN,
+        enabled=True,
+        description="persistent configuration operation",
+        minimum_risk=RiskLevel.HIGH,
+        approval_required_operations=("persist",),
+        approval_reasons={"persist": "writes a value that survives task completion"},
+    )
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"persistent.tool": StaticToolAdapter()},
+        tool_definitions=[definition],
+    )
+
+    result = await executor.execute(
+        ToolCallRequest(
+            task_id=task.id,
+            tool_name="persistent.tool",
+            capability=Capability.TERMINAL_RUN,
+            risk_level=RiskLevel.HIGH,
+            input={"operation": "persist"},
+        )
+    )
+
+    assert result.status == ToolResultStatus.NEEDS_APPROVAL
+    approval_id = result.output["approval_id"]
+    approval = repos.approvals.get(approval_id)
+    assert "writes a value that survives task completion" in approval.summary
+
+    # An operation with no approval_reasons entry still falls back to the
+    # generic summary rather than raising or showing "None".
+    definition_no_reason = ToolDefinition(
+        name="persistent.tool",
+        capability=Capability.TERMINAL_RUN,
+        enabled=True,
+        description="persistent configuration operation",
+        minimum_risk=RiskLevel.HIGH,
+        approval_required_operations=("persist",),
+    )
+    executor_no_reason = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"persistent.tool": StaticToolAdapter()},
+        tool_definitions=[definition_no_reason],
+    )
+    result2 = await executor_no_reason.execute(
+        ToolCallRequest(
+            task_id=task.id,
+            tool_name="persistent.tool",
+            capability=Capability.TERMINAL_RUN,
+            risk_level=RiskLevel.HIGH,
+            input={"operation": "persist"},
+        )
+    )
+    approval2 = repos.approvals.get(result2.output["approval_id"])
+    assert approval2.summary == "Approve persistent.tool using terminal.run"
 
 
 @pytest.mark.asyncio

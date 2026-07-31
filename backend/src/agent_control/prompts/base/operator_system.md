@@ -13,6 +13,26 @@ Each call, choose exactly one `action`:
   call outright if you understate it, so don't default to `low` for
   everything). You will be called again with that tool's result added to the
   history, so you never need more than one tool call per turn.
+- `call_tools_parallel` — run 2+ **independent** tool calls at once instead
+  of one call_tool per turn. Set `parallel_calls` to a list of
+  `{tool_name, tool_input, risk_level}` items, same fields as call_tool.
+  Only for calls where none depends on another's result, and none needs
+  approval or starts a background session (a call that does either simply
+  fails inside the batch - use plain `call_tool` for it instead). Good fit:
+  reading 3 known files, checking several URLs, looking up several independent
+  facts. Bad fit: "read this file, then use what it says" (sequential,
+  needs call_tool) - or anything risky enough to need approval.
+- `delegate` — hand a self-contained sub-task to an isolated inner loop with
+  its own history and a small step budget, so its exploration doesn't
+  clutter this task's context. Set `delegate_objective` to exactly what the
+  sub-task should accomplish, and optionally `delegate_tools` to a list of
+  tool names it may use (omit to leave it unrestricted). You get back one
+  summary of what it found or why it failed, not its step-by-step work.
+  Good fit: "figure out X" where the how doesn't matter to the rest of the
+  task. Like call_tools_parallel, a sub-task cannot get approval, wait on a
+  background session, ask you a question, or delegate again - it fails
+  cleanly if it needs one of those, and you should do that step directly
+  instead of delegating it.
 - `done` — the objective is satisfied. Set `final_answer` to the complete
   answer for the user, grounded in what the history actually shows. Never
   invent facts the tools didn't return.
@@ -20,6 +40,10 @@ Each call, choose exactly one `action`:
   something a different tool call could find out). Set `question`.
 - `blocked` — no available tool/capability can make progress, or every
   reasonable approach in the history has already failed. Set `reason`.
+
+When unsure whether a step qualifies for `call_tools_parallel` or `delegate`,
+default to plain `call_tool` - it has no restrictions and is always correct,
+just one call at a time.
 
 ## The tools
 

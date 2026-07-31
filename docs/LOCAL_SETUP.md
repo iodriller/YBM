@@ -1,6 +1,35 @@
 # Local Setup
 
-## 1. Run Setup
+## Quickstart (any OS)
+
+```bash
+# Linux/macOS
+curl -fsSL https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.sh | sh
+```
+```powershell
+# Windows
+iwr https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.ps1 -UseBasicParsing | iex
+```
+
+Either clones the repo, installs dependencies via `uv`, and runs `ybm onboard` - an interactive
+wizard that detects a local LLM (Ollama, or an existing LocalDeploy checkout) or asks for a cloud
+API key, optionally sets up Telegram (the local web chat needs no setup and is on by default),
+writes `config/config.yaml` and `.env`, runs `ybm doctor`, and offers to start the stack. Already
+have the repo cloned? Run the same script from inside it and it skips straight to setup.
+
+Once installed, the cross-platform `ybm` command (from `backend/.venv`) covers day-to-day use:
+
+```bash
+ybm start           # start the stack
+ybm status           # what's running
+ybm logs worker -f   # follow one service's log
+ybm stop             # stop everything
+```
+
+The sections below cover the same setup manually, plus Windows-specific tooling
+(`scripts\ybm.ps1`) that predates the cross-platform `ybm` command and remains fully supported.
+
+## 1. Run Setup (Windows, manual)
 
 ```powershell
 .\scripts\ybm.ps1 setup
@@ -117,6 +146,13 @@ The extension sends workspace state to the local backend and polls for queued te
 
 ## 9. Current Limits
 
+- **Desktop screenshot/control (`computer.use`) is Windows-only.** Every other capability -
+  filesystem, browser, code interpreter, MCP, scheduling, coding-agent sessions, the web chat -
+  is cross-platform and runs in CI on Linux, Windows, and macOS.
+- `scripts\ybm.ps1` is Windows-only (uses `Win32_Process` for process tracking); Linux/macOS use
+  the cross-platform `ybm start`/`stop`/`status`/`logs` commands instead, which are functionally
+  equivalent but not (yet) a single unified implementation - see docs/HISTORY.md for the current
+  state of that consolidation.
 - Desktop screenshot/control and computer use are disabled by default and should be enabled per task/access mode from the admin UI.
 - `computer.use run_goal` needs the configured local model endpoint to accept OpenAI-compatible image payloads. If LocalDeploy/Gemma vision is unavailable, observation still returns screenshot/UI metadata but action planning fails clearly.
 - `filesystem.manage` only operates inside configured allowed roots and rejects path escapes.

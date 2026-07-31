@@ -963,8 +963,11 @@ class TelegramIntakeService:
             ]
             if not pending:
                 continue
+            approved_count = 0
             for approval in pending:
-                self.repositories.approvals.set_status(approval.id, ApprovalStatus.APPROVED)
+                if not self.repositories.approvals.decide_pending(approval.id, ApprovalStatus.APPROVED):
+                    continue
+                approved_count += 1
                 self.audit.append(
                     AuditEventType.APPROVAL_DECIDED,
                     actor=f"telegram:user:{inbound.sender_id}",
@@ -972,8 +975,9 @@ class TelegramIntakeService:
                     correlation_id=inbound.correlation_id,
                     payload={"approval_id": approval.id, "decision": "approve", "source": "plain_text"},
                 )
-            return self._out(chat_id, f"Approved {len(pending)} pending approval(s) for {task.id}.")
-        return self._out(chat_id, "No pending approval found. Full-access modes run without approval.")
+            if approved_count:
+                return self._out(chat_id, f"Approved {approved_count} pending approval(s) for {task.id}.")
+        return self._out(chat_id, "No live pending approval found.")
 
     def _status_summary(self) -> str:
         recent = self.repositories.tasks.list_recent(20)
@@ -991,15 +995,21 @@ class TelegramIntakeService:
     def _apply_callback(self, payload: dict[str, Any], actor: str) -> TaskSignal | None:
         if payload.get("kind") == "approval":
             decision = payload.get("decision")
+            decided = False
             if decision == "approve":
-                self.repositories.approvals.set_status(payload["approval_id"], ApprovalStatus.APPROVED)
+                decided = self.repositories.approvals.decide_pending(
+                    payload["approval_id"], ApprovalStatus.APPROVED
+                )
             elif decision == "reject":
-                self.repositories.approvals.set_status(payload["approval_id"], ApprovalStatus.REJECTED)
-            self.audit.append(
-                AuditEventType.APPROVAL_DECIDED,
-                actor=actor,
-                payload={"approval_id": payload.get("approval_id"), "decision": decision},
-            )
+                decided = self.repositories.approvals.decide_pending(
+                    payload["approval_id"], ApprovalStatus.REJECTED
+                )
+            if decided:
+                self.audit.append(
+                    AuditEventType.APPROVAL_DECIDED,
+                    actor=actor,
+                    payload={"approval_id": payload.get("approval_id"), "decision": decision},
+                )
             return None
 
         if payload.get("kind") == "task" and payload.get("action") in {"pause", "resume", "cancel"}:

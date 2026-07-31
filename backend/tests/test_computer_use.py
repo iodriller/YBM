@@ -8,7 +8,7 @@ import pytest
 
 from agent_control.config import AppSettings, CapabilityPolicy, ComputerUseAdapterConfig
 from agent_control.policy import PolicyEngine
-from agent_control.schemas import Capability, RiskLevel, ToolCallRequest
+from agent_control.schemas import ApprovalStatus, Capability, RiskLevel, ToolCallRequest
 from agent_control.storage import AuditLogger, Database, Repositories
 from agent_control.tools.computer_use import ComputerUseAdapter
 from agent_control.tools.computer_use import _clean_summary_text
@@ -208,7 +208,10 @@ def test_policy_blocks_disabled_desktop_control_and_requires_approval(monkeypatc
         },
     )
     needs_approval = PolicyEngine(settings, audit).evaluate(request)
-    approved = PolicyEngine(settings, audit).evaluate(request, approved=True)
+    approval = PolicyEngine(settings, audit).approval_request(request).model_copy(
+        update={"status": ApprovalStatus.APPROVED}
+    )
+    approved = PolicyEngine(settings, audit).evaluate(request, approval=approval)
 
     assert needs_approval.needs_approval is True
     assert approved.allowed is True

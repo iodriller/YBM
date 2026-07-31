@@ -139,6 +139,7 @@ class CapabilityAccessMode(StrEnum):
 class ApprovalStatus(StrEnum):
     PENDING = "pending"
     APPROVED = "approved"
+    CONSUMED = "consumed"
     REJECTED = "rejected"
     EXPIRED = "expired"
     CANCELLED = "cancelled"
@@ -438,11 +439,31 @@ class OperatorAction(StrEnum):
 
     See docs/HISTORY.md P3 / orchestration/operator.py - the additive
     observe/decide/act alternative to plan-once-then-replan.
+
+    CALL_TOOLS_PARALLEL and DELEGATE (docs/HISTORY.md Part 4 T1.1/T1.2) are
+    both narrowly scoped, not general replacements for CALL_TOOL: parallel
+    calls skip the approval/retry/background-wait machinery entirely (see
+    worker.py's _run_parallel_calls), and a delegated sub-task cannot itself
+    approval-pause, wait on a background session, ask the user, or delegate
+    further (see worker.py's _run_delegate). Both exist for the specific
+    case they were built for - independent reads, and a self-contained
+    sub-task with its own tool subset - not as drop-in CALL_TOOL upgrades.
     """
     CALL_TOOL = "call_tool"
+    CALL_TOOLS_PARALLEL = "call_tools_parallel"
+    DELEGATE = "delegate"
     DONE = "done"
     ASK_USER = "ask_user"
     BLOCKED = "blocked"
+
+
+class ParallelToolCall(StrictBaseModel):
+    """One call within a call_tools_parallel batch - same shape as the
+    single-call fields on OperatorDecision, just repeated per item."""
+
+    tool_name: str
+    tool_input: dict[str, Any] = Field(default_factory=dict)
+    risk_level: RiskLevel = RiskLevel.LOW
 
 
 class OperatorDecision(StrictBaseModel):
@@ -459,11 +480,22 @@ class OperatorDecision(StrictBaseModel):
     final_answer: str | None = None
     question: str | None = None
     reason: str | None = None
+    # action=call_tools_parallel only.
+    parallel_calls: list[ParallelToolCall] = Field(default_factory=list)
+    # action=delegate only. delegate_tools=None means the sub-task inherits
+    # the full tool catalog; an explicit list narrows it, enforced in code
+    # (worker.py's _run_delegate), not just by prompt instruction.
+    delegate_objective: str | None = None
+    delegate_tools: list[str] | None = None
 
     @model_validator(mode="after")
     def call_tool_requires_tool_name(self) -> "OperatorDecision":
         if self.action == OperatorAction.CALL_TOOL and not self.tool_name:
             raise ValueError("action=call_tool requires tool_name")
+        if self.action == OperatorAction.CALL_TOOLS_PARALLEL and len(self.parallel_calls) < 2:
+            raise ValueError("action=call_tools_parallel requires at least 2 parallel_calls")
+        if self.action == OperatorAction.DELEGATE and not self.delegate_objective:
+            raise ValueError("action=delegate requires delegate_objective")
         return self
 
 

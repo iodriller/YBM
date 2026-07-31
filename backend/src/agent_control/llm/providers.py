@@ -39,11 +39,38 @@ class LLMProvider(Protocol):
         ...
 
 
+def _normalize_usage(raw: dict | None, *, model: str) -> dict | None:
+    """OpenAI-compatible `usage` objects use prompt_tokens/completion_tokens/
+    total_tokens; a few servers (notably some Ollama-backed proxies) omit the
+    field or use eval_count/prompt_eval_count instead. Return a normalized
+    dict, or None when nothing usable was reported - callers must treat that
+    as "unknown", not "zero"."""
+    if not isinstance(raw, dict):
+        return None
+    prompt = raw.get("prompt_tokens", raw.get("prompt_eval_count"))
+    completion = raw.get("completion_tokens", raw.get("eval_count"))
+    total = raw.get("total_tokens")
+    if total is None and (prompt is not None or completion is not None):
+        total = (prompt or 0) + (completion or 0)
+    if prompt is None and completion is None and total is None:
+        return None
+    return {
+        "prompt_tokens": int(prompt or 0),
+        "completion_tokens": int(completion or 0),
+        "total_tokens": int(total or 0),
+        "model": model,
+    }
+
+
 class OpenAICompatibleProvider:
     def __init__(self, profile: LLMProfileConfig) -> None:
         if not profile.base_url:
             raise ValueError("base_url is required for OpenAI-compatible LLM provider")
         self.profile = profile
+        # Usage from the most recent successful _chat() call - see
+        # docs/HISTORY.md Part 4 T1.4. None until a call completes, or if the
+        # server never reported usage; never a fabricated zero.
+        self.last_usage: dict | None = None
 
     async def generate_text(self, system_prompt: str, user_prompt: str) -> str:
         data = await self._chat(system_prompt, user_prompt, response_format=None)
@@ -129,7 +156,9 @@ class OpenAICompatibleProvider:
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
                 raise ValueError(_http_error_detail(exc.response)) from exc
-            return dict(response.json())
+            data = dict(response.json())
+            self.last_usage = _normalize_usage(data.get("usage"), model=self.profile.model)
+            return data
 
     def _api_key(self) -> str | None:
         if self.profile.api_key:
@@ -152,6 +181,9 @@ class FailoverLLMProvider:
     def __init__(self, primary: LLMProvider, fallback: LLMProvider) -> None:
         self.primary = primary
         self.fallback = fallback
+        # Proxies whichever inner provider actually served the last call -
+        # the fallback's usage after a failover, the primary's otherwise.
+        self.last_usage: dict | None = None
 
     async def generate_text(self, system_prompt: str, user_prompt: str) -> str:
         return await self._call("generate_text", system_prompt, user_prompt)
@@ -173,12 +205,16 @@ class FailoverLLMProvider:
 
     async def _call(self, method: str, *args, **kwargs):
         try:
-            return await getattr(self.primary, method)(*args, **kwargs)
+            result = await getattr(self.primary, method)(*args, **kwargs)
+            self.last_usage = getattr(self.primary, "last_usage", None)
+            return result
         except Exception as exc:
             if not _is_unavailability(exc):
                 raise
             logger.warning("primary LLM unavailable (%s); using fallback profile", exc)
-            return await getattr(self.fallback, method)(*args, **kwargs)
+            result = await getattr(self.fallback, method)(*args, **kwargs)
+            self.last_usage = getattr(self.fallback, "last_usage", None)
+            return result
 
 
 def _is_unavailability(exc: Exception) -> bool:

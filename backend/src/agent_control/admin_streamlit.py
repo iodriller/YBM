@@ -67,6 +67,7 @@ def _render_live_page(state: dict[str, str]) -> None:
         return
 
     _render_header(summary)
+    _render_local_chat(state)
     _render_pending_approvals(state)
     _render_live_activity(summary, state)
     _render_operations(summary, state)
@@ -134,6 +135,61 @@ def _extract_last_output(task: dict[str, Any]) -> str | None:
     if meta.get("last_worker_error"):
         return f"Error: {meta['last_worker_error']}"
     return None
+
+
+def _render_local_chat(state: dict[str, str]) -> None:
+    """The local web chat channel (docs/HISTORY.md Part 4 T2.8) - talk to
+    the agent from this console without Telegram configured or reachable.
+    Each message becomes a normal task through the same worker/policy
+    pipeline as any other channel; this just renders that one fixed
+    conversation as a transcript and lets you add to it.
+    """
+    with st.expander("Chat", expanded=True):
+        try:
+            chat = _api_json(state["backend_url"], "/admin/api/chat/messages", state["token"])
+        except ApiError as exc:
+            st.error(str(exc))
+            return
+
+        tasks = chat.get("tasks") or []
+        if not tasks:
+            st.caption("No messages yet - say something below.")
+        for task in tasks:
+            with st.chat_message("user"):
+                st.write(task.get("objective") or "")
+            with st.chat_message("assistant"):
+                st.write(_chat_answer_text(task))
+
+        message = st.chat_input("Message the agent...")
+        if message:
+            try:
+                _api_json(
+                    state["backend_url"], "/admin/api/chat/messages", state["token"],
+                    method="POST", payload={"text": message},
+                )
+            except ApiError as exc:
+                st.error(str(exc))
+            else:
+                st.rerun()
+
+
+def _chat_answer_text(task: dict[str, Any]) -> str:
+    status = str(task.get("status") or "")
+    meta = task.get("metadata") or {}
+    if meta.get("synthesized_answer"):
+        return str(meta["synthesized_answer"])
+    last_output = _extract_last_output(task)
+    if status == "completed":
+        return last_output or "Done."
+    if status == "failed":
+        return last_output or "Failed."
+    if status == "blocked":
+        return last_output or "Blocked."
+    if status == "awaiting_approval":
+        return "Waiting for approval - see Pending Approvals above."
+    if status == "clarifying":
+        return str(meta.get("clarifying_question") or "Needs more information.")
+    return last_output or f"Working... ({status or 'received'})"
 
 
 def _render_pending_approvals(state: dict[str, str]) -> None:
@@ -334,11 +390,21 @@ def _render_task_trace(trace: dict[str, Any], key_prefix: str = "trace") -> None
     audit = trace.get("audit") or []
     trace_timeline = _trace_timeline_rows(trace)
 
-    c1, c2, c3, c4 = st.columns(4)
+    token_usage = ((trace.get("task") or {}).get("metadata") or {}).get("token_usage") or {}
+
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Operator Steps", len(operator_history))
     c2.metric("Tool Calls", len(tools))
     c3.metric("Timeline", len(trace_timeline))
     c4.metric("Audit", len(audit))
+    c5.metric("LLM Tokens", token_usage.get("total_tokens", 0) if token_usage else "—")
+    if token_usage:
+        by_source = token_usage.get("by_source") or {}
+        breakdown = " · ".join(
+            f"{name}: {entry.get('total_tokens', 0)} ({entry.get('calls', 0)} call(s))"
+            for name, entry in by_source.items()
+        )
+        st.caption(f"Token usage — {breakdown}" if breakdown else "Token usage recorded.")
 
     st.markdown("##### Timeline")
     if trace_timeline:

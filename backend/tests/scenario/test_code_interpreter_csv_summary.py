@@ -60,11 +60,12 @@ async def test_code_interpreter_csv_summary_writes_json_totals(tmp_path, monkeyp
     settings = isolated_settings(
         monkeypatch, tmp_path,
         capabilities=caps,
-        # require_approval_for_untrusted_run_python: False - this test is
-        # about execution correctness, not the approval gate; see
+        # require_approval_for_untrusted_run_python: False - the
+        # code.interpreter-specific "would run unsandboxed" gate; see
         # test_code_interpreter.py's
-        # test_code_interpreter_generated_run_needs_approval_on_silent_docker_fallback
-        # for that gate's own coverage.
+        # test_code_interpreter_generated_run_needs_approval_on_silent_docker_fallback.
+        # Does NOT disable generate_and_run's OWN separate, unconditional
+        # approval requirement - see run_task_to_completion's auto_approve.
         adapters={
             "code_interpreter": {
                 "enabled": True,
@@ -82,6 +83,11 @@ async def test_code_interpreter_csv_summary_writes_json_totals(tmp_path, monkeyp
         "hosting 25, OCR review 45, browser testing 120. "
         "Step 2: run a second script that reads expenses.csv back from disk, "
         "sums the amounts, and writes expense-summary.json with the total.",
+        # generate_and_run is unconditionally approval-gated by design
+        # (code_interpreter.py's ToolDefinition, approval_required_operations).
+        # Simulate a human approving both of this test's two calls - it's
+        # about execution correctness, not the approval gate itself.
+        auto_approve=True,
     )
 
     assert task.status == TaskStatus.COMPLETED

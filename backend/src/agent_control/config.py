@@ -392,6 +392,51 @@ class TTSAdapterConfig(StrictBaseModel):
     timeout_seconds: int = Field(default=120, ge=1)
 
 
+class SkillsAdapterConfig(StrictBaseModel):
+    """User-droppable capability packs (docs/HISTORY.md Part 4 T1.3): a flat
+    directory of markdown files, each with a name/description in YAML
+    frontmatter and full instructions as the body. Adding one is copying a
+    file in - no code change, no restart of anything but the worker process
+    picking up the new file on its next tool-registry build.
+    """
+
+    enabled: bool = True
+    root_dir: str = ".agent_control/skills"
+    max_skills_listed: int = Field(default=50, ge=1, le=500)
+
+
+class PersonaAdapterConfig(StrictBaseModel):
+    """A single stable identity/preference document, injected into every
+    Operator prompt (docs/HISTORY.md Part 4 T2.5) - separate from
+    channels/memory.py's ConversationMemoryService, which is per-conversation
+    short-term recall, not a global, cross-conversation preference store.
+    """
+
+    enabled: bool = True
+    path: str = ".agent_control/persona.md"
+    max_chars: int = Field(default=4000, ge=1, le=20000)
+
+
+class KnowledgeBaseAdapterConfig(StrictBaseModel):
+    """A local, personal document index (docs/HISTORY.md Part 4 T2.7):
+    lexical (keyword-overlap) search over a folder of the user's own files -
+    notes, docs, reference material - so the Operator can answer from what
+    the user already has instead of only from tool output gathered mid-task.
+
+    Deliberately keyword-based, not embedding/vector search: no extra model
+    dependency (embeddings would need either a live API call per index/query
+    or bundling a local embedding model), fully deterministic, and testable
+    with zero network or GPU - a real trade-off (semantic near-misses are
+    not found), not a placeholder for "real" search later.
+    """
+
+    enabled: bool = True
+    root_dir: str = ".agent_control/knowledge"
+    max_files_indexed: int = Field(default=500, ge=1, le=5000)
+    max_chars_per_file: int = Field(default=20000, ge=100, le=200000)
+    max_results: int = Field(default=5, ge=1, le=50)
+
+
 class AdaptersConfig(StrictBaseModel):
     vscode: VSCodeAdapterConfig = Field(default_factory=VSCodeAdapterConfig)
     workspace: WorkspaceAdapterConfig = Field(default_factory=WorkspaceAdapterConfig)
@@ -407,6 +452,9 @@ class AdaptersConfig(StrictBaseModel):
     artifact_delivery: ArtifactDeliveryAdapterConfig = Field(default_factory=ArtifactDeliveryAdapterConfig)
     stt: STTAdapterConfig = Field(default_factory=STTAdapterConfig)
     tts: TTSAdapterConfig = Field(default_factory=TTSAdapterConfig)
+    skills: SkillsAdapterConfig = Field(default_factory=SkillsAdapterConfig)
+    persona: PersonaAdapterConfig = Field(default_factory=PersonaAdapterConfig)
+    knowledge_base: KnowledgeBaseAdapterConfig = Field(default_factory=KnowledgeBaseAdapterConfig)
 
 
 def default_capability_policies() -> dict[Capability, CapabilityPolicy]:

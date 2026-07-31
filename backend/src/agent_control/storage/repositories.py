@@ -193,6 +193,18 @@ class TaskRepository:
             ).fetchall()
         return [self._row_to_task(row) for row in rows]
 
+    def list_for_conversation(self, conversation_id: str, limit: int = 50) -> list[TaskRecord]:
+        """Oldest-first (a chat transcript reads top-to-bottom), unlike
+        list_recent's newest-first - used by the local web chat channel
+        (docs/HISTORY.md Part 4 T2.8) to render one conversation's history.
+        """
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM tasks WHERE conversation_id = ? ORDER BY created_at ASC LIMIT ?",
+                (conversation_id, limit),
+            ).fetchall()
+        return [self._row_to_task(row) for row in rows]
+
     def count(self) -> int:
         with self.database.connect() as connection:
             row = connection.execute("SELECT COUNT(*) FROM tasks").fetchone()
@@ -450,6 +462,79 @@ class ApprovalRepository:
                 "UPDATE approvals SET status = ? WHERE id = ?",
                 (status.value, approval_id),
             )
+
+    def decide_pending(self, approval_id: str, status: ApprovalStatus) -> bool:
+        """Atomically decide a live pending approval.
+
+        Approval UI/API races must not revive an expired request or overwrite
+        an earlier decision. Every decision fails closed once the exact expiry
+        timestamp has passed.
+        """
+        if status not in {ApprovalStatus.APPROVED, ApprovalStatus.REJECTED}:
+            raise ValueError("approval decisions must be approved or rejected")
+        now = _dt(utc_now())
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE approvals
+                SET status = ?
+                WHERE id = ? AND status = ? AND expires_at > ?
+                """,
+                (
+                    status.value,
+                    approval_id,
+                    ApprovalStatus.PENDING.value,
+                    now,
+                ),
+            )
+            if cursor.rowcount == 0:
+                connection.execute(
+                    """
+                    UPDATE approvals
+                    SET status = ?
+                    WHERE id = ? AND status = ? AND expires_at <= ?
+                    """,
+                    (
+                        ApprovalStatus.EXPIRED.value,
+                        approval_id,
+                        ApprovalStatus.PENDING.value,
+                        now,
+                    ),
+                )
+        return cursor.rowcount == 1
+
+    def consume_approved(self, approval_id: str) -> bool:
+        """Consume one unexpired approval exactly once before dispatch."""
+        now = _dt(utc_now())
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE approvals
+                SET status = ?
+                WHERE id = ? AND status = ? AND expires_at > ?
+                """,
+                (
+                    ApprovalStatus.CONSUMED.value,
+                    approval_id,
+                    ApprovalStatus.APPROVED.value,
+                    now,
+                ),
+            )
+            if cursor.rowcount == 0:
+                connection.execute(
+                    """
+                    UPDATE approvals
+                    SET status = ?
+                    WHERE id = ? AND status = ? AND expires_at <= ?
+                    """,
+                    (
+                        ApprovalStatus.EXPIRED.value,
+                        approval_id,
+                        ApprovalStatus.APPROVED.value,
+                        now,
+                    ),
+                )
+        return cursor.rowcount == 1
 
     def get(self, approval_id: str) -> ApprovalRequest | None:
         with self.database.connect() as connection:
