@@ -94,6 +94,7 @@ runtime detail.
 
 - [Architecture and message flow](docs/ARCHITECTURE.md) — how the system works now, plus known gaps
 - [Capabilities](docs/CAPABILITIES.md) — the full implemented/not-yet-implemented list
+- [UI rewrite plan](docs/UI_REWRITE_PLAN.md) — planned React console replacing the Streamlit one
 - [Threat model](docs/THREAT_MODEL.md) — trust boundaries, enforced controls, limitations
 - [Security policy](SECURITY.md) — supported versions and private vulnerability reporting
 - [Contributing](CONTRIBUTING.md)
