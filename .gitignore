@@ -6,9 +6,17 @@ __pycache__/
 .venv/
 venv/
 .env
+.env.*
+!.env.example
 config/config.yaml
 agent_control.db
 .agent_control/
+*.session
+*.session-journal
+*.pem
+*.key
+*.p12
+*.pfx
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 CLAUDE.local.md

@@ -1,0 +1,10 @@
+title = "YBM secret-scanning rules"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "telegram-api-hash"
+description = "Detected a literal Telegram API hash"
+regex = '''(?i)(telegram_api_hash|api_hash)[^\r\n]{0,100}["']([0-9a-f]{32})["']'''
+secretGroup = 2

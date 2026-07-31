@@ -45,7 +45,7 @@ async def main() -> None:
         await client.disconnect()
         return
 
-    phone = input("Enter your phone number (e.g. <phone-number>): ").strip()
+    phone = input("Enter your phone number in international format: ").strip()
     await client.send_code_request(phone)
     code = input("Enter the OTP Telegram sent you: ").strip()
     try:
