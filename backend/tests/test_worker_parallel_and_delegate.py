@@ -42,22 +42,40 @@ class QueueOperator:
 
 
 class RecordingAdapter:
-    """Returns per-tool distinguishable output and records call timing, so
-    concurrency can be asserted on directly (all calls overlap in time)."""
+    """Return distinguishable output and optionally track concurrent calls."""
 
-    def __init__(self, name: str, *, delay: float = 0.05, output: dict | None = None, needs_approval: bool = False) -> None:
+    def __init__(
+        self,
+        name: str,
+        *,
+        delay: float = 0.05,
+        output: dict | None = None,
+        needs_approval: bool = False,
+        concurrency_probe: dict[str, int] | None = None,
+    ) -> None:
         self.name = name
         self.delay = delay
         self.output = output or {"tool": name}
         self.needs_approval = needs_approval
+        self.concurrency_probe = concurrency_probe
         self.started_at: list[float] = []
         self.finished_at: list[float] = []
 
     async def execute(self, request: ToolCallRequest) -> ToolCallResult:
         loop = asyncio.get_event_loop()
         self.started_at.append(loop.time())
-        await asyncio.sleep(self.delay)
-        self.finished_at.append(loop.time())
+        if self.concurrency_probe is not None:
+            self.concurrency_probe["active"] += 1
+            self.concurrency_probe["maximum"] = max(
+                self.concurrency_probe["maximum"],
+                self.concurrency_probe["active"],
+            )
+        try:
+            await asyncio.sleep(self.delay)
+        finally:
+            if self.concurrency_probe is not None:
+                self.concurrency_probe["active"] -= 1
+            self.finished_at.append(loop.time())
         return ToolCallResult(request_id=request.id, status=ToolResultStatus.SUCCEEDED, output=self.output)
 
 
@@ -97,9 +115,10 @@ async def test_call_tools_parallel_runs_calls_concurrently_not_sequentially(tmp_
     repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("check three sites")
     settings = _settings(Capability.LLM_GENERATE)
-    site_a = RecordingAdapter("site_a", delay=0.08)
-    site_b = RecordingAdapter("site_b", delay=0.08)
-    site_c = RecordingAdapter("site_c", delay=0.08)
+    concurrency_probe = {"active": 0, "maximum": 0}
+    site_a = RecordingAdapter("site_a", delay=0.08, concurrency_probe=concurrency_probe)
+    site_b = RecordingAdapter("site_b", delay=0.08, concurrency_probe=concurrency_probe)
+    site_c = RecordingAdapter("site_c", delay=0.08, concurrency_probe=concurrency_probe)
     executor = _executor(settings, audit, repos, {"site_a": site_a, "site_b": site_b, "site_c": site_c})
     operator = QueueOperator([
         OperatorDecision(
@@ -116,12 +135,9 @@ async def test_call_tools_parallel_runs_calls_concurrently_not_sequentially(tmp_
 
     running = await worker.process_task(task.id)
 
-    # Three calls with an 0.08s delay each: if run sequentially, the third
-    # call would not START until the first two had already FINISHED. Proof
-    # of real concurrency: every call starts before any of them finishes.
-    earliest_finish = min(a.finished_at[0] for a in (site_a, site_b, site_c))
-    for adapter in (site_a, site_b, site_c):
-        assert adapter.started_at[0] < earliest_finish
+    # Track overlap directly instead of comparing clock readings. Windows CI
+    # can quantize loop.time() enough that a start and finish compare equal.
+    assert concurrency_probe == {"active": 0, "maximum": 3}
 
     history = running.metadata["operator_history"]
     assert len(history) == 3

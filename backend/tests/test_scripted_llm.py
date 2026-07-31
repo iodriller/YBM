@@ -122,6 +122,22 @@ def test_fixture_key_normalizes_scenario_scratch_root_across_platforms() -> None
     )
 
 
+def test_fixture_key_normalizes_macos_scenario_scratch_aliases() -> None:
+    windows = (
+        r"search C:\Users\recording-user\AppData\Local\Temp"
+        r"\ybm_scenario_scratch\file_search"
+    )
+    macos = "search /var/folders/ab/random-hash/T/ybm_scenario_scratch/file_search"
+    resolved_macos = (
+        "search /private/var/folders/ab/random-hash/T/"
+        "ybm_scenario_scratch/file_search"
+    )
+
+    expected = fixture_key("generate_text", "sys", windows)
+    assert fixture_key("generate_text", "sys", macos) == expected
+    assert fixture_key("generate_text", "sys", resolved_macos) == expected
+
+
 def test_fixture_key_normalizes_escaped_scenario_paths_in_history() -> None:
     recorded = (
         r"input: {'root': 'C:\\Users\\recording-user\\AppData\\Local\\Temp"

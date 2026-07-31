@@ -60,9 +60,33 @@ _HEX_RUN = re.compile(r"[0-9a-f]{6,}", re.IGNORECASE)
 # the run's random tmp dir, and replay could never match the replan prompt
 # recorded under a different random name). Collapse it the same way.
 _TEMPDIR_RUN = re.compile(r"\btmp[a-z0-9]{6,}\b", re.IGNORECASE)
-_SCENARIO_SCRATCH_PATTERN = (
-    r"(?:[A-Za-z]:\\(?:[^\\\r\n]+\\)*AppData\\Local\\Temp\\ybm_scenario_scratch|"
-    r"/tmp/ybm_scenario_scratch)"
+_CURRENT_SCENARIO_SCRATCH_ROOT = str(
+    Path(tempfile.gettempdir()) / "ybm_scenario_scratch"
+)
+
+
+def _scenario_scratch_pattern(current_root: str) -> str:
+    """Match recorded roots plus the host's actual temporary-directory root."""
+    roots = {
+        re.escape(current_root),
+        re.escape(str(Path(current_root).resolve())),
+    }
+    if current_root.startswith("/var/"):
+        roots.add(re.escape(f"/private{current_root}"))
+    elif current_root.startswith("/private/var/"):
+        roots.add(re.escape(current_root.removeprefix("/private")))
+
+    dynamic_roots = "|".join(sorted(roots, key=len, reverse=True))
+    return (
+        r"(?:[A-Za-z]:\\(?:[^\\\r\n]+\\)*AppData\\Local\\Temp\\ybm_scenario_scratch|"
+        r"/tmp/ybm_scenario_scratch|"
+        r"/(?:private/)?var/folders/[^/\s'\"),\]}]+/[^/\s'\"),\]}]+/T/ybm_scenario_scratch|"
+        f"{dynamic_roots})"
+    )
+
+
+_SCENARIO_SCRATCH_PATTERN = _scenario_scratch_pattern(
+    _CURRENT_SCENARIO_SCRATCH_ROOT
 )
 _SCENARIO_SCRATCH_ROOT = re.compile(
     _SCENARIO_SCRATCH_PATTERN,
@@ -72,11 +96,6 @@ _SCENARIO_SCRATCH_PATH = re.compile(
     _SCENARIO_SCRATCH_PATTERN + r"(?:[\\/][^\s'\"),\]}]+)*",
     re.IGNORECASE,
 )
-_CURRENT_SCENARIO_SCRATCH_ROOT = str(
-    Path(tempfile.gettempdir()) / "ybm_scenario_scratch"
-)
-
-
 def _normalize(text: str) -> str:
     # Tool output uses the host platform's native line endings. Recordings
     # made on Windows therefore contain CRLF while Linux CI produces LF for
