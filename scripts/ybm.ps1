@@ -476,7 +476,22 @@ switch ($Command) {
     exit $LASTEXITCODE
   }
   "e2e-login" {
-    & "$Script:YbmRoot\scripts\login_telegram_e2e.ps1" @Rest
+    # Was a separate scripts/login_telegram_e2e.ps1 whose only job was to
+    # prompt for two values and shell out; it also called bare `python`
+    # rather than the venv interpreter, so it used whatever Python happened
+    # to be on PATH (usually not the one with telethon installed).
+    $apiId = $env:TELEGRAM_API_ID
+    $apiHash = $env:TELEGRAM_API_HASH
+    $session = if ($Sub) { $Sub } else { ".agent_control/telegram_e2e_user" }
+    if (-not $apiId) { $apiId = Read-Host "Telegram API ID" }
+    if (-not $apiHash) { $apiHash = Read-Host "Telegram API Hash" }
+    if (-not $apiId -or -not $apiHash) {
+      Write-Host "TELEGRAM_API_ID and TELEGRAM_API_HASH are required (get them from https://my.telegram.org)."
+      exit 1
+    }
+    Set-Location $Script:YbmRoot
+    & (Get-YbmPython) "$Script:YbmRoot\e2e\telegram_login.py" `
+      --api-id $apiId --api-hash $apiHash --session $session
     exit $LASTEXITCODE
   }
   "send" {

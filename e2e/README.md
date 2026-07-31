@@ -37,7 +37,7 @@ That creates the local session file. You can also create the session
 explicitly:
 
 ```powershell
-.\scripts\login_telegram_e2e.ps1
+.\scripts\ybm.ps1 e2e-login
 ```
 
 After the session file exists, the runner can run unattended.
