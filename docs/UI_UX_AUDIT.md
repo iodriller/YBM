@@ -118,37 +118,78 @@ The goal is not to imitate a general chat product. The useful patterns are:
 
 ## Delivery Plan and Acceptance Criteria
 
-### Phase 1 — Foundation and trust (**shipped**)
+Revised 2026-08-01: Chat quality, Task Receipts, and Connections outrank the control-plane and
+operational-insight items the Gap Analysis above lists as P1-P2 - most users spend nearly all
+their time in Chat, and receipts are the trust story that matters most once Connections lets data
+leave the machine for the first time. The gap analysis above still holds as reference; the phase
+numbers below are the actual build order.
 
-- Semantic themes, responsive shell, overflow fixes, Access redesign, status consistency,
-  notification routing, and response redaction.
-- Acceptance: no main-content horizontal overflow at 390px or 1440px; theme survives navigation;
-  local web tasks never call Telegram; configured secrets do not appear in admin responses.
+### Phase 0 — Stabilize the baseline (**shipped**)
 
-### Phase 2 — UI regression harness
+- Fixed the Evidence Pack's mislabeled "Reversibility" field (renamed to "Capability" - it never
+  computed reversibility) and README's absolute "secrets never reach logs" claim.
+- Re-recorded the 6 scenario fixtures the runtime risk-floor change invalidated.
+- Wired the web chat channel to resume a CLARIFYING task on reply instead of spawning an unrelated
+  new one, matching Telegram's existing behavior (shared via clarification.py).
+- Acceptance: ruff, full pytest suite, tsc, and vite build all green with no known-red tests.
 
-- Add Vitest/Testing Library, recorded API fixtures, and Playwright desktop/mobile/theme flows.
-- Acceptance: loading, empty, long-output, failed, active, approval, and offline states are
-  deterministic in CI; accessibility snapshots cover primary navigation and dialogs.
+### Phase 1 — Complete Chat
 
-### Phase 3 — Chat and task ergonomics
+- Sanitized Markdown rendering, a Stop button wired to the existing cancel signal, inline
+  clarifications (reusing Phase 0's resume path), artifact cards, inline approvals
+  (Deny / Approve once / Allow for this task, backed by a real task-scoped grant), and
+  attachments + folder selection.
+- Acceptance: a user can read code/tables in an answer, stop a runaway task in one click, answer a
+  clarifying question without leaving the conversation, and approve or deny a pending action
+  without opening a separate page.
 
-- Safe Markdown, attachments, task pagination/search, step durations, and exact trace nesting.
-- Acceptance: long code/URLs/tables remain readable on mobile; a user can locate and explain a
-  failed step in under 30 seconds; task history is not limited to the first 100 records.
+### Phase 2 — Task Receipts
 
-### Phase 4 — Control-plane depth
+- A human-readable "Done" card in Chat and a full receipt view: result summary, changes made,
+  services contacted, whether data left the machine (needs per-task egress tracking), approvals,
+  evidence, duration/cost, uncertainty, export.
+- Acceptance: a completed task's outcome is understandable without opening the technical trace;
+  every receipt states plainly whether anything left the machine.
 
-- Editable scoped policies, capability-health matrix, time-boxed grants, per-role models, and
-  delegate presets.
-- Acceptance: every permission change shows its consequence; every grant is exact, expiring, and
-  revocable; UI settings map to enforced backend behavior with tests.
+### Phase 3 — Connections
 
-### Phase 5 — Operational insight
+- A Connections page; GitHub first (OAuth app already has capability plumbing via
+  `github.read`/`github.push`), then Google (Calendar, then Gmail/Drive sharing one consent flow).
+  Per-connection scopes, vault-backed tokens, connection testing and error states.
+- Hard external dependency: registering the OAuth App (GitHub) and the OAuth consent screen +
+  client credentials (Google) requires the repository owner's own account - not something this
+  agent can do unattended.
+- Acceptance: a connection can be added, scoped, tested, and revoked entirely from the console; no
+  token is ever displayed after entry.
 
-- Cross-task reliability/cost views, optional event streaming, and evaluation hooks.
-- Acceptance: an operator can answer what failed, which tool/model caused it, how often, and at
-  what cost without reading raw JSON.
+### Phase 4 — Structured memory
+
+- A real schema (provenance, confidence, category, contradiction handling), remember/edit/forget
+  controls, a Memory page, and full-text/entity retrieval - replacing the current rolling summary
+  + keyword search with something inspectable and correctable.
+- Acceptance: a user can see why the agent believes something, correct it, and have the
+  correction stick.
+
+### Phase 5 — Skills lifecycle
+
+- A skill manifest format, a Skills page (catalog, permission labels, install/uninstall, version
+  pinning, updates, integrity verification) - `skills.use` today is list/read over a directory with
+  no lifecycle concept at all.
+- Acceptance: a skill can be installed, its permissions inspected before installing, and removed,
+  entirely from the console.
+
+### Phase 6 — Packaging
+
+- Windows installer, tray app, automatic startup, versioned updates, backup, a stable release
+  channel.
+- Acceptance: install-to-running-tray-app in one click, no terminal required.
+
+### Phase 7 — Public launch
+
+- README/screenshots/demo polish, a website, public security documentation, an initial connection
+  and skill catalog, first stable version tag.
+- Needs the repository owner's direct decisions on public content and hosting - not something this
+  agent originates unprompted.
 
 ## Explicit Non-goals
 
