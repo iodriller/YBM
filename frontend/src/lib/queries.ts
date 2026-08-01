@@ -8,6 +8,7 @@ import {
   getSettingsSummary,
   getSetupDetect,
   getSummary,
+  getTaskReceipt,
   getTaskTrace,
   initSecretVault,
   listAudit,
@@ -150,6 +151,17 @@ export function useTaskTrace(taskId: string | undefined) {
       const status = query.state.data?.task.status
       return status && isTerminal(status) ? false : TRACE_POLL_MS
     },
+  })
+}
+
+export function useTaskReceipt(taskId: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: ["tasks", "receipt", taskId],
+    queryFn: () => getTaskReceipt(taskId!),
+    enabled: taskId != null && enabled,
+    // A receipt only makes sense once - and only changes if - the task has
+    // settled; no need to poll it the way the live trace does.
+    staleTime: 30_000,
   })
 }
 

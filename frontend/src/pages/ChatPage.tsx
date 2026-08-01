@@ -8,7 +8,8 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { ArtifactCard } from "@/components/chat/ArtifactCard"
 import { ChatMarkdown } from "@/components/chat/ChatMarkdown"
 import { InlineApproval } from "@/components/chat/InlineApproval"
-import { chatAnswerText, isTerminal } from "@/lib/chat"
+import { TaskReceiptCard } from "@/components/chat/TaskReceiptCard"
+import { chatAnswerText, displayedObjective, isTerminal } from "@/lib/chat"
 import {
   useChatMessages,
   usePendingApprovals,
@@ -263,14 +264,15 @@ function ChatExchange({ task }: { task: TaskRecord }) {
 
   return (
     <div className="flex flex-col gap-3">
-      <Bubble role="user" text={task.objective.split("\n[User clarification:")[0]} />
+      <Bubble role="user" text={displayedObjective(task.objective)} />
       {clarificationAnswers.map((entry, index) => (
         <div key={index} className="flex flex-col gap-2">
           {entry.question && <Bubble role="assistant" text={entry.question} muted />}
-          {entry.answer && <Bubble role="user" text={entry.answer} />}
+          {entry.answer && <Bubble role="user" text={displayedObjective(entry.answer)} />}
         </div>
       ))}
       <Bubble role="assistant" text={chatAnswerText(task)} pending={!settled} status={task.status}>
+        {task.status === "completed" && <TaskReceiptCard taskId={task.id} />}
         {!settled && !clarifying && (
           <Button
             type="button"

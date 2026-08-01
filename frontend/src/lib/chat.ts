@@ -61,6 +61,22 @@ export function isTerminal(status: TaskRecord["status"]): boolean {
   return status === "completed" || status === "failed" || status === "blocked" || status === "cancelled"
 }
 
+// admin.py folds machine-facing notes into the objective text (a
+// clarification answer, an attachment's file name and path) the same way
+// clarification.py already did for Telegram - context the operator needs,
+// not something a user wants to read back at themselves in their own
+// message bubble. Strips from the first such marker, whichever comes first.
+const OBJECTIVE_NOTE_MARKERS = ["\n[User clarification:", "\n\n[Attached files:"]
+
+export function displayedObjective(objective: string): string {
+  let cut = objective.length
+  for (const marker of OBJECTIVE_NOTE_MARKERS) {
+    const index = objective.indexOf(marker)
+    if (index !== -1 && index < cut) cut = index
+  }
+  return objective.slice(0, cut)
+}
+
 // Defense in depth for old task records created before transport errors were
 // sanitized server-side. Telegram embeds its bot token in request URLs, and
 // httpx includes those URLs in exception text. Never render that credential

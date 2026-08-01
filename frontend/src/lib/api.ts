@@ -483,6 +483,55 @@ export function getTaskTrace(taskId: string) {
   return apiFetch(`/api/tasks/${taskId}/trace`, TaskTraceSchema)
 }
 
+const ServiceContactedSchema = z.object({
+  host: z.string().nullable(),
+  tool_name: z.string().nullable(),
+  at: z.string(),
+})
+
+const ToolUsageSummarySchema = z.object({
+  tool_name: z.string(),
+  calls: z.number().int(),
+  succeeded: z.number().int(),
+  failed: z.number().int(),
+})
+
+const ReceiptApprovalSchema = z.object({
+  id: z.string(),
+  capability: z.string(),
+  risk_level: z.string(),
+  status: z.string(),
+  summary: z.string(),
+})
+
+export const TaskReceiptSchema = z.object({
+  task_id: z.string(),
+  objective: z.string(),
+  status: z.string(),
+  result_summary: z.string().nullable(),
+  changes: z.object({
+    files: z.array(EvidenceItemSchema),
+    urls: z.array(EvidenceItemSchema),
+    commands: z.array(EvidenceItemSchema),
+  }),
+  tools_used: z.array(ToolUsageSummarySchema),
+  services_contacted: z.array(ServiceContactedSchema),
+  data_left_machine: z.boolean(),
+  llm_left_machine: z.boolean(),
+  approvals: z.array(ReceiptApprovalSchema),
+  artifacts: z.array(ArtifactSchema),
+  token_usage: TokenUsageSchema.partial(),
+  duration_seconds: z.number(),
+  uncertainties: z.array(z.string()),
+  created_at: z.string(),
+  updated_at: z.string(),
+})
+export type TaskReceipt = z.infer<typeof TaskReceiptSchema>
+
+export function getTaskReceipt(taskId: string) {
+  return apiFetch(`/api/tasks/${taskId}/receipt`, TaskReceiptSchema)
+}
+
 const TaskSignalResponseSchema = z.object({
   signal: z.record(z.string(), z.unknown()),
   task: TaskRecordSchema,
