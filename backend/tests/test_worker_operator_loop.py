@@ -501,6 +501,39 @@ async def test_operator_loop_awaiting_approval_stays_put_while_pending(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_run_forever_sleeps_instead_of_busy_looping_on_a_pending_approval(tmp_path, monkeypatch) -> None:
+    """docs/UI_UX_AUDIT.md Phase 8: process_next() returns the SAME
+    AWAITING_APPROVAL task on every call (claim_next always re-picks the
+    oldest task this worker already claimed, and this check returns
+    instantly) - without a sleep here, run_forever span the CPU at 100%
+    hammering the DB for as long as a human takes to decide, and gave any
+    other queued task in this same worker's slot no chance to run either.
+    """
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("needs approval")
+    executor = _executor(_approval_settings(), audit, repos, output={"answer": "42"})
+    operator = QueueOperator([
+        OperatorDecision(action=OperatorAction.CALL_TOOL, tool_name="llm", tool_input={}, risk_level=RiskLevel.LOW),
+    ])
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator)
+    await worker.process_task(task.id)  # gets it into AWAITING_APPROVAL once, for real
+
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+        if len(sleep_calls) >= 3:
+            raise RuntimeError("stop the loop - three sleeps observed is enough to prove it isn't busy-looping")
+
+    monkeypatch.setattr("agent_control.orchestration.worker.asyncio.sleep", fake_sleep)
+
+    with pytest.raises(RuntimeError, match="stop the loop"):
+        await worker.run_forever(poll_interval_seconds=5.0)
+
+    assert sleep_calls == [5.0, 5.0, 5.0]
+
+
+@pytest.mark.asyncio
 async def test_operator_loop_resumes_and_executes_after_approval_granted(tmp_path) -> None:
     repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("needs approval")

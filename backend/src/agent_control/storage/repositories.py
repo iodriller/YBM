@@ -563,6 +563,26 @@ class ApprovalRepository:
             ).fetchall()
         return [self._row_to_approval(row) for row in rows]
 
+    def cancel_pending_for_task(self, task_id: str) -> int:
+        """Called when a task is cancelled (docs/UI_UX_AUDIT.md Phase 8) - a
+        pending approval whose task is already dead must not keep sitting in
+        the pending list looking actionable. Mirrors decide_pending's exact
+        live-vs-already-expired split, just scoped to every pending approval
+        on one task instead of a single id chosen by the caller.
+        """
+        now = _dt(utc_now())
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE approvals SET status = ? WHERE task_id = ? AND status = ? AND expires_at > ?",
+                (ApprovalStatus.CANCELLED.value, task_id, ApprovalStatus.PENDING.value, now),
+            )
+            cancelled = cursor.rowcount
+            connection.execute(
+                "UPDATE approvals SET status = ? WHERE task_id = ? AND status = ? AND expires_at <= ?",
+                (ApprovalStatus.EXPIRED.value, task_id, ApprovalStatus.PENDING.value, now),
+            )
+        return cancelled
+
     @staticmethod
     def _row_to_approval(row: sqlite3.Row) -> ApprovalRequest:
         return ApprovalRequest(
@@ -624,6 +644,20 @@ class ApprovalGrantRepository:
                 (task_id,),
             ).fetchall()
         return [self._row_to_grant(row) for row in rows]
+
+    def expire_for_task(self, task_id: str) -> int:
+        """Revokes every still-active grant for a cancelled task by expiring
+        it immediately - reuses find_matching's existing expires_at > now
+        check rather than adding a separate revoked column for what is,
+        functionally, the same "not valid anymore" state.
+        """
+        now = _dt(utc_now())
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE approval_grants SET expires_at = ? WHERE task_id = ? AND expires_at > ?",
+                (now, task_id, now),
+            )
+        return cursor.rowcount
 
     @staticmethod
     def _row_to_grant(row: sqlite3.Row) -> ApprovalGrant:
@@ -706,6 +740,20 @@ class ToolInvocationRepository:
             }
             for row in rows
         ]
+
+    def cancel_pending_for_task(self, task_id: str) -> int:
+        """needs_approval is the only non-terminal status this table has -
+        called when a task is cancelled so its trace doesn't show a call
+        forever "awaiting" a decision that will never come.
+        """
+        now = _dt(utc_now())
+        result = _dump({"status": "cancelled", "error_message": "Task was cancelled before this action was decided."})
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE tool_invocations SET status = ?, result_json = ?, completed_at = ? WHERE task_id = ? AND status = ?",
+                (ToolResultStatus.CANCELLED.value, result, now, task_id, ToolResultStatus.NEEDS_APPROVAL.value),
+            )
+        return cursor.rowcount
 
 
 class ArtifactRepository:

@@ -224,7 +224,21 @@ class TaskWorker:
     async def run_forever(self, poll_interval_seconds: float = 3.0) -> None:
         while True:
             processed = await self.process_next()
-            if processed is None:
+            # AWAITING_APPROVAL stays in WORKABLE_STATUSES (unlike
+            # AWAITING_EXTERNAL, which claim_next never re-selects) because
+            # _process_operator_awaiting_approval needs to notice the moment
+            # a decision lands. But claim_next's ORDER BY created_at ASC
+            # always re-picks the SAME oldest task this worker already
+            # claimed while its approval is still pending, and that check
+            # returns instantly - with no sleep here, that was a tight,
+            # uncapped loop hammering the DB at 100% CPU for as long as a
+            # human takes to decide (docs/UI_UX_AUDIT.md Phase 8). Known
+            # remaining limitation, not fixed by this: with the default
+            # max_parallel_tasks=1, a genuinely-pending approval still
+            # prevents this one worker from reaching any other queued task
+            # until it resolves - only running more parallel workers (each
+            # with its own worker_id) avoids that today.
+            if processed is None or processed.status == TaskStatus.AWAITING_APPROVAL:
                 await asyncio.sleep(poll_interval_seconds)
 
     async def process_task(self, task_id: str) -> TaskRecord:

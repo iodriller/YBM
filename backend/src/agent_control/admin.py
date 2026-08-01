@@ -836,6 +836,7 @@ def create_admin_router(
                 payload.signal,
                 "admin",
                 payload.model_dump(mode="json"),
+                settings=loaded,
             )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

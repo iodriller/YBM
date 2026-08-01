@@ -202,6 +202,10 @@ class AuditEventType(StrEnum):
     ARTIFACT_CREATED = "artifact_created"
     EGRESS_CONTACTED = "egress_contacted"
     ERROR = "error"
+    # What a task cancellation cleaned up - pending approvals rejected,
+    # task-scoped grants revoked, stuck tool invocations closed out, an
+    # awaiting-external session stopped (docs/UI_UX_AUDIT.md Phase 8).
+    TASK_CANCELLED = "task_cancelled"
 
 
 class ErrorClass(StrEnum):

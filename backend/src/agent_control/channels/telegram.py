@@ -1012,7 +1012,9 @@ class TelegramIntakeService:
         actor: str,
         payload: dict[str, Any],
     ) -> TaskSignal:
-        signal, _, _ = apply_task_signal(self.repositories, self.audit, task_id, action, actor, payload)
+        signal, _, _ = apply_task_signal(
+            self.repositories, self.audit, task_id, action, actor, payload, settings=self.settings
+        )
         return signal
 
 
