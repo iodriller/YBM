@@ -11,7 +11,8 @@ import { useInstallSkill } from "@/lib/queries"
  * Install a skill straight from the console (docs/UI_UX_AUDIT.md Phase 5) -
  * no more "find adapters.skills.root_dir and hand-write YAML frontmatter".
  * Declaring tools here is optional; when left blank the backend infers
- * permission labels by scanning the body against the real tool registry.
+ * which tools the instructions reference by scanning the body against the
+ * real tool registry - informational only, not an enforced permission.
  */
 export function SkillInstallForm({ onDone }: { onDone: () => void }) {
   const [name, setName] = useState("")

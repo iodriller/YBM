@@ -180,15 +180,20 @@ numbers below are the actual build order.
 ### Phase 5 — Skills lifecycle (**shipped, reduced scope**)
 
 - Shipped: an extended manifest (optional `version` and `tools` frontmatter fields), a Skills page
-  (catalog, install, uninstall), and inferred permission labels (which registered tools a skill's
-  body references, scanned against the real tool registry when not explicitly declared).
+  (catalog, install, uninstall), and an inferred "tools referenced in these instructions" tag
+  (which registered tools a skill's body references, scanned against the real tool registry when
+  not explicitly declared). **Corrected in Phase 8:** this was originally labeled a "permission
+  label" in three places, which overstated what a literal substring scan can guarantee - it is
+  informational only, and every real action still goes through YBM's normal capability gates
+  regardless of what a skill's instructions say.
 - Not built as originally scoped: there is no skill registry or distribution channel for this
   product, so "version pinning, updates, integrity verification" would mean inventing trust
   infrastructure with nothing real behind it. What shipped instead is honest about that: a
   `version` string an author can bump, and a content hash shown per skill so a person can notice
   "this changed since I last looked" - not a signature or a source to pin against.
-- Acceptance (as shipped): a skill can be installed, its permission labels inspected before
-  installing (or immediately after, live from the same install call), and removed, entirely from
+- Acceptance (as shipped): a skill can be installed, the tools its instructions reference
+  inspected before installing (or immediately after, live from the same install call), and
+  removed, entirely from
   the console.
 
 ### Phase 6 — Packaging (**shipped, reduced scope**)
@@ -276,7 +281,10 @@ Every item here is a defect, not a feature. Three are defects in work shipped ea
   merely-requested commands. Replace the absolute "Nothing left this computer" with
   **"No external transfer was recorded"** until every network-capable adapter calls
   `record_egress` (today only `http.request` does). Both are wording fixes to stop over-claiming;
-  the real classification work is Phase 12.
+  real per-item effect classification (read/created/modified/moved/deleted/command executed/
+  website visited/message sent) is real work, not a rename, and belongs with Phase 12's other
+  trace-fidelity work - many tools already carry the needed signal in their `operation` name
+  (`read_file` vs `write_text_file` vs `open_file`), so it's a mapping table, not a redesign.
 - **Receipts for every terminal state**, not just `completed`. A task that modified files and then
   failed is exactly when a receipt matters most. Cover completed, failed, cancelled, and blocked.
 - **Artifact download.** Add `GET /admin/api/artifacts/{artifact_id}/download`, serving only
@@ -362,7 +370,13 @@ is doing**. The current five-to-seven-item flat nav does not express that.
   kind, with duration and token badges.
 - Click any node for a side panel: the exact prompt sent, the raw model response, tool input and
   output, tokens, latency, and the audit events scoped to that step.
-- Acceptance: "why did it do that" is answerable from the console alone, for any past task.
+- Real per-item effect classification for receipts and evidence, replacing Phase 8's "Touched
+  during this task" wording fix with actual read/created/modified/moved/deleted/command-executed/
+  website-visited/message-sent labels. A mapping table from each tool's `operation` name to an
+  effect kind (`filesystem.manage`'s `read_file` vs `write_text_file` vs `open_file` already
+  distinguishes this at the source), not a redesign of evidence extraction.
+- Acceptance: "why did it do that" is answerable from the console alone, for any past task, and a
+  receipt's evidence list says what actually happened to each item, not just that it was touched.
 
 ### Phase 13 — Memory: real retrieval, real provenance, gated forgetting
 

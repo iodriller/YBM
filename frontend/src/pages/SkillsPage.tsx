@@ -11,8 +11,10 @@ import { useSkills } from "@/lib/queries"
 
 /**
  * Skill catalog (docs/UI_UX_AUDIT.md Phase 5): install/uninstall entirely
- * from the console, with inferred permission labels shown up front -
- * replacing "drop a markdown file into adapters.skills.root_dir by hand".
+ * from the console, with the tools each skill's instructions reference
+ * shown up front - replacing "drop a markdown file into
+ * adapters.skills.root_dir by hand". Those tool tags are informational,
+ * not enforced permissions - see SkillCard's own docstring for why.
  */
 export function SkillsPage() {
   const { data, isPending, isError, error } = useSkills()

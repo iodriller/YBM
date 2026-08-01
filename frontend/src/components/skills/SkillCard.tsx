@@ -10,10 +10,17 @@ import { formatRelativeTime } from "@/lib/time"
 
 /**
  * One installed skill (docs/UI_UX_AUDIT.md Phase 5): what it's for, which
- * tools its instructions reference (permission labels - inferred unless
- * the manifest declared them explicitly), and uninstall. A skill has no
- * execution capability of its own (tools/skills.py) - these labels are
- * informational, not an enforced permission grant.
+ * tools its instructions reference, and uninstall.
+ *
+ * Deliberately NOT called a "permission label" anywhere in this UI
+ * (Phase 8 correction - it used to be): detect_referenced_tools is a
+ * literal substring scan of the body against registered tool names. A
+ * skill that says "use the shell to do this" without naming a tool
+ * registers nothing, so the list can under-represent what a skill
+ * actually steers the model toward. Calling that a permission would imply
+ * a constraint the manifest cannot yet enforce - it's informational only,
+ * and every real action still goes through YBM's normal capability gates
+ * regardless of what a skill's instructions say.
  */
 export function SkillCard({ skill }: { skill: Skill }) {
   const [expanded, setExpanded] = useState(false)
@@ -36,15 +43,20 @@ export function SkillCard({ skill }: { skill: Skill }) {
       </div>
 
       {skill.tools.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-xs text-muted-foreground">
-            {skill.tools_declared ? "Declared tools:" : "References:"}
-          </span>
-          {skill.tools.map((tool) => (
-            <Badge key={tool} variant="secondary" className="font-mono text-[10px]">
-              {tool}
-            </Badge>
-          ))}
+        <div className="flex flex-col gap-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-xs text-muted-foreground">
+              Tools referenced in these instructions{skill.tools_declared ? " (declared by the author)" : ""}:
+            </span>
+            {skill.tools.map((tool) => (
+              <Badge key={tool} variant="secondary" className="font-mono text-[10px]">
+                {tool}
+              </Badge>
+            ))}
+          </div>
+          <p className="text-[10px] text-muted-foreground/70">
+            Informational only - actual actions remain governed by YBM's normal permissions.
+          </p>
         </div>
       )}
 

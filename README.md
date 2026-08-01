@@ -61,9 +61,9 @@ through Telegram or the local web chat, all policy-gated.
 
 Structured memory (facts with a category, confidence, and provenance — did the agent save it
 itself mid-task, or did you type it into the console — remember/edit/forget from a dedicated
-Memory page) and a skill catalog (install/uninstall from the console, with inferred permission
-labels showing which tools a skill's instructions reference) round out the admin console
-alongside Access, Tasks, and Chat.
+Memory page) and a skill catalog (install/uninstall from the console, with an informational tag
+showing which tools a skill's instructions reference — not an enforced permission) round out the
+admin console alongside Access, Tasks, and Chat.
 
 See [docs/CAPABILITIES.md](docs/CAPABILITIES.md) for the full, detailed list and
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the pieces fit together.
