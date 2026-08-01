@@ -1,5 +1,8 @@
-import { ExternalLink, File, FileJson, FileText, Image, Mic } from "lucide-react"
-import type { Artifact } from "@/lib/api"
+import { useState } from "react"
+import { toast } from "sonner"
+import { Check, Copy, Download, ExternalLink, File, FileJson, FileText, Image, Mic } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { artifactDownloadUrl, type Artifact } from "@/lib/api"
 
 const TYPE_ICON: Record<string, typeof File> = {
   text_log: FileText,
@@ -30,17 +33,20 @@ function basename(uri: string): string {
 }
 
 /**
- * A file/output a task produced (docs/UI_UX_AUDIT.md Phase 1) - previously
- * only visible by opening the task's trace and reading raw JSON.
- * `uri` is a local filesystem path for most artifact types (there's no
- * download/serve endpoint yet - that's Phase 2 Receipts' "export" scope),
- * so only an actual http(s) URL is rendered as a clickable link; everything
- * else shows the path as informational text.
+ * A file/output a task produced (docs/UI_UX_AUDIT.md Phase 1). `uri` is a
+ * local filesystem path for most artifact types - Phase 8 added a real
+ * download endpoint, so a local artifact now gets Open / Download / Copy
+ * path instead of only showing its path as inert text. ("Show in folder"
+ * was also requested but deliberately deferred: it would mean a new
+ * backend endpoint that launches Explorer from a stored path, which is a
+ * real desktop-control-shaped capability this pass didn't scope a policy
+ * for - not something to add as a side effect of a download button.)
  */
 export function ArtifactCard({ artifact }: { artifact: Artifact }) {
   const Icon = TYPE_ICON[artifact.type] ?? File
   const label = TYPE_LABEL[artifact.type] ?? artifact.type
   const isWebLink = artifact.uri != null && /^https?:\/\//.test(artifact.uri)
+  const isLocalFile = artifact.uri != null && !isWebLink
   const name = artifact.uri ? basename(artifact.uri) : label
 
   return (
@@ -67,7 +73,53 @@ export function ArtifactCard({ artifact }: { artifact: Artifact }) {
           {label}
           {artifact.content_preview && ` · ${artifact.content_preview}`}
         </p>
+        {isLocalFile && <ArtifactActions artifact={artifact} />}
       </div>
+    </div>
+  )
+}
+
+function ArtifactActions({ artifact }: { artifact: Artifact }) {
+  const [copied, setCopied] = useState(false)
+
+  async function copyPath() {
+    if (!artifact.uri) return
+    try {
+      await navigator.clipboard.writeText(artifact.uri)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      toast.error("Could not copy the path - your browser blocked clipboard access.")
+    }
+  }
+
+  return (
+    <div className="mt-1 flex items-center gap-2">
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-5 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+        onClick={() => window.open(artifactDownloadUrl(artifact.id, { inline: true }), "_blank", "noopener,noreferrer")}
+      >
+        <ExternalLink className="size-3" />
+        Open
+      </Button>
+      <a
+        href={artifactDownloadUrl(artifact.id)}
+        className="flex h-5 items-center gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+      >
+        <Download className="size-3" />
+        Download
+      </a>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-5 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+        onClick={copyPath}
+      >
+        {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+        {copied ? "Copied" : "Copy path"}
+      </Button>
     </div>
   )
 }

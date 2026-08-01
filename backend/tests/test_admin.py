@@ -881,6 +881,95 @@ def test_admin_task_receipt_reports_no_egress_for_a_fully_local_task(monkeypatch
     assert body["uncertainties"] == []
 
 
+def _settings_with_artifact_root(root: Path) -> AppSettings:
+    return AppSettings(_env_file=None, storage={"artifact_dir": str(root)})
+
+
+def test_admin_artifact_download_serves_a_registered_file(tmp_path) -> None:
+    """docs/UI_UX_AUDIT.md Phase 8: a generated file previously showed only
+    its path in Chat - not actionable from a browser."""
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    file_path = artifact_root / "report.csv"
+    file_path.write_bytes(b"a,b,c\n1,2,3\n")
+    artifact = repositories.artifacts.create(
+        Artifact(type=ArtifactType.GENERATED_FILE, uri=str(file_path)),
+    )
+    client = _admin_client(repositories, settings=_settings_with_artifact_root(artifact_root))
+
+    response = client.get(f"/admin/api/artifacts/{artifact.id}/download")
+
+    assert response.status_code == 200
+    assert response.content == b"a,b,c\n1,2,3\n"
+    assert "attachment" in response.headers["content-disposition"]
+    assert "report.csv" in response.headers["content-disposition"]
+
+
+def test_admin_artifact_download_inline_uses_inline_disposition(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    file_path = artifact_root / "preview.pdf"
+    file_path.write_bytes(b"%PDF-1.4 fake")
+    artifact = repositories.artifacts.create(Artifact(type=ArtifactType.DOCUMENT, uri=str(file_path)))
+    client = _admin_client(repositories, settings=_settings_with_artifact_root(artifact_root))
+
+    response = client.get(f"/admin/api/artifacts/{artifact.id}/download?inline=true")
+
+    assert response.status_code == 200
+    assert "inline" in response.headers["content-disposition"]
+
+
+def test_admin_artifact_download_404s_for_an_unknown_artifact(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    client = _admin_client(repositories)
+
+    assert client.get("/admin/api/artifacts/artifact_missing/download").status_code == 404
+
+
+def test_admin_artifact_download_404s_for_an_artifact_with_no_file(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    artifact = repositories.artifacts.create(Artifact(type=ArtifactType.EXTERNAL_LINK, uri=None))
+    client = _admin_client(repositories)
+
+    assert client.get(f"/admin/api/artifacts/{artifact.id}/download").status_code == 404
+
+
+def test_admin_artifact_download_403s_for_a_path_outside_allowed_roots(tmp_path) -> None:
+    """The same allowed-roots check artifact.deliver itself enforces - an
+    artifact row pointing somewhere it shouldn't must not become a way to
+    read arbitrary files off the host through the admin API."""
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    outside_dir = tmp_path / "not_an_artifact_root"
+    outside_dir.mkdir()
+    secret_file = outside_dir / "secret.txt"
+    secret_file.write_text("should never be servable", encoding="utf-8")
+    artifact = repositories.artifacts.create(Artifact(type=ArtifactType.GENERATED_FILE, uri=str(secret_file)))
+    client = _admin_client(repositories, settings=_settings_with_artifact_root(tmp_path / "artifacts"))
+
+    assert client.get(f"/admin/api/artifacts/{artifact.id}/download").status_code == 403
+
+
+def test_admin_artifact_download_404s_when_the_file_was_deleted_after_registration(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    file_path = artifact_root / "gone.csv"
+    file_path.write_text("x", encoding="utf-8")
+    artifact = repositories.artifacts.create(Artifact(type=ArtifactType.GENERATED_FILE, uri=str(file_path)))
+    file_path.unlink()
+    client = _admin_client(repositories, settings=_settings_with_artifact_root(artifact_root))
+
+    assert client.get(f"/admin/api/artifacts/{artifact.id}/download").status_code == 404
+
+
 def test_admin_clears_task_history_and_audit(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)  # see test_admin_page_and_summary for why chdir, not just delenv
     database_url = f"sqlite:///{tmp_path / 'admin.db'}"

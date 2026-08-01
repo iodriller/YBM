@@ -45,6 +45,7 @@ from agent_control.storage.repositories import Repositories
 from agent_control.storage.redaction import redact_payload
 from agent_control.storage.secrets import SecretVault, SecretVaultError
 from agent_control.tools.registry import build_tool_registry
+from agent_control.tools.artifact_delivery import artifact_delivery_roots, path_from_uri
 from agent_control.tools.skills import delete_skill_file, detect_referenced_tools, list_skills_detailed, write_skill_file
 from agent_control.tools.vscode_bridge import VSCodeBridgeStore, VSCodeTerminalCommand
 
@@ -538,6 +539,36 @@ def create_admin_router(
         if receipt is None:
             raise HTTPException(status_code=404, detail="task not found")
         return _redact_admin_output(receipt, loaded)
+
+    @router.get("/api/artifacts/{artifact_id}/download", response_model=None)
+    def admin_artifact_download(request: Request, artifact_id: str, inline: bool = False) -> FileResponse:
+        """A generated file previously showed only its path in Chat - not
+        actionable from a browser (docs/UI_UX_AUDIT.md Phase 8: "generated
+        files still are not conveniently usable"). Serves only artifacts
+        registered in the database whose resolved path stays inside the
+        same allowed roots artifact.deliver itself enforces - reuses that
+        exact check rather than re-deriving a second path-safety rule.
+        ``?inline=1`` renders in a new tab (PDFs, images) instead of forcing
+        a Save As dialog; ``?token=`` (require_admin's existing fallback) is
+        what lets a plain ``<a href>`` navigation authenticate at all, since
+        a browser-initiated download can't attach the admin token header.
+        """
+        loaded = require_admin(request)
+        repositories = repositories_loader()
+        artifact = repositories.artifacts.get(artifact_id)
+        if artifact is None or not artifact.uri:
+            raise HTTPException(status_code=404, detail="artifact not found")
+        path = path_from_uri(artifact.uri)
+        if path is None:
+            raise HTTPException(status_code=404, detail="artifact has no downloadable file")
+        allowed_roots = [Path(root).expanduser().resolve() for root in artifact_delivery_roots(loaded)]
+        if allowed_roots and not any(root == path or root in path.parents for root in allowed_roots):
+            raise HTTPException(status_code=403, detail="artifact path is outside configured delivery roots")
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="artifact file no longer exists on disk")
+        return FileResponse(
+            path, filename=path.name, content_disposition_type="inline" if inline else "attachment"
+        )
 
     @router.get("/api/approvals")
     def admin_pending_approvals(request: Request) -> dict[str, Any]:

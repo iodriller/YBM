@@ -148,7 +148,7 @@ class ArtifactDeliveryAdapter:
                 raise ValueError(f"artifact not found: {artifact_id}")
             if artifact.task_id not in {None, request.task_id}:
                 raise ValueError(f"artifact {artifact_id} is not linked to task {request.task_id}")
-            return artifact, _path_from_uri(artifact.uri)
+            return artifact, path_from_uri(artifact.uri)
 
         raw_path = request.input.get("path")
         if raw_path:
@@ -164,7 +164,7 @@ class ArtifactDeliveryAdapter:
 
         if operation == "send_screenshot":
             for value in _task_screenshot_values(task):
-                path = _path_from_uri(value)
+                path = path_from_uri(value)
                 if path and path.exists() and path.is_file():
                     return _artifact_for_path(self.artifacts.list_for_task(request.task_id), path), path
 
@@ -175,7 +175,7 @@ class ArtifactDeliveryAdapter:
         if operation == "send_screenshot":
             artifacts = [item for item in artifacts if item.type == ArtifactType.SCREENSHOT]
         for artifact in reversed(artifacts):
-            path = _path_from_uri(artifact.uri)
+            path = path_from_uri(artifact.uri)
             if path and path.exists() and path.is_file():
                 return artifact, path
         return None, None
@@ -192,7 +192,7 @@ class ArtifactDeliveryAdapter:
         if "/" in name or "\\" in name or not name:
             return None
         for artifact in reversed(self.artifacts.list_for_task(task_id)):
-            path = _path_from_uri(artifact.uri)
+            path = path_from_uri(artifact.uri)
             if path is None or not path.exists() or not path.is_file():
                 continue
             if path.name == name:
@@ -205,12 +205,12 @@ class ArtifactDeliveryAdapter:
             return None, None
         artifact_type = str(request.input.get("artifact_type") or "").strip() or None
         for artifact in list_recent(limit=25, artifact_type=artifact_type):
-            path = _path_from_uri(artifact.uri)
+            path = path_from_uri(artifact.uri)
             if path and path.exists() and path.is_file():
                 return artifact, path
         if artifact_type:
             for artifact in list_recent(limit=25):
-                path = _path_from_uri(artifact.uri)
+                path = path_from_uri(artifact.uri)
                 if path and path.exists() and path.is_file():
                     return artifact, path
         return None, None
@@ -235,7 +235,7 @@ class ArtifactDeliveryAdapter:
         return artifact, path
 
     def _safe_path(self, value: str) -> Path:
-        path = _path_from_uri(value)
+        path = path_from_uri(value)
         if path is None:
             raise ValueError(f"invalid file path: {value}")
         path = path.expanduser().resolve()
@@ -309,7 +309,10 @@ def _task_screenshot_values(task: TaskRecord) -> list[object]:
     ]
 
 
-def _path_from_uri(value: object) -> Path | None:
+def path_from_uri(value: object) -> Path | None:
+    """Not module-private: admin.py's artifact download endpoint reuses this
+    (and artifact_delivery_roots below) so path resolution has exactly one
+    implementation, not a second one re-derived at the API boundary."""
     if not value:
         return None
     text = str(value)
@@ -400,7 +403,7 @@ def _latest_task_text(task: TaskRecord) -> str | None:
 def _artifact_for_path(artifacts: list[Artifact], path: Path) -> Artifact | None:
     resolved = path.resolve()
     for artifact in artifacts:
-        artifact_path = _path_from_uri(artifact.uri)
+        artifact_path = path_from_uri(artifact.uri)
         if artifact_path and artifact_path.resolve() == resolved:
             return artifact
     return None
@@ -449,12 +452,12 @@ def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -
             deps.artifact_repository,  # type: ignore[arg-type]
             deps.task_repository,  # type: ignore[arg-type]
             telegram_client=deps.telegram_client,  # type: ignore[arg-type]
-            allowed_roots=_artifact_delivery_roots(settings),
+            allowed_roots=artifact_delivery_roots(settings),
             recent_fallback_enabled=settings.adapters.artifact_delivery.recent_artifact_fallback_enabled,
         )
 
 
-def _artifact_delivery_roots(settings: AppSettings) -> list[str]:
+def artifact_delivery_roots(settings: AppSettings) -> list[str]:
     return [
         settings.storage.artifact_dir,
         settings.adapters.workspace.root_dir,
