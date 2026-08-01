@@ -216,6 +216,74 @@ numbers below are the actual build order.
 - Needs the repository owner's direct decisions on public content and hosting - not something this
   agent originates unprompted.
 
+## Observability and Control Depth (Phases 8-11, **planned, not shipped**)
+
+Added 2026-08-01 after an operator review of the shipped console. The theme: the runtime already
+records far more than the UI shows, and three surfaces (approvals, tasks, diagnostics) are
+functional but visually poor. Grounding facts established by reading the code first, because they
+change the cost of each item substantially:
+
+- `build_task_trace()` already returns `timeline` (audit + tool calls, merged and time-sorted) and
+  `context` (inbound message, classification, classifier LLM). **The frontend reads neither.**
+- `DELETE /api/tasks` (with `include_active`, audit-logged) already exists and **no UI calls it**.
+- `_tool_registry_summary()` already returns every tool's name, group, capability, enabled state,
+  lifecycle, operations, and schemas; `DiagnosticsCard` deliberately dropped that table.
+- `ToolCallRequest.parent_step_id` exists but is always `null` - the exact field needed to close
+  the gap `TraceGraph`'s own docstring discloses (a subagent lane can't be linked to the step that
+  spawned it).
+- LLM prompts are **not persisted anywhere**; `render_prompt()` builds them per call. This is the
+  only genuinely new backend capability in this group.
+
+### Phase 8 — Wave 1: surfaces over data that already exists
+
+- Rebuild the pending-approval window: one approval at a time with a pager, two-column layout,
+  sticky action bar, risk-colored header, collapsed-by-default parameter JSON, keyboard shortcuts.
+  Layout only - no change to Evidence Pack semantics or approval policy.
+- Tasks list: an outcome column (result summary, duration, tool count, cost) alongside status,
+  failure reason inline on failed rows, clear-history UI wired to the existing endpoint, and
+  per-task delete.
+- A timeline/waterfall view in the trace, rendering the already-computed `timeline`.
+- Diagnostics: service cards (status, restarts, per-service log link), a database size chart, a
+  doctor-check runner, and a one-click copy-diagnostics-bundle - replacing the current flat text.
+- Acceptance: an operator can decide an approval without scrolling, tell success from failure in
+  the task list without opening anything, and clear history from the console.
+
+### Phase 9 — Wave 2: the rich, clickable trace
+
+- Persist LLM calls (`task_id`, `step_index`, `source`, `model`, messages, raw response, tokens,
+  latency), written through the existing `redact_payload` with a per-call size cap. Enabled by
+  default - the product's whole claim is that it shows the receipts - with a config flag to
+  disable and pruning through `ybm db clean`.
+- Give each operator step a stable `step_id` and stamp it into `ToolCallRequest.parent_step_id`,
+  linking operator history, tool invocations, approvals, and LLM calls into one real tree. This
+  is the root-cause fix for the graph gap above, not a display workaround.
+- Graph v2 rooted at the actual user query: query -> classification -> operator step (with its
+  reasoning) -> tool calls / approval gates / artifacts -> final answer, typed and colored by node
+  kind, with duration and token badges.
+- Click any node for a side panel: the exact prompt sent, the raw model response, tool input and
+  output, tokens, latency, and the audit events scoped to that step.
+- Acceptance: "why did it do that" is answerable from the console alone, for any past task.
+
+### Phase 10 — Wave 3: tools and skills as first-class surfaces
+
+- A Tools page: catalog grouped by domain with counts, enabled state, capability, operations, and
+  risk; enable/disable mapped onto the existing access-mode engine; MCP server add/edit/test
+  (a new write endpoint - MCP is config-file-only today); and an `adapter.factory` surface to
+  review, sandbox, and promote generated tools, which the engine already supports headlessly.
+- A bundled starter skill catalog in-repo (`.agent_control/skills` is generated, so starters must
+  ship somewhere committed), browsable and installable from the Skills page, plus edit-in-place
+  and a live preview of inferred permission labels while authoring.
+- Acceptance: a new user sees what the agent can do, and can extend it, without reading config.
+
+### Phase 11 — Wave 4: a second channel
+
+- Refactor `channels/` into a channel-adapter interface (Telegram already provides the shape:
+  intake -> classify -> task -> notify) so a new channel is an adapter, not a fork.
+- Candidate order by reach-per-effort: WhatsApp (Baileys), Discord, Email/IMAP, Slack, Signal.
+  iMessage needs a macOS host and is out of scope on this machine.
+- Comparable prior art: OpenClaw (MIT, self-hosted) routes ~25 chat platforms through one local
+  gateway into a single agent - the same architecture this refactor points at.
+
 ## Explicit Non-goals
 
 - No fake workflow builder over the current hardcoded agent pipeline.
