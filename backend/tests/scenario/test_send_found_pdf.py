@@ -15,7 +15,7 @@ from __future__ import annotations
 from agent_control.schemas import TaskStatus
 import pytest
 
-from .harness import build_scenario, filesystem_settings, run_task_to_completion, scenario_scratch_dir
+from .harness import build_scenario, filesystem_settings, isolated_settings, run_task_to_completion, scenario_scratch_dir
 
 
 def _write_minimal_pdf(path, text: str) -> None:
@@ -52,7 +52,18 @@ async def test_send_found_pdf_delivers_the_file(tmp_path, monkeypatch) -> None:
     pdf_path = desktop_dir / "agent-control-sample.pdf"
     _write_minimal_pdf(pdf_path, "Agent Control E2E PDF sample content.")
 
-    settings = filesystem_settings(monkeypatch, tmp_path, str(desktop_dir))
+    # Deliberately NOT filesystem_settings(): delivering a file at a known
+    # path only needs artifact.deliver's own allowed-root check
+    # (computer_use.allowed_roots below), not the filesystem.manage tool.
+    # Granting filesystem.write here let the model wander into
+    # filesystem.manage's open_file operation, which for real calls
+    # os.startfile() on the PDF - a genuine host side effect (launches
+    # whatever PDF viewer is installed) that has no business happening
+    # during a test run, recorded or replayed.
+    settings = isolated_settings(
+        monkeypatch, tmp_path,
+        adapters={"computer_use": {"enabled": True, "allowed_roots": [str(desktop_dir)]}},
+    )
     scenario = build_scenario(settings, tmp_path=tmp_path, fixture_name="send_found_pdf")
 
     task = await run_task_to_completion(scenario, f"Send me the PDF file at {pdf_path}.")
