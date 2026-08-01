@@ -91,6 +91,7 @@ class Capability(StrEnum):
     GITHUB_READ = "github.read"
     GITHUB_PUSH = "github.push"
     DEPENDENCIES_INSTALL = "dependencies.install"
+    MEMORY_MANAGE = "memory.manage"
 
 
 class TaskType(StrEnum):

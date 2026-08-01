@@ -134,6 +134,11 @@ capabilities:
     scopes: []
     requires_approval: true
     max_risk_level: "high"
+  memory.manage:
+    enabled: false
+    scopes: []
+    requires_approval: false
+    max_risk_level: "low"
 
 approval_policy:
   default_timeout_seconds: 900

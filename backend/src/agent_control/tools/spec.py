@@ -58,6 +58,7 @@ CAPABILITY_MINIMUM_RISKS: dict[Capability, RiskLevel] = {
     Capability.GITHUB_READ: RiskLevel.LOW,
     Capability.GITHUB_PUSH: RiskLevel.CRITICAL,
     Capability.DEPENDENCIES_INSTALL: RiskLevel.HIGH,
+    Capability.MEMORY_MANAGE: RiskLevel.LOW,
 }
 
 

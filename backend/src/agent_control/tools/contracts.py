@@ -859,6 +859,29 @@ class ScheduleManageOutput(ToolOutputModel):
     summary: str | None = None
 
 
+class MemoryManageInput(ToolInputModel):
+    operation: Literal["remember", "list", "forget"] = "remember"
+    category: str | None = None
+    content: str | None = None
+    fact_id: str | None = None
+    query: str | None = None
+
+    @model_validator(mode="after")
+    def _require_inputs_per_operation(self) -> "MemoryManageInput":
+        if self.operation == "remember" and not (self.category and self.content):
+            raise ValueError("memory.manage remember requires 'category' and 'content'")
+        if self.operation == "forget" and not self.fact_id:
+            raise ValueError("memory.manage forget requires 'fact_id'")
+        return self
+
+
+class MemoryManageOutput(ToolOutputModel):
+    operation: str = Field(min_length=1)
+    fact_id: str | None = None
+    facts: list[dict[str, Any]] = Field(default_factory=list)
+    summary: str | None = None
+
+
 class TaskStatusOutput(ToolOutputModel):
     operation: Literal["status"] = "status"
     summary: str = Field(min_length=1)
