@@ -1180,6 +1180,46 @@ def test_admin_chat_redacts_secret_values_from_historical_errors(monkeypatch, tm
     assert "/bot***/sendMessage" in response_text
 
 
+def test_admin_chat_send_resumes_a_clarifying_task_instead_of_spawning_a_new_one(monkeypatch, tmp_path) -> None:
+    """The web channel previously always created a new task, so a reply to
+    a clarifying question just spawned an unrelated second task while the
+    real one sat stuck forever - the exact gap Telegram's own
+    _resume_clarifying_task (now shared via clarification.py) already
+    closed for that channel."""
+    client, repositories = _chat_client(monkeypatch, tmp_path)
+    original = client.post("/admin/api/chat/messages", json={"text": "organize my files"}).json()["task"]
+    repositories.tasks.update_metadata(
+        original["id"],
+        {**original["metadata"], "clarifying_question": "Which folder?"},
+        TaskStatus.CLARIFYING,
+    )
+
+    response = client.post("/admin/api/chat/messages", json={"text": "the Downloads folder"})
+
+    assert response.status_code == 200
+    body = response.json()["task"]
+    assert body["id"] == original["id"]
+    assert body["status"] == "received"
+    assert "[User clarification: the Downloads folder]" in body["objective"]
+
+    listed = client.get("/admin/api/chat/messages").json()["tasks"]
+    assert len(listed) == 1
+
+
+def test_admin_chat_send_cancel_word_cancels_the_clarifying_task(monkeypatch, tmp_path) -> None:
+    client, repositories = _chat_client(monkeypatch, tmp_path)
+    original = client.post("/admin/api/chat/messages", json={"text": "organize my files"}).json()["task"]
+    repositories.tasks.update_metadata(
+        original["id"],
+        {**original["metadata"], "clarifying_question": "Which folder?"},
+        TaskStatus.CLARIFYING,
+    )
+
+    response = client.post("/admin/api/chat/messages", json={"text": "never mind"})
+
+    assert response.json()["task"]["status"] == "cancelled"
+
+
 def test_admin_chat_send_rejects_empty_text(monkeypatch, tmp_path) -> None:
     client, _repositories = _chat_client(monkeypatch, tmp_path)
 

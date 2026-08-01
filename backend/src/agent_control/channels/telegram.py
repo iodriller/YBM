@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 
+from agent_control.clarification import find_clarifying_task, resume_clarifying_task
 from agent_control.config import AppSettings, TelegramConfig
 from agent_control.config_sync import read_env_value
 from agent_control.channels.responder import TelegramResponder, gateway_context
@@ -675,65 +676,30 @@ class TelegramIntakeService:
         )
 
     def _resume_clarifying_task(self, inbound: InboundMessage, conversation_id: str) -> OutboundMessage | None:
-        """Route a reply to the task waiting on a question instead of spawning a new task."""
+        """Route a reply to the task waiting on a question instead of spawning a new task.
+
+        Core logic lives in clarification.py so the web chat channel
+        (admin.py's admin_send_chat_message) shares the exact same behavior
+        instead of re-implementing it.
+        """
         text = (inbound.text or "").strip()
         if not text:
             return None
-        task = next(
-            (
-                candidate
-                for candidate in self.repositories.tasks.list_by_statuses([TaskStatus.CLARIFYING], limit=20)
-                if candidate.conversation_id == conversation_id
-                or str(candidate.metadata.get("source_chat_id")) == str(inbound.chat_id)
-            ),
-            None,
-        )
+        task = find_clarifying_task(self.repositories, conversation_id=conversation_id, chat_id=inbound.chat_id)
         if task is None:
             return None
-        actor = f"telegram:user:{inbound.sender_id}"
-        if text.lower() in {"cancel", "stop", "drop it", "never mind", "nevermind", "forget it", "no"}:
-            self.repositories.tasks.update_status(task.id, TaskStatus.CANCELLED)
-            self.audit.append(
-                AuditEventType.TASK_STATE_CHANGED,
-                actor=actor,
-                task_id=task.id,
-                correlation_id=inbound.correlation_id,
-                payload={"reason": "clarification_cancelled", "status": TaskStatus.CANCELLED.value},
-            )
-            return self._out(inbound.chat_id, f"Cancelled: {task.objective[:200]}")
-
-        # Fold the answer into the objective so replanning sees it, and reset
-        # the attempt counters — the user's input makes this a fresh attempt.
-        objective = f"{task.objective}\n[User clarification: {text}]"
-        self.repositories.tasks.update_objective(task.id, objective)
-        answers = list(task.metadata.get("clarification_answers") or [])
-        answers.append(
-            {
-                "question": task.metadata.get("clarifying_question"),
-                "answer": text,
-                "message_id": inbound.id,
-                "created_at": inbound.received_at.isoformat(),
-            }
-        )
-        metadata = {
-            **task.metadata,
-            "clarification_answer": text,
-            "clarification_answers": answers,
-            "answered_clarifying_question": task.metadata.get("clarifying_question"),
-            "retry_count": 0,
-            "replan_count": 0,
-            "evaluator_repair_count": 0,
-            "fulfillment_retry_count": 0,
-        }
-        metadata.pop("clarifying_question", None)
-        self.repositories.tasks.update_metadata(task.id, metadata, TaskStatus.RECEIVED)
-        self.audit.append(
-            AuditEventType.TASK_STATE_CHANGED,
-            actor=actor,
-            task_id=task.id,
+        result = resume_clarifying_task(
+            self.repositories,
+            self.audit,
+            task,
+            text=text,
+            actor=f"telegram:user:{inbound.sender_id}",
+            message_id=inbound.id,
+            received_at=inbound.received_at,
             correlation_id=inbound.correlation_id,
-            payload={"reason": "clarification_answered", "answer": text[:400], "status": TaskStatus.RECEIVED.value},
         )
+        if result.cancelled:
+            return self._out(inbound.chat_id, f"Cancelled: {result.task.objective[:200]}")
         return self._out(inbound.chat_id, "Got it — resuming the task with your answer.")
 
     async def _non_task_response(

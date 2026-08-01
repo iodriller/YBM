@@ -69,6 +69,90 @@ def test_telegram_text_update_creates_task(tmp_path) -> None:
     assert repos.tasks.get(result.task.id) is not None
 
 
+def test_telegram_reply_resumes_a_clarifying_task_instead_of_spawning_a_new_one(tmp_path) -> None:
+    """clarification.py's resume_clarifying_task, called from
+    _resume_clarifying_task - this file's own regression coverage for the
+    logic that moved out of this module during the web-chat sharing
+    refactor (admin.py gained the same behavior; this locks in Telegram's
+    unchanged)."""
+    service, repos = _service(
+        tmp_path,
+        TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
+        classifier=StaticMessageClassifier(),
+    )
+    created = service.handle_update(
+        {
+            "message": {
+                "message_id": 1,
+                "from": {"id": 42},
+                "chat": {"id": 100},
+                "text": "organize my files",
+            }
+        }
+    )
+    task = created.task
+    assert task is not None
+    repos.tasks.update_metadata(
+        task.id, {**task.metadata, "clarifying_question": "Which folder?"}, TaskStatus.CLARIFYING,
+    )
+
+    reply = service.handle_update(
+        {
+            "message": {
+                "message_id": 2,
+                "from": {"id": 42},
+                "chat": {"id": 100},
+                "text": "the Downloads folder",
+            }
+        }
+    )
+
+    assert reply.task is None  # resumed the existing task, did not spawn a new one
+    assert reply.outbound_message is not None
+    assert "resuming" in reply.outbound_message.text.lower()
+    resumed = repos.tasks.get(task.id)
+    assert resumed.status == TaskStatus.RECEIVED
+    assert "[User clarification: the Downloads folder]" in resumed.objective
+    assert len(repos.tasks.list_recent(limit=10)) == 1
+
+
+def test_telegram_reply_cancel_word_cancels_the_clarifying_task(tmp_path) -> None:
+    service, repos = _service(
+        tmp_path,
+        TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
+        classifier=StaticMessageClassifier(),
+    )
+    created = service.handle_update(
+        {
+            "message": {
+                "message_id": 1,
+                "from": {"id": 42},
+                "chat": {"id": 100},
+                "text": "organize my files",
+            }
+        }
+    )
+    task = created.task
+    assert task is not None
+    repos.tasks.update_metadata(
+        task.id, {**task.metadata, "clarifying_question": "Which folder?"}, TaskStatus.CLARIFYING,
+    )
+
+    reply = service.handle_update(
+        {
+            "message": {
+                "message_id": 2,
+                "from": {"id": 42},
+                "chat": {"id": 100},
+                "text": "never mind",
+            }
+        }
+    )
+
+    assert "cancelled" in reply.outbound_message.text.lower()
+    assert repos.tasks.get(task.id).status == TaskStatus.CANCELLED
+
+
 @pytest.mark.asyncio
 async def test_telegram_intake_sends_user_facing_progress_without_task_id(tmp_path) -> None:
     service, repos = _service(

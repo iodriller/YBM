@@ -20,7 +20,16 @@ from agent_control.orchestration.signals import apply_task_signal
 from agent_control.policy import apply_access_modes_to_config, summarize_access_modes
 from agent_control.prompts import render_prompt
 from agent_control.runtime_status import service_summary
-from agent_control.schemas import ApprovalStatus, AuditEventType, Capability, CapabilityAccessMode, ChannelType, StrictBaseModel
+from agent_control.clarification import find_clarifying_task, resume_clarifying_task
+from agent_control.schemas import (
+    ApprovalStatus,
+    AuditEventType,
+    Capability,
+    CapabilityAccessMode,
+    ChannelType,
+    StrictBaseModel,
+    utc_now,
+)
 from agent_control.storage.audit import AuditLogger
 from agent_control.storage.audit_view import format_audit_event
 from agent_control.storage.database import Database
@@ -891,15 +900,34 @@ def create_admin_router(
 
     @router.post("/api/chat/messages")
     def admin_send_chat_message(request: Request, payload: AdminChatMessageRequest) -> dict[str, Any]:
+        """A reply while a task sits in CLARIFYING resumes that task instead
+        of spawning an unrelated new one - same behavior Telegram already
+        had (clarification.py, shared with channels/telegram.py), just
+        never wired up for the web channel before.
+        """
         loaded = require_admin(request)
         repositories = repositories_loader()
         conversation_id = repositories.conversations.get_or_create(ChannelType.WEB, WEB_CHAT_ID)
+        audit = AuditLogger(repositories.audit, loaded.logging.redact_patterns)
+
+        text = payload.text.strip()
+        clarifying = find_clarifying_task(repositories, conversation_id=conversation_id, chat_id=WEB_CHAT_ID)
+        if clarifying is not None and text:
+            result = resume_clarifying_task(
+                repositories, audit, clarifying,
+                text=text, actor="admin_chat", message_id="", received_at=utc_now(),
+            )
+            return {
+                "conversation_id": conversation_id,
+                "task": _redact_admin_output(result.task.model_dump(mode="json"), loaded),
+            }
+
         task = repositories.tasks.create(
             payload.text,
             conversation_id=conversation_id,
             metadata={"source_chat_id": WEB_CHAT_ID, "source_channel": ChannelType.WEB.value},
         )
-        AuditLogger(repositories.audit, loaded.logging.redact_patterns).append(
+        audit.append(
             AuditEventType.TASK_CREATED,
             actor="admin_chat",
             task_id=task.id,
