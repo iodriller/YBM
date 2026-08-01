@@ -26,6 +26,7 @@ import {
   updateTelegramConfig,
   updateVSCodeConfig,
   updateWorkspaceConfig,
+  uploadChatAttachment,
   type ApprovalDecision,
   type CapabilityAccessMode,
   type ComputerUseConfigInput,
@@ -93,11 +94,16 @@ export function useChatMessages() {
 export function useSendChatMessage() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: sendChatMessage,
+    mutationFn: ({ text, attachmentIds }: { text: string; attachmentIds?: string[] }) =>
+      sendChatMessage(text, attachmentIds),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["chat", "messages"] })
     },
   })
+}
+
+export function useUploadChatAttachment() {
+  return useMutation({ mutationFn: uploadChatAttachment })
 }
 
 export function usePendingApprovals() {

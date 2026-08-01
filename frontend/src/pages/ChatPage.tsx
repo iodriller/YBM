@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react"
-import { Bot, LoaderCircle, Send, ShieldCheck, Sparkles, Square, User } from "lucide-react"
+import { toast } from "sonner"
+import { Bot, LoaderCircle, Paperclip, Send, ShieldCheck, Sparkles, Square, User, X } from "lucide-react"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -8,9 +9,22 @@ import { ArtifactCard } from "@/components/chat/ArtifactCard"
 import { ChatMarkdown } from "@/components/chat/ChatMarkdown"
 import { InlineApproval } from "@/components/chat/InlineApproval"
 import { chatAnswerText, isTerminal } from "@/lib/chat"
-import { useChatMessages, usePendingApprovals, useSendChatMessage, useTaskSignal } from "@/lib/queries"
+import {
+  useChatMessages,
+  usePendingApprovals,
+  useSendChatMessage,
+  useTaskSignal,
+  useUploadChatAttachment,
+} from "@/lib/queries"
 import { cn } from "@/lib/utils"
-import type { TaskRecord } from "@/lib/api"
+import { ApiError, type TaskRecord } from "@/lib/api"
+
+interface PendingAttachment {
+  key: string
+  fileName: string
+  artifactId?: string
+  uploading: boolean
+}
 
 // One of these deliberately routes through an approval, so a first-time
 // user meets the approval gate in their first minute rather than
@@ -24,20 +38,47 @@ const STARTER_PROMPTS = [
 export function ChatPage() {
   const { data, isPending, isError, error } = useChatMessages()
   const sendMessage = useSendChatMessage()
+  const uploadAttachment = useUploadChatAttachment()
   const [draft, setDraft] = useState("")
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([])
   const scrollAnchorRef = useRef<HTMLDivElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const tasks = data?.tasks ?? []
+  const attachmentsUploading = attachments.some((a) => a.uploading)
 
   useEffect(() => {
     scrollAnchorRef.current?.scrollIntoView({ block: "end" })
   }, [tasks.length])
 
+  function handleFilesSelected(files: FileList | null) {
+    if (!files) return
+    for (const file of Array.from(files)) {
+      const key = `${file.name}-${file.size}-${Date.now()}-${Math.random()}`
+      setAttachments((prev) => [...prev, { key, fileName: file.name, uploading: true }])
+      uploadAttachment.mutate(file, {
+        onSuccess: (result) => {
+          setAttachments((prev) => prev.map((a) => (a.key === key ? { ...a, artifactId: result.artifact_id, uploading: false } : a)))
+        },
+        onError: (error) => {
+          toast.error(error instanceof ApiError ? error.message : `Could not upload ${file.name}.`)
+          setAttachments((prev) => prev.filter((a) => a.key !== key))
+        },
+      })
+    }
+  }
+
+  function removeAttachment(key: string) {
+    setAttachments((prev) => prev.filter((a) => a.key !== key))
+  }
+
   function handleSend(text: string) {
     const trimmed = text.trim()
-    if (!trimmed || sendMessage.isPending) return
-    sendMessage.mutate(trimmed)
+    if (!trimmed || sendMessage.isPending || attachmentsUploading) return
+    const attachmentIds = attachments.map((a) => a.artifactId).filter((id): id is string => Boolean(id))
+    sendMessage.mutate({ text: trimmed, attachmentIds })
     setDraft("")
+    setAttachments([])
   }
 
   return (
@@ -109,32 +150,79 @@ export function ChatPage() {
           handleSend(draft)
         }}
       >
-        <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-2xl border border-input bg-card p-2 shadow-sm focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/20">
-          <textarea
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault()
-                handleSend(draft)
-              }
-            }}
-            placeholder="Ask YBM to do something..."
-            disabled={sendMessage.isPending}
-            autoFocus
-            rows={1}
-            aria-label="Message YBM"
-            className="max-h-36 min-h-10 min-w-0 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-5 outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50"
-          />
-          <Button
-            type="submit"
-            size="icon"
-            className="size-9 rounded-xl"
-            aria-label="Send message"
-            disabled={sendMessage.isPending || !draft.trim()}
-          >
-            {sendMessage.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Send className="size-4" />}
-          </Button>
+        <div className="mx-auto flex max-w-3xl flex-col gap-2">
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {attachments.map((attachment) => (
+                <span
+                  key={attachment.key}
+                  className="flex items-center gap-1.5 rounded-full border border-border bg-muted/60 py-1 pl-2.5 pr-1.5 text-xs"
+                >
+                  {attachment.uploading ? (
+                    <LoaderCircle className="size-3 animate-spin text-muted-foreground" />
+                  ) : (
+                    <Paperclip className="size-3 text-muted-foreground" />
+                  )}
+                  <span className="max-w-40 truncate">{attachment.fileName}</span>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${attachment.fileName}`}
+                    onClick={() => removeAttachment(attachment.key)}
+                    className="flex size-4 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
+                  >
+                    <X className="size-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+          <div className="flex items-end gap-2 rounded-2xl border border-input bg-card p-2 shadow-sm focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/20">
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(event) => {
+                handleFilesSelected(event.target.files)
+                event.target.value = ""
+              }}
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-9 shrink-0 rounded-xl text-muted-foreground"
+              aria-label="Attach a file"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <Paperclip className="size-4" />
+            </Button>
+            <textarea
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault()
+                  handleSend(draft)
+                }
+              }}
+              placeholder="Ask YBM to do something..."
+              disabled={sendMessage.isPending}
+              autoFocus
+              rows={1}
+              aria-label="Message YBM"
+              className="max-h-36 min-h-10 min-w-0 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-5 outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            />
+            <Button
+              type="submit"
+              size="icon"
+              className="size-9 shrink-0 rounded-xl"
+              aria-label="Send message"
+              disabled={sendMessage.isPending || !draft.trim() || attachmentsUploading}
+            >
+              {sendMessage.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Send className="size-4" />}
+            </Button>
+          </div>
         </div>
         <p className="mx-auto mt-1.5 hidden max-w-3xl px-2 text-[11px] text-muted-foreground sm:block">
           Enter to send · Shift + Enter for a new line
@@ -165,7 +253,7 @@ function ChatExchange({ task }: { task: TaskRecord }) {
     event.preventDefault()
     const trimmed = clarifyDraft.trim()
     if (!trimmed || sendMessage.isPending) return
-    sendMessage.mutate(trimmed)
+    sendMessage.mutate({ text: trimmed })
     setClarifyDraft("")
   }
 

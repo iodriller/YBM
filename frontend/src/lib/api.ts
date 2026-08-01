@@ -79,7 +79,10 @@ async function apiFetch<T>(
   if (adminToken) {
     headers.set("X-Agent-Control-Admin-Token", adminToken)
   }
-  if (init?.body) {
+  // FormData (file uploads) must keep the browser-generated multipart
+  // boundary in its own Content-Type - forcing application/json here would
+  // send the file as an unparseable body.
+  if (init?.body && !(init.body instanceof FormData)) {
     headers.set("Content-Type", "application/json")
   }
 
@@ -169,10 +172,26 @@ export function listChatMessages(limit = 50) {
   return apiFetch(`/api/chat/messages?limit=${limit}`, ChatMessagesResponseSchema)
 }
 
-export function sendChatMessage(text: string) {
+export function sendChatMessage(text: string, attachmentIds: string[] = []) {
   return apiFetch("/api/chat/messages", ChatSendResponseSchema, {
     method: "POST",
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({ text, attachment_ids: attachmentIds }),
+  })
+}
+
+const ChatAttachmentUploadResponseSchema = z.object({
+  artifact_id: z.string(),
+  file_name: z.string().nullable(),
+  size_bytes: z.number(),
+})
+export type ChatAttachmentUpload = z.infer<typeof ChatAttachmentUploadResponseSchema>
+
+export function uploadChatAttachment(file: File) {
+  const form = new FormData()
+  form.append("file", file)
+  return apiFetch("/api/chat/attachments", ChatAttachmentUploadResponseSchema, {
+    method: "POST",
+    body: form,
   })
 }
 
