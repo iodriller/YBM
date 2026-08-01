@@ -38,8 +38,8 @@ export function AppShell() {
           <nav className="flex w-56 shrink-0 flex-col justify-between border-r border-border p-4">
             <div>
               <div className="mb-6 px-2">
-                <h1 className="text-lg font-semibold tracking-tight">YBM</h1>
-                <p className="text-xs text-muted-foreground">Agent Control</p>
+                <h1 className="text-lg font-semibold tracking-tight">YBM Control</h1>
+                <p className="text-xs text-muted-foreground">The auditable personal agent</p>
               </div>
               <ul className="space-y-1">
                 {NAV_ITEMS.map(({ to, label, icon: Icon, end }) => (

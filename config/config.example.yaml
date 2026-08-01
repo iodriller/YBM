@@ -6,7 +6,7 @@ server:
   admin_token_env: "AGENT_ADMIN_TOKEN"
 
 identity:
-  instance_name: "local-agent-control"
+  instance_name: "ybm-control"
   owner_label: "local-user"
 
 channels:

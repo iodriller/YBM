@@ -2,7 +2,7 @@
 
 ## Project
 
-YBM is a configurable local agent-control system. A FastAPI/Python backend accepts
+YBM (product name: "YBM Control") is a configurable local agent-control system. A FastAPI/Python backend accepts
 Telegram and local requests, applies policy, schedules work, invokes configured tools
 or coding agents, and serves a React admin console at `/admin`. A VS Code extension
 provides the editor bridge.

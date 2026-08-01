@@ -1,17 +1,25 @@
-# YBM
+# YBM Control
 
-**A local-first personal agent that asks before it acts.**
+**The auditable personal agent — it asks before it acts, and proves what it did.**
 
-YBM gives an LLM real access to your machine — filesystem, terminal, browser, VS Code, a
-scheduler, MCP tools, even desktop control — through Telegram or a built-in web chat. Every
-capability ships **disabled by default**. Dangerous operations require an explicit, one-shot,
-expiring approval that the runtime enforces — not the model, not a config flag, and not
-bypassable by an "allow everything" mode. Every request, approval, and result is logged.
+```
+You:  organize my Downloads folder by file type, then tell me what you moved
+YBM:  Sorted 41 files into 6 folders (Images, Documents, Archives, Installers,
+      Code, Other). Nothing was deleted. Full list and every file path touched
+      are in this task's trace.
+```
 
-## Why YBM
+That's the shape of it: real access to your machine — filesystem, terminal, browser, VS Code, a
+scheduler, MCP tools, even desktop control — through Telegram or a built-in web chat, with every
+capability **disabled by default**. Dangerous operations require an explicit, one-shot, expiring
+approval that the runtime enforces — not the model, not a config flag, and not bypassable by an
+"allow everything" mode. Every request, approval, and result is logged, and every task has a full
+trace you can open and check.
 
-Most self-hosted agent frameworks ask you to trust the model. YBM is built around the assumption
-that you shouldn't have to.
+## Why YBM Control
+
+Most self-hosted agent frameworks ask you to trust the model. YBM Control is built around the
+assumption that you shouldn't have to.
 
 | | |
 |---|---|
@@ -114,7 +122,7 @@ The example config disables terminal execution, filesystem access, VS Code acces
 screenshots, desktop control, computer use, browser automation, dependency installation, and Git
 pushes.
 
-YBM is intended for one trusted operator on a local machine. Keep the backend, admin UI, VS Code
+YBM Control is intended for one trusted operator on a local machine. Keep the backend, admin UI, VS Code
 bridge, model endpoints, and generated preview servers bound to loopback. It is not designed as
 an Internet-facing or multi-tenant control plane.
 

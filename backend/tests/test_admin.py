@@ -79,7 +79,7 @@ def test_admin_page_points_to_build_instructions_before_a_react_build_exists(mon
     # pointer telling the operator to build it, rather than 404ing or
     # crashing when no build is present at this checkout.
     assert page.status_code == 200
-    assert "Agent Control Admin" in page.text
+    assert "YBM Control" in page.text
     assert "ui-build" in page.text
     assert "8501" not in page.text
     assert "streamlit" not in page.text.lower()
@@ -97,7 +97,7 @@ def test_admin_summary_api_unaffected_by_html_page_removal(monkeypatch, tmp_path
     summary = client.get("/admin/api/summary")
 
     assert summary.status_code == 200
-    assert summary.json()["config"]["identity"]["instance_name"] == "local-agent-control"
+    assert summary.json()["config"]["identity"]["instance_name"] == "ybm-control"
     assert "services" in summary.json()
     assert "schedules" in summary.json()
     assert "tool_registry" in summary.json()

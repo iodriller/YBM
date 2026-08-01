@@ -31,7 +31,7 @@ def is_loopback_host(host: str) -> bool:
 
 
 class IdentityConfig(StrictBaseModel):
-    instance_name: str = "local-agent-control"
+    instance_name: str = "ybm-control"
     owner_label: str = "local-user"
 
 

@@ -38,7 +38,7 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
     <div className="flex h-svh w-full items-center justify-center bg-background p-6">
       <Card className="w-full max-w-md">
         <CardHeader>
-          <CardTitle>Welcome to YBM</CardTitle>
+          <CardTitle>Welcome to YBM Control</CardTitle>
           <CardDescription>
             A few quick choices - skippable at every step, re-runnable later from Settings.
           </CardDescription>

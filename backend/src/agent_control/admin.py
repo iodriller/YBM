@@ -1272,7 +1272,7 @@ _ADMIN_HTML = """
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Agent Control Admin</title>
+  <title>YBM Control</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1.5rem; color: #1a1a1a; }
     a { color: #2563eb; }
@@ -1280,7 +1280,7 @@ _ADMIN_HTML = """
   </style>
 </head>
 <body>
-  <h1>Agent Control Admin</h1>
+  <h1>YBM Control</h1>
   <p>No admin console build was found yet.</p>
   <p>Run <code>ybm ui-build</code> (or <code>npm run build</code> in <code>frontend/</code>), then reload this page.</p>
   <p>This page's JSON API (<code>/admin/api/*</code>) is unchanged and works regardless of whether a build exists.</p>

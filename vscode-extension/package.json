@@ -1,7 +1,7 @@
 {
-  "name": "agent-control-bridge",
-  "displayName": "Agent Control Bridge",
-  "description": "Companion VS Code bridge for the configurable agentic control system.",
+  "name": "ybm-control-bridge",
+  "displayName": "YBM Control Bridge",
+  "description": "Companion VS Code bridge for YBM Control, the auditable personal agent.",
   "version": "0.1.0",
   "engines": {
     "vscode": "^1.90.0"
@@ -20,34 +20,34 @@
     "commands": [
       {
         "command": "agentControl.showStatus",
-        "title": "Agent Control: Show Status"
+        "title": "YBM Control: Show Status"
       },
       {
         "command": "agentControl.syncState",
-        "title": "Agent Control: Sync State"
+        "title": "YBM Control: Sync State"
       },
       {
         "command": "agentControl.createTerminal",
-        "title": "Agent Control: Create Terminal"
+        "title": "YBM Control: Create Terminal"
       }
     ],
     "configuration": {
-      "title": "Agent Control Bridge",
+      "title": "YBM Control Bridge",
       "properties": {
         "agentControl.bridgeUrl": {
           "type": "string",
           "default": "http://127.0.0.1:8765",
-          "description": "Local backend URL for the Agent Control bridge."
+          "description": "Local backend URL for the YBM Control bridge."
         },
         "agentControl.bridgeTokenEnv": {
           "type": "string",
           "default": "VSCODE_BRIDGE_TOKEN",
-          "description": "Environment variable name that stores the Agent Control bridge token. The extension also checks the workspace .env file."
+          "description": "Environment variable name that stores the YBM Control bridge token. The extension also checks the workspace .env file."
         },
         "agentControl.bridgeToken": {
           "type": "string",
           "default": "",
-          "description": "Optional Agent Control bridge token override. Prefer using the workspace .env file or environment variable."
+          "description": "Optional YBM Control bridge token override. Prefer using the workspace .env file or environment variable."
         }
       }
     }

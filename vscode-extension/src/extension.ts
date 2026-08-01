@@ -8,11 +8,11 @@ import * as path from "path";
 export function activate(context: vscode.ExtensionContext) {
   const terminals = new Map<string, vscode.Terminal>();
   const statusCommand = vscode.commands.registerCommand("agentControl.showStatus", () => {
-    vscode.window.showInformationMessage("Agent Control Bridge is installed.");
+    vscode.window.showInformationMessage("YBM Control Bridge is installed.");
   });
   const syncCommand = vscode.commands.registerCommand("agentControl.syncState", () => syncState());
   const terminalCommand = vscode.commands.registerCommand("agentControl.createTerminal", () => {
-    const terminal = vscode.window.createTerminal("Agent Control");
+    const terminal = vscode.window.createTerminal("YBM Control");
     terminals.set("agent-control", terminal);
     terminal.show();
   });
@@ -99,7 +99,7 @@ async function bridgeTick(terminals: Map<string, vscode.Terminal>): Promise<void
     await syncState();
     await pollTerminalCommands(terminals);
   } catch (error) {
-    console.warn("Agent Control bridge sync failed", error);
+    console.warn("YBM Control bridge sync failed", error);
   }
 }
 
