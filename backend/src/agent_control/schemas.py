@@ -199,6 +199,7 @@ class AuditEventType(StrEnum):
     TOOL_REQUESTED = "tool_requested"
     TOOL_COMPLETED = "tool_completed"
     ARTIFACT_CREATED = "artifact_created"
+    EGRESS_CONTACTED = "egress_contacted"
     ERROR = "error"
 
 

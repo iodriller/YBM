@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 import httpx
 
 from agent_control.config import HttpRequestAdapterConfig, SecretVaultConfig
+from agent_control.egress import record_egress
 from agent_control.schemas import Capability, RiskLevel, ToolCallRequest, ToolCallResult, ToolResultStatus
 from agent_control.storage.redaction import redact_payload
 from agent_control.storage.secrets import SecretVault, SecretVaultError
@@ -36,10 +37,12 @@ class HttpRequestAdapter:
         secrets_config: SecretVaultConfig,
         *,
         transport: httpx.AsyncBaseTransport | None = None,
+        audit: Any | None = None,
     ) -> None:
         self.config = config
         self.secrets = SecretVault(secrets_config)
         self._transport = transport
+        self.audit = audit
 
     async def execute(self, request: ToolCallRequest) -> ToolCallResult:
         if not self.config.enabled:
@@ -76,6 +79,7 @@ class HttpRequestAdapter:
         )
         _check_body_size(json_body=json_body, body=body, max_chars=self.config.max_body_chars)
         timeout = min(int(request.input.get("timeout_seconds") or request.timeout_seconds or self.config.timeout_seconds), self.config.timeout_seconds)
+        record_egress(self.audit, request.task_id, urlparse(url).hostname or url, "http.request")
         start = time.perf_counter()
         async with httpx.AsyncClient(
             timeout=timeout,
@@ -283,7 +287,7 @@ def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -
         )
     )
     if settings.adapters.http_request.enabled:
-        adapters["http.request"] = HttpRequestAdapter(settings.adapters.http_request, settings.secrets)
+        adapters["http.request"] = HttpRequestAdapter(settings.adapters.http_request, settings.secrets, audit=deps.audit_logger)
 
 
 def _http_required_risk(value: dict[str, Any]) -> RiskLevel:

@@ -4,9 +4,17 @@ import httpx
 import pytest
 
 from agent_control.config import HttpRequestAdapterConfig, SecretVaultConfig
-from agent_control.schemas import Capability, ToolCallRequest, ToolResultStatus
+from agent_control.schemas import AuditEventType, Capability, ToolCallRequest, ToolResultStatus
 from agent_control.storage.secrets import SecretVault
 from agent_control.tools.http_request import HttpRequestAdapter
+
+
+class _FakeAudit:
+    def __init__(self) -> None:
+        self.events: list[tuple[AuditEventType, dict]] = []
+
+    def append(self, event_type, *, actor, task_id, payload):
+        self.events.append((event_type, {"actor": actor, "task_id": task_id, **payload}))
 
 
 @pytest.mark.asyncio
@@ -48,6 +56,36 @@ async def test_http_request_injects_and_redacts_secret(monkeypatch, tmp_path) ->
     assert result.status == ToolResultStatus.SUCCEEDED
     assert result.output["json"]["echo"] == "***"
     assert result.output["headers"]["set-cookie"] == "***"
+
+
+@pytest.mark.asyncio
+async def test_http_request_records_egress_for_the_receipt(tmp_path) -> None:
+    """docs/UI_UX_AUDIT.md Phase 2: a real, non-loopback call must show up
+    as an EGRESS_CONTACTED audit event so Task Receipts can say what left
+    the machine - egress.record_egress()."""
+    secrets_config = SecretVaultConfig(path=str(tmp_path / "vault.json"))
+    audit = _FakeAudit()
+    adapter = HttpRequestAdapter(
+        HttpRequestAdapterConfig(allowed_hosts=["api.example.com"]),
+        secrets_config,
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"ok": True})),
+        audit=audit,
+    )
+
+    await adapter.execute(
+        ToolCallRequest(
+            task_id="task_egress",
+            tool_name="http.request",
+            capability=Capability.NETWORK_HTTP,
+            input={"operation": "request", "method": "GET", "url": "https://api.example.com/status"},
+        )
+    )
+
+    assert len(audit.events) == 1
+    event_type, details = audit.events[0]
+    assert event_type == AuditEventType.EGRESS_CONTACTED
+    assert details["task_id"] == "task_egress"
+    assert details["host"] == "api.example.com"
 
 
 @pytest.mark.asyncio

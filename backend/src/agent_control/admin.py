@@ -32,6 +32,7 @@ from agent_control.schemas import (
     ChannelType,
     StrictBaseModel,
     TaskRecord,
+    TaskStatus,
     utc_now,
 )
 from agent_control.storage.audit import AuditLogger
@@ -506,6 +507,15 @@ def create_admin_router(
         if trace is None:
             raise HTTPException(status_code=404, detail="task not found")
         return _redact_admin_output(trace, loaded)
+
+    @router.get("/api/tasks/{task_id}/receipt")
+    def admin_task_receipt(request: Request, task_id: str) -> dict[str, Any]:
+        loaded = require_admin(request)
+        repositories = repositories_loader()
+        receipt = build_task_receipt(repositories, loaded, task_id)
+        if receipt is None:
+            raise HTTPException(status_code=404, detail="task not found")
+        return _redact_admin_output(receipt, loaded)
 
     @router.get("/api/approvals")
     def admin_pending_approvals(request: Request) -> dict[str, Any]:
@@ -1242,6 +1252,82 @@ def build_task_trace(repositories: Repositories, task_id: str) -> dict[str, Any]
         "signals": [signal.model_dump(mode="json") for signal in repositories.task_signals.list_for_task(task_id)],
         "audit": formatted_audit,
         "raw_audit": raw_audit,
+    }
+
+
+def build_task_receipt(repositories: Repositories, settings: AppSettings, task_id: str) -> dict[str, Any] | None:
+    """A human-readable "what happened" summary (docs/UI_UX_AUDIT.md Phase 2)
+    - what was asked, what changed, what was contacted outside this
+    machine, what was approved, how long it took, and what's uncertain.
+    Entirely derived from data build_task_trace already assembles plus
+    egress.py's EGRESS_CONTACTED audit events; nothing new is persisted for
+    this beyond those events. Returns None if the task doesn't exist.
+    """
+    task = repositories.tasks.get(task_id)
+    if task is None:
+        return None
+    tool_invocations = repositories.tool_invocations.list_for_task(task_id)
+    audit_events = repositories.audit.list_for_task(task_id)
+    approvals = repositories.approvals.list_for_task(task_id)
+    artifacts = repositories.artifacts.list_for_task(task_id)
+    metadata = task.metadata
+
+    tools_used: dict[str, dict[str, Any]] = {}
+    for invocation in tool_invocations:
+        name = str(invocation.get("tool_name") or "unknown")
+        entry = tools_used.setdefault(name, {"tool_name": name, "calls": 0, "succeeded": 0, "failed": 0})
+        entry["calls"] += 1
+        status = str(invocation.get("status") or "")
+        if status == "succeeded":
+            entry["succeeded"] += 1
+        elif status in {"failed", "denied", "timeout"}:
+            entry["failed"] += 1
+
+    services_contacted = [
+        {"host": event.payload.get("host"), "tool_name": event.payload.get("tool_name"), "at": event.created_at.isoformat()}
+        for event in audit_events
+        if event.type == AuditEventType.EGRESS_CONTACTED
+    ]
+
+    token_usage = metadata.get("token_usage") if isinstance(metadata.get("token_usage"), dict) else {}
+    default_profile = settings.llm.profiles.get(settings.llm.default_profile)
+    llm_left_machine = bool(
+        token_usage
+        and default_profile is not None
+        and not any(host in (default_profile.base_url or "") for host in ("127.0.0.1", "localhost"))
+    )
+
+    uncertainties: list[str] = []
+    clarify_count = metadata.get("clarify_count")
+    if clarify_count:
+        uncertainties.append(f"Asked {clarify_count} clarifying question(s) before proceeding.")
+    if metadata.get("fulfillment_gap"):
+        uncertainties.append(str(metadata["fulfillment_gap"]))
+    if task.status in {TaskStatus.FAILED, TaskStatus.BLOCKED} and metadata.get("last_worker_error"):
+        uncertainties.append(str(metadata["last_worker_error"]))
+
+    duration_seconds = max(0.0, (task.updated_at - task.created_at).total_seconds())
+
+    return {
+        "task_id": task.id,
+        "objective": task.objective,
+        "status": task.status.value,
+        "result_summary": metadata.get("synthesized_answer") or metadata.get("document_summary"),
+        "changes": _extract_evidence(tool_invocations),
+        "tools_used": sorted(tools_used.values(), key=lambda entry: str(entry["tool_name"])),
+        "services_contacted": services_contacted,
+        "data_left_machine": bool(services_contacted) or llm_left_machine,
+        "llm_left_machine": llm_left_machine,
+        "approvals": [
+            {"id": a.id, "capability": a.capability.value, "risk_level": a.risk_level.value, "status": a.status.value, "summary": a.summary}
+            for a in approvals
+        ],
+        "artifacts": [artifact.model_dump(mode="json") for artifact in artifacts],
+        "token_usage": token_usage,
+        "duration_seconds": duration_seconds,
+        "uncertainties": uncertainties,
+        "created_at": task.created_at.isoformat(),
+        "updated_at": task.updated_at.isoformat(),
     }
 
 

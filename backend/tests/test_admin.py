@@ -700,6 +700,86 @@ def test_admin_task_trace_evidence_aggregates_files_urls_and_commands(monkeypatc
     assert evidence["files"][0]["tool_name"] == "filesystem.manage"
 
 
+def test_admin_task_receipt_404s_for_an_unknown_task(monkeypatch, tmp_path) -> None:
+    client, _repositories = _chat_client(monkeypatch, tmp_path)
+
+    response = client.get("/admin/api/tasks/task_does_not_exist/receipt")
+
+    assert response.status_code == 404
+
+
+def test_admin_task_receipt_summarizes_a_completed_task(monkeypatch, tmp_path) -> None:
+    """docs/UI_UX_AUDIT.md Phase 2: what was asked, what changed, what was
+    contacted outside this machine, what was approved, how long it took."""
+    monkeypatch.chdir(tmp_path)
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    audit = AuditLogger(repositories.audit)
+    task = repositories.tasks.create("organize downloads and check a status page")
+    repositories.tasks.update_metadata(
+        task.id,
+        {"synthesized_answer": "Moved 3 files and checked the page.", "token_usage": {"last_model": "gpt-4.1", "total_tokens": 500}},
+        TaskStatus.COMPLETED,
+    )
+
+    write_request = ToolCallRequest(
+        task_id=task.id, tool_name="filesystem.manage", capability=Capability.FILESYSTEM_WRITE,
+        input={"operation": "move", "path": "C:/dl/a.pdf"},
+    )
+    repositories.tool_invocations.create(write_request)
+    repositories.tool_invocations.complete(
+        ToolCallResult(request_id=write_request.id, status=ToolResultStatus.SUCCEEDED, output={"changed_paths": ["C:/dl/a.pdf"]})
+    )
+    http_request = ToolCallRequest(
+        task_id=task.id, tool_name="http.request", capability=Capability.NETWORK_HTTP,
+        input={"url": "https://example.com/status"},
+    )
+    repositories.tool_invocations.create(http_request)
+    repositories.tool_invocations.complete(
+        ToolCallResult(request_id=http_request.id, status=ToolResultStatus.SUCCEEDED, output={"url": "https://example.com/status"})
+    )
+    audit.append(
+        AuditEventType.EGRESS_CONTACTED, actor="http.request", task_id=task.id,
+        payload={"host": "example.com", "tool_name": "http.request"},
+    )
+    approval = repositories.approvals.create(
+        ApprovalRequest(
+            task_id=task.id, capability=Capability.NETWORK_HTTP, risk_level=RiskLevel.MEDIUM,
+            summary="Approve http.request", expires_at=utc_now() + timedelta(minutes=15),
+        )
+    )
+    repositories.approvals.decide_pending(approval.id, ApprovalStatus.APPROVED)
+    client = _admin_client(repositories)
+
+    response = client.get(f"/admin/api/tasks/{task.id}/receipt")
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["task_id"] == task.id
+    assert body["status"] == "completed"
+    assert body["result_summary"] == "Moved 3 files and checked the page."
+    assert body["changes"]["files"][0]["value"] == "C:/dl/a.pdf"
+    assert body["services_contacted"] == [{"host": "example.com", "tool_name": "http.request", "at": body["services_contacted"][0]["at"]}]
+    assert body["data_left_machine"] is True
+    assert body["approvals"][0]["status"] == "approved"
+    assert body["token_usage"]["last_model"] == "gpt-4.1"
+    assert body["duration_seconds"] >= 0
+    assert {entry["tool_name"] for entry in body["tools_used"]} == {"filesystem.manage", "http.request"}
+
+
+def test_admin_task_receipt_reports_no_egress_for_a_fully_local_task(monkeypatch, tmp_path) -> None:
+    client, repositories = _chat_client(monkeypatch, tmp_path)
+    task = repositories.tasks.create("summarize a local file")
+    repositories.tasks.update_metadata(task.id, {"synthesized_answer": "Done."}, TaskStatus.COMPLETED)
+
+    response = client.get(f"/admin/api/tasks/{task.id}/receipt")
+    body = response.json()
+
+    assert body["services_contacted"] == []
+    assert body["data_left_machine"] is False
+    assert body["uncertainties"] == []
+
+
 def test_admin_clears_task_history_and_audit(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)  # see test_admin_page_and_summary for why chdir, not just delenv
     database_url = f"sqlite:///{tmp_path / 'admin.db'}"
