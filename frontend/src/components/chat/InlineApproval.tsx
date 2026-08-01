@@ -2,6 +2,7 @@ import { useState } from "react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { EvidencePack } from "@/components/approvals/EvidencePack"
+import { ApprovalActions } from "@/components/approvals/ApprovalActions"
 import { ApiError, type PendingApprovalItem } from "@/lib/api"
 import { useDecideApproval } from "@/lib/queries"
 
@@ -36,10 +37,15 @@ export function InlineApproval({ item }: { item: PendingApprovalItem }) {
       <div className="mt-2.5 rounded-lg border border-warning/30 bg-warning/5 p-3">
         <EvidencePack
           item={item}
-          deciding={decide.isPending}
-          onApprove={() => handleDecide("approve")}
-          onApproveForTask={() => handleDecide("approve_for_task")}
-          onDeny={() => handleDecide("reject")}
+          actions={
+            <ApprovalActions
+              size="sm"
+              deciding={decide.isPending}
+              onApprove={() => handleDecide("approve")}
+              onApproveForTask={() => handleDecide("approve_for_task")}
+              onDeny={() => handleDecide("reject")}
+            />
+          }
         />
       </div>
     )
