@@ -143,7 +143,7 @@ approval_policy:
   approval_token_ttl_seconds: 900
 
 storage:
-  database_url: "sqlite:///./agent_control.db"
+  database_url: "sqlite:///.agent_control/agent_control.db"
   artifact_dir: ".agent_control/artifacts"
 
 secrets:

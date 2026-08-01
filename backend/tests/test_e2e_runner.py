@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -33,6 +34,46 @@ def test_case_suites_do_not_infer_recovery_from_metadata_assertions() -> None:
     assert "tools" in suites
     assert "recovery" not in suites
     assert "recovery" in runner._case_suites({"tags": ["recovery"]})
+
+
+def test_admin_get_authenticates_with_configured_token(monkeypatch) -> None:
+    runner = _runner_module()
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps({"ok": True}).encode()
+
+    def fake_urlopen(request, *, timeout):
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setenv("AGENT_ADMIN_TOKEN", "e2e-admin-token")
+    monkeypatch.setattr(runner.urlrequest, "urlopen", fake_urlopen)
+
+    assert runner.admin_get("/admin/api/summary", timeout=7) == {"ok": True}
+    request = captured["request"]
+    headers = {name.lower(): value for name, value in request.header_items()}
+    assert headers["x-agent-control-admin-token"] == "e2e-admin-token"
+    assert captured["timeout"] == 7
+
+
+def test_preflight_uses_localdeploy_health_endpoint(monkeypatch) -> None:
+    runner = _runner_module()
+    urls: list[tuple[str, float]] = []
+
+    monkeypatch.setattr(runner, "admin_get", lambda _path: {"tasks": []})
+    monkeypatch.setattr(runner, "ping", lambda url, *, timeout: urls.append((url, timeout)) or True)
+
+    assert runner._preflight() == []
+    assert urls == [(f"{runner.LOCALDEPLOY_BASE}/health", 5.0)]
 
 
 def test_diagnose_turn_enforces_structured_assertions() -> None:

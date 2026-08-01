@@ -52,7 +52,6 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parents[1]
-DB_PATH = ROOT / "agent_control.db"
 ENV_PATH = ROOT / ".env"
 RESULTS_ROOT = ROOT / ".agent_control" / "e2e_results"
 CASES_PATH = ROOT / "e2e" / "all_cases.json"
@@ -77,9 +76,29 @@ WORKER_BUDGET_SAFETY_S = 640
 # ---------- HTTP / DB helpers ----------
 
 
+def _database_path() -> Path:
+    """Resolve the same configured SQLite file used by the running services."""
+    from agent_control.config import load_settings
+
+    database_url = load_settings(ROOT / "config" / "config.yaml", _env_file=ENV_PATH).storage.database_url
+    prefix = "sqlite:///"
+    if not database_url.startswith(prefix):
+        raise RuntimeError(f"live E2E requires SQLite storage, got {database_url!r}")
+    configured = Path(database_url.removeprefix(prefix))
+    return configured if configured.is_absolute() else ROOT / configured
+
+
+DB_PATH = _database_path()
+
+
 def admin_get(path: str, timeout: int = 10) -> Any:
     url = f"{ADMIN_BASE}{path}"
-    with urlrequest.urlopen(url, timeout=timeout) as r:
+    headers: dict[str, str] = {}
+    admin_token = os.getenv("AGENT_ADMIN_TOKEN")
+    if admin_token:
+        headers["X-Agent-Control-Admin-Token"] = admin_token
+    request = urlrequest.Request(url, headers=headers)
+    with urlrequest.urlopen(request, timeout=timeout) as r:
         return json.loads(r.read())
 
 
@@ -1024,9 +1043,11 @@ def _preflight() -> list[str]:
         issues.append(f"agent_control.db not found at {DB_PATH}")
     if not CASES_PATH.exists():
         issues.append(f"case catalogue not found at {CASES_PATH}")
-    if not ping(f"{ADMIN_BASE}/admin/api/summary?task_limit=1"):
+    try:
+        admin_get("/admin/api/summary?task_limit=1")
+    except Exception:
         issues.append(f"YBM admin API not responding at {ADMIN_BASE}")
-    if not ping(f"{LOCALDEPLOY_BASE}/v1/models"):
+    if not ping(f"{LOCALDEPLOY_BASE}/health", timeout=5.0):
         issues.append(f"LocalDeploy not responding at {LOCALDEPLOY_BASE}")
     return issues
 
@@ -1043,8 +1064,8 @@ def _warn_if_chrome_down() -> None:
             _try_launch_chrome()
         except Exception as exc:
             print(f"  [chrome] WARN: not on :9222 and auto-launch failed: {exc}")
-            print(f"           browser cases will fail. start Chrome with:")
-            print(f"           chrome --remote-debugging-port=9222 --remote-allow-origins=*")
+            print("           browser cases will fail. start Chrome with:")
+            print("           chrome --remote-debugging-port=9222 --remote-allow-origins=*")
             return
         # Re-check after a short pause to give Chrome a moment to bind.
         import time as _t
@@ -1133,9 +1154,9 @@ async def main() -> int:
     suite_count = Counter(suite for c in selected for suite in _case_suites(c) if suite != "full")
     declared_total_s = sum(int(c.get("timeout_seconds") or 360) for c in selected)
     print(f"Loaded {len(cases_all)} cases. Selected {len(selected)} (guarded={'included' if args.include_guarded else 'skipped'}).")
-    print(f"  By size: " + ", ".join(f"{size}={n}" for size, n in size_count.items()))
+    print("  By size: " + ", ".join(f"{size}={n}" for size, n in size_count.items()))
     if suite_count:
-        print(f"  By suite: " + ", ".join(f"{suite}={n}" for suite, n in sorted(suite_count.items())))
+        print("  By suite: " + ", ".join(f"{suite}={n}" for suite, n in sorted(suite_count.items())))
     print(f"  Sum of declared timeouts: {declared_total_s}s "
           f"(~{declared_total_s // 60}m; actual will differ from this upper bound)")
     skipped = [c for c in cases_all if c not in selected]
