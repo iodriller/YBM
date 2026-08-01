@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import Field
 
@@ -16,6 +16,7 @@ from agent_control.bootstrap import OLLAMA_TAGS_URL, _http_json, check_llm_confi
 from agent_control.config_sync import CONFIG_FILE_PATH, ConfigManager, read_env_value
 from agent_control.config import AppSettings, backend_base_url, is_loopback_host
 from agent_control.llm.providers import OpenAICompatibleProvider
+from agent_control.observation.artifacts import ArtifactService
 from agent_control.orchestration.signals import apply_task_signal
 from agent_control.policy import apply_access_modes_to_config, summarize_access_modes
 from agent_control.prompts import render_prompt
@@ -24,6 +25,7 @@ from agent_control.clarification import find_clarifying_task, resume_clarifying_
 from agent_control.schemas import (
     ApprovalGrant,
     ApprovalStatus,
+    ArtifactType,
     AuditEventType,
     Capability,
     CapabilityAccessMode,
@@ -127,6 +129,16 @@ class AdminSecretSetRequest(StrictBaseModel):
 
 class AdminChatMessageRequest(StrictBaseModel):
     text: str = Field(min_length=1, max_length=4000)
+    # Artifact ids from a prior POST /api/chat/attachments upload
+    # (docs/UI_UX_AUDIT.md Phase 1). Folded into the objective as a plain
+    # note, same technique as clarification.py's answer-folding - the
+    # operator still needs FILESYSTEM_READ (or whichever capability the
+    # tool it picks requires) enabled and in scope to actually read the
+    # file; attaching it does not grant access on its own.
+    attachment_ids: list[str] = Field(default_factory=list, max_length=10)
+
+
+MAX_CHAT_ATTACHMENT_BYTES = 10 * 1024 * 1024
 
 
 # Single fixed local chat "chat_id" (docs/HISTORY.md Part 4 T2.8): this is a
@@ -962,32 +974,88 @@ def create_admin_router(
         audit = AuditLogger(repositories.audit, loaded.logging.redact_patterns)
 
         text = payload.text.strip()
+        attached = [
+            artifact for artifact_id in payload.attachment_ids
+            if (artifact := repositories.artifacts.get(artifact_id)) is not None
+        ]
+        attachment_note = (
+            "; ".join(f"{a.content_preview or a.id} (at: {a.uri})" for a in attached) if attached else ""
+        )
+
         clarifying = find_clarifying_task(repositories, conversation_id=conversation_id, chat_id=WEB_CHAT_ID)
         if clarifying is not None and text:
+            reply_text = f"{text}\n\n[Attached files: {attachment_note}]" if attachment_note else text
             result = resume_clarifying_task(
                 repositories, audit, clarifying,
-                text=text, actor="admin_chat", message_id="", received_at=utc_now(),
+                text=reply_text, actor="admin_chat", message_id="", received_at=utc_now(),
             )
+            for artifact in attached:
+                repositories.artifacts.link_to_task(artifact.id, result.task.id)
             return {
                 "conversation_id": conversation_id,
                 "task": _task_with_artifacts(result.task, repositories, loaded),
             }
 
+        objective = payload.text
+        if attachment_note:
+            objective = f"{objective}\n\n[Attached files: {attachment_note}]"
+
         task = repositories.tasks.create(
-            payload.text,
+            objective,
             conversation_id=conversation_id,
-            metadata={"source_chat_id": WEB_CHAT_ID, "source_channel": ChannelType.WEB.value},
+            metadata={
+                "source_chat_id": WEB_CHAT_ID,
+                "source_channel": ChannelType.WEB.value,
+                "attachment_ids": [a.id for a in attached],
+            },
         )
+        for artifact in attached:
+            repositories.artifacts.link_to_task(artifact.id, task.id)
         audit.append(
             AuditEventType.TASK_CREATED,
             actor="admin_chat",
             task_id=task.id,
-            payload={"conversation_id": conversation_id},
+            payload={"conversation_id": conversation_id, "attachment_ids": [a.id for a in attached]},
         )
         return {
             "conversation_id": conversation_id,
             "task": _task_with_artifacts(task, repositories, loaded),
         }
+
+    @router.post("/api/chat/attachments")
+    async def admin_upload_chat_attachment(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
+        """Backs Chat's attachment button with a real Artifact
+        (docs/UI_UX_AUDIT.md Phase 1) instead of a client-side-only file
+        picker. Storage is ArtifactService.write_bytes() - the same
+        mechanism code.interpreter and document_manage already use - into
+        the configured artifact_dir, never an arbitrary caller-chosen path.
+        Uploading does not grant the agent access to the file: whatever
+        tool the operator picks to read it back still goes through the
+        normal capability/scope policy check, same as any other path.
+        """
+        loaded = require_admin(request)
+        data = await file.read()
+        if len(data) > MAX_CHAT_ATTACHMENT_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"attachment exceeds the {MAX_CHAT_ATTACHMENT_BYTES // (1024 * 1024)} MB limit",
+            )
+        repositories = repositories_loader()
+        service = ArtifactService(loaded.storage, repositories.artifacts)
+        extension = (Path(file.filename or "attachment").suffix or ".bin").lstrip(".")
+        artifact = service.write_bytes(
+            ArtifactType.DOCUMENT,
+            data,
+            extension,
+            metadata={"source": "chat_attachment", "original_filename": file.filename, "mime_type": file.content_type},
+            content_preview=file.filename,
+        )
+        AuditLogger(repositories.audit, loaded.logging.redact_patterns).append(
+            AuditEventType.ARTIFACT_CREATED,
+            actor="admin_chat",
+            payload={"artifact_id": artifact.id, "file_name": file.filename, "size_bytes": len(data)},
+        )
+        return {"artifact_id": artifact.id, "file_name": file.filename, "size_bytes": len(data)}
 
     @router.post("/api/llm/test")
     async def admin_test_llm(request: Request) -> dict[str, Any]:

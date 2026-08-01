@@ -732,6 +732,17 @@ class ArtifactRepository:
             )
         return artifact
 
+    def link_to_task(self, artifact_id: str, task_id: str) -> None:
+        """Attaches an artifact created before its task existed (a chat
+        upload) to the task it was sent with - list_for_task filters by
+        this same column, so an unlinked upload would never appear
+        anywhere the task's own artifacts do."""
+        with self.database.connect() as connection:
+            connection.execute(
+                "UPDATE artifacts SET task_id = ? WHERE id = ?",
+                (task_id, artifact_id),
+            )
+
     def list_for_task(self, task_id: str) -> list[Artifact]:
         with self.database.connect() as connection:
             rows = connection.execute(

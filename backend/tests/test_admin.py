@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import yaml
@@ -1164,6 +1166,54 @@ def _chat_client(monkeypatch, tmp_path) -> tuple[TestClient, Repositories]:
     return _admin_client(repositories), repositories
 
 
+def test_admin_chat_attachment_upload_creates_a_real_artifact(monkeypatch, tmp_path) -> None:
+    client, repositories = _chat_client(monkeypatch, tmp_path)
+
+    response = client.post(
+        "/admin/api/chat/attachments",
+        files={"file": ("notes.txt", b"hello from a real upload", "text/plain")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["file_name"] == "notes.txt"
+    assert body["size_bytes"] == len(b"hello from a real upload")
+    artifact = repositories.artifacts.get(body["artifact_id"])
+    assert artifact is not None
+    assert Path(artifact.uri).read_bytes() == b"hello from a real upload"
+
+
+def test_admin_chat_attachment_upload_rejects_oversized_files(monkeypatch, tmp_path) -> None:
+    client, _repositories = _chat_client(monkeypatch, tmp_path)
+    oversized = b"x" * (admin_module.MAX_CHAT_ATTACHMENT_BYTES + 1)
+
+    response = client.post(
+        "/admin/api/chat/attachments",
+        files={"file": ("big.bin", oversized, "application/octet-stream")},
+    )
+
+    assert response.status_code == 413
+
+
+def test_admin_chat_send_folds_an_attached_artifact_into_the_objective(monkeypatch, tmp_path) -> None:
+    client, repositories = _chat_client(monkeypatch, tmp_path)
+    uploaded = client.post(
+        "/admin/api/chat/attachments",
+        files={"file": ("budget.csv", b"a,b\n1,2\n", "text/csv")},
+    ).json()
+
+    response = client.post(
+        "/admin/api/chat/messages",
+        json={"text": "summarize this file", "attachment_ids": [uploaded["artifact_id"]]},
+    )
+
+    assert response.status_code == 200
+    task = response.json()["task"]
+    assert "budget.csv" in task["objective"]
+    assert task["metadata"]["attachment_ids"] == [uploaded["artifact_id"]]
+    assert task["artifacts"][0]["id"] == uploaded["artifact_id"]
+
+
 def test_admin_chat_send_creates_a_task_and_list_returns_it_oldest_first(monkeypatch, tmp_path) -> None:
     """docs/HISTORY.md Part 4 T2.8: the local web chat channel - a message
     becomes a normal task, going through the exact same worker/policy
@@ -1240,6 +1290,34 @@ def test_admin_chat_send_resumes_a_clarifying_task_instead_of_spawning_a_new_one
 
     listed = client.get("/admin/api/chat/messages").json()["tasks"]
     assert len(listed) == 1
+
+
+def test_admin_chat_send_resume_also_attaches_a_file_sent_with_the_reply(monkeypatch, tmp_path) -> None:
+    """An attachment sent alongside a clarification reply was silently
+    dropped: the resume branch only ever looked at payload.text, never
+    payload.attachment_ids."""
+    client, repositories = _chat_client(monkeypatch, tmp_path)
+    original = client.post("/admin/api/chat/messages", json={"text": "organize my files"}).json()["task"]
+    repositories.tasks.update_metadata(
+        original["id"],
+        {**original["metadata"], "clarifying_question": "Which files?"},
+        TaskStatus.CLARIFYING,
+    )
+    uploaded = client.post(
+        "/admin/api/chat/attachments",
+        files={"file": ("list.txt", b"a,b,c", "text/plain")},
+    ).json()
+
+    response = client.post(
+        "/admin/api/chat/messages",
+        json={"text": "these ones", "attachment_ids": [uploaded["artifact_id"]]},
+    )
+
+    assert response.status_code == 200
+    task = response.json()["task"]
+    assert task["id"] == original["id"]
+    assert "list.txt" in task["objective"]
+    assert task["artifacts"][0]["id"] == uploaded["artifact_id"]
 
 
 def test_admin_chat_send_cancel_word_cancels_the_clarifying_task(monkeypatch, tmp_path) -> None:
