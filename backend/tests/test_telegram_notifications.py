@@ -7,7 +7,7 @@ import pytest
 from datetime import datetime, timedelta, timezone
 
 from agent_control.channels.telegram_notifications import TelegramTaskNotifier, _task_message_without_screenshot, _user_facing_task_message
-from agent_control.schemas import ApprovalRequest, ApprovalStatus, Capability, RiskLevel, TaskRecord, TaskStatus
+from agent_control.schemas import ApprovalRequest, ApprovalStatus, Capability, ChannelType, RiskLevel, TaskRecord, TaskStatus
 
 
 class FakeApprovalRepository:
@@ -46,6 +46,21 @@ class FakeTelegramClient:
             raise RuntimeError("sendPhoto rejected")
         self.photos.append((chat_id, path, caption))
         return {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_notifier_ignores_web_chat_source_ids() -> None:
+    client = FakeTelegramClient()
+    notifier = TelegramTaskNotifier(client)  # type: ignore[arg-type]
+    task = TaskRecord(
+        objective="answer in local chat",
+        status=TaskStatus.COMPLETED,
+        metadata={"source_channel": ChannelType.WEB.value, "source_chat_id": "local"},
+    )
+
+    await notifier.notify(task)
+
+    assert client.messages == []
 
 
 def test_task_message_prioritizes_result_links() -> None:

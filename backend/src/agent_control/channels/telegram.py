@@ -109,11 +109,14 @@ class TelegramBotApi:
         if caption:
             payload["caption"] = caption
         url = f"{self.base_url}/bot{self.token}/sendPhoto"
-        with open(path, "rb") as photo:
-            async with httpx.AsyncClient(timeout=60) as client:
-                response = await client.post(url, data=payload, files={"photo": photo})
-                response.raise_for_status()
-                data = response.json()
+        try:
+            with open(path, "rb") as photo:
+                async with httpx.AsyncClient(timeout=60) as client:
+                    response = await client.post(url, data=payload, files={"photo": photo})
+                    response.raise_for_status()
+                    data = response.json()
+        except httpx.HTTPError as exc:
+            raise _safe_telegram_http_error("sendPhoto", exc) from None
         if not data.get("ok"):
             raise RuntimeError("Telegram Bot API call failed: sendPhoto")
         self._log_sent(chat_id, kind="photo", caption=caption, path=path, response=data)
@@ -124,11 +127,14 @@ class TelegramBotApi:
         if caption:
             payload["caption"] = caption
         url = f"{self.base_url}/bot{self.token}/sendDocument"
-        with open(path, "rb") as document:
-            async with httpx.AsyncClient(timeout=60) as client:
-                response = await client.post(url, data=payload, files={"document": document})
-                response.raise_for_status()
-                data = response.json()
+        try:
+            with open(path, "rb") as document:
+                async with httpx.AsyncClient(timeout=60) as client:
+                    response = await client.post(url, data=payload, files={"document": document})
+                    response.raise_for_status()
+                    data = response.json()
+        except httpx.HTTPError as exc:
+            raise _safe_telegram_http_error("sendDocument", exc) from None
         if not data.get("ok"):
             raise RuntimeError("Telegram Bot API call failed: sendDocument")
         self._log_sent(chat_id, kind="document", caption=caption, path=path, response=data)
@@ -175,10 +181,13 @@ class TelegramBotApi:
 
     async def download_file(self, file_path: str) -> bytes:
         url = f"{self.base_url}/file/bot{self.token}/{file_path}"
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            return response.content
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                return response.content
+        except httpx.HTTPError as exc:
+            raise _safe_telegram_http_error("downloadFile", exc) from None
 
     async def answer_callback_query(self, callback_query_id: str, text: str | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {"callback_query_id": callback_query_id}
@@ -188,13 +197,25 @@ class TelegramBotApi:
 
     async def _post(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
         url = f"{self.base_url}/bot{self.token}/{method}"
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(url, json=payload)
-            response.raise_for_status()
-            data = response.json()
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                response = await client.post(url, json=payload)
+                response.raise_for_status()
+                data = response.json()
+        except httpx.HTTPError as exc:
+            raise _safe_telegram_http_error(method, exc) from None
         if not data.get("ok"):
             raise RuntimeError(f"Telegram Bot API call failed: {method}")
         return data
+
+
+def _safe_telegram_http_error(method: str, exc: httpx.HTTPError) -> RuntimeError:
+    """Describe a Telegram transport failure without echoing its token URL."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return RuntimeError(
+            f"Telegram Bot API request failed: {method} (HTTP {exc.response.status_code})"
+        )
+    return RuntimeError(f"Telegram Bot API request failed: {method} ({type(exc).__name__})")
 
 
 class TelegramPollingRunner:

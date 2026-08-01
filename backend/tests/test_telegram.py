@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import httpx
 import pytest
 
 from agent_control.channels.telegram import TelegramAdapter, TelegramBotApi, TelegramIntakeService, TelegramPollingRunner
@@ -968,6 +969,13 @@ class _FakeTelegramHttpClient:
         return _FakeTelegramHttpResponse({"ok": True, "result": {"message_id": 555}})
 
 
+class _FailingTelegramHttpClient(_FakeTelegramHttpClient):
+    async def post(self, url: str, *, json: dict | None = None, data: dict | None = None, files=None):
+        request = httpx.Request("POST", url)
+        response = httpx.Response(400, request=request)
+        raise httpx.HTTPStatusError("bad request", request=request, response=response)
+
+
 @pytest.mark.asyncio
 async def test_telegram_bot_api_persists_outbound_message_audit_record(tmp_path, monkeypatch) -> None:
     database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
@@ -995,3 +1003,16 @@ async def test_telegram_bot_api_without_audit_still_sends(monkeypatch) -> None:
     data = await client.send_message("100", "hello from ybm")
 
     assert data["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_telegram_bot_api_error_does_not_expose_token_url(monkeypatch) -> None:
+    monkeypatch.setattr("agent_control.channels.telegram.httpx.AsyncClient", _FailingTelegramHttpClient)
+    client = TelegramBotApi("123456:super-secret-token-value-that-must-not-leak")
+
+    with pytest.raises(RuntimeError) as error:
+        await client.send_message("100", "hello")
+
+    message = str(error.value)
+    assert message == "Telegram Bot API request failed: sendMessage (HTTP 400)"
+    assert "super-secret" not in message

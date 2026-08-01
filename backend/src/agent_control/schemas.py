@@ -518,6 +518,13 @@ def task_chat_id(task: TaskRecord) -> str | None:
     no import direction between those packages that would let one reuse the
     other's.
     """
+    # A source_chat_id is meaningful only within its channel. Web chat uses
+    # its own fixed local id, which must never be handed to the Telegram Bot
+    # API. Keep accepting channel-less legacy records created before
+    # source_channel was added.
+    source_channel = task.metadata.get("source_channel")
+    if source_channel and source_channel != ChannelType.TELEGRAM.value:
+        return None
     value = task.metadata.get("source_chat_id")
     if value:
         return str(value)
