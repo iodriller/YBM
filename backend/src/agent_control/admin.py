@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 import os
 from pathlib import Path
@@ -22,6 +22,7 @@ from agent_control.prompts import render_prompt
 from agent_control.runtime_status import service_summary
 from agent_control.clarification import find_clarifying_task, resume_clarifying_task
 from agent_control.schemas import (
+    ApprovalGrant,
     ApprovalStatus,
     AuditEventType,
     Capability,
@@ -110,7 +111,12 @@ class AdminAccessModesRequest(StrictBaseModel):
 
 
 class AdminApprovalDecisionRequest(StrictBaseModel):
-    decision: str = Field(pattern="^(approve|reject)$")
+    # approve_for_task (docs/UI_UX_AUDIT.md Phase 1's "Allow for this task"):
+    # approves this one call exactly like "approve", and additionally
+    # creates an ApprovalGrant so the same tool+capability doesn't need
+    # re-approval for the rest of this task (ApprovalGrantRepository.
+    # find_matching, consulted by ToolExecutor before PolicyEngine.evaluate).
+    decision: str = Field(pattern="^(approve|reject|approve_for_task)$")
 
 
 class AdminSecretSetRequest(StrictBaseModel):
@@ -526,19 +532,48 @@ def create_admin_router(
         if approval.status != ApprovalStatus.PENDING:
             raise HTTPException(status_code=409, detail=f"approval is already {approval.status.value}, not pending")
 
-        new_status = ApprovalStatus.APPROVED if payload.decision == "approve" else ApprovalStatus.REJECTED
+        new_status = ApprovalStatus.REJECTED if payload.decision == "reject" else ApprovalStatus.APPROVED
         if not repositories.approvals.decide_pending(approval_id, new_status):
             updated = repositories.approvals.get(approval_id)
             state = updated.status.value if updated is not None else "unavailable"
             raise HTTPException(status_code=409, detail=f"approval could not be decided; current status is {state}")
-        AuditLogger(repositories.audit, loaded.logging.redact_patterns).append(
+        audit = AuditLogger(repositories.audit, loaded.logging.redact_patterns)
+        audit.append(
             AuditEventType.APPROVAL_DECIDED,
             actor="admin",
             task_id=approval.task_id,
             payload={"approval_id": approval_id, "decision": payload.decision, "source": "admin_ui"},
         )
+
+        grant: ApprovalGrant | None = None
+        if payload.decision == "approve_for_task":
+            tool_name = str(approval.action_payload.get("tool_name") or "")
+            grant = ApprovalGrant(
+                task_id=approval.task_id,
+                tool_name=tool_name,
+                capability=approval.capability,
+                granted_from_approval_id=approval_id,
+                expires_at=utc_now() + timedelta(seconds=loaded.limits.task_budget_seconds),
+            )
+            repositories.approval_grants.create(grant)
+            audit.append(
+                AuditEventType.CONFIG_UPDATED,
+                actor="admin",
+                task_id=approval.task_id,
+                payload={
+                    "section": "approval_grant",
+                    "action": "create",
+                    "grant_id": grant.id,
+                    "tool_name": tool_name,
+                    "capability": approval.capability.value,
+                },
+            )
+
         updated = repositories.approvals.get(approval_id)
-        return {"approval": updated.model_dump(mode="json") if updated else None}
+        return {
+            "approval": updated.model_dump(mode="json") if updated else None,
+            "grant": grant.model_dump(mode="json") if grant else None,
+        }
 
     @router.delete("/api/tasks")
     def admin_clear_tasks(

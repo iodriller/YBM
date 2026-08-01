@@ -8,11 +8,13 @@ import sqlite3
 from typing import Any
 
 from agent_control.schemas import (
+    ApprovalGrant,
     ApprovalRequest,
     ApprovalStatus,
     Artifact,
     AuditEvent,
     AuditEventType,
+    Capability,
     ChannelType,
     InboundMessage,
     ScheduleRecord,
@@ -575,6 +577,66 @@ class ApprovalRepository:
         )
 
 
+class ApprovalGrantRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def create(self, grant: ApprovalGrant) -> ApprovalGrant:
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO approval_grants (
+                    id, task_id, tool_name, capability, granted_from_approval_id,
+                    created_at, expires_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    grant.id,
+                    grant.task_id,
+                    grant.tool_name,
+                    grant.capability.value,
+                    grant.granted_from_approval_id,
+                    _dt(grant.created_at),
+                    _dt(grant.expires_at),
+                ),
+            )
+        return grant
+
+    def find_matching(self, task_id: str, tool_name: str, capability: Capability) -> ApprovalGrant | None:
+        now = _dt(utc_now())
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM approval_grants
+                WHERE task_id = ? AND tool_name = ? AND capability = ? AND expires_at > ?
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (task_id, tool_name, capability.value, now),
+            ).fetchone()
+        return self._row_to_grant(row) if row is not None else None
+
+    def list_for_task(self, task_id: str) -> list[ApprovalGrant]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM approval_grants WHERE task_id = ? ORDER BY created_at ASC",
+                (task_id,),
+            ).fetchall()
+        return [self._row_to_grant(row) for row in rows]
+
+    @staticmethod
+    def _row_to_grant(row: sqlite3.Row) -> ApprovalGrant:
+        return ApprovalGrant(
+            id=row["id"],
+            task_id=row["task_id"],
+            tool_name=row["tool_name"],
+            capability=row["capability"],
+            granted_from_approval_id=row["granted_from_approval_id"],
+            created_at=row["created_at"],
+            expires_at=row["expires_at"],
+        )
+
+
 class ToolInvocationRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
@@ -951,6 +1013,7 @@ class Repositories:
     tasks: TaskRepository
     task_signals: TaskSignalRepository
     approvals: ApprovalRepository
+    approval_grants: ApprovalGrantRepository
     tool_invocations: ToolInvocationRepository
     artifacts: ArtifactRepository
     schedules: ScheduleRepository
@@ -965,6 +1028,7 @@ class Repositories:
             tasks=TaskRepository(database),
             task_signals=TaskSignalRepository(database),
             approvals=ApprovalRepository(database),
+            approval_grants=ApprovalGrantRepository(database),
             tool_invocations=ToolInvocationRepository(database),
             artifacts=ArtifactRepository(database),
             schedules=ScheduleRepository(database),

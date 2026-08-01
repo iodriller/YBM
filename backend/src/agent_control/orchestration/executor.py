@@ -85,7 +85,10 @@ class ToolExecutor:
                     error_message="approval_not_found",
                 ),
             )
-        decision = self.policy.evaluate(request, approval=approval)
+        has_grant = approval is None and self.repositories.approval_grants.find_matching(
+            request.task_id, request.tool_name, request.capability,
+        ) is not None
+        decision = self.policy.evaluate(request, approval=approval, has_grant=has_grant)
         if decision.needs_approval:
             definition = self.tool_definitions.get(request.tool_name)
             reason = definition.approval_reason(request.input) if definition else None
@@ -143,7 +146,7 @@ class ToolExecutor:
 
         try:
             dispatch_request = request
-            if approval is not None and "approved" in request.input:
+            if (approval is not None or has_grant) and "approved" in request.input:
                 dispatch_request = request.model_copy(
                     update={"input": {**request.input, "approved": True}}
                 )

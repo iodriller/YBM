@@ -125,6 +125,18 @@ SCHEMA_STATEMENTS = [
         created_at TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS approval_grants (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        capability TEXT NOT NULL,
+        granted_from_approval_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        FOREIGN KEY(task_id) REFERENCES tasks(id)
+    )
+    """,
 ]
 
 

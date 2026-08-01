@@ -2,10 +2,20 @@ from __future__ import annotations
 
 import pytest
 
+from datetime import timedelta
+
 from agent_control.config import AppSettings, CapabilityPolicy, default_capability_policies
 from agent_control.orchestration import StaticToolAdapter, ToolExecutor
 from agent_control.policy import PolicyEngine
-from agent_control.schemas import ApprovalStatus, Capability, RiskLevel, ToolCallRequest, ToolResultStatus
+from agent_control.schemas import (
+    ApprovalGrant,
+    ApprovalStatus,
+    Capability,
+    RiskLevel,
+    ToolCallRequest,
+    ToolResultStatus,
+    utc_now,
+)
 from agent_control.tools.registry import build_tool_registry
 from helpers import make_repos
 
@@ -69,6 +79,121 @@ def test_scope_check_does_not_allow_prefix_escape(tmp_path) -> None:
     assert denied.allowed is False
     assert denied.reason == "scope_not_allowed"
     assert allowed.allowed is True
+
+
+def test_has_grant_skips_approval_but_not_risk_ceiling(tmp_path) -> None:
+    """"Allow for this task" (docs/UI_UX_AUDIT.md Phase 1): has_grant=True
+    only bypasses the "ask a human" step. It must never let a call through
+    that fails the capability's own risk ceiling - a grant recorded while
+    the ceiling allowed HIGH must not survive a config change that later
+    lowers it, since PolicyEngine re-checks the ceiling on every call."""
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("Run command")
+    settings = AppSettings(
+        _env_file=None,
+        capabilities={
+            Capability.TERMINAL_RUN: CapabilityPolicy(
+                enabled=True, requires_approval=True, max_risk_level=RiskLevel.MEDIUM,
+            )
+        },
+    )
+    engine = PolicyEngine(settings, audit)
+    request = ToolCallRequest(
+        task_id=task.id, tool_name="terminal", capability=Capability.TERMINAL_RUN, risk_level=RiskLevel.MEDIUM,
+    )
+
+    without_grant = engine.evaluate(request)
+    with_grant = engine.evaluate(request, has_grant=True)
+    over_ceiling = engine.evaluate(
+        request.model_copy(update={"risk_level": RiskLevel.HIGH}), has_grant=True,
+    )
+
+    assert without_grant.needs_approval is True
+    assert with_grant.allowed is True and with_grant.needs_approval is False
+    assert with_grant.reason == "granted_for_task"
+    assert over_ceiling.allowed is False and over_ceiling.reason == "risk_exceeds_capability_policy"
+
+
+@pytest.mark.asyncio
+async def test_executor_consults_a_matching_grant_instead_of_asking_again(tmp_path) -> None:
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("Run two commands")
+    settings = AppSettings(
+        _env_file=None,
+        capabilities={
+            Capability.TERMINAL_RUN: CapabilityPolicy(
+                enabled=True, requires_approval=True, max_risk_level=RiskLevel.HIGH,
+            )
+        },
+    )
+    adapter = StaticToolAdapter({"done": True})
+    executor = ToolExecutor(PolicyEngine(settings, audit), repos, audit, adapters={"terminal": adapter})
+
+    first = await executor.execute(
+        ToolCallRequest(task_id=task.id, tool_name="terminal", capability=Capability.TERMINAL_RUN, risk_level=RiskLevel.LOW)
+    )
+    assert first.status == ToolResultStatus.NEEDS_APPROVAL
+
+    repos.approval_grants.create(
+        ApprovalGrant(
+            task_id=task.id,
+            tool_name="terminal",
+            capability=Capability.TERMINAL_RUN,
+            granted_from_approval_id=first.output["approval_id"],
+            expires_at=utc_now() + timedelta(minutes=10),
+        )
+    )
+
+    second = await executor.execute(
+        ToolCallRequest(task_id=task.id, tool_name="terminal", capability=Capability.TERMINAL_RUN, risk_level=RiskLevel.LOW)
+    )
+
+    assert second.status == ToolResultStatus.SUCCEEDED
+    assert len(adapter.requests) == 1  # only the granted second call actually dispatched
+
+
+@pytest.mark.asyncio
+async def test_executor_marks_a_grant_bypassed_call_as_approved_for_the_adapter(tmp_path) -> None:
+    """Regression: a grant only bypasses PolicyEngine's "ask a human" gate.
+    Some adapters (code.interpreter's generate_and_run, when generated code
+    silently fell back to an unsandboxed backend) carry their own separate
+    approved-input check, independent of policy. The dispatch-time input
+    rewrite that flips input["approved"] to True only fired for the
+    approval-replay path (approval is not None) - a grant-authorized call
+    reached the adapter with approved still False, so the adapter's own
+    gate re-raised "needs approval" right after policy had just granted it.
+    Caught by hand-tracing a live end-to-end run; this locks it in."""
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("Run a command that checks its own approval")
+    settings = AppSettings(
+        _env_file=None,
+        capabilities={
+            Capability.TERMINAL_RUN: CapabilityPolicy(
+                enabled=True, requires_approval=True, max_risk_level=RiskLevel.HIGH,
+            )
+        },
+    )
+    adapter = StaticToolAdapter({"done": True})
+    executor = ToolExecutor(PolicyEngine(settings, audit), repos, audit, adapters={"terminal": adapter})
+    repos.approval_grants.create(
+        ApprovalGrant(
+            task_id=task.id,
+            tool_name="terminal",
+            capability=Capability.TERMINAL_RUN,
+            granted_from_approval_id="approval_seed",
+            expires_at=utc_now() + timedelta(minutes=10),
+        )
+    )
+
+    result = await executor.execute(
+        ToolCallRequest(
+            task_id=task.id, tool_name="terminal", capability=Capability.TERMINAL_RUN,
+            risk_level=RiskLevel.LOW, input={"approved": False},
+        )
+    )
+
+    assert result.status == ToolResultStatus.SUCCEEDED
+    assert adapter.requests[0].input["approved"] is True
 
 
 def test_global_approval_floor_cannot_be_disabled_per_capability(tmp_path) -> None:

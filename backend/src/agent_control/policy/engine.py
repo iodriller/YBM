@@ -41,7 +41,16 @@ class PolicyEngine:
         self,
         request: ToolCallRequest,
         approval: ApprovalRequest | None = None,
+        has_grant: bool = False,
     ) -> PolicyDecision:
+        """``has_grant`` (docs/UI_UX_AUDIT.md Phase 1's "Allow for this
+        task"): the caller has already confirmed an ApprovalGrant matches
+        (task_id, tool_name, capability) - see ApprovalGrantRepository.
+        find_matching. It only skips the "ask a human" step below; every
+        check above it (capability enabled, risk ceiling, scope, patterns)
+        still runs unconditionally, so a grant can never let through a call
+        policy would otherwise reject.
+        """
         policy = self.settings.capabilities.get(request.capability)
         if policy is None or not policy.enabled:
             return self._decision(False, False, "capability_disabled", request)
@@ -58,8 +67,11 @@ class PolicyEngine:
         if approval is not None and not self._approval_matches(request, approval):
             return self._decision(False, False, "approval_invalid_or_mismatched", request)
 
-        if approval is None and self._requires_approval(request, policy):
+        if approval is None and not has_grant and self._requires_approval(request, policy):
             return self._decision(False, True, "approval_required", request)
+
+        if approval is None and has_grant:
+            return self._decision(True, False, "granted_for_task", request)
 
         return self._decision(True, False, "allowed", request)
 

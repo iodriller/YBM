@@ -604,7 +604,12 @@ class CodeInterpreterGenerateAndRunInput(ToolInputModel):
     # Runtime-only approval marker. The model cannot bypass policy by setting
     # this: ToolDefinition.approval_required_operations gates the request
     # before adapter dispatch, and ToolExecutor overwrites this to True only
-    # when replaying a matching, consumed human approval.
+    # when a human already authorized this call - either by approving this
+    # exact request (approval consumed) or via an active ApprovalGrant
+    # ("Allow for this task", docs/UI_UX_AUDIT.md Phase 1). Adapter-level
+    # approval gates (e.g. code.interpreter's unsandboxed-fallback check)
+    # must see the same signal a policy-level bypass already granted, or a
+    # grant silently stops working the moment an adapter has its own gate.
     approved: bool = False
 
 

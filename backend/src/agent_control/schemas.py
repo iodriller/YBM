@@ -607,6 +607,31 @@ class ApprovalRequest(StrictBaseModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class ApprovalGrant(StrictBaseModel):
+    """"Allow for this task" (docs/UI_UX_AUDIT.md Phase 1): a human approved
+    one call and chose to pre-approve the same tool+capability for the rest
+    of this task, instead of being asked again for every subsequent call.
+
+    Deliberately narrower than a one-shot ApprovalRequest match: it does not
+    bind to the exact input, only (task_id, tool_name, capability) - so it
+    covers "the same kind of call again with different arguments" within one
+    task. It does not widen what's allowed: PolicyEngine's scope/pattern/
+    risk-ceiling checks still run before a grant is even consulted, so a
+    grant only skips the "ask a human" step for a call that policy would
+    have permitted anyway. Not "Always allow" - there is no grant that
+    outlives its task, and no revocation list yet (docs/UI_UX_AUDIT.md's
+    explicit scope-down for this pass).
+    """
+
+    id: str = Field(default_factory=lambda: new_id("grant"))
+    task_id: str
+    tool_name: str
+    capability: Capability
+    granted_from_approval_id: str
+    created_at: datetime = Field(default_factory=utc_now)
+    expires_at: datetime
+
+
 class Artifact(StrictBaseModel):
     id: str = Field(default_factory=lambda: new_id("artifact"))
     task_id: str | None = None

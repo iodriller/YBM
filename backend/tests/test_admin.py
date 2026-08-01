@@ -496,6 +496,40 @@ def test_admin_pending_approvals_blast_radius_is_empty_for_unrelated_input(monke
     assert item["blast_radius"] == {"files": [], "urls": [], "commands": []}
 
 
+def test_admin_decide_approval_approve_for_task_creates_a_grant(monkeypatch, tmp_path) -> None:
+    """docs/UI_UX_AUDIT.md Phase 1's "Allow for this task" - approves the
+    current call exactly like "approve" and additionally creates an
+    ApprovalGrant (task_id, tool_name, capability) so the executor won't
+    ask again for the same tool+capability within this task."""
+    monkeypatch.chdir(tmp_path)
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    task = repositories.tasks.create("write a report")
+    approval = repositories.approvals.create(
+        ApprovalRequest(
+            task_id=task.id,
+            capability=Capability.FILESYSTEM_WRITE,
+            risk_level=RiskLevel.HIGH,
+            summary="write a file",
+            action_payload={"tool_name": "filesystem.manage", "input": {"path": "/tmp/report.txt"}},
+            expires_at=utc_now() + timedelta(minutes=15),
+        )
+    )
+    client = _admin_client(repositories)
+
+    response = client.post(f"/admin/api/approvals/{approval.id}/decide", json={"decision": "approve_for_task"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["approval"]["status"] == ApprovalStatus.APPROVED.value
+    assert body["grant"]["task_id"] == task.id
+    assert body["grant"]["tool_name"] == "filesystem.manage"
+    assert body["grant"]["capability"] == Capability.FILESYSTEM_WRITE.value
+    grants = repositories.approval_grants.list_for_task(task.id)
+    assert len(grants) == 1
+    assert repositories.approval_grants.find_matching(task.id, "filesystem.manage", Capability.FILESYSTEM_WRITE) is not None
+
+
 def test_admin_decide_approval_approve_updates_status_and_audits(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     database_url = f"sqlite:///{tmp_path / 'admin.db'}"
