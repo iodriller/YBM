@@ -267,7 +267,7 @@ The first item is an operational reliability bug and outranks every feature belo
 - LLM prompts are **not persisted anywhere**; `render_prompt()` builds them per call. This is the
   only genuinely new backend capability in this group.
 
-### Phase 8 — P0: correctness and honesty (blocks everything below)
+### Phase 8 — P0: correctness and honesty (**shipped** - was blocking everything below)
 
 Every item here is a defect, not a feature. Three are defects in work shipped earlier in this pass.
 
@@ -300,19 +300,25 @@ Every item here is a defect, not a feature. Three are defects in work shipped ea
 - Acceptance: no shipped label claims more than the code can support, and cancelling a task always
   frees the worker.
 
-### Phase 9 — Console surfaces over data that already exists
+### Phase 9 — Console surfaces over data that already exists (**shipped, reduced scope**)
 
-- Rebuild the pending-approval window: one approval at a time with a pager, two-column layout,
-  sticky action bar, risk-colored header, collapsed-by-default parameter JSON, keyboard shortcuts.
-  Layout only - no change to Evidence Pack semantics or approval policy.
-- Tasks list: an outcome column (result summary, duration, tool count, cost) alongside status,
-  failure reason inline on failed rows, clear-history UI wired to the existing endpoint, and
-  per-task delete.
-- A timeline/waterfall view in the trace, rendering the already-computed `timeline`.
-- Diagnostics: service cards (status, restarts, per-service log link), a database size chart, a
-  doctor-check runner, and a one-click copy-diagnostics-bundle - replacing the current flat text.
-- Acceptance: an operator can decide an approval without scrolling, tell success from failure in
-  the task list without opening anything, and clear history from the console.
+- Shipped: the pending-approval window rebuilt (one approval at a time, pager, two-column layout,
+  sticky action bar pinned to the dialog bottom, risk-colored header, collapsed-by-default
+  parameter JSON, A/T/D keyboard shortcuts - layout only, no change to Evidence Pack semantics or
+  approval policy). Tasks list outcome column (reuses `chatAnswerText`, the same summarization
+  Chat already does, plus duration/step count/tokens from data already in the list response - no
+  per-row trace fetch) with the failure reason shown inline in destructive color on failed/blocked
+  rows, and clear-history UI wired to the `DELETE /api/tasks` endpoint that already existed with
+  no caller. A Timeline tab in the trace rendering `build_task_trace`'s own already-computed
+  `timeline`. Diagnostics rebuilt: service cards now show restart count, last exit code, pid, and
+  last-updated (all already in `ServiceItemSchema`, none of it rendered before), a bar-style
+  database size view, a `GET /api/doctor` action that calls `collect_checks()` directly, a
+  per-service log viewer (`GET /api/logs/{service}`, validated against a literal-string whitelist),
+  and a one-click copy of the whole diagnostics bundle as JSON.
+- Not built: per-task delete (only bulk clear-history, in two tiers) - a single-row delete endpoint
+  would be a small, real addition, just not done this pass.
+- Acceptance (as shipped): an operator can decide an approval without scrolling, tell success from
+  failure in the task list without opening anything, and clear history from the console.
 
 ### Phase 10 — One command to run it, and a real identity
 
