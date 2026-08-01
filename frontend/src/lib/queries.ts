@@ -154,6 +154,7 @@ export function useTaskSignal() {
     onSuccess: (_data, variables) => {
       void queryClient.invalidateQueries({ queryKey: ["tasks"] })
       void queryClient.invalidateQueries({ queryKey: ["tasks", "trace", variables.taskId] })
+      void queryClient.invalidateQueries({ queryKey: ["chat", "messages"] })
     },
   })
 }

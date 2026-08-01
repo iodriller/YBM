@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react"
-import { Bot, LoaderCircle, Send, ShieldCheck, Sparkles, User } from "lucide-react"
+import { Bot, LoaderCircle, Send, ShieldCheck, Sparkles, Square, User } from "lucide-react"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { ChatMarkdown } from "@/components/chat/ChatMarkdown"
 import { chatAnswerText, isTerminal } from "@/lib/chat"
-import { useChatMessages, useSendChatMessage } from "@/lib/queries"
+import { useChatMessages, useSendChatMessage, useTaskSignal } from "@/lib/queries"
 import { cn } from "@/lib/utils"
 import type { TaskRecord } from "@/lib/api"
 
@@ -148,15 +149,61 @@ export function ChatPage() {
 
 function ChatExchange({ task }: { task: TaskRecord }) {
   const settled = isTerminal(task.status)
+  const taskSignal = useTaskSignal()
+  const sendMessage = useSendChatMessage()
+  const [clarifyDraft, setClarifyDraft] = useState("")
+  const clarifying = task.status === "clarifying"
+
+  function handleClarifySubmit(event: React.FormEvent) {
+    event.preventDefault()
+    const trimmed = clarifyDraft.trim()
+    if (!trimmed || sendMessage.isPending) return
+    sendMessage.mutate(trimmed)
+    setClarifyDraft("")
+  }
+
+  const clarificationAnswers = Array.isArray(task.metadata.clarification_answers)
+    ? (task.metadata.clarification_answers as { question?: string; answer?: string }[])
+    : []
+
   return (
     <div className="flex flex-col gap-3">
-      <Bubble role="user" text={task.objective} />
-      <Bubble
-        role="assistant"
-        text={chatAnswerText(task)}
-        pending={!settled}
-        status={task.status}
-      />
+      <Bubble role="user" text={task.objective.split("\n[User clarification:")[0]} />
+      {clarificationAnswers.map((entry, index) => (
+        <div key={index} className="flex flex-col gap-2">
+          {entry.question && <Bubble role="assistant" text={entry.question} muted />}
+          {entry.answer && <Bubble role="user" text={entry.answer} />}
+        </div>
+      ))}
+      <Bubble role="assistant" text={chatAnswerText(task)} pending={!settled} status={task.status}>
+        {!settled && !clarifying && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="mt-2 h-6 gap-1 px-2 text-xs text-muted-foreground hover:text-destructive"
+            disabled={taskSignal.isPending}
+            onClick={() => taskSignal.mutate({ taskId: task.id, signal: "cancel" })}
+          >
+            <Square className="size-3" />
+            Stop
+          </Button>
+        )}
+        {clarifying && (
+          <form onSubmit={handleClarifySubmit} className="mt-2.5 flex items-center gap-1.5">
+            <input
+              value={clarifyDraft}
+              onChange={(event) => setClarifyDraft(event.target.value)}
+              placeholder="Type your answer..."
+              autoFocus
+              className="h-8 min-w-0 flex-1 rounded-lg border border-input bg-background px-2.5 text-xs outline-none focus:border-ring focus:ring-2 focus:ring-ring/20"
+            />
+            <Button type="submit" size="sm" className="h-8 px-2.5 text-xs" disabled={!clarifyDraft.trim() || sendMessage.isPending}>
+              Reply
+            </Button>
+          </form>
+        )}
+      </Bubble>
     </div>
   )
 }
@@ -166,11 +213,15 @@ function Bubble({
   text,
   pending,
   status,
+  muted,
+  children,
 }: {
   role: "user" | "assistant"
   text: string
   pending?: boolean
   status?: string
+  muted?: boolean
+  children?: React.ReactNode
 }) {
   const isUser = role === "user"
   const failed = status === "failed" || status === "blocked"
@@ -183,20 +234,22 @@ function Bubble({
       </Avatar>
       <div
         className={cn(
-          "min-w-0 max-w-[84%] whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-[0.925rem] leading-6 [overflow-wrap:anywhere] sm:max-w-[78%]",
+          "min-w-0 max-w-[84%] rounded-2xl px-4 py-2.5 text-[0.925rem] leading-6 sm:max-w-[78%]",
           isUser
-            ? "rounded-tr-sm bg-primary text-primary-foreground shadow-sm shadow-primary/10"
+            ? "rounded-tr-sm bg-primary text-primary-foreground shadow-sm shadow-primary/10 whitespace-pre-wrap [overflow-wrap:anywhere]"
             : "rounded-tl-sm border border-border/80 bg-card text-card-foreground shadow-sm",
           failed && !isUser && "border-destructive/25 bg-destructive/5",
+          muted && !isUser && "text-muted-foreground",
         )}
       >
-        {text}
+        {isUser ? text : <ChatMarkdown text={text} />}
         {pending && status && (
           <span className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
             <LoaderCircle className="size-3 animate-spin" />
             {status.replace(/_/g, " ")}
           </span>
         )}
+        {children}
       </div>
     </div>
   )

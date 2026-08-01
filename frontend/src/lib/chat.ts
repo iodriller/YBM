@@ -44,6 +44,8 @@ export function chatAnswerText(task: TaskRecord): string {
       return lastOutput ?? "Failed."
     case "blocked":
       return lastOutput ?? "Blocked."
+    case "cancelled":
+      return "Stopped."
     case "awaiting_approval":
       return "Waiting for approval - see Pending Approvals above."
     case "clarifying":
