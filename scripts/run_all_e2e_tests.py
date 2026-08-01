@@ -65,6 +65,7 @@ GUARDED_TAGS = {"codex", "copilot", "external", "quota", "limit", "presentation"
 # Per-case absolute ceiling regardless of what the JSON declares. Protects the
 # whole run from getting stuck on one runaway case.
 HARD_CEILING_S = 900
+TASK_SPAWN_TIMEOUT_S = 180
 
 # The runner must wait AT LEAST this long after the case's declared timeout so
 # the worker's own per-task budget (settings.limits.task_budget_seconds,
@@ -451,7 +452,9 @@ async def _send_message(message: str) -> int:
         return sent.id
 
 
-async def _find_new_task(known_ids: set[str], spawn_timeout_s: int = 80) -> str | None:
+async def _find_new_task(
+    known_ids: set[str], spawn_timeout_s: int = TASK_SPAWN_TIMEOUT_S
+) -> str | None:
     deadline = time.monotonic() + spawn_timeout_s
     while time.monotonic() < deadline:
         await asyncio.sleep(2)
@@ -676,7 +679,8 @@ async def _run_turn(label: str, message: str, max_seconds: int) -> TurnResult:
             turn.duration_s = round(time.monotonic() - start_mono, 1)
             return turn
 
-        task_id = await _find_new_task(known)
+        spawn_timeout_s = min(TASK_SPAWN_TIMEOUT_S, max_seconds)
+        task_id = await _find_new_task(known, spawn_timeout_s=spawn_timeout_s)
         if not task_id:
             # Distinguish "classifier said is_task=False" from "polling didn't see the message"
             # so the report can blame the right component.
@@ -690,11 +694,14 @@ async def _run_turn(label: str, message: str, max_seconds: int) -> TurnResult:
                     )
                 else:
                     turn.error = (
-                        f"classifier said is_task=True but no task spawned within 80s "
+                        f"classifier said is_task=True but no task spawned within {spawn_timeout_s}s "
                         f"(intake or worker layer dropped it). reason: {reason[:200]}"
                     )
             else:
-                turn.error = "no task spawned within 80s — message never classified (telegram intake stuck?)"
+                turn.error = (
+                    f"no task spawned within {spawn_timeout_s}s — "
+                    "message never classified (telegram intake stuck?)"
+                )
             # Also capture the full classifier verdict for the diagnosis dump.
             turn.classifier_verdict = fetch_classifier_verdict_for_text(message)
             turn.duration_s = round(time.monotonic() - start_mono, 1)
