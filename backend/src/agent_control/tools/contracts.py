@@ -601,6 +601,11 @@ class CodeInterpreterGenerateAndRunInput(ToolInputModel):
     requirements: list[str] = Field(default_factory=list)
     files: list[str] = Field(default_factory=list)
     persist_session: bool = False
+    # Runtime-only approval marker. The model cannot bypass policy by setting
+    # this: ToolDefinition.approval_required_operations gates the request
+    # before adapter dispatch, and ToolExecutor overwrites this to True only
+    # when replaying a matching, consumed human approval.
+    approved: bool = False
 
 
 class CodeInterpreterSolveOnceInput(CodeInterpreterGenerateAndRunInput):

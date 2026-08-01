@@ -84,6 +84,25 @@ def test_registry_exposes_code_interpreter_when_terminal_run_is_enabled(tmp_path
     assert "generate_and_run" in definitions["code.interpreter"].operations
     assert "code.interpreter" in registry.adapters
 
+
+def test_generate_and_run_contract_preserves_runtime_approval_marker(tmp_path) -> None:
+    registry = build_tool_registry(
+        _settings(tmp_path),
+        backend_base_url="http://127.0.0.1:8765",
+        provider=FakeScriptProvider(),
+    )
+    definition = next(item for item in registry.definitions if item.name == "code.interpreter")
+
+    validated = definition.validate_input(
+        {
+            "operation": "generate_and_run",
+            "objective": "Create a result file.",
+            "approved": True,
+        }
+    )
+
+    assert validated["approved"] is True
+
 @pytest.mark.asyncio
 async def test_code_interpreter_runs_python_in_managed_workspace(tmp_path) -> None:
     adapter = CodeInterpreterAdapter(_settings(tmp_path).adapters.code_interpreter)
