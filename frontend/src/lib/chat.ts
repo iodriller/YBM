@@ -47,7 +47,7 @@ export function chatAnswerText(task: TaskRecord): string {
     case "cancelled":
       return "Stopped."
     case "awaiting_approval":
-      return "Waiting for approval - see Pending Approvals above."
+      return "Wants to do something that needs your approval."
     case "clarifying":
       return typeof meta.clarifying_question === "string"
         ? meta.clarifying_question

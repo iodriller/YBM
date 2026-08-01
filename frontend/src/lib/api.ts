@@ -333,15 +333,28 @@ const PendingApprovalsResponseSchema = z.object({
   approvals: z.array(PendingApprovalItemSchema),
 })
 
+const ApprovalGrantSchema = z.object({
+  id: z.string(),
+  task_id: z.string(),
+  tool_name: z.string(),
+  capability: z.string(),
+  granted_from_approval_id: z.string(),
+  created_at: z.string(),
+  expires_at: z.string(),
+})
+
 const DecideApprovalResponseSchema = z.object({
   approval: ApprovalRequestSchema.nullable(),
+  grant: ApprovalGrantSchema.nullable(),
 })
 
 export function listPendingApprovals() {
   return apiFetch("/api/approvals", PendingApprovalsResponseSchema)
 }
 
-export function decideApproval(approvalId: string, decision: "approve" | "reject") {
+export type ApprovalDecision = "approve" | "reject" | "approve_for_task"
+
+export function decideApproval(approvalId: string, decision: ApprovalDecision) {
   return apiFetch(`/api/approvals/${approvalId}/decide`, DecideApprovalResponseSchema, {
     method: "POST",
     body: JSON.stringify({ decision }),

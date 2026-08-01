@@ -26,6 +26,7 @@ import {
   updateTelegramConfig,
   updateVSCodeConfig,
   updateWorkspaceConfig,
+  type ApprovalDecision,
   type CapabilityAccessMode,
   type ComputerUseConfigInput,
   type LLMConfigInput,
@@ -110,7 +111,7 @@ export function usePendingApprovals() {
 export function useDecideApproval() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ approvalId, decision }: { approvalId: string; decision: "approve" | "reject" }) =>
+    mutationFn: ({ approvalId, decision }: { approvalId: string; decision: ApprovalDecision }) =>
       decideApproval(approvalId, decision),
     onSuccess: () => {
       // Also invalidate tasks/chat - approving unblocks a task that may be

@@ -10,6 +10,7 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { toast } from "sonner"
 import { ApiError } from "@/lib/api"
+import type { ApprovalDecision } from "@/lib/api"
 import { useDecideApproval, usePendingApprovals } from "@/lib/queries"
 import { EvidencePack } from "@/components/approvals/EvidencePack"
 
@@ -26,7 +27,7 @@ export function ApprovalBanner() {
   const items = data?.approvals ?? []
   if (items.length === 0) return null
 
-  function handleDecide(approvalId: string, decision: "approve" | "reject") {
+  function handleDecide(approvalId: string, decision: ApprovalDecision) {
     decide.mutate(
       { approvalId, decision },
       {
@@ -68,6 +69,7 @@ export function ApprovalBanner() {
                   item={item}
                   deciding={decide.isPending}
                   onApprove={() => handleDecide(item.approval.id, "approve")}
+                  onApproveForTask={() => handleDecide(item.approval.id, "approve_for_task")}
                   onDeny={() => handleDecide(item.approval.id, "reject")}
                 />
               </div>

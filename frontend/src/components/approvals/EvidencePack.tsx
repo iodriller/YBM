@@ -23,11 +23,13 @@ import { formatCountdown, useCountdown } from "@/lib/time"
 export function EvidencePack({
   item,
   onApprove,
+  onApproveForTask,
   onDeny,
   deciding,
 }: {
   item: PendingApprovalItem
   onApprove: () => void
+  onApproveForTask: () => void
   onDeny: () => void
   deciding: boolean
 }) {
@@ -117,12 +119,15 @@ export function EvidencePack({
         </Link>
       </div>
 
-      <div className="flex justify-end gap-2">
+      <div className="flex flex-wrap items-center justify-end gap-2">
         <Button variant="outline" onClick={onDeny} disabled={deciding || expired}>
           Deny
         </Button>
+        <Button variant="outline" onClick={onApproveForTask} disabled={deciding || expired}>
+          Allow for this task
+        </Button>
         <Button onClick={onApprove} disabled={deciding || expired}>
-          Approve
+          Approve once
         </Button>
       </div>
     </div>
