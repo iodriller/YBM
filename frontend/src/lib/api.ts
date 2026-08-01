@@ -545,6 +545,12 @@ export function deleteSecret(service: string, key: string) {
   })
 }
 
+const SecretVaultInitResponseSchema = z.object({ key_env: z.string(), generated: z.boolean() })
+
+export function initSecretVault() {
+  return apiFetch("/api/secrets/init", SecretVaultInitResponseSchema, { method: "POST" })
+}
+
 // ---- Settings (docs/UI_REWRITE_PLAN.md §14) -------------------------------
 //
 // Reuses /api/summary (already fetched for the health indicator) rather

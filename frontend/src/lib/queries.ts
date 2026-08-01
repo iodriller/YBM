@@ -9,6 +9,7 @@ import {
   getSetupDetect,
   getSummary,
   getTaskTrace,
+  initSecretVault,
   listAudit,
   listChatMessages,
   listPendingApprovals,
@@ -203,6 +204,16 @@ export function useDeleteSecret() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: ({ service, key }: { service: string; key: string }) => deleteSecret(service, key),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["secrets"] })
+    },
+  })
+}
+
+export function useInitSecretVault() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: initSecretVault,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["secrets"] })
     },

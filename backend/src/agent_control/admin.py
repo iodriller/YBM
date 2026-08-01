@@ -25,6 +25,7 @@ from agent_control.storage.audit import AuditLogger
 from agent_control.storage.audit_view import format_audit_event
 from agent_control.storage.database import Database
 from agent_control.storage.repositories import Repositories
+from agent_control.storage.redaction import redact_payload
 from agent_control.storage.secrets import SecretVault, SecretVaultError
 from agent_control.tools.registry import build_tool_registry
 from agent_control.tools.vscode_bridge import VSCodeBridgeStore, VSCodeTerminalCommand
@@ -116,6 +117,33 @@ class AdminChatMessageRequest(StrictBaseModel):
 # personal, local-first, single-user system, not multi-tenant - one thread
 # is the right scope for v1, the same way there is one Telegram user.
 WEB_CHAT_ID = "local"
+
+
+def _redact_admin_output(value: Any, settings: AppSettings) -> Any:
+    """Remove configured secret values from data returned by admin APIs.
+
+    Audit logging already redacts sensitive keys, but older task/audit rows
+    may contain an exception string with a credential embedded in a URL.
+    Response-boundary redaction protects every admin surface, including raw
+    trace JSON, without mutating historical records.
+    """
+    env_names = {
+        settings.server.admin_token_env,
+        settings.channels.telegram.token_env,
+        settings.secrets.key_env,
+        settings.adapters.vscode.auth_token_env,
+    }
+    env_names.update(
+        profile.api_key_env
+        for profile in settings.llm.profiles.values()
+        if profile.api_key_env
+    )
+    secret_values = [secret for name in env_names if (secret := read_env_value(name))]
+    return redact_payload(
+        value,
+        patterns=("__ybm_no_key_redaction__",),
+        secret_values=secret_values,
+    )
 
 try:
     _APP_VERSION = _pkg_version("agent-control-backend")
@@ -356,14 +384,17 @@ def create_admin_router(
         return {
             "status": "ok",
             "config": loaded.safe_summary(),
-            "tasks": [task.model_dump(mode="json") for task in tasks],
+            "tasks": [_redact_admin_output(task.model_dump(mode="json"), loaded) for task in tasks],
             "task_pagination": {
                 "limit": task_limit,
                 "offset": 0,
                 "total": task_total,
                 "has_more": task_total > task_limit,
             },
-            "audit": [format_audit_event(event).model_dump(mode="json") for event in audit_events],
+            "audit": [
+                _redact_admin_output(format_audit_event(event).model_dump(mode="json"), loaded)
+                for event in audit_events
+            ],
             "vscode": _vscode_summary(vscode_store),
             "access_modes": {
                 name: summary.model_dump(mode="json")
@@ -410,12 +441,12 @@ def create_admin_router(
         limit: int = Query(default=25, ge=1, le=100),
         offset: int = Query(default=0, ge=0),
     ) -> dict[str, Any]:
-        require_admin(request)
+        loaded = require_admin(request)
         repositories = repositories_loader()
         total = repositories.tasks.count()
         tasks = repositories.tasks.list_recent(limit, offset=offset)
         return {
-            "tasks": [task.model_dump(mode="json") for task in tasks],
+            "tasks": [_redact_admin_output(task.model_dump(mode="json"), loaded) for task in tasks],
             "pagination": {
                 "limit": limit,
                 "offset": offset,
@@ -426,12 +457,12 @@ def create_admin_router(
 
     @router.get("/api/tasks/{task_id}/trace")
     def admin_task_trace(request: Request, task_id: str) -> dict[str, Any]:
-        require_admin(request)
+        loaded = require_admin(request)
         repositories = repositories_loader()
         trace = build_task_trace(repositories, task_id)
         if trace is None:
             raise HTTPException(status_code=404, detail="task not found")
-        return trace
+        return _redact_admin_output(trace, loaded)
 
     @router.get("/api/approvals")
     def admin_pending_approvals(request: Request) -> dict[str, Any]:
@@ -513,7 +544,7 @@ def create_admin_router(
         q: str | None = None,
         limit: int = Query(default=50, ge=1, le=200),
     ) -> dict[str, Any]:
-        require_admin(request)
+        loaded = require_admin(request)
         repositories = repositories_loader()
         raw_events = repositories.audit.list_for_task(task_id)[-limit:] if task_id else repositories.audit.list_recent(200)
         formatted = [format_audit_event(event) for event in raw_events]
@@ -532,7 +563,12 @@ def create_admin_router(
                 or needle in event.title.lower()
                 or needle in str(event.details).lower()
             ]
-        return {"events": [event.model_dump(mode="json") for event in formatted[:limit]]}
+        return {
+            "events": [
+                _redact_admin_output(event.model_dump(mode="json"), loaded)
+                for event in formatted[:limit]
+            ]
+        }
 
     @router.delete("/api/audit")
     def admin_clear_audit(request: Request) -> dict[str, Any]:
@@ -611,7 +647,10 @@ def create_admin_router(
         updated = repositories.tasks.get(task_id)
         if updated is None:
             raise HTTPException(status_code=404, detail="task not found")
-        return {"signal": signal.model_dump(mode="json"), "task": updated.model_dump(mode="json")}
+        return {
+            "signal": signal.model_dump(mode="json"),
+            "task": _redact_admin_output(updated.model_dump(mode="json"), loaded),
+        }
 
     @router.post("/api/config/llm")
     def admin_update_llm_config(request: Request, payload: AdminLLMConfigRequest) -> dict[str, Any]:
@@ -758,6 +797,22 @@ def create_admin_router(
             },
         }
 
+    @router.post("/api/secrets/init")
+    def admin_init_secret_vault(request: Request) -> dict[str, Any]:
+        """Closes the one real dead end the Access page's "Vault not
+        initialized" message used to be: same generation
+        (`SecretVault.generate_key()`) `ybm setup` already does, just
+        reachable from a button instead of requiring a terminal. Picked up
+        immediately - read_env_value() re-reads .env on every call, nothing
+        caches it at process start, so no restart is needed.
+        """
+        loaded = require_admin(request)
+        if read_env_value(loaded.secrets.key_env):
+            return {"key_env": loaded.secrets.key_env, "generated": False}
+        config_manager.upsert_env({loaded.secrets.key_env: SecretVault.generate_key()})
+        _audit_config_update(repositories_loader(), loaded, "secrets", {"action": "init_vault"})
+        return {"key_env": loaded.secrets.key_env, "generated": True}
+
     @router.get("/api/secrets")
     def admin_list_secrets(request: Request) -> dict[str, Any]:
         loaded = require_admin(request)
@@ -825,13 +880,13 @@ def create_admin_router(
         and a task ending that way will say so in its own error text rather
         than silently pretending to have sent something.
         """
-        require_admin(request)
+        loaded = require_admin(request)
         repositories = repositories_loader()
         conversation_id = repositories.conversations.get_or_create(ChannelType.WEB, WEB_CHAT_ID)
         tasks = repositories.tasks.list_for_conversation(conversation_id, limit=limit)
         return {
             "conversation_id": conversation_id,
-            "tasks": [task.model_dump(mode="json") for task in tasks],
+            "tasks": [_redact_admin_output(task.model_dump(mode="json"), loaded) for task in tasks],
         }
 
     @router.post("/api/chat/messages")
@@ -850,7 +905,10 @@ def create_admin_router(
             task_id=task.id,
             payload={"conversation_id": conversation_id},
         )
-        return {"conversation_id": conversation_id, "task": task.model_dump(mode="json")}
+        return {
+            "conversation_id": conversation_id,
+            "task": _redact_admin_output(task.model_dump(mode="json"), loaded),
+        }
 
     @router.post("/api/llm/test")
     async def admin_test_llm(request: Request) -> dict[str, Any]:

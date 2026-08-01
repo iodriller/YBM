@@ -1036,6 +1036,38 @@ def test_admin_secrets_unavailable_without_vault_key(monkeypatch, tmp_path) -> N
     assert "ybm setup" in set_response.json()["detail"]
 
 
+def test_admin_secrets_init_generates_a_key_and_the_vault_becomes_usable(monkeypatch, tmp_path) -> None:
+    # The "Vault not initialized" dead end (docs/HISTORY.md's P2 UX pass) -
+    # a real fix, not a link to a terminal command: generate the key, and
+    # the vault must be immediately usable with no restart (read_env_value
+    # re-reads .env live).
+    monkeypatch.delenv("AGENT_SECRET_VAULT_KEY", raising=False)
+    client = _secrets_client(monkeypatch, tmp_path)
+    assert client.get("/admin/api/secrets").json()["available"] is False
+
+    init_response = client.post("/admin/api/secrets/init")
+    assert init_response.status_code == 200
+    assert init_response.json() == {"key_env": "AGENT_SECRET_VAULT_KEY", "generated": True}
+
+    listed = client.get("/admin/api/secrets")
+    assert listed.json()["available"] is True
+    created = client.post("/admin/api/secrets", json={"service": "openai", "key": "api_key", "value": "sk-1"})
+    assert created.status_code == 200
+
+
+def test_admin_secrets_init_is_idempotent_when_a_key_already_exists(monkeypatch, tmp_path) -> None:
+    from agent_control.storage.secrets import SecretVault
+
+    existing_key = SecretVault.generate_key()
+    monkeypatch.setenv("AGENT_SECRET_VAULT_KEY", existing_key)
+    client = _secrets_client(monkeypatch, tmp_path)
+
+    response = client.post("/admin/api/secrets/init")
+
+    assert response.status_code == 200
+    assert response.json() == {"key_env": "AGENT_SECRET_VAULT_KEY", "generated": False}
+
+
 def test_admin_secrets_set_list_and_delete_round_trip(monkeypatch, tmp_path) -> None:
     from agent_control.storage.secrets import SecretVault
 
@@ -1128,6 +1160,24 @@ def test_admin_chat_list_is_empty_before_any_message_sent(monkeypatch, tmp_path)
 
     assert listed.status_code == 200
     assert listed.json()["tasks"] == []
+
+
+def test_admin_chat_redacts_secret_values_from_historical_errors(monkeypatch, tmp_path) -> None:
+    token = "123456:super-secret-token-value-that-must-not-leak"
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", token)
+    client, repositories = _chat_client(monkeypatch, tmp_path)
+    created = client.post("/admin/api/chat/messages", json={"text": "hello"}).json()["task"]
+    task = repositories.tasks.get(created["id"])
+    repositories.tasks.update_metadata(
+        task.id,
+        {**task.metadata, "last_worker_error": f"https://api.telegram.org/bot{token}/sendMessage"},
+        TaskStatus.FAILED,
+    )
+
+    response_text = client.get("/admin/api/chat/messages").text
+
+    assert token not in response_text
+    assert "/bot***/sendMessage" in response_text
 
 
 def test_admin_chat_send_rejects_empty_text(monkeypatch, tmp_path) -> None:
