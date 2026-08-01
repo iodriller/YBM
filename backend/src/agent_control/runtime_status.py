@@ -13,6 +13,16 @@ logger = logging.getLogger(__name__)
 
 SERVICE_STALE_SECONDS = 30
 
+# The complete set of names ybm.ps1/supervisor.py ever supervise - static
+# regardless of config (whether each is currently *expected* to run does
+# vary, via _expected_services below). The admin log-viewer endpoint
+# (docs/UI_UX_AUDIT.md Phase 9) validates against this before turning a
+# name into a file path, since a log for a now-disabled service (e.g.
+# telegram_polling) should still be viewable from a past run.
+KNOWN_SERVICE_NAMES = frozenset(
+    {"localdeploy", "backend", "worker", "coding_session_watcher", "scheduler", "telegram_polling"}
+)
+
 
 def service_summary(settings: AppSettings) -> dict[str, Any]:
     services = []

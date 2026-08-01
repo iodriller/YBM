@@ -12,7 +12,7 @@ from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import Field
 
-from agent_control.bootstrap import OLLAMA_TAGS_URL, _http_json, check_llm_configured
+from agent_control.bootstrap import OLLAMA_TAGS_URL, _http_json, check_llm_configured, collect_checks
 from agent_control.config_sync import CONFIG_FILE_PATH, ConfigManager, read_env_value
 from agent_control.config import AppSettings, backend_base_url, is_loopback_host
 from agent_control.llm.providers import OpenAICompatibleProvider
@@ -20,7 +20,8 @@ from agent_control.observation.artifacts import ArtifactService
 from agent_control.orchestration.signals import apply_task_signal
 from agent_control.policy import apply_access_modes_to_config, summarize_access_modes
 from agent_control.prompts import render_prompt
-from agent_control.runtime_status import service_summary
+from agent_control.runtime_status import KNOWN_SERVICE_NAMES, service_summary
+from agent_control.supervisor import read_log_tail
 from agent_control.channels.memory import memory_context
 from agent_control.clarification import find_clarifying_task, resume_clarifying_task
 from agent_control.schemas import (
@@ -501,6 +502,33 @@ def create_admin_router(
                 "config_file": str(CONFIG_FILE_PATH),
             },
         }
+
+    @router.get("/api/doctor")
+    def admin_doctor(request: Request) -> dict[str, Any]:
+        """Runs the same checks `ybm doctor` runs (collect_checks - this
+        endpoint never duplicates that logic, just calls it) from the
+        console (docs/UI_UX_AUDIT.md Phase 9), since a person diagnosing a
+        problem from the admin UI shouldn't have to drop to a terminal to
+        run it. Takes a couple of seconds - it probes ports, the DB, and
+        LocalDeploy for real - so it's operator-triggered, not polled.
+        """
+        require_admin(request)
+        checks = collect_checks()
+        return {
+            "checks": [{"name": c.name, "status": c.status, "detail": c.detail} for c in checks],
+            "ok": all(c.status != "fail" for c in checks),
+        }
+
+    @router.get("/api/logs/{service}")
+    def admin_service_log(request: Request, service: str, lines: int = Query(default=200, ge=1, le=2000)) -> dict[str, Any]:
+        require_admin(request)
+        if service not in KNOWN_SERVICE_NAMES:
+            raise HTTPException(status_code=404, detail=f"unknown service: {service}")
+        result = read_log_tail(service, lines=lines)
+        if result is None:
+            return {"service": service, "log_path": None, "lines": []}
+        log_path, tail_lines = result
+        return {"service": service, "log_path": log_path, "lines": tail_lines}
 
     @router.get("/api/tasks")
     def admin_tasks(

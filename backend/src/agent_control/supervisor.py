@@ -343,6 +343,20 @@ def status_all() -> int:
     return 0 if any_running else 1
 
 
+def read_log_tail(name: str, lines: int = 200) -> tuple[str, list[str]] | None:
+    """The admin Diagnostics page's "view log" action (docs/UI_UX_AUDIT.md
+    Phase 9) - the same file `ybm logs <service>` tails, returned as text
+    instead of printed. Returns None if the log doesn't exist yet.
+    """
+    log_path = _log_path(name)
+    if not log_path.exists():
+        return None
+    with open(log_path, "rb") as fh:
+        data = fh.read()
+    text = data.decode("utf-8", errors="replace")
+    return str(log_path), text.splitlines()[-lines:]
+
+
 def tail_log(name: str, *, follow: bool = False, lines: int = 60) -> int:
     log_path = _log_path(name)
     if not log_path.exists():

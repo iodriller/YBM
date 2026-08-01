@@ -970,6 +970,87 @@ def test_admin_artifact_download_404s_when_the_file_was_deleted_after_registrati
     assert client.get(f"/admin/api/artifacts/{artifact.id}/download").status_code == 404
 
 
+def test_admin_doctor_reuses_collect_checks_and_summarizes_ok(monkeypatch, tmp_path) -> None:
+    """docs/UI_UX_AUDIT.md Phase 9: same checks `ybm doctor` runs, from the
+    console - never a second implementation, just collect_checks() itself."""
+    from agent_control.bootstrap import Check
+
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    client = _admin_client(repositories)
+    monkeypatch.setattr(
+        admin_module, "collect_checks",
+        lambda: [Check("Python version", "ok", "3.12.3"), Check("Telegram token", "warn", "not configured")],
+    )
+
+    response = client.get("/admin/api/doctor")
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["ok"] is True  # no "fail" status present
+    assert body["checks"] == [
+        {"name": "Python version", "status": "ok", "detail": "3.12.3"},
+        {"name": "Telegram token", "status": "warn", "detail": "not configured"},
+    ]
+
+
+def test_admin_doctor_reports_not_ok_when_any_check_fails(monkeypatch, tmp_path) -> None:
+    from agent_control.bootstrap import Check
+
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    client = _admin_client(repositories)
+    monkeypatch.setattr(admin_module, "collect_checks", lambda: [Check("Ports", "fail", "8765 already in use")])
+
+    assert client.get("/admin/api/doctor").json()["ok"] is False
+
+
+def test_admin_service_log_returns_the_tail_of_a_real_log_file(monkeypatch, tmp_path) -> None:
+    """docs/UI_UX_AUDIT.md Phase 9: a per-service log link from the console
+    instead of needing `ybm logs <service>` in a terminal."""
+    monkeypatch.setattr("agent_control.supervisor._repo_root", lambda: tmp_path)
+    log_dir = tmp_path / ".agent_control" / "logs"
+    log_dir.mkdir(parents=True)
+    (log_dir / "worker.ybmpy.log").write_text("line 1\nline 2\nline 3\n", encoding="utf-8")
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    client = _admin_client(repositories)
+
+    response = client.get("/admin/api/logs/worker?lines=2")
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["service"] == "worker"
+    assert body["lines"] == ["line 2", "line 3"]
+    assert body["log_path"] is not None
+
+
+def test_admin_service_log_returns_empty_when_no_log_exists_yet(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("agent_control.supervisor._repo_root", lambda: tmp_path)
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    client = _admin_client(repositories)
+
+    response = client.get("/admin/api/logs/worker")
+
+    assert response.status_code == 200
+    assert response.json() == {"service": "worker", "log_path": None, "lines": []}
+
+
+def test_admin_service_log_404s_for_an_unknown_service_name(tmp_path) -> None:
+    """The service name becomes a file path (supervisor._log_path) - must
+    be validated against the known set, not accepted as arbitrary input.
+    The check is unconditional string equality against six literal names
+    (KNOWN_SERVICE_NAMES), so any non-matching string is rejected the same
+    way regardless of what characters it contains - one representative
+    case here, not one assertion per possible payload shape."""
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    client = _admin_client(repositories)
+
+    assert client.get("/admin/api/logs/not_a_real_service").status_code == 404
+
+
 def test_admin_clears_task_history_and_audit(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)  # see test_admin_page_and_summary for why chdir, not just delenv
     database_url = f"sqlite:///{tmp_path / 'admin.db'}"
