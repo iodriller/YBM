@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -699,6 +700,58 @@ def test_admin_task_trace_evidence_aggregates_files_urls_and_commands(monkeypatc
     assert [item["value"] for item in evidence["urls"]] == ["https://example.com"]
     assert evidence["commands"] == []
     assert evidence["files"][0]["tool_name"] == "filesystem.manage"
+
+
+def test_admin_skill_install_list_and_uninstall(monkeypatch, tmp_path) -> None:
+    """docs/UI_UX_AUDIT.md Phase 5: install a skill (writing its manifest
+    file), see it in the catalog with inferred permission labels, remove it
+    - entirely through the console, no manual filesystem access."""
+    client, repositories = _chat_client(monkeypatch, tmp_path)
+
+    installed = client.post(
+        "/admin/api/skills",
+        json={
+            "name": "Invoice Extraction",
+            "description": "Pulls totals from invoice PDFs.",
+            "body": "Use filesystem.manage to read the PDF, then report the total.",
+            "version": "1",
+        },
+    )
+    assert installed.status_code == 200
+    skill = installed.json()["skill"]
+    assert skill["name"] == "Invoice Extraction"
+    assert skill["tools_declared"] is False
+    assert "filesystem.manage" in skill["tools"]
+
+    listed = client.get("/admin/api/skills").json()["skills"]
+    assert [s["name"] for s in listed] == ["Invoice Extraction"]
+
+    uninstalled = client.delete(f"/admin/api/skills/{quote('Invoice Extraction')}")
+    assert uninstalled.status_code == 200
+    assert uninstalled.json() == {"name": "Invoice Extraction", "deleted": True}
+    assert client.get("/admin/api/skills").json()["skills"] == []
+
+    events = repositories.audit.list_recent(limit=20)
+    actions = {e.payload.get("action") for e in events if e.payload.get("section") == "skills"}
+    assert actions == {"install", "uninstall"}
+
+
+def test_admin_skill_install_overwrites_an_existing_skill_with_the_same_name(monkeypatch, tmp_path) -> None:
+    client, _repositories = _chat_client(monkeypatch, tmp_path)
+    client.post("/admin/api/skills", json={"name": "My Skill", "description": "v1", "body": "v1 body"})
+
+    updated = client.post("/admin/api/skills", json={"name": "My Skill", "description": "v2", "body": "v2 body"})
+
+    assert updated.status_code == 200
+    listed = client.get("/admin/api/skills").json()["skills"]
+    assert len(listed) == 1
+    assert listed[0]["description"] == "v2"
+
+
+def test_admin_skill_uninstall_404s_for_an_unknown_skill(monkeypatch, tmp_path) -> None:
+    client, _repositories = _chat_client(monkeypatch, tmp_path)
+
+    assert client.delete("/admin/api/skills/does-not-exist").status_code == 404
 
 
 def test_admin_memory_create_list_update_and_forget(monkeypatch, tmp_path) -> None:

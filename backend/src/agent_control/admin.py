@@ -45,6 +45,7 @@ from agent_control.storage.repositories import Repositories
 from agent_control.storage.redaction import redact_payload
 from agent_control.storage.secrets import SecretVault, SecretVaultError
 from agent_control.tools.registry import build_tool_registry
+from agent_control.tools.skills import delete_skill_file, detect_referenced_tools, list_skills_detailed, write_skill_file
 from agent_control.tools.vscode_bridge import VSCodeBridgeStore, VSCodeTerminalCommand
 
 
@@ -139,6 +140,14 @@ class AdminMemoryFactCreateRequest(StrictBaseModel):
 class AdminMemoryFactUpdateRequest(StrictBaseModel):
     category: str = Field(min_length=1, max_length=60)
     content: str = Field(min_length=1, max_length=2000)
+
+
+class AdminSkillInstallRequest(StrictBaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    description: str = Field(min_length=1, max_length=400)
+    body: str = Field(min_length=1, max_length=20000)
+    version: str = Field(default="1", max_length=20)
+    tools: list[str] = Field(default_factory=list)
 
 
 class AdminChatMessageRequest(StrictBaseModel):
@@ -722,6 +731,46 @@ def create_admin_router(
             payload={"section": "memory", "action": "forget", "fact_id": fact_id},
         )
         return {"fact_id": fact_id, "deleted": True}
+
+    @router.get("/api/skills")
+    def admin_list_skills(request: Request) -> dict[str, Any]:
+        loaded = require_admin(request)
+        skills = list_skills_detailed(loaded.adapters.skills.root_dir, _known_tool_names(loaded))
+        return {"root_dir": loaded.adapters.skills.root_dir, "skills": skills}
+
+    @router.post("/api/skills")
+    def admin_install_skill(request: Request, payload: AdminSkillInstallRequest) -> dict[str, Any]:
+        """Installs (creates or overwrites by name) a skill - docs/UI_UX_AUDIT.md
+        Phase 5's "install ... entirely from the console", writing straight
+        to adapters.skills.root_dir the same way a hand-dropped file would
+        (skills.py's own docstring: there is no separate database record).
+        """
+        loaded = require_admin(request)
+        repositories = repositories_loader()
+        skill = write_skill_file(
+            loaded.adapters.skills.root_dir, payload.name, payload.description, payload.body,
+            version=payload.version, tools=payload.tools,
+        )
+        if not skill["tools_declared"]:
+            skill["tools"] = detect_referenced_tools(skill["body"], _known_tool_names(loaded))
+        AuditLogger(repositories.audit, loaded.logging.redact_patterns).append(
+            AuditEventType.CONFIG_UPDATED, actor="admin",
+            payload={"section": "skills", "action": "install", "name": skill["name"], "version": skill["version"]},
+        )
+        return {"skill": skill}
+
+    @router.delete("/api/skills/{name}")
+    def admin_uninstall_skill(request: Request, name: str) -> dict[str, Any]:
+        loaded = require_admin(request)
+        repositories = repositories_loader()
+        deleted = delete_skill_file(loaded.adapters.skills.root_dir, name)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="skill not found")
+        AuditLogger(repositories.audit, loaded.logging.redact_patterns).append(
+            AuditEventType.CONFIG_UPDATED, actor="admin",
+            payload={"section": "skills", "action": "uninstall", "name": name},
+        )
+        return {"name": name, "deleted": True}
 
     @router.get("/api/config/effective")
     def admin_effective_config(request: Request) -> dict[str, Any]:
@@ -1591,6 +1640,15 @@ def _database_summary(settings: AppSettings) -> dict[str, Any]:
         "last_audit_at": last_audit[0] if last_audit else None,
         "recommended_vscode_extension": "qwtel.sqlite-viewer",
     }
+
+
+def _known_tool_names(settings: AppSettings) -> list[str]:
+    """Every registered tool's name, regardless of whether it's currently
+    enabled - used only to spot which tools a skill's instructions
+    reference (skills.py's detect_referenced_tools), not to gate anything.
+    """
+    registry = build_tool_registry(settings, backend_base_url(settings))
+    return [definition.name for definition in registry.definitions]
 
 
 def _tool_registry_summary(settings: AppSettings, repositories: Repositories, audit: AuditLogger) -> dict[str, Any]:

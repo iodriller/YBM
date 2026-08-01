@@ -21,6 +21,9 @@ directly exploit beyond what any other text in the prompt could do.
 
 from __future__ import annotations
 
+import hashlib
+import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -124,7 +127,91 @@ def _parse_skill_file(path: Path) -> dict[str, Any] | None:
     if not name:
         return None
     description = str(frontmatter.get("description") or "").strip() or "(no description)"
-    return {"name": name, "description": description, "body": body.strip(), "path": str(path)}
+    version = str(frontmatter.get("version") or "1").strip() or "1"
+    declared_tools = frontmatter.get("tools")
+    tools_declared = isinstance(declared_tools, list) and all(isinstance(t, str) for t in declared_tools)
+    body_text = body.strip()
+    return {
+        "name": name,
+        "description": description,
+        "version": version,
+        "tools": sorted({t.strip() for t in declared_tools if t.strip()}) if tools_declared else [],
+        "tools_declared": tools_declared,
+        "body": body_text,
+        "path": str(path),
+        "content_hash": _content_hash(text),
+        "size_bytes": len(text.encode("utf-8")),
+        "modified_at": path.stat().st_mtime if path.exists() else None,
+    }
+
+
+def _content_hash(text: str) -> str:
+    """A short fingerprint, not a signature - there is no distribution
+    channel or signing key for skills (they're hand-authored local files),
+    so this exists only to let a person notice "this file's content
+    changed since I last looked", not to assert authenticity."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+
+def detect_referenced_tools(body: str, known_tool_names: list[str]) -> list[str]:
+    """Informational "permission label": which registered tool names this
+    skill's instructions mention, so an operator can see what it's likely
+    to steer the model toward using before installing it. A heuristic
+    substring scan, not an enforced permission - a skill is inert text
+    (this module's own docstring), so there is nothing to actually gate.
+    """
+    return sorted({name for name in known_tool_names if name in body})
+
+
+_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def slugify(name: str) -> str:
+    slug = _SLUG_RE.sub("-", name.strip().lower()).strip("-")
+    return slug or f"skill-{int(time.time())}"
+
+
+def list_skills_detailed(root_dir: str, known_tool_names: list[str]) -> list[dict[str, Any]]:
+    """Full metadata per skill for the admin Skills page - list_skills the
+    runtime tool never needs (progressive disclosure keeps skills.use's own
+    `list` operation to name+description only)."""
+    skills = _load_skills(root_dir)
+    for skill in skills:
+        if not skill["tools_declared"]:
+            skill["tools"] = detect_referenced_tools(skill["body"], known_tool_names)
+    return skills
+
+
+def write_skill_file(
+    root_dir: str, name: str, description: str, body: str, *, version: str = "1", tools: list[str] | None = None
+) -> dict[str, Any]:
+    """Installs (creates or updates) a skill by writing its markdown file
+    directly - skills have no separate database record, matching this
+    module's existing "the file IS the skill" design (see _load_skills'
+    own docstring on why: hand-edited files should be picked up on the
+    very next call, not diverge from a cached copy elsewhere).
+    """
+    root = Path(root_dir).expanduser()
+    root.mkdir(parents=True, exist_ok=True)
+    frontmatter: dict[str, Any] = {"name": name, "description": description, "version": version}
+    if tools:
+        frontmatter["tools"] = tools
+    text = f"---\n{yaml.safe_dump(frontmatter, sort_keys=False)}---\n\n{body.strip()}\n"
+    path = root / f"{slugify(name)}.md"
+    path.write_text(text, encoding="utf-8")
+    parsed = _parse_skill_file(path)
+    if parsed is None:
+        raise ValueError("wrote a skill file that failed to parse back - this should never happen")
+    return parsed
+
+
+def delete_skill_file(root_dir: str, name: str) -> bool:
+    skills = _load_skills(root_dir)
+    match = next((s for s in skills if s["name"] == name), None)
+    if match is None:
+        return False
+    Path(match["path"]).unlink(missing_ok=True)
+    return True
 
 
 def _terminal_output(operation: str, output: dict[str, Any]) -> dict[str, Any]:

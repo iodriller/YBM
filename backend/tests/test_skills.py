@@ -11,7 +11,14 @@ import pytest
 from agent_control.config import AppSettings, Capability, CapabilityPolicy, RiskLevel, SkillsAdapterConfig
 from agent_control.schemas import ToolCallRequest, ToolResultStatus
 from agent_control.tools.registry import build_tool_registry
-from agent_control.tools.skills import SkillsAdapter
+from agent_control.tools.skills import (
+    SkillsAdapter,
+    delete_skill_file,
+    detect_referenced_tools,
+    list_skills_detailed,
+    slugify,
+    write_skill_file,
+)
 
 
 def _write_skill(tmp_path, filename: str, *, name: str | None = "invoice-extraction", description: str = "How to pull the total from an invoice PDF.", body: str = "1. Read the PDF.\n2. Find the total line.") -> None:
@@ -167,3 +174,71 @@ def test_registry_disables_skills_use_when_telegram_receive_capability_is_off() 
 
     definitions = {d.name: d for d in registry.definitions}
     assert definitions["skills.use"].enabled is False
+
+
+# ---- Lifecycle: manifest, install, uninstall (docs/UI_UX_AUDIT.md Phase 5) ----
+
+
+def test_slugify_produces_a_safe_filename_stem() -> None:
+    assert slugify("Invoice Extraction!") == "invoice-extraction"
+    assert slugify("  weird__chars***here  ") == "weird-chars-here"
+
+
+def test_slugify_falls_back_to_a_generated_name_when_nothing_survives() -> None:
+    assert slugify("!!!").startswith("skill-")
+
+
+def test_write_skill_file_creates_a_well_formed_markdown_file_with_frontmatter(tmp_path) -> None:
+    root = tmp_path / "skills"
+
+    written = write_skill_file(
+        str(root), "Invoice Extraction", "Pulls totals from PDFs.", "1. Read the PDF.\n2. Find the total.",
+        version="2", tools=["filesystem.manage", "document.manage"],
+    )
+
+    assert written["name"] == "Invoice Extraction"
+    assert written["version"] == "2"
+    assert written["tools"] == ["document.manage", "filesystem.manage"]
+    assert written["tools_declared"] is True
+    assert written["body"] == "1. Read the PDF.\n2. Find the total."
+    assert (root / "invoice-extraction.md").exists()
+
+
+def test_write_skill_file_overwrites_an_existing_skill_with_the_same_name(tmp_path) -> None:
+    root = tmp_path / "skills"
+    write_skill_file(str(root), "My Skill", "v1 description", "v1 body")
+
+    updated = write_skill_file(str(root), "My Skill", "v2 description", "v2 body", version="2")
+
+    assert updated["description"] == "v2 description"
+    assert updated["version"] == "2"
+    assert len(list(root.glob("*.md"))) == 1
+
+
+def test_delete_skill_file_removes_it_by_name_and_reports_whether_it_existed(tmp_path) -> None:
+    root = tmp_path / "skills"
+    write_skill_file(str(root), "Removable", "desc", "body")
+
+    assert delete_skill_file(str(root), "Removable") is True
+    assert delete_skill_file(str(root), "Removable") is False
+    assert list(root.glob("*.md")) == []
+
+
+def test_detect_referenced_tools_finds_known_tool_names_mentioned_in_the_body() -> None:
+    body = "Use filesystem.manage to read the file, then http.request to post it. Never mention scheduling."
+    known = ["filesystem.manage", "http.request", "schedule.manage", "browser.control"]
+
+    assert detect_referenced_tools(body, known) == ["filesystem.manage", "http.request"]
+
+
+def test_list_skills_detailed_infers_tools_only_when_not_declared(tmp_path) -> None:
+    root = tmp_path / "skills"
+    write_skill_file(str(root), "Declared", "desc", "mentions filesystem.manage", tools=["http.request"])
+    write_skill_file(str(root), "Inferred", "desc", "mentions filesystem.manage in passing")
+
+    skills = list_skills_detailed(str(root), ["filesystem.manage", "http.request"])
+    by_name = {s["name"]: s for s in skills}
+
+    assert by_name["Declared"]["tools"] == ["http.request"]
+    assert by_name["Inferred"]["tools"] == ["filesystem.manage"]
+    assert by_name["Inferred"]["tools_declared"] is False
