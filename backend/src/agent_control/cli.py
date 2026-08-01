@@ -10,6 +10,7 @@ import sys
 
 from agent_control.backup import run_backup
 from agent_control.bootstrap import run_doctor, run_setup
+from agent_control.updates import check_for_updates
 from agent_control.config_sync import set_config_path
 from agent_control.onboarding import run_onboard
 from agent_control.db_tools import db_clean, db_inspect, db_reset
@@ -434,6 +435,7 @@ def main() -> None:
             "run-coding-agent-session",
             "run-coding-session-watcher",
             "backup",
+            "check-updates",
         ],
     )
     parser.add_argument("--session-root", default=None)
@@ -521,6 +523,17 @@ def main() -> None:
         asyncio.run(run_coding_session_watcher(args.poll_interval_seconds))
     elif args.command == "backup":
         raise SystemExit(run_backup(args.out))
+    elif args.command == "check-updates":
+        result = check_for_updates()
+        if result.status == "update_available":
+            print(f"Update available: {result.latest_version} (currently {result.current_version}) - {result.release_url}")
+        elif result.status == "up_to_date":
+            print(f"Up to date ({result.current_version}).")
+        elif result.status == "no_releases":
+            print(f"Running {result.current_version}. {result.detail}")
+        else:
+            print(f"Could not check for updates: {result.detail}")
+        raise SystemExit(0 if result.status != "check_failed" else 1)
 
 
 if __name__ == "__main__":

@@ -41,6 +41,7 @@ Additional operator workflows:
 .\scripts\ybm.ps1 tray
 .\scripts\ybm.ps1 autostart enable
 .\scripts\ybm.ps1 backup
+.\scripts\ybm.ps1 check-updates
 ```
 
 `scenario record` makes a real LLM call. Live E2E requires the setup documented in

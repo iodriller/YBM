@@ -15,7 +15,7 @@
 #>
 param(
   [Parameter(Position = 0)]
-  [ValidateSet("setup", "doctor", "start", "stop", "restart", "status", "logs", "test", "e2e", "e2e-login", "send", "trace", "scenario", "db", "config", "clean", "package-extension", "tray", "autostart", "backup", "help")]
+  [ValidateSet("setup", "doctor", "start", "stop", "restart", "status", "logs", "test", "e2e", "e2e-login", "send", "trace", "scenario", "db", "config", "clean", "package-extension", "tray", "autostart", "backup", "check-updates", "help")]
   [string]$Command = "help",
 
   [Parameter(Position = 1)]
@@ -57,6 +57,7 @@ YBM - local agentic control stack
   ybm autostart enable|disable|status
                                 run the tray icon automatically at login (per-user Startup folder shortcut)
   ybm backup [--out <dir>]     zip the database, config.yaml, .env, and secret vault (default: .agent_control/backups)
+  ybm check-updates            compare the installed version against the latest GitHub release (read-only)
 "@ | Write-Host
 }
 
@@ -587,6 +588,11 @@ switch ($Command) {
   "backup" {
     $env:PYTHONPATH = "$Script:YbmRoot\backend\src"
     & (Get-YbmPython) -m agent_control.cli backup @Rest
+    exit $LASTEXITCODE
+  }
+  "check-updates" {
+    $env:PYTHONPATH = "$Script:YbmRoot\backend\src"
+    & (Get-YbmPython) -m agent_control.cli check-updates
     exit $LASTEXITCODE
   }
   "trace" {
