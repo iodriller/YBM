@@ -23,7 +23,7 @@ assumption that you shouldn't have to.
 |---|---|
 | **Approvals the model can't bypass** | High-impact operations (running generated code, creating a schedule, installing an MCP server, ...) are gated at the runtime level — `ToolDefinition.approval_required_operations` — independent of any access-mode preset, including "Full Access." The model setting `approved: true` in its own output has no effect. |
 | **Secure by default, not secure-if-configured** | Terminal execution, filesystem access, browser automation, desktop control, dependency installs, and git push all start **off**. A capability policy engine with per-capability risk ceilings and a global approval floor sits in front of every tool call. |
-| **A real audit trail** | Every tool request, policy decision, and approval is a structured, redacted audit event — secrets never reach logs or task output. |
+| **A real audit trail** | Every tool request, policy decision, and approval is a structured, redacted audit event. Configured secrets are redacted at logging and response boundaries, and vault-backed tools inject them without intentionally exposing their values — redaction is a real safeguard, not a substitute for keeping secrets out of prompts and outputs (see [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)). |
 | **Tested against recorded reality, not mocks** | 30+ deterministic scenario tests replay real, previously-recorded LLM responses through the actual worker/policy/executor stack — no network calls, no flake, no API cost, and they catch real regressions (see [docs/HISTORY.md](docs/HISTORY.md) for examples). |
 | **A published threat model** | [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) states trust boundaries and known limitations up front, instead of implying there are none. |
 

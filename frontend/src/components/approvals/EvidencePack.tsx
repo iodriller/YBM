@@ -11,8 +11,14 @@ import { formatCountdown, useCountdown } from "@/lib/time"
 /**
  * The approval decision surface (docs/UI_REWRITE_PLAN.md §11.2), ordered
  * for a sub-15-second decision per the 2026 human-in-the-loop research this
- * plan cites: Why -> What -> Exactly what -> Blast radius -> Reversibility
+ * plan cites: Why -> What -> Exactly what -> Blast radius -> Capability
  * -> Authority -> expiry. Never a bare "Approve?" button.
+ *
+ * "Capability" (not "Reversibility"): describeCapability() deliberately
+ * never claims whether a specific action can be undone (lib/capability.ts) -
+ * a real Recovery field (fully/partially/not reversible) needs rollback
+ * metadata this system doesn't compute yet, and a mislabeled field promising
+ * that with false confidence is worse than not promising it.
  */
 export function EvidencePack({
   item,
@@ -75,7 +81,7 @@ export function EvidencePack({
         )}
       </Field>
 
-      <Field label="Reversibility">
+      <Field label="Capability">
         <p>{describeCapability(approval.capability)}</p>
       </Field>
 
