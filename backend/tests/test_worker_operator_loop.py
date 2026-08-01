@@ -402,6 +402,55 @@ async def test_operator_loop_unregistered_tool_does_not_crash(tmp_path) -> None:
     assert result.metadata["operator_history"][0]["error"] == "unregistered tool: not.a.real.tool"
 
 
+@pytest.mark.asyncio
+async def test_operator_loop_applies_runtime_risk_floor_to_model_tool_call(tmp_path) -> None:
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("run a generated script")
+    settings = AppSettings(
+        _env_file=None,
+        approval_policy={"require_approval_at_or_above": RiskLevel.CRITICAL},
+        capabilities={
+            Capability.TERMINAL_RUN: CapabilityPolicy(
+                enabled=True,
+                requires_approval=False,
+                max_risk_level=RiskLevel.CRITICAL,
+            )
+        },
+    )
+    adapter = StaticToolAdapter({"stdout": "done"})
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"code.interpreter": adapter},
+        tool_definitions={
+            "code.interpreter": ToolDefinition(
+                name="code.interpreter",
+                capability=Capability.TERMINAL_RUN,
+                enabled=True,
+                description="run generated code",
+                minimum_risk=RiskLevel.HIGH,
+            )
+        },
+    )
+    operator = QueueOperator([
+        OperatorDecision(
+            action=OperatorAction.CALL_TOOL,
+            tool_name="code.interpreter",
+            tool_input={"operation": "generate_and_run", "objective": "write a report"},
+            risk_level=RiskLevel.LOW,
+        ),
+    ])
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator)
+
+    result = await worker.process_task(task.id)
+
+    assert result.status == TaskStatus.RUNNING
+    assert len(adapter.requests) == 1
+    assert adapter.requests[0].risk_level == RiskLevel.HIGH
+    assert result.metadata["operator_history"][0]["status"] == "succeeded"
+
+
 def _approval_settings() -> AppSettings:
     return AppSettings(
         _env_file=None,

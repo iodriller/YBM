@@ -430,9 +430,11 @@ class TaskWorker:
             task_id=latest.id,
             tool_name=decision.tool_name,
             capability=tool_def.capability,
-            risk_level=decision.risk_level,
+            risk_level=_effective_operator_risk(tool_def, decision.tool_input, decision.risk_level),
             input=decision.tool_input,
         )
+        if request.risk_level != decision.risk_level:
+            decision = decision.model_copy(update={"risk_level": request.risk_level})
         result = await self.executor.execute(request)
 
         if result.status == ToolResultStatus.NEEDS_APPROVAL:
@@ -508,7 +510,8 @@ class TaskWorker:
                 }
             request = ToolCallRequest(
                 task_id=task_id, tool_name=call.tool_name, capability=tool_def.capability,
-                risk_level=call.risk_level, input=call.tool_input, origin=batch_origin,
+                risk_level=_effective_operator_risk(tool_def, call.tool_input, call.risk_level),
+                input=call.tool_input, origin=batch_origin,
             )
             result = await self.executor.execute(request)
             if result.status == ToolResultStatus.NEEDS_APPROVAL:
@@ -653,7 +656,8 @@ class TaskWorker:
                 continue
             request = ToolCallRequest(
                 task_id=task.id, tool_name=sub_decision.tool_name, capability=tool_def.capability,
-                risk_level=sub_decision.risk_level, input=sub_decision.tool_input, origin=delegate_origin,
+                risk_level=_effective_operator_risk(tool_def, sub_decision.tool_input, sub_decision.risk_level),
+                input=sub_decision.tool_input, origin=delegate_origin,
             )
             result = await self.executor.execute(request)
             if result.status == ToolResultStatus.NEEDS_APPROVAL:
@@ -1103,6 +1107,29 @@ class TaskWorker:
             if output.get("artifact_id"):
                 metadata["last_delivered_artifact_id"] = output["artifact_id"]
         return self.repositories.tasks.update_metadata(task_id, metadata)
+
+
+def _effective_operator_risk(tool_definition: Any, tool_input: dict[str, Any], declared: RiskLevel) -> RiskLevel:
+    """Apply the runtime-owned risk floor to a model-authored tool call.
+
+    The executor still rejects understated requests from any other caller.
+    Operator decisions are normalized first so a small model cannot bypass
+    policy or derail a valid task merely by labeling a write as a low-risk
+    read. Invalid inputs stay untouched and are rejected by the executor's
+    normal schema validation path.
+    """
+    try:
+        validated_input = tool_definition.validate_input(tool_input)
+    except ValueError:
+        return declared
+    required = tool_definition.required_risk(validated_input)
+    risk_order = {
+        RiskLevel.LOW: 1,
+        RiskLevel.MEDIUM: 2,
+        RiskLevel.HIGH: 3,
+        RiskLevel.CRITICAL: 4,
+    }
+    return required if risk_order[required] > risk_order[declared] else declared
 
 def _is_background_external_tool_result(tool_name: str | None, result: ToolCallResult) -> bool:
     if tool_name != "coding.agent" or result.status != ToolResultStatus.SUCCEEDED:
