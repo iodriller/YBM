@@ -28,6 +28,7 @@ from agent_control.schemas import (
     CapabilityAccessMode,
     ChannelType,
     StrictBaseModel,
+    TaskRecord,
     utc_now,
 )
 from agent_control.storage.audit import AuditLogger
@@ -153,6 +154,21 @@ def _redact_admin_output(value: Any, settings: AppSettings) -> Any:
         patterns=("__ybm_no_key_redaction__",),
         secret_values=secret_values,
     )
+
+
+def _task_with_artifacts(task: TaskRecord, repositories: Repositories, settings: AppSettings) -> dict[str, Any]:
+    """A task dict plus its artifacts inline (docs/UI_UX_AUDIT.md Phase 1's
+    "artifact cards") - the trace endpoint already does this
+    (repositories.artifacts.list_for_task); chat never had, so a file a task
+    produced was invisible unless you opened its trace.
+    """
+    dumped = _redact_admin_output(task.model_dump(mode="json"), settings)
+    dumped["artifacts"] = [
+        _redact_admin_output(artifact.model_dump(mode="json"), settings)
+        for artifact in repositories.artifacts.list_for_task(task.id)
+    ]
+    return dumped
+
 
 try:
     _APP_VERSION = _pkg_version("agent-control-backend")
@@ -895,7 +911,7 @@ def create_admin_router(
         tasks = repositories.tasks.list_for_conversation(conversation_id, limit=limit)
         return {
             "conversation_id": conversation_id,
-            "tasks": [_redact_admin_output(task.model_dump(mode="json"), loaded) for task in tasks],
+            "tasks": [_task_with_artifacts(task, repositories, loaded) for task in tasks],
         }
 
     @router.post("/api/chat/messages")
@@ -919,7 +935,7 @@ def create_admin_router(
             )
             return {
                 "conversation_id": conversation_id,
-                "task": _redact_admin_output(result.task.model_dump(mode="json"), loaded),
+                "task": _task_with_artifacts(result.task, repositories, loaded),
             }
 
         task = repositories.tasks.create(
@@ -935,7 +951,7 @@ def create_admin_router(
         )
         return {
             "conversation_id": conversation_id,
-            "task": _redact_admin_output(task.model_dump(mode="json"), loaded),
+            "task": _task_with_artifacts(task, repositories, loaded),
         }
 
     @router.post("/api/llm/test")

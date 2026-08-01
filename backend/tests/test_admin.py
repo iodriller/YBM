@@ -13,6 +13,8 @@ from datetime import timedelta
 from agent_control.schemas import (
     ApprovalRequest,
     ApprovalStatus,
+    Artifact,
+    ArtifactType,
     AuditEventType,
     Capability,
     CapabilityAccessMode,
@@ -1218,6 +1220,24 @@ def test_admin_chat_send_cancel_word_cancels_the_clarifying_task(monkeypatch, tm
     response = client.post("/admin/api/chat/messages", json={"text": "never mind"})
 
     assert response.json()["task"]["status"] == "cancelled"
+
+
+def test_admin_chat_list_includes_a_task_s_artifacts(monkeypatch, tmp_path) -> None:
+    """The trace endpoint already inlines artifacts (build_task_trace) - a
+    file a task produced was otherwise invisible in Chat unless you opened
+    the trace to find it."""
+    client, repositories = _chat_client(monkeypatch, tmp_path)
+    created = client.post("/admin/api/chat/messages", json={"text": "generate a report"}).json()["task"]
+    assert created["artifacts"] == []
+    repositories.artifacts.create(
+        Artifact(task_id=created["id"], type=ArtifactType.GENERATED_FILE, uri="file:///tmp/report.csv"),
+    )
+
+    listed = client.get("/admin/api/chat/messages").json()["tasks"]
+
+    assert len(listed) == 1
+    assert listed[0]["artifacts"][0]["uri"] == "file:///tmp/report.csv"
+    assert listed[0]["artifacts"][0]["type"] == "generated_file"
 
 
 def test_admin_chat_send_rejects_empty_text(monkeypatch, tmp_path) -> None:

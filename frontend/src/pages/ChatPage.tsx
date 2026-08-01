@@ -4,6 +4,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { ArtifactCard } from "@/components/chat/ArtifactCard"
 import { ChatMarkdown } from "@/components/chat/ChatMarkdown"
 import { chatAnswerText, isTerminal } from "@/lib/chat"
 import { useChatMessages, useSendChatMessage, useTaskSignal } from "@/lib/queries"
@@ -202,6 +203,13 @@ function ChatExchange({ task }: { task: TaskRecord }) {
               Reply
             </Button>
           </form>
+        )}
+        {task.artifacts != null && task.artifacts.length > 0 && (
+          <div className="mt-2.5 flex flex-col gap-1.5">
+            {task.artifacts.map((artifact) => (
+              <ArtifactCard key={artifact.id} artifact={artifact} />
+            ))}
+          </div>
         )}
       </Bubble>
     </div>

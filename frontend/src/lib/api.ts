@@ -127,6 +127,17 @@ export const TaskStatusSchema = z.enum([
 ])
 export type TaskStatus = z.infer<typeof TaskStatusSchema>
 
+export const ArtifactSchema = z.object({
+  id: z.string(),
+  task_id: z.string().nullable(),
+  type: z.string(),
+  uri: z.string().nullable(),
+  content_preview: z.string().nullable(),
+  metadata: z.record(z.string(), z.unknown()),
+  created_at: z.string(),
+})
+export type Artifact = z.infer<typeof ArtifactSchema>
+
 export const TaskRecordSchema = z.object({
   id: z.string(),
   objective: z.string(),
@@ -135,6 +146,10 @@ export const TaskRecordSchema = z.object({
   created_at: z.string(),
   updated_at: z.string(),
   metadata: z.record(z.string(), z.unknown()),
+  // Only populated by the chat endpoints (docs/UI_UX_AUDIT.md Phase 1's
+  // artifact cards) - optional so /api/tasks and /api/tasks/{id}/trace,
+  // which don't send this key, still parse.
+  artifacts: z.array(ArtifactSchema).optional(),
 })
 export type TaskRecord = z.infer<typeof TaskRecordSchema>
 
