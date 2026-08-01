@@ -38,6 +38,9 @@ Additional operator workflows:
 .\scripts\ybm.ps1 trace <task_id>
 .\scripts\ybm.ps1 scenario record <name>
 .\scripts\ybm.ps1 package-extension
+.\scripts\ybm.ps1 tray
+.\scripts\ybm.ps1 autostart enable
+.\scripts\ybm.ps1 backup
 ```
 
 `scenario record` makes a real LLM call. Live E2E requires the setup documented in

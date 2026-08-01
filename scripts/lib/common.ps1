@@ -14,6 +14,17 @@ function Get-YbmPython {
   return "python"
 }
 
+function Get-YbmPythonW {
+  # Windowless variant (no console flash) - for the tray app specifically,
+  # which is meant to run detached from a shortcut, not a terminal.
+  $pythonw = Join-Path (Split-Path $Script:YbmVenvPython -Parent) "pythonw.exe"
+  if (Test-Path -LiteralPath $pythonw) {
+    return $pythonw
+  }
+  Write-Warning "backend\.venv\Scripts\pythonw.exe not found - falling back to 'pythonw' on PATH. Run '.\scripts\ybm.ps1 setup' first."
+  return "pythonw"
+}
+
 function Import-DotEnv {
   param([string]$Path = (Join-Path $Script:YbmRoot ".env"))
   if (-not (Test-Path -LiteralPath $Path)) {

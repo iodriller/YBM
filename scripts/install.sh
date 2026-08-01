@@ -62,7 +62,7 @@ log "Installing Python dependencies (uv sync)"
 # Keep this extras list identical to scripts/ybm.ps1's Invoke-YbmSetup - these
 # drifted before (this line used to say just "--extra dev", which skips
 # pytest/telethon/voice/desktop entirely, unlike the Windows path).
-uv sync --extra test --extra e2e --extra voice --extra desktop --extra dev
+uv sync --extra test --extra e2e --extra voice --extra desktop --extra tray --extra dev
 
 cd "$REPO_DIR"
 log "Setting up config, tokens, and the admin console"

@@ -15,7 +15,7 @@
 #>
 param(
   [Parameter(Position = 0)]
-  [ValidateSet("setup", "doctor", "start", "stop", "restart", "status", "logs", "test", "e2e", "e2e-login", "send", "trace", "scenario", "db", "config", "clean", "package-extension", "help")]
+  [ValidateSet("setup", "doctor", "start", "stop", "restart", "status", "logs", "test", "e2e", "e2e-login", "send", "trace", "scenario", "db", "config", "clean", "package-extension", "tray", "autostart", "backup", "help")]
   [string]$Command = "help",
 
   [Parameter(Position = 1)]
@@ -53,7 +53,53 @@ YBM - local agentic control stack
   ybm scenario record <name> [--profile <name>]
                                 re-record a scenario fixture against a live LLM (real API calls, may cost money)
   ybm package-extension        build the VS Code bridge extension .vsix
+  ybm tray                     launch the system tray icon (Open Admin Console / Start / Stop / Status)
+  ybm autostart enable|disable|status
+                                run the tray icon automatically at login (per-user Startup folder shortcut)
+  ybm backup [--out <dir>]     zip the database, config.yaml, .env, and secret vault (default: .agent_control/backups)
 "@ | Write-Host
+}
+
+function Get-YbmAutostartShortcutPath {
+  Join-Path ([Environment]::GetFolderPath("Startup")) "YBM Control.lnk"
+}
+
+function Invoke-YbmAutostart {
+  param([string]$Sub)
+  $shortcutPath = Get-YbmAutostartShortcutPath
+  switch ($Sub) {
+    "enable" {
+      $shell = New-Object -ComObject WScript.Shell
+      $shortcut = $shell.CreateShortcut($shortcutPath)
+      $shortcut.TargetPath = Get-YbmPythonW
+      $shortcut.Arguments = "`"$Script:YbmRoot\scripts\tray_app.py`""
+      $shortcut.WorkingDirectory = $Script:YbmRoot
+      $shortcut.Description = "YBM Control tray icon"
+      $shortcut.Save()
+      Write-Host "Autostart enabled - $shortcutPath will launch the tray icon at login."
+      Write-Host "Launching it now too, so you don't have to log out and back in..."
+      Start-Process -FilePath (Get-YbmPythonW) -ArgumentList "`"$Script:YbmRoot\scripts\tray_app.py`"" -WorkingDirectory $Script:YbmRoot
+    }
+    "disable" {
+      if (Test-Path -LiteralPath $shortcutPath) {
+        Remove-Item -LiteralPath $shortcutPath -Force
+        Write-Host "Autostart disabled - removed $shortcutPath."
+      } else {
+        Write-Host "Autostart was not enabled (no shortcut at $shortcutPath)."
+      }
+    }
+    "status" {
+      if (Test-Path -LiteralPath $shortcutPath) {
+        Write-Host "Autostart: enabled ($shortcutPath)"
+      } else {
+        Write-Host "Autostart: disabled"
+      }
+    }
+    default {
+      Write-Host "usage: ybm autostart enable | disable | status"
+      exit 1
+    }
+  }
 }
 
 # NOTE: none of the helper functions below use a parameter named "Args" -
@@ -77,7 +123,7 @@ function Invoke-YbmSetup {
       # skipping pytest/telethon/voice/desktop on a fresh Linux/macOS install).
       # "dev" (ruff) is included so a fresh `ybm setup` can actually run the
       # `uv run --frozen ruff check .` step AGENTS.md/CONTRIBUTING.md document.
-      $extraArgs = @("--extra", "test", "--extra", "e2e", "--extra", "voice", "--extra", "dev")
+      $extraArgs = @("--extra", "test", "--extra", "e2e", "--extra", "voice", "--extra", "tray", "--extra", "dev")
       if ($Argv -notcontains "--no-desktop") {
         $extraArgs += @("--extra", "desktop")
       }
@@ -529,6 +575,18 @@ switch ($Command) {
   }
   "package-extension" {
     & "$Script:YbmRoot\scripts\package_vscode_extension.ps1"
+    exit $LASTEXITCODE
+  }
+  "tray" {
+    & (Get-YbmPython) "$Script:YbmRoot\scripts\tray_app.py"
+    exit $LASTEXITCODE
+  }
+  "autostart" {
+    Invoke-YbmAutostart -Sub $Sub
+  }
+  "backup" {
+    $env:PYTHONPATH = "$Script:YbmRoot\backend\src"
+    & (Get-YbmPython) -m agent_control.cli backup @Rest
     exit $LASTEXITCODE
   }
   "trace" {

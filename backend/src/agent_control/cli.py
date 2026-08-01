@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import sys
 
+from agent_control.backup import run_backup
 from agent_control.bootstrap import run_doctor, run_setup
 from agent_control.config_sync import set_config_path
 from agent_control.onboarding import run_onboard
@@ -432,6 +433,7 @@ def main() -> None:
             "run-scheduler",
             "run-coding-agent-session",
             "run-coding-session-watcher",
+            "backup",
         ],
     )
     parser.add_argument("--session-root", default=None)
@@ -451,6 +453,7 @@ def main() -> None:
     parser.add_argument("--no-scheduler", action="store_true", help="for `start`: skip the scheduler")
     parser.add_argument("--no-localdeploy", action="store_true", help="for `start`: skip launching LocalDeploy")
     parser.add_argument("--open", action="store_true", help="for `start`: open the admin console in a browser once ready")
+    parser.add_argument("--out", default=None, help="output directory for `backup` (default: .agent_control/backups)")
     args = parser.parse_args()
 
     _configure_logging_for_command(args.command)
@@ -516,6 +519,8 @@ def main() -> None:
         asyncio.run(run_coding_agent_session(args.session_root, args.session_id))
     elif args.command == "run-coding-session-watcher":
         asyncio.run(run_coding_session_watcher(args.poll_interval_seconds))
+    elif args.command == "backup":
+        raise SystemExit(run_backup(args.out))
 
 
 if __name__ == "__main__":
