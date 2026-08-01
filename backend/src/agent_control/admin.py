@@ -227,6 +227,13 @@ except PackageNotFoundError:
 # repo root (ybm start) or as an installed package.
 _STATIC_ADMIN_DIR = Path(__file__).parent / "static" / "admin"
 
+# Bundled starter skills (docs/UI_UX_AUDIT.md Phase 11) - committed, unlike
+# adapters.skills.root_dir which is generated/gitignored, so a starter
+# catalog has somewhere to actually ship from. Same file-based-not-cwd-based
+# resolution as _STATIC_ADMIN_DIR above, four parents up from
+# backend/src/agent_control/admin.py to the repo root.
+_STARTER_SKILLS_DIR = Path(__file__).resolve().parents[3] / "skills" / "starter"
+
 
 SettingsLoader = Callable[[], AppSettings]
 RepositoriesLoader = Callable[[], Repositories]
@@ -796,6 +803,18 @@ def create_admin_router(
         loaded = require_admin(request)
         skills = list_skills_detailed(loaded.adapters.skills.root_dir, _known_tool_names(loaded))
         return {"root_dir": loaded.adapters.skills.root_dir, "skills": skills}
+
+    @router.get("/api/skills/catalog")
+    def admin_skills_catalog(request: Request) -> dict[str, Any]:
+        """Bundled starter skills (docs/UI_UX_AUDIT.md Phase 11) - read-only
+        browsing of skills/starter/, distinct from the installed catalog
+        above. Installing one goes through the existing POST /api/skills
+        with this entry's own fields, not a separate install-from-catalog
+        endpoint - one install code path, not two.
+        """
+        loaded = require_admin(request)
+        catalog = list_skills_detailed(str(_STARTER_SKILLS_DIR), _known_tool_names(loaded))
+        return {"skills": catalog}
 
     @router.post("/api/skills")
     def admin_install_skill(request: Request, payload: AdminSkillInstallRequest) -> dict[str, Any]:

@@ -1096,6 +1096,16 @@ export function listSkills() {
   return apiFetch("/api/skills", SkillsListResponseSchema)
 }
 
+const SkillsCatalogResponseSchema = z.object({ skills: z.array(SkillSchema) })
+
+/** The bundled skills/starter/ catalog (docs/UI_UX_AUDIT.md Phase 11) -
+ * read-only browsing, distinct from listSkills() above (what's actually
+ * installed). Installing a catalog entry reuses installSkill() with its
+ * own fields - one install code path, not a separate one for the catalog. */
+export function listSkillsCatalog() {
+  return apiFetch("/api/skills/catalog", SkillsCatalogResponseSchema)
+}
+
 const SkillInstallResponseSchema = z.object({ skill: SkillSchema })
 
 export type SkillInstallInput = { name: string; description: string; body: string; version?: string; tools?: string[] }

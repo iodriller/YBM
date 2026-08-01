@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Plus, Sparkles } from "lucide-react"
+import { LayoutGrid, Plus, Sparkles } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -7,6 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { SkillCard } from "@/components/skills/SkillCard"
 import { SkillInstallForm } from "@/components/skills/SkillInstallForm"
+import { SkillCatalogBrowser } from "@/components/skills/SkillCatalogBrowser"
 import { useSkills } from "@/lib/queries"
 
 /**
@@ -19,8 +20,10 @@ import { useSkills } from "@/lib/queries"
 export function SkillsPage() {
   const { data, isPending, isError, error } = useSkills()
   const [installing, setInstalling] = useState(false)
+  const [browsing, setBrowsing] = useState(false)
 
   const skills = data?.skills ?? []
+  const installedNames = new Set(skills.map((s) => s.name))
 
   return (
     <div className="h-full overflow-y-auto">
@@ -30,14 +33,34 @@ export function SkillsPage() {
           title="Skills"
           description="Instructions YBM can read when they're relevant to a task - a runbook, a house style guide, anything that's expertise rather than an action. A skill can't execute anything on its own."
           actions={
-            !installing && (
-              <Button size="sm" onClick={() => setInstalling(true)}>
-                <Plus className="size-4" />
-                Install a skill
-              </Button>
-            )
+            <div className="flex items-center gap-2">
+              {!browsing && (
+                <Button variant="outline" size="sm" onClick={() => setBrowsing(true)}>
+                  <LayoutGrid className="size-4" />
+                  Browse catalog
+                </Button>
+              )}
+              {!installing && (
+                <Button size="sm" onClick={() => setInstalling(true)}>
+                  <Plus className="size-4" />
+                  Install a skill
+                </Button>
+              )}
+            </div>
           }
         />
+
+        {browsing && (
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Starter catalog</p>
+              <Button variant="ghost" size="sm" onClick={() => setBrowsing(false)}>
+                Close
+              </Button>
+            </div>
+            <SkillCatalogBrowser installedNames={installedNames} />
+          </div>
+        )}
 
         {installing && <SkillInstallForm onDone={() => setInstalling(false)} />}
 
@@ -63,8 +86,9 @@ export function SkillsPage() {
               </span>
               <p className="text-sm font-medium">No skills installed yet.</p>
               <p className="max-w-sm text-xs text-muted-foreground">
-                Install one above, or drop a markdown file into {data?.root_dir ?? "the skills directory"} directly -
-                either way it's available on the worker's next call.
+                Browse the starter catalog above, write your own, or drop a markdown file into{" "}
+                {data?.root_dir ?? "the skills directory"} directly - any of the three is available on the
+                worker's next call.
               </p>
             </CardContent>
           </Card>

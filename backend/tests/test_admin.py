@@ -702,6 +702,29 @@ def test_admin_task_trace_evidence_aggregates_files_urls_and_commands(monkeypatc
     assert evidence["files"][0]["tool_name"] == "filesystem.manage"
 
 
+def test_admin_skills_catalog_lists_the_real_bundled_starters(monkeypatch, tmp_path) -> None:
+    """docs/UI_UX_AUDIT.md Phase 11: skills/starter/ is committed (unlike
+    adapters.skills.root_dir, which is generated), so there's something to
+    browse and install on a fresh checkout with zero skills installed yet.
+    Reads the real directory - this is the actual bundled catalog, not a
+    fixture standing in for it.
+    """
+    client, _repositories = _chat_client(monkeypatch, tmp_path)
+
+    response = client.get("/admin/api/skills/catalog")
+    body = response.json()
+
+    assert response.status_code == 200
+    names = {s["name"] for s in body["skills"]}
+    assert "File Organization" in names
+    assert "Document Summary" in names
+    assert len(body["skills"]) >= 6
+    # Every starter declares its own tools explicitly - the catalog
+    # shouldn't be relying on the substring-scan fallback for its own
+    # bundled content.
+    assert all(s["tools_declared"] for s in body["skills"])
+
+
 def test_admin_skill_install_list_and_uninstall(monkeypatch, tmp_path) -> None:
     """docs/UI_UX_AUDIT.md Phase 5: install a skill (writing its manifest
     file), see it in the catalog with inferred permission labels, remove it

@@ -22,6 +22,7 @@ import {
   listPendingApprovals,
   listSecrets,
   listSkills,
+  listSkillsCatalog,
   listTasks,
   runDoctor,
   selectLLMPreset,
@@ -401,6 +402,14 @@ export function useSkills() {
     queryKey: ["skills"],
     queryFn: listSkills,
     staleTime: 10_000,
+  })
+}
+
+export function useSkillsCatalog() {
+  return useQuery({
+    queryKey: ["skills", "catalog"],
+    queryFn: listSkillsCatalog,
+    staleTime: 60_000,
   })
 }
 
