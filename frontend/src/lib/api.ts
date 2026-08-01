@@ -957,3 +957,55 @@ const AuditClearResponseSchema = z.object({ deleted_audit_events: z.number().int
 export function clearAudit() {
   return apiFetch("/api/audit", AuditClearResponseSchema, { method: "DELETE" })
 }
+
+// ---- Memory (docs/UI_UX_AUDIT.md Phase 4) ------------------------------
+
+export const MemorySourceSchema = z.enum(["user_stated", "task_derived", "operator_admin"])
+export type MemorySource = z.infer<typeof MemorySourceSchema>
+
+export const MemoryFactSchema = z.object({
+  id: z.string(),
+  category: z.string(),
+  content: z.string(),
+  source: MemorySourceSchema,
+  confidence: z.number(),
+  task_id: z.string().nullable(),
+  supersedes_id: z.string().nullable(),
+  created_at: z.string(),
+  updated_at: z.string(),
+})
+export type MemoryFact = z.infer<typeof MemoryFactSchema>
+
+const MemoryListResponseSchema = z.object({ facts: z.array(MemoryFactSchema) })
+
+export function listMemoryFacts(params: { q?: string; category?: string } = {}) {
+  const search = new URLSearchParams()
+  if (params.q) search.set("q", params.q)
+  if (params.category) search.set("category", params.category)
+  const query = search.toString()
+  return apiFetch(`/api/memory${query ? `?${query}` : ""}`, MemoryListResponseSchema)
+}
+
+const MemoryFactResponseSchema = z.object({ fact: MemoryFactSchema })
+
+export function createMemoryFact(category: string, content: string) {
+  return apiFetch("/api/memory", MemoryFactResponseSchema, {
+    method: "POST",
+    body: JSON.stringify({ category, content }),
+  })
+}
+
+export function updateMemoryFact(factId: string, category: string, content: string) {
+  return apiFetch(`/api/memory/${encodeURIComponent(factId)}`, MemoryFactResponseSchema, {
+    method: "PATCH",
+    body: JSON.stringify({ category, content }),
+  })
+}
+
+const MemoryDeleteResponseSchema = z.object({ fact_id: z.string(), deleted: z.boolean() })
+
+export function deleteMemoryFact(factId: string) {
+  return apiFetch(`/api/memory/${encodeURIComponent(factId)}`, MemoryDeleteResponseSchema, {
+    method: "DELETE",
+  })
+}

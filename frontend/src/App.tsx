@@ -17,6 +17,7 @@ const TaskTracePage = lazy(() =>
   import("@/pages/TaskTracePage").then((m) => ({ default: m.TaskTracePage })),
 )
 const AccessPage = lazy(() => import("@/pages/AccessPage").then((m) => ({ default: m.AccessPage })))
+const MemoryPage = lazy(() => import("@/pages/MemoryPage").then((m) => ({ default: m.MemoryPage })))
 const SettingsPage = lazy(() =>
   import("@/pages/SettingsPage").then((m) => ({ default: m.SettingsPage })),
 )
@@ -82,6 +83,14 @@ function App() {
           element={
             <Suspense fallback={<PageFallback />}>
               <AccessPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="memory"
+          element={
+            <Suspense fallback={<PageFallback />}>
+              <MemoryPage />
             </Suspense>
           }
         />

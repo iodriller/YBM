@@ -1,7 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   clearAudit,
+  createMemoryFact,
   decideApproval,
+  deleteMemoryFact,
   deleteSecret,
   getBootstrap,
   getEffectiveConfig,
@@ -13,6 +15,7 @@ import {
   initSecretVault,
   listAudit,
   listChatMessages,
+  listMemoryFacts,
   listPendingApprovals,
   listSecrets,
   listTasks,
@@ -24,6 +27,7 @@ import {
   updateAccessModes,
   updateComputerUseConfig,
   updateLLMConfig,
+  updateMemoryFact,
   updateTelegramConfig,
   updateVSCodeConfig,
   updateWorkspaceConfig,
@@ -313,6 +317,48 @@ export function useClearAudit() {
     mutationFn: clearAudit,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["audit"] })
+    },
+  })
+}
+
+// ---- Memory (docs/UI_UX_AUDIT.md Phase 4) --------------------------------
+
+export function useMemoryFacts(params: { q?: string; category?: string } = {}) {
+  return useQuery({
+    queryKey: ["memory", params],
+    queryFn: () => listMemoryFacts(params),
+    staleTime: 10_000,
+  })
+}
+
+export function useCreateMemoryFact() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ category, content }: { category: string; content: string }) =>
+      createMemoryFact(category, content),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["memory"] })
+    },
+  })
+}
+
+export function useUpdateMemoryFact() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ factId, category, content }: { factId: string; category: string; content: string }) =>
+      updateMemoryFact(factId, category, content),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["memory"] })
+    },
+  })
+}
+
+export function useDeleteMemoryFact() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (factId: string) => deleteMemoryFact(factId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["memory"] })
     },
   })
 }
