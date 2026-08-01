@@ -1009,3 +1009,44 @@ export function deleteMemoryFact(factId: string) {
     method: "DELETE",
   })
 }
+
+// ---- Skills (docs/UI_UX_AUDIT.md Phase 5) -------------------------------
+
+export const SkillSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  version: z.string(),
+  tools: z.array(z.string()),
+  tools_declared: z.boolean(),
+  body: z.string(),
+  path: z.string(),
+  content_hash: z.string(),
+  size_bytes: z.number(),
+  modified_at: z.number().nullable(),
+})
+export type Skill = z.infer<typeof SkillSchema>
+
+const SkillsListResponseSchema = z.object({ root_dir: z.string(), skills: z.array(SkillSchema) })
+
+export function listSkills() {
+  return apiFetch("/api/skills", SkillsListResponseSchema)
+}
+
+const SkillInstallResponseSchema = z.object({ skill: SkillSchema })
+
+export type SkillInstallInput = { name: string; description: string; body: string; version?: string; tools?: string[] }
+
+export function installSkill(input: SkillInstallInput) {
+  return apiFetch("/api/skills", SkillInstallResponseSchema, {
+    method: "POST",
+    body: JSON.stringify(input),
+  })
+}
+
+const SkillUninstallResponseSchema = z.object({ name: z.string(), deleted: z.boolean() })
+
+export function uninstallSkill(name: string) {
+  return apiFetch(`/api/skills/${encodeURIComponent(name)}`, SkillUninstallResponseSchema, {
+    method: "DELETE",
+  })
+}

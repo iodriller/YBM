@@ -13,17 +13,20 @@ import {
   getTaskReceipt,
   getTaskTrace,
   initSecretVault,
+  installSkill,
   listAudit,
   listChatMessages,
   listMemoryFacts,
   listPendingApprovals,
   listSecrets,
+  listSkills,
   listTasks,
   selectLLMPreset,
   sendChatMessage,
   sendTaskSignal,
   setSecret,
   testLLM,
+  uninstallSkill,
   updateAccessModes,
   updateComputerUseConfig,
   updateLLMConfig,
@@ -36,6 +39,7 @@ import {
   type CapabilityAccessMode,
   type ComputerUseConfigInput,
   type LLMConfigInput,
+  type SkillInstallInput,
   type TelegramConfigInput,
   type VSCodeConfigInput,
   type WorkspaceConfigInput,
@@ -359,6 +363,36 @@ export function useDeleteMemoryFact() {
     mutationFn: (factId: string) => deleteMemoryFact(factId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["memory"] })
+    },
+  })
+}
+
+// ---- Skills (docs/UI_UX_AUDIT.md Phase 5) --------------------------------
+
+export function useSkills() {
+  return useQuery({
+    queryKey: ["skills"],
+    queryFn: listSkills,
+    staleTime: 10_000,
+  })
+}
+
+export function useInstallSkill() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: SkillInstallInput) => installSkill(input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["skills"] })
+    },
+  })
+}
+
+export function useUninstallSkill() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (name: string) => uninstallSkill(name),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["skills"] })
     },
   })
 }
