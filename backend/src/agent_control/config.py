@@ -572,7 +572,22 @@ class AppSettings(BaseSettings):
             "logging": self.logging.model_dump(),
             "limits": self.limits.model_dump(),
             "adapters": self.adapters.model_dump(),
-            "mcp": self.mcp.model_dump(mode="json"),
+            "mcp": {
+                "enabled": self.mcp.enabled,
+                "cache_ttl_seconds": self.mcp.cache_ttl_seconds,
+                "catalog_path": self.mcp.catalog_path,
+                "servers": {
+                    # MCP servers commonly need secrets (API tokens, etc.) passed via
+                    # env - dump every other field but replace values with just their
+                    # key names, the same "list the key, never the value" invariant
+                    # storage/secrets.py's vault already enforces.
+                    name: {
+                        **server.model_dump(mode="json", exclude={"env"}),
+                        "env_keys": sorted(server.env.keys()),
+                    }
+                    for name, server in self.mcp.servers.items()
+                },
+            },
             "operator": self.operator.model_dump(),
         }
 

@@ -386,3 +386,71 @@ async def test_delegate_accumulates_subagent_token_usage_into_parent_task(tmp_pa
     assert usage["by_source"]["subagent"] == {
         "calls": 1, "prompt_tokens": 40, "completion_tokens": 10, "total_tokens": 50,
     }
+
+
+@pytest.mark.asyncio
+async def test_call_tools_parallel_tags_all_calls_with_a_shared_batch_origin(tmp_path) -> None:
+    """docs/UI_REWRITE_PLAN.md §7/§9 Phase 0.6: a trace UI needs to render
+    concurrent calls as siblings, not indistinguishable sequential ones.
+    Every call in one batch must carry the same ToolCallRequest.origin, both
+    on the persisted tool_invocations row (via request_json) and on the
+    operator_history entry that mirrors it - the two must correlate."""
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("check three sites")
+    settings = _settings(Capability.LLM_GENERATE)
+    adapters = {name: RecordingAdapter(name, delay=0.0) for name in ("a", "b", "c")}
+    executor = _executor(settings, audit, repos, adapters)
+    operator = QueueOperator([
+        OperatorDecision(
+            action=OperatorAction.CALL_TOOLS_PARALLEL,
+            parallel_calls=[ParallelToolCall(tool_name=n, tool_input={}) for n in ("a", "b", "c")],
+        ),
+        OperatorDecision(action=OperatorAction.DONE, final_answer="done"),
+    ])
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator)
+
+    running = await worker.process_task(task.id)
+
+    history_origins = {entry["origin"] for entry in running.metadata["operator_history"]}
+    assert len(history_origins) == 1
+    (shared_origin,) = history_origins
+    assert shared_origin.startswith("parallel_batch:")
+
+    invocations = repos.tool_invocations.list_for_task(task.id)
+    assert len(invocations) == 3
+    assert all(call["request"]["origin"] == shared_origin for call in invocations)
+
+
+@pytest.mark.asyncio
+async def test_delegate_tags_its_own_tool_calls_with_a_subagent_origin(tmp_path) -> None:
+    """The isolated sub-loop's own tool_invocations rows must be tagged with
+    a subagent:<id> origin, and the parent-visible "delegate" summary entry
+    must carry that same id - the correlation a trace UI needs to nest the
+    sub-agent's calls under the delegate step that spawned them."""
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("summarize a file via a sub-task")
+    settings = _settings(Capability.LLM_GENERATE)
+    executor = _executor(
+        settings, audit, repos,
+        {"filesystem.manage": RecordingAdapter("filesystem.manage", delay=0.0, output={"text": "contents"})},
+    )
+    operator = QueueOperator([
+        OperatorDecision(action=OperatorAction.DELEGATE, delegate_objective="read and summarize the file"),
+        OperatorDecision(
+            action=OperatorAction.CALL_TOOL, tool_name="filesystem.manage", tool_input={}, risk_level=RiskLevel.LOW,
+        ),
+        OperatorDecision(action=OperatorAction.DONE, final_answer="sub-task done"),
+    ])
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator)
+
+    running = await worker.process_task(task.id)
+
+    history = running.metadata["operator_history"]
+    assert len(history) == 1
+    delegate_origin = history[0]["origin"]
+    assert delegate_origin.startswith("subagent:")
+
+    invocations = repos.tool_invocations.list_for_task(task.id)
+    assert len(invocations) == 1
+    assert invocations[0]["tool_name"] == "filesystem.manage"
+    assert invocations[0]["request"]["origin"] == delegate_origin

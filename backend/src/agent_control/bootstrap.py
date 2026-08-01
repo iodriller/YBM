@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import importlib.util
 import secrets as secrets_module
+import shutil
 import socket
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,7 +27,7 @@ from agent_control.storage.secrets import SecretVault
 
 REQUIRED_MODULES = [
     "fastapi", "cryptography", "httpx", "json_repair", "mcp", "pandas",
-    "pydantic", "pydantic_settings", "PIL", "pypdf", "yaml", "streamlit",
+    "pydantic", "pydantic_settings", "PIL", "pypdf", "yaml",
     "structlog", "uvicorn", "websocket",
 ]
 DESKTOP_MODULES = ["mss", "pyautogui", "pygetwindow", "pywinauto"]
@@ -118,7 +120,7 @@ def _port_listening(port: int, host: str = "127.0.0.1", timeout: float = 0.5) ->
 
 def _check_ports() -> list[Check]:
     checks = []
-    for name, port in (("LocalDeploy", 8000), ("Backend", 8765), ("Admin UI", 8501)):
+    for name, port in (("LocalDeploy", 8000), ("Backend", 8765)):
         listening = _port_listening(port)
         checks.append(Check(
             f"Port {port} ({name})", "ok" if listening else "warn",
@@ -145,7 +147,7 @@ def _http_ok(url: str, timeout: float = 6.0) -> bool:
         return False
 
 
-def _check_localdeploy(settings: AppSettings) -> Check:
+def check_localdeploy(settings: AppSettings) -> Check:
     profile = settings.llm.profiles.get(settings.llm.default_profile)
     base_url = profile.base_url if profile else None
     if not base_url or not any(host in base_url for host in ("127.0.0.1", "localhost")):
@@ -196,7 +198,7 @@ def collect_checks() -> list[Check]:
     if settings is not None:
         checks.extend(_check_desktop_modules(settings))
         checks.append(_check_db(settings))
-        checks.append(_check_localdeploy(settings))
+        checks.append(check_localdeploy(settings))
         checks.append(_check_telegram(settings))
         checks.append(_check_admin_token(settings))
         checks.append(_check_vault(settings))
@@ -273,6 +275,43 @@ def run_setup(*, telegram_token: str | None = None) -> int:
     database.initialize()
     print(f"database ready at {load_settings().storage.database_url}")
 
+    _build_admin_console()
+
     print()
     print("Next: `ybm doctor` to verify the environment, then `ybm start`.")
     return 0
+
+
+def _build_admin_console() -> None:
+    """Build the React admin console so `/admin` serves the real app instead
+    of the "no build yet, run `ybm ui-build`" fallback page - without this,
+    a fresh install runs fine but silently shows an unfinished-looking admin
+    UI on first launch. Best-effort: a missing/broken Node toolchain warns
+    loudly (with the exact fix) rather than failing the whole setup, since
+    the backend and every non-admin-console feature works without it."""
+    frontend_dir = Path("frontend")
+    if not frontend_dir.exists():
+        return
+
+    print("\n-- Building the admin console --")
+    npm = shutil.which("npm")
+    if npm is None:
+        print("WARN: npm not found - skipping the admin console build. Install Node.js 20+ "
+              "(https://nodejs.org), then run `ybm ui-build`. Until then, /admin shows a "
+              "build-instructions page instead of the real console.")
+        return
+
+    use_shell = sys.platform == "win32"
+    if not (frontend_dir / "node_modules").exists():
+        print("installing admin console dependencies (npm install)...")
+        install_result = subprocess.run(["npm", "install"], cwd=frontend_dir, shell=use_shell, check=False)
+        if install_result.returncode != 0:
+            print("WARN: `npm install` failed - run it manually in frontend/, then `ybm ui-build`.")
+            return
+
+    print("building the admin console (npm run build)...")
+    build_result = subprocess.run(["npm", "run", "build"], cwd=frontend_dir, shell=use_shell, check=False)
+    if build_result.returncode == 0:
+        print("admin console built - /admin will serve the real app.")
+    else:
+        print("WARN: admin console build failed - run `ybm ui-build` to see the full error.")

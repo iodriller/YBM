@@ -39,7 +39,7 @@ if ! command -v uv >/dev/null 2>&1; then
   command -v uv >/dev/null 2>&1 || fail "uv install did not put 'uv' on PATH - open a new shell and re-run."
 fi
 
-if [ -f "pyproject.toml" ] && [ -f "AGENTS.md" ] && [ -d "backend" ]; then
+if [ -f "backend/pyproject.toml" ] && [ -f "AGENTS.md" ] && [ -f "scripts/ybm.ps1" ]; then
   log "Already inside a YBM checkout - using $(pwd)"
   REPO_DIR="$(pwd)"
 else
@@ -55,7 +55,10 @@ fi
 
 cd "$REPO_DIR/backend"
 log "Installing Python dependencies (uv sync)"
-uv sync --extra dev
+# Keep this extras list identical to scripts/ybm.ps1's Invoke-YbmSetup - these
+# drifted before (this line used to say just "--extra dev", which skips
+# pytest/telethon/voice/desktop entirely, unlike the Windows path).
+uv sync --extra test --extra e2e --extra voice --extra desktop --extra dev
 
 log "Starting the onboarding wizard"
 cd "$REPO_DIR"

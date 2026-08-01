@@ -81,10 +81,10 @@ piece surfaces before you try to start the stack, not as a silent crash loop aft
 ```
 
 This runs `doctor` first (skip with `-SkipDoctor`), then initializes the database and starts
-LocalDeploy, backend, Streamlit admin UI, Telegram polling, worker, scheduler, and the
-coding-session watcher. Skip individual services with `-NoTelegram`, `-NoWorker`,
-`-NoScheduler`, `-NoAdminUi`, or `-NoLocalDeploy`. Generated task workspaces default to
-`.agent_control/workspaces/task_<id>`.
+LocalDeploy, backend, Telegram polling, worker, scheduler, and the coding-session watcher. The
+admin console is served by the backend itself, not a separate service. Skip individual services
+with `-NoTelegram`, `-NoWorker`, `-NoScheduler`, or `-NoLocalDeploy`. Generated task workspaces
+default to `.agent_control/workspaces/task_<id>`.
 
 Browser tasks use Chrome through the DevTools remote debugging port configured at `adapters.browser.remote_debugging_port` (default `9222`). If Chrome is not already available there, the adapter launches a separate Chrome profile under `.agent_control/browser/chrome-profile`. Screenshots are saved under `.agent_control/browser/screenshots`.
 
@@ -93,12 +93,13 @@ Computer-use tasks use the `computer.use` adapter when desktop control is enable
 Open the admin UI:
 
 ```text
-http://127.0.0.1:8501
+http://127.0.0.1:8765/admin
 ```
 
-`http://127.0.0.1:8765/admin` used to serve a second, ~1,300-line embedded-HTML console; it's now a
-small pointer page back to the Streamlit UI above. The JSON API underneath it
-(`/admin/api/*`) is unchanged and is what Streamlit itself talks to.
+If `frontend/`'s React console hasn't been built yet at this checkout (`ybm ui-build`, or
+`npm run build` in `frontend/`), this serves a small pointer page instead, explaining how to build
+it. Either way, the JSON API underneath it (`/admin/api/*`) is unchanged and works regardless of
+whether a build exists.
 
 Launchable app requests use Copilot first when VS Code write access is enabled, then the workspace adapter serves the result locally. Generated adapter proposals, when requested, are cached under `.agent_control/adapters` and are not loaded into runtime automatically.
 
@@ -126,7 +127,7 @@ Invoke-RestMethod http://127.0.0.1:8765/health
 
 The per-service launchers under `scripts/services/` are what `ybm start` actually runs; use
 them directly only when debugging a single process in isolation (they read `YBM_LOCALDEPLOY_ROOT`
-and other `.env` values the same way `ybm start` does): `run_backend.ps1`, `run_admin_ui.ps1`,
+and other `.env` values the same way `ybm start` does): `run_backend.ps1`,
 `run_telegram_polling.ps1`, `run_worker.ps1`, `run_coding_session_watcher.ps1`,
 `run_localdeploy.ps1`.
 

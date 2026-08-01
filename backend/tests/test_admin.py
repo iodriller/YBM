@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import yaml
 
+import agent_control.admin as admin_module
 from agent_control.admin import create_admin_router
 from agent_control.config import AppSettings, default_capability_policies
 from agent_control.main import app
@@ -33,30 +34,62 @@ def _repositories(database_url: str) -> Repositories:
     return Repositories.for_database(database)
 
 
-def test_admin_page_points_to_streamlit(monkeypatch, tmp_path) -> None:
+def _admin_client(
+    repositories: Repositories,
+    settings: AppSettings | None = None,
+    vscode_store: VSCodeBridgeStore | None = None,
+) -> TestClient:
+    # The one piece of setup every test in this file needs - was hand-copied
+    # 30 times (two slightly different formattings) before being pulled out
+    # here. `lambda: settings or AppSettings(...)` preserves the original
+    # per-call laziness (several tests re-read config.yaml after a POST
+    # writes it, which depends on the settings loader re-constructing
+    # AppSettings, not returning a cached instance).
+    app = FastAPI()
+    app.include_router(
+        create_admin_router(
+            lambda: settings or AppSettings(_env_file=None),
+            lambda: repositories,
+            vscode_store or VSCodeBridgeStore(),
+        )
+    )
+    return TestClient(app)
+
+
+def test_admin_page_points_to_build_instructions_before_a_react_build_exists(monkeypatch, tmp_path) -> None:
     # chdir, not just delenv: read_env_value() reads .env from the current
     # working directory, so a bare delenv here is not real isolation.
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
     monkeypatch.setenv("AGENT_STORAGE__DATABASE_URL", f"sqlite:///{tmp_path / 'admin.db'}")
+    # Explicitly force the "no build yet" precondition (docs/UI_REWRITE_PLAN.md
+    # §9 Phase 0.2's case 3) rather than relying on whatever
+    # backend/src/agent_control/static/admin/ happens to contain on this
+    # machine - that directory is a gitignored, locally-generated build
+    # artifact (frontend/'s `npm run build` output), so this test would
+    # otherwise pass or fail depending on whether someone had run the
+    # frontend build locally, which a fresh clone or CI never has.
+    monkeypatch.setattr(admin_module, "_STATIC_ADMIN_DIR", tmp_path / "no_build_here")
     client = TestClient(app)
 
     page = client.get("/admin")
 
-    # The Streamlit app (admin_streamlit.py) is the one real admin UI
-    # (docs/HISTORY.md P4) - /admin is now just a small pointer to it, not a
-    # second console. Assert it stays small and points at Streamlit, rather
-    # than reintroducing the ~1,300-line embedded SPA this replaced.
+    # The React console is the only admin UI now (Streamlit was removed at
+    # cutover, docs/UI_REWRITE_PLAN.md §19) - /admin falls back to a small
+    # pointer telling the operator to build it, rather than 404ing or
+    # crashing when no build is present at this checkout.
     assert page.status_code == 200
     assert "Agent Control Admin" in page.text
-    assert "8501" in page.text
+    assert "ui-build" in page.text
+    assert "8501" not in page.text
+    assert "streamlit" not in page.text.lower()
     assert len(page.text) < 2000
     assert "onclick=" not in page.text
     assert "task-card" not in page.text
 
 
 def test_admin_summary_api_unaffected_by_html_page_removal(monkeypatch, tmp_path) -> None:
-    monkeypatch.chdir(tmp_path)  # see test_admin_page_points_to_streamlit for why chdir, not just delenv
+    monkeypatch.chdir(tmp_path)  # see test_admin_page_points_to_build_instructions for why chdir, not just delenv
     monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
     monkeypatch.setenv("AGENT_STORAGE__DATABASE_URL", f"sqlite:///{tmp_path / 'admin.db'}")
     client = TestClient(app)
@@ -111,6 +144,153 @@ def test_admin_allows_same_origin_request_without_token(monkeypatch, tmp_path) -
     assert response.status_code == 200
 
 
+def test_admin_bootstrap_reports_onboarding_incomplete_without_config(monkeypatch, tmp_path) -> None:
+    # docs/UI_REWRITE_PLAN.md §9 Phase 0.3: the SPA shell's very first call,
+    # before it knows whether a token is even needed - deliberately NOT
+    # behind require_admin (a token-required client can't learn it needs a
+    # token from an endpoint that itself demands one).
+    monkeypatch.chdir(tmp_path)  # empty tmp_path -> no config/config.yaml
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    monkeypatch.setenv("AGENT_STORAGE__DATABASE_URL", f"sqlite:///{tmp_path / 'admin.db'}")
+    client = TestClient(app)
+
+    response = client.get("/admin/api/bootstrap")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["token_required"] is False
+    assert body["onboarding_complete"] is False
+    assert isinstance(body["llm_reachable"], bool)
+    assert isinstance(body["version"], str) and body["version"]
+
+
+def test_admin_bootstrap_reports_onboarding_complete_and_token_required(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.yaml").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("AGENT_ADMIN_TOKEN", "secret-token")
+    monkeypatch.setenv("AGENT_STORAGE__DATABASE_URL", f"sqlite:///{tmp_path / 'admin.db'}")
+    client = TestClient(app)
+
+    response = client.get("/admin/api/bootstrap")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["token_required"] is True
+    assert body["onboarding_complete"] is True
+
+
+def test_admin_bootstrap_rejects_cross_origin_request_even_without_token(monkeypatch, tmp_path) -> None:
+    # Same CSRF-style protection as every other admin route - bootstrap not
+    # requiring a *token* does not mean it skips the same-origin check.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    monkeypatch.setenv("AGENT_STORAGE__DATABASE_URL", f"sqlite:///{tmp_path / 'admin.db'}")
+    client = TestClient(app)
+
+    response = client.get("/admin/api/bootstrap", headers={"origin": "http://evil.example"})
+
+    assert response.status_code == 403
+
+
+def test_admin_serves_built_index_html_when_a_build_exists(monkeypatch, tmp_path) -> None:
+    # docs/UI_REWRITE_PLAN.md §9 Phase 0.2: once frontend/ is actually built,
+    # /admin should serve the real SPA shell instead of the Streamlit pointer.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    monkeypatch.setenv("AGENT_STORAGE__DATABASE_URL", f"sqlite:///{tmp_path / 'admin.db'}")
+    static_dir = tmp_path / "static_admin"
+    static_dir.mkdir()
+    (static_dir / "index.html").write_text("<html><body>console shell</body></html>", encoding="utf-8")
+    monkeypatch.setattr(admin_module, "_STATIC_ADMIN_DIR", static_dir)
+    client = TestClient(app)
+
+    page = client.get("/admin")
+
+    assert page.status_code == 200
+    assert "console shell" in page.text
+
+
+def test_admin_serves_a_real_static_asset_by_path(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    monkeypatch.setenv("AGENT_STORAGE__DATABASE_URL", f"sqlite:///{tmp_path / 'admin.db'}")
+    static_dir = tmp_path / "static_admin"
+    (static_dir / "assets").mkdir(parents=True)
+    (static_dir / "index.html").write_text("<html>shell</html>", encoding="utf-8")
+    (static_dir / "assets" / "index-abc123.js").write_text("console.log('hi')", encoding="utf-8")
+    monkeypatch.setattr(admin_module, "_STATIC_ADMIN_DIR", static_dir)
+    client = TestClient(app)
+
+    asset = client.get("/admin/assets/index-abc123.js")
+
+    assert asset.status_code == 200
+    assert "console.log" in asset.text
+
+
+def test_admin_falls_back_to_index_html_for_client_side_routes(monkeypatch, tmp_path) -> None:
+    # React Router routes like /admin/tasks have no matching file on disk -
+    # a hard refresh there must still serve the SPA shell, not 404.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    monkeypatch.setenv("AGENT_STORAGE__DATABASE_URL", f"sqlite:///{tmp_path / 'admin.db'}")
+    static_dir = tmp_path / "static_admin"
+    static_dir.mkdir()
+    (static_dir / "index.html").write_text("<html>shell</html>", encoding="utf-8")
+    monkeypatch.setattr(admin_module, "_STATIC_ADMIN_DIR", static_dir)
+    client = TestClient(app)
+
+    page = client.get("/admin/tasks")
+
+    assert page.status_code == 200
+    assert "shell" in page.text
+
+
+def test_admin_catch_all_404s_on_unmatched_api_path_instead_of_serving_html(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    monkeypatch.setenv("AGENT_STORAGE__DATABASE_URL", f"sqlite:///{tmp_path / 'admin.db'}")
+    static_dir = tmp_path / "static_admin"
+    static_dir.mkdir()
+    (static_dir / "index.html").write_text("<html>shell</html>", encoding="utf-8")
+    monkeypatch.setattr(admin_module, "_STATIC_ADMIN_DIR", static_dir)
+    client = TestClient(app)
+
+    response = client.get("/admin/api/this-route-does-not-exist")
+
+    assert response.status_code == 404
+    assert "shell" not in response.text
+
+
+def test_admin_rejects_path_traversal_outside_static_dir(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    monkeypatch.setenv("AGENT_STORAGE__DATABASE_URL", f"sqlite:///{tmp_path / 'admin.db'}")
+    static_dir = tmp_path / "static_admin"
+    static_dir.mkdir()
+    (static_dir / "index.html").write_text("<html>shell</html>", encoding="utf-8")
+    secret = tmp_path / "secret.txt"
+    secret.write_text("should never be served", encoding="utf-8")
+    monkeypatch.setattr(admin_module, "_STATIC_ADMIN_DIR", static_dir)
+    client = TestClient(app)
+
+    # A literal "/admin/../secret.txt" gets normalized away by the HTTP
+    # client itself before the request is even sent (confirmed empirically -
+    # it never reaches the server, let alone this route) - not a real test
+    # of the guard. URL-encoded dot segments survive that client-side
+    # normalization and arrive at the route with a literal ".." in
+    # sub_path, which is what actually exercises _serve_admin_app's
+    # relative_to() check.
+    response = client.get("/admin/%2e%2e/secret.txt")
+
+    assert response.status_code == 404
+    assert "should never be served" not in response.text
+    # Distinguishes "the guard fired" from "no route matched at all" (which
+    # would also 404, but via Starlette's own generic handler, not proof
+    # the traversal attempt was actually blocked).
+    assert response.json()["detail"] == "not found"
+
+
 def test_admin_lists_tasks_and_audit(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)  # see test_admin_page_and_summary for why chdir, not just delenv
     monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
@@ -137,15 +317,7 @@ def test_admin_task_signal_updates_task(monkeypatch, tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'admin.db'}"
     repositories = _repositories(database_url)
     task = repositories.tasks.create("pause me")
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(
-            lambda: AppSettings(_env_file=None),
-            lambda: repositories,
-            VSCodeBridgeStore(),
-        )
-    )
-    client = TestClient(local_app)
+    client = _admin_client(repositories)
 
     response = client.post(f"/admin/api/tasks/{task.id}/signals", json={"signal": "pause"})
     updated = repositories.tasks.get(task.id)
@@ -175,11 +347,7 @@ def test_admin_pending_approvals_lists_only_pending(monkeypatch, tmp_path) -> No
     pending = _pending_approval(repositories, task.id)
     decided = _pending_approval(repositories, task.id)
     repositories.approvals.set_status(decided.id, ApprovalStatus.APPROVED)
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(lambda: AppSettings(_env_file=None), lambda: repositories, VSCodeBridgeStore())
-    )
-    client = TestClient(local_app)
+    client = _admin_client(repositories)
 
     response = client.get("/admin/api/approvals")
 
@@ -190,17 +358,75 @@ def test_admin_pending_approvals_lists_only_pending(monkeypatch, tmp_path) -> No
     assert items[0]["task_status"] == TaskStatus.RECEIVED.value
 
 
+def test_admin_pending_approvals_includes_capability_ceiling_and_blast_radius(monkeypatch, tmp_path) -> None:
+    # docs/UI_REWRITE_PLAN.md §11.2 - the Evidence Pack's "Authority" (risk
+    # vs. the configured ceiling) and "Blast radius" (what this would
+    # actually touch) fields, both derived from data the existing
+    # ApprovalRequest doesn't expose on its own.
+    monkeypatch.chdir(tmp_path)
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    task = repositories.tasks.create("write a report", metadata={"source_chat_id": "1"})
+    repositories.approvals.create(
+        ApprovalRequest(
+            task_id=task.id,
+            capability=Capability.FILESYSTEM_WRITE,
+            risk_level=RiskLevel.HIGH,
+            summary="write a file",
+            action_payload={
+                "tool_name": "filesystem.manage",
+                "input": {"path": "/tmp/secret.txt", "command": "rm -rf /tmp"},
+            },
+            expires_at=utc_now() + timedelta(minutes=15),
+        )
+    )
+    client = _admin_client(repositories)
+
+    response = client.get("/admin/api/approvals")
+
+    assert response.status_code == 200
+    item = response.json()["approvals"][0]
+    # FILESYSTEM_WRITE gets no override in default_capability_policies(), so
+    # it carries the bare CapabilityPolicy() default: max_risk_level=LOW.
+    # This approval's own risk_level (HIGH) exceeding that ceiling is
+    # exactly the "why a human should look closely" signal Authority exists
+    # to surface.
+    assert item["capability_max_risk_level"] == "low"
+    assert item["blast_radius"]["files"] == ["/tmp/secret.txt"]
+    assert item["blast_radius"]["commands"] == ["rm -rf /tmp"]
+    assert item["blast_radius"]["urls"] == []
+
+
+def test_admin_pending_approvals_blast_radius_is_empty_for_unrelated_input(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    task = repositories.tasks.create("do something")
+    repositories.approvals.create(
+        ApprovalRequest(
+            task_id=task.id,
+            capability=Capability.FILESYSTEM_WRITE,
+            risk_level=RiskLevel.HIGH,
+            summary="write a file",
+            action_payload={"tool_name": "some.tool", "input": {"objective": "no file/url/command keys here"}},
+            expires_at=utc_now() + timedelta(minutes=15),
+        )
+    )
+    client = _admin_client(repositories)
+
+    response = client.get("/admin/api/approvals")
+
+    item = response.json()["approvals"][0]
+    assert item["blast_radius"] == {"files": [], "urls": [], "commands": []}
+
+
 def test_admin_decide_approval_approve_updates_status_and_audits(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     database_url = f"sqlite:///{tmp_path / 'admin.db'}"
     repositories = _repositories(database_url)
     task = repositories.tasks.create("write a report")
     approval = _pending_approval(repositories, task.id)
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(lambda: AppSettings(_env_file=None), lambda: repositories, VSCodeBridgeStore())
-    )
-    client = TestClient(local_app)
+    client = _admin_client(repositories)
 
     response = client.post(f"/admin/api/approvals/{approval.id}/decide", json={"decision": "approve"})
 
@@ -217,11 +443,7 @@ def test_admin_decide_approval_reject_updates_status(monkeypatch, tmp_path) -> N
     repositories = _repositories(database_url)
     task = repositories.tasks.create("write a report")
     approval = _pending_approval(repositories, task.id)
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(lambda: AppSettings(_env_file=None), lambda: repositories, VSCodeBridgeStore())
-    )
-    client = TestClient(local_app)
+    client = _admin_client(repositories)
 
     response = client.post(f"/admin/api/approvals/{approval.id}/decide", json={"decision": "reject"})
 
@@ -234,11 +456,7 @@ def test_admin_decide_approval_404_for_unknown_id(monkeypatch, tmp_path) -> None
     monkeypatch.chdir(tmp_path)
     database_url = f"sqlite:///{tmp_path / 'admin.db'}"
     repositories = _repositories(database_url)
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(lambda: AppSettings(_env_file=None), lambda: repositories, VSCodeBridgeStore())
-    )
-    client = TestClient(local_app)
+    client = _admin_client(repositories)
 
     response = client.post("/admin/api/approvals/approval_does_not_exist/decide", json={"decision": "approve"})
 
@@ -252,11 +470,7 @@ def test_admin_decide_approval_409_when_already_decided(monkeypatch, tmp_path) -
     task = repositories.tasks.create("write a report")
     approval = _pending_approval(repositories, task.id)
     repositories.approvals.set_status(approval.id, ApprovalStatus.APPROVED)
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(lambda: AppSettings(_env_file=None), lambda: repositories, VSCodeBridgeStore())
-    )
-    client = TestClient(local_app)
+    client = _admin_client(repositories)
 
     response = client.post(f"/admin/api/approvals/{approval.id}/decide", json={"decision": "reject"})
 
@@ -306,15 +520,7 @@ def test_admin_task_trace_includes_operator_history_tool_calls_and_audit(monkeyp
         task_id=task.id,
         payload={"action": "operator_decision", "decision": {"action": "call_tool", "tool_name": "vscode.copilot_terminal"}},
     )
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(
-            lambda: AppSettings(_env_file=None),
-            lambda: repositories,
-            VSCodeBridgeStore(),
-        )
-    )
-    client = TestClient(local_app)
+    client = _admin_client(repositories)
 
     response = client.get(f"/admin/api/tasks/{task.id}/trace")
     body = response.json()
@@ -370,11 +576,7 @@ def test_admin_task_trace_evidence_aggregates_files_urls_and_commands(monkeypatc
         )
     )
 
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(lambda: AppSettings(_env_file=None), lambda: repositories, VSCodeBridgeStore())
-    )
-    client = TestClient(local_app)
+    client = _admin_client(repositories)
 
     response = client.get(f"/admin/api/tasks/{task.id}/trace")
     evidence = response.json()["evidence"]
@@ -395,15 +597,7 @@ def test_admin_clears_task_history_and_audit(monkeypatch, tmp_path) -> None:
     active = repositories.tasks.create("active task")
     AuditLogger(repositories.audit).append(AuditEventType.TASK_CREATED, actor="test", task_id=completed.id)
     AuditLogger(repositories.audit).append(AuditEventType.TASK_CREATED, actor="test", task_id=active.id)
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(
-            lambda: AppSettings(_env_file=None),
-            lambda: repositories,
-            VSCodeBridgeStore(),
-        )
-    )
-    client = TestClient(local_app)
+    client = _admin_client(repositories)
 
     clear_completed = client.delete("/admin/api/tasks?include_active=false")
     remaining_tasks = client.get("/admin/api/tasks?limit=10").json()["tasks"]
@@ -422,15 +616,7 @@ def test_admin_tasks_are_paginated(monkeypatch, tmp_path) -> None:
     repositories = _repositories(database_url)
     for index in range(7):
         repositories.tasks.create(f"task {index}")
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(
-            lambda: AppSettings(_env_file=None),
-            lambda: repositories,
-            VSCodeBridgeStore(),
-        )
-    )
-    client = TestClient(local_app)
+    client = _admin_client(repositories)
 
     first_page = client.get("/admin/api/tasks?limit=5").json()
     summary = client.get("/admin/api/summary?task_limit=5").json()
@@ -447,15 +633,7 @@ def test_admin_task_resume_restores_paused_status(monkeypatch, tmp_path) -> None
     repositories = _repositories(database_url)
     task = repositories.tasks.create("resume me")
     task = repositories.tasks.update_status(task.id, TaskStatus.RUNNING)
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(
-            lambda: AppSettings(_env_file=None),
-            lambda: repositories,
-            VSCodeBridgeStore(),
-        )
-    )
-    client = TestClient(local_app)
+    client = _admin_client(repositories)
 
     paused = client.post(f"/admin/api/tasks/{task.id}/signals", json={"signal": "pause"})
     resumed = client.post(f"/admin/api/tasks/{task.id}/signals", json={"signal": "resume"})
@@ -473,9 +651,7 @@ def test_admin_rejects_vscode_terminal_command_by_default(monkeypatch, tmp_path)
     repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
     store = VSCodeBridgeStore()
     settings = AppSettings(_env_file=None, capabilities=default_capability_policies())
-    local_app = FastAPI()
-    local_app.include_router(create_admin_router(lambda: settings, lambda: repositories, store))
-    client = TestClient(local_app)
+    client = _admin_client(repositories, settings=settings, vscode_store=store)
 
     response = client.post("/admin/api/vscode/terminal-commands", json={"command": "echo blocked"})
 
@@ -497,9 +673,7 @@ def test_admin_can_queue_vscode_terminal_command_when_enabled(monkeypatch, tmp_p
     settings.capabilities[Capability.TERMINAL_RUN].enabled = True
     settings.capabilities[Capability.TERMINAL_RUN].requires_approval = False
     store = VSCodeBridgeStore()
-    local_app = FastAPI()
-    local_app.include_router(create_admin_router(lambda: settings, lambda: repositories, store))
-    client = TestClient(local_app)
+    client = _admin_client(repositories, settings=settings, vscode_store=store)
 
     response = client.post("/admin/api/vscode/terminal-commands", json={"command": "echo hi"})
 
@@ -510,15 +684,7 @@ def test_admin_can_queue_vscode_terminal_command_when_enabled(monkeypatch, tmp_p
 def test_admin_writes_llm_runtime_config(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(
-            lambda: AppSettings(_env_file=None),
-            lambda: repositories,
-            VSCodeBridgeStore(),
-        )
-    )
-    client = TestClient(local_app)
+    client = _admin_client(repositories)
 
     response = client.post(
         "/admin/api/config/llm",
@@ -543,15 +709,7 @@ def test_admin_writes_llm_runtime_config(monkeypatch, tmp_path) -> None:
 def test_admin_selects_llm_preset(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(
-            lambda: AppSettings(_env_file=None),
-            lambda: repositories,
-            VSCodeBridgeStore(),
-        )
-    )
-    client = TestClient(local_app)
+    client = _admin_client(repositories)
 
     response = client.post("/admin/api/config/llm/preset", json={"preset": "localdeploy_gemma3_12b"})
     saved = yaml.safe_load((tmp_path / "config" / "config.yaml").read_text(encoding="utf-8"))
@@ -566,15 +724,7 @@ def test_admin_selects_llm_preset(monkeypatch, tmp_path) -> None:
 def test_admin_writes_telegram_runtime_config(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(
-            lambda: AppSettings(_env_file=None),
-            lambda: repositories,
-            VSCodeBridgeStore(),
-        )
-    )
-    client = TestClient(local_app)
+    client = _admin_client(repositories)
 
     response = client.post(
         "/admin/api/config/telegram",
@@ -597,15 +747,8 @@ def test_admin_writes_telegram_runtime_config(monkeypatch, tmp_path) -> None:
 def test_admin_llm_test_requires_configured_profile(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)  # see test_admin_page_and_summary for why chdir, not just delenv
     repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(
-            lambda: AppSettings(_env_file=None, llm={"default_profile": "missing", "profiles": {}}),
-            lambda: repositories,
-            VSCodeBridgeStore(),
-        )
-    )
-    client = TestClient(local_app)
+    settings = AppSettings(_env_file=None, llm={"default_profile": "missing", "profiles": {}})
+    client = _admin_client(repositories, settings=settings)
 
     response = client.post("/admin/api/llm/test", json={})
 
@@ -615,15 +758,7 @@ def test_admin_llm_test_requires_configured_profile(monkeypatch, tmp_path) -> No
 def test_admin_writes_vscode_runtime_config(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(
-            lambda: AppSettings(_env_file=None),
-            lambda: repositories,
-            VSCodeBridgeStore(),
-        )
-    )
-    client = TestClient(local_app)
+    client = _admin_client(repositories)
 
     response = client.post(
         "/admin/api/config/vscode",
@@ -646,15 +781,7 @@ def test_admin_writes_vscode_runtime_config(monkeypatch, tmp_path) -> None:
 def test_admin_writes_workspace_runtime_config(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(
-            lambda: AppSettings(_env_file=None),
-            lambda: repositories,
-            VSCodeBridgeStore(),
-        )
-    )
-    client = TestClient(local_app)
+    client = _admin_client(repositories)
 
     response = client.post(
         "/admin/api/config/workspace",
@@ -677,15 +804,7 @@ def test_admin_writes_workspace_runtime_config(monkeypatch, tmp_path) -> None:
 def test_admin_writes_computer_use_runtime_config(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(
-            lambda: AppSettings(_env_file=None),
-            lambda: repositories,
-            VSCodeBridgeStore(),
-        )
-    )
-    client = TestClient(local_app)
+    client = _admin_client(repositories)
 
     response = client.post(
         "/admin/api/config/computer-use",
@@ -713,15 +832,7 @@ def test_admin_writes_computer_use_runtime_config(monkeypatch, tmp_path) -> None
 def test_admin_writes_access_modes(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(
-            lambda: AppSettings(_env_file=None),
-            lambda: repositories,
-            VSCodeBridgeStore(),
-        )
-    )
-    client = TestClient(local_app)
+    client = _admin_client(repositories)
 
     response = client.post(
         "/admin/api/config/access-modes",
@@ -737,15 +848,7 @@ def test_admin_writes_access_modes(monkeypatch, tmp_path) -> None:
 def test_admin_access_modes_sync_desktop_screenshot_adapter(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(
-            lambda: AppSettings(_env_file=None),
-            lambda: repositories,
-            VSCodeBridgeStore(),
-        )
-    )
-    client = TestClient(local_app)
+    client = _admin_client(repositories)
 
     response = client.post(
         "/admin/api/config/access-modes",
@@ -761,15 +864,7 @@ def test_admin_access_modes_sync_desktop_screenshot_adapter(monkeypatch, tmp_pat
 def test_admin_access_modes_sync_computer_use_adapter(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(
-            lambda: AppSettings(_env_file=None),
-            lambda: repositories,
-            VSCodeBridgeStore(),
-        )
-    )
-    client = TestClient(local_app)
+    client = _admin_client(repositories)
 
     response = client.post(
         "/admin/api/config/access-modes",
@@ -801,15 +896,7 @@ def test_admin_access_modes_sync_computer_use_adapter(monkeypatch, tmp_path) -> 
 def test_admin_access_modes_sync_browser_adapter(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(
-            lambda: AppSettings(_env_file=None),
-            lambda: repositories,
-            VSCodeBridgeStore(),
-        )
-    )
-    client = TestClient(local_app)
+    client = _admin_client(repositories)
 
     response = client.post(
         "/admin/api/config/access-modes",
@@ -841,15 +928,8 @@ def test_admin_summary_includes_database_and_schedule_data(monkeypatch, tmp_path
             next_run_at=utc_now(),
         )
     )
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(
-            lambda: AppSettings(_env_file=None, storage={"database_url": database_url}),
-            lambda: repositories,
-            VSCodeBridgeStore(),
-        )
-    )
-    client = TestClient(local_app)
+    settings = AppSettings(_env_file=None, storage={"database_url": database_url})
+    client = _admin_client(repositories, settings=settings)
 
     response = client.get("/admin/api/summary")
     body = response.json()
@@ -861,23 +941,16 @@ def test_admin_summary_includes_database_and_schedule_data(monkeypatch, tmp_path
     assert body["schedules"]["items"][0]["objective"] == "check example.com daily"
 
 
-def _secrets_app(monkeypatch, tmp_path) -> FastAPI:
+def _secrets_client(monkeypatch, tmp_path) -> TestClient:
     monkeypatch.chdir(tmp_path)
     repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(
-            lambda: AppSettings(_env_file=None, secrets={"path": str(tmp_path / "vault.json")}),
-            lambda: repositories,
-            VSCodeBridgeStore(),
-        )
-    )
-    return local_app
+    settings = AppSettings(_env_file=None, secrets={"path": str(tmp_path / "vault.json")})
+    return _admin_client(repositories, settings=settings)
 
 
 def test_admin_secrets_unavailable_without_vault_key(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("AGENT_SECRET_VAULT_KEY", raising=False)
-    client = TestClient(_secrets_app(monkeypatch, tmp_path))
+    client = _secrets_client(monkeypatch, tmp_path)
 
     listed = client.get("/admin/api/secrets")
     assert listed.status_code == 200
@@ -893,7 +966,7 @@ def test_admin_secrets_set_list_and_delete_round_trip(monkeypatch, tmp_path) -> 
     from agent_control.storage.secrets import SecretVault
 
     monkeypatch.setenv("AGENT_SECRET_VAULT_KEY", SecretVault.generate_key())
-    client = TestClient(_secrets_app(monkeypatch, tmp_path))
+    client = _secrets_client(monkeypatch, tmp_path)
 
     created = client.post("/admin/api/secrets", json={"service": "openai", "key": "api_key", "value": "sk-secret-value"})
     assert created.status_code == 200
@@ -918,7 +991,7 @@ def test_admin_secrets_delete_missing_returns_404(monkeypatch, tmp_path) -> None
     from agent_control.storage.secrets import SecretVault
 
     monkeypatch.setenv("AGENT_SECRET_VAULT_KEY", SecretVault.generate_key())
-    client = TestClient(_secrets_app(monkeypatch, tmp_path))
+    client = _secrets_client(monkeypatch, tmp_path)
 
     response = client.delete("/admin/api/secrets/nobody/nothing")
 
@@ -931,15 +1004,8 @@ def test_admin_secrets_set_audits_service_and_key_but_not_value(monkeypatch, tmp
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("AGENT_SECRET_VAULT_KEY", SecretVault.generate_key())
     repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(
-            lambda: AppSettings(_env_file=None, secrets={"path": str(tmp_path / "vault.json")}),
-            lambda: repositories,
-            VSCodeBridgeStore(),
-        )
-    )
-    client = TestClient(local_app)
+    settings = AppSettings(_env_file=None, secrets={"path": str(tmp_path / "vault.json")})
+    client = _admin_client(repositories, settings=settings)
 
     client.post("/admin/api/secrets", json={"service": "openai", "key": "api_key", "value": "sk-must-not-be-logged"})
 
@@ -950,26 +1016,17 @@ def test_admin_secrets_set_audits_service_and_key_but_not_value(monkeypatch, tmp
     assert "sk-must-not-be-logged" not in str(matching[0].payload)
 
 
-def _chat_app(monkeypatch, tmp_path) -> FastAPI:
+def _chat_client(monkeypatch, tmp_path) -> tuple[TestClient, Repositories]:
     monkeypatch.chdir(tmp_path)
     repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
-    local_app = FastAPI()
-    local_app.include_router(
-        create_admin_router(
-            lambda: AppSettings(_env_file=None),
-            lambda: repositories,
-            VSCodeBridgeStore(),
-        )
-    )
-    return local_app, repositories
+    return _admin_client(repositories), repositories
 
 
 def test_admin_chat_send_creates_a_task_and_list_returns_it_oldest_first(monkeypatch, tmp_path) -> None:
     """docs/HISTORY.md Part 4 T2.8: the local web chat channel - a message
     becomes a normal task, going through the exact same worker/policy
     pipeline as any other channel, with no Telegram dependency."""
-    app, repositories = _chat_app(monkeypatch, tmp_path)
-    client = TestClient(app)
+    client, repositories = _chat_client(monkeypatch, tmp_path)
 
     first = client.post("/admin/api/chat/messages", json={"text": "what is the status?"})
     second = client.post("/admin/api/chat/messages", json={"text": "thanks"})
@@ -991,8 +1048,7 @@ def test_admin_chat_send_creates_a_task_and_list_returns_it_oldest_first(monkeyp
 
 
 def test_admin_chat_list_is_empty_before_any_message_sent(monkeypatch, tmp_path) -> None:
-    app, _repositories = _chat_app(monkeypatch, tmp_path)
-    client = TestClient(app)
+    client, _repositories = _chat_client(monkeypatch, tmp_path)
 
     listed = client.get("/admin/api/chat/messages")
 
@@ -1001,8 +1057,7 @@ def test_admin_chat_list_is_empty_before_any_message_sent(monkeypatch, tmp_path)
 
 
 def test_admin_chat_send_rejects_empty_text(monkeypatch, tmp_path) -> None:
-    app, _repositories = _chat_app(monkeypatch, tmp_path)
-    client = TestClient(app)
+    client, _repositories = _chat_client(monkeypatch, tmp_path)
 
     response = client.post("/admin/api/chat/messages", json={"text": ""})
 
@@ -1010,8 +1065,7 @@ def test_admin_chat_send_rejects_empty_text(monkeypatch, tmp_path) -> None:
 
 
 def test_admin_chat_send_audits_task_creation(monkeypatch, tmp_path) -> None:
-    app, repositories = _chat_app(monkeypatch, tmp_path)
-    client = TestClient(app)
+    client, repositories = _chat_client(monkeypatch, tmp_path)
 
     response = client.post("/admin/api/chat/messages", json={"text": "hello"})
 

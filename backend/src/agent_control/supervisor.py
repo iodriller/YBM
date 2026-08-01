@@ -7,8 +7,8 @@ supervisor for the `ybm` console-script entrypoint (`[project.scripts]` in
 pyproject.toml) - the path a `pip install`/`uv tool install` user on Linux or
 macOS actually has, where PowerShell's `Win32_Process`/CIM-based child
 tracking in scripts/lib/common.ps1 does not exist. Every service here is
-already a thin `python -m ...` (or `python -m streamlit`) invocation - see
-scripts/services/*.ps1 - so spawning it directly needs no shell wrapper and,
+already a thin `python -m ...` invocation - see scripts/services/*.ps1 -
+so spawning it directly needs no shell wrapper and,
 unlike the PowerShell version, never needs to walk a wrapper process's
 children to find the real PID.
 
@@ -94,7 +94,7 @@ def _localdeploy_spec() -> ServiceSpec | None:
 
 def build_service_specs(
     *, no_telegram: bool = False, no_worker: bool = False, no_scheduler: bool = False,
-    no_admin_ui: bool = False, no_localdeploy: bool = False,
+    no_localdeploy: bool = False,
 ) -> list[ServiceSpec]:
     env = _backend_env()
     specs: list[ServiceSpec] = []
@@ -132,19 +132,6 @@ def build_service_specs(
             name="scheduler",
             args=[sys.executable, "-m", "agent_control.cli", "run-scheduler"],
             cwd=_repo_root(), env=env, required=True,
-        ))
-    if not no_admin_ui:
-        specs.append(ServiceSpec(
-            name="admin_ui",
-            args=[
-                sys.executable, "-m", "streamlit", "run",
-                str(_repo_root() / "backend" / "src" / "agent_control" / "admin_streamlit.py"),
-                "--server.address", "127.0.0.1", "--server.port", "8501",
-                "--server.headless", "true", "--browser.gatherUsageStats", "false",
-                "--client.toolbarMode", "minimal",
-            ],
-            cwd=_repo_root(), env=env,
-            ready_url="http://127.0.0.1:8501", ready_timeout_seconds=30, required=True,
         ))
     return specs
 
@@ -265,7 +252,7 @@ def start_all(**flags) -> int:
     if hard_failure:
         print("One or more required services failed to start. Check the logs above, then `ybm status` / `ybm logs <name>`.")
         return 1
-    print("Admin UI:   http://127.0.0.1:8501")
+    print("Admin UI:   http://127.0.0.1:8765/admin")
     print("Backend:    http://127.0.0.1:8765/health")
     print("Stop with:  ybm stop")
     return 0

@@ -33,12 +33,12 @@ TELEGRAM_BOT_TOKEN=your_bot_token_here
 Open:
 
 ```text
-http://127.0.0.1:8501
+http://127.0.0.1:8765/admin
 ```
 
-`http://127.0.0.1:8765/admin` used to serve a second, ~1,300-line embedded-HTML console; it's now a
-small pointer page back to the Streamlit UI above. The JSON API underneath it
-(`/admin/api/*`) is unchanged and is what Streamlit itself talks to.
+If the React console (`frontend/`) hasn't been built yet at this checkout, this serves a small
+pointer page explaining how to build it (`ybm ui-build`). The JSON API underneath it
+(`/admin/api/*`) is unchanged either way.
 
 ## 3. Confirm The Local Orchestrator LLM
 

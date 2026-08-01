@@ -35,7 +35,7 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
   }
 }
 
-$inRepo = (Test-Path "pyproject.toml") -and (Test-Path "AGENTS.md") -and (Test-Path "backend")
+$inRepo = (Test-Path "backend\pyproject.toml") -and (Test-Path "AGENTS.md") -and (Test-Path "scripts\ybm.ps1")
 if ($inRepo) {
   Write-Step "Already inside a YBM checkout - using $(Get-Location)"
   $RepoDir = (Get-Location).Path

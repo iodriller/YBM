@@ -44,7 +44,12 @@ def _prompt(question: str, default: str | None = None) -> str:
 
 def _prompt_llm_choice() -> dict | None:
     """Returns a dict of llm.profiles.onboard fields to write, or None to
-    leave the shipped default config.example.yaml profile untouched."""
+    leave the shipped default config.example.yaml profile untouched.
+
+    Checks .env for an already-usable credential/endpoint before asking for
+    anything - a user re-running onboarding (or installing into a directory
+    that already has a real .env) should never be asked to re-paste a key
+    that's already sitting right there."""
     print("\n-- LLM --")
     ollama = _http_json(OLLAMA_TAGS_URL)
     if ollama and ollama.get("models"):
@@ -62,7 +67,11 @@ def _prompt_llm_choice() -> dict | None:
         print(f"YBM_LOCALDEPLOY_ROOT is set ({localdeploy_root}) - keeping the shipped LocalDeploy profile.")
         return None
 
-    print("No local model server detected (checked Ollama at 127.0.0.1:11434).")
+    if read_env_value("OPENAI_API_KEY"):
+        print("OPENAI_API_KEY is already set in .env - keeping the shipped cloud profile that uses it.")
+        return None
+
+    print("No local model server detected (checked Ollama at 127.0.0.1:11434), and no OPENAI_API_KEY in .env.")
     choice = _prompt("Use a cloud API instead? [y/N]", default="n").lower()
     if choice not in ("y", "yes"):
         print("Skipping - the default config points at a local profile that won't respond until you "
@@ -95,6 +104,10 @@ def _apply_llm_choice(profile: dict | None) -> None:
 
 def _prompt_telegram_choice() -> str | None:
     print("\n-- How you'll talk to YBM --")
+    existing_token = read_env_value("TELEGRAM_BOT_TOKEN")
+    if existing_token:
+        print("TELEGRAM_BOT_TOKEN is already set in .env - enabling Telegram with it.")
+        return existing_token
     print("The local web chat in the admin console needs no setup and is enabled by default.")
     choice = _prompt("Also set up Telegram now? [y/N]", default="n").lower()
     if choice not in ("y", "yes"):
@@ -128,8 +141,17 @@ def run_onboard() -> int:
     start_choice = _prompt("\nStart YBM now?", default="Y").lower()
     if start_choice in ("", "y", "yes"):
         from agent_control.supervisor import start_all
-        return start_all()
+        rc = start_all()
+        if rc == 0:
+            # The one moment this is worth doing automatically: the very end
+            # of first-run onboarding, where "open a browser tab" is exactly
+            # the one-click experience being onboarded into. `ybm start` on
+            # its own (a developer restarting the stack) deliberately does
+            # NOT do this - it would be a nuisance popup on every restart.
+            import webbrowser
+            webbrowser.open("http://127.0.0.1:8765/admin")
+        return rc
 
     print("\nWhen you're ready: `ybm start` (or `.\\scripts\\ybm.ps1 start` on Windows).")
-    print("Then open http://127.0.0.1:8501 for the admin console and web chat.")
+    print("Then open http://127.0.0.1:8765/admin for the admin console and web chat.")
     return 0

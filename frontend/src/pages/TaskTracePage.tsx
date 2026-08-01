@@ -1,0 +1,169 @@
+import { Link, useParams } from "react-router-dom"
+import { ArrowLeft } from "lucide-react"
+import { toast } from "sonner"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Button } from "@/components/ui/button"
+import { Skeleton } from "@/components/ui/skeleton"
+import { StatusBadge } from "@/components/tasks/StatusBadge"
+import { CostPanel } from "@/components/tasks/CostPanel"
+import { OperatorHistoryList } from "@/components/tasks/OperatorHistoryList"
+import { TraceGraph } from "@/components/tasks/TraceGraph"
+import { useTaskSignal, useTaskTrace } from "@/lib/queries"
+import { useAdvancedMode } from "@/lib/advanced-mode"
+import { ApiError, tokenUsageOf } from "@/lib/api"
+import { isTerminal } from "@/lib/chat"
+import { CANCELLABLE, PAUSABLE, RESUMABLE } from "@/lib/task-signals"
+
+export function TaskTracePage() {
+  const { taskId } = useParams<{ taskId: string }>()
+  const { data: trace, isPending, isError, error } = useTaskTrace(taskId)
+  const { advanced } = useAdvancedMode()
+  const signal = useTaskSignal()
+
+  if (isPending) {
+    return (
+      <div className="flex flex-col gap-4 p-6">
+        <Skeleton className="h-8 w-2/3" />
+        <Skeleton className="h-48 w-full" />
+      </div>
+    )
+  }
+  if (isError || !trace) {
+    return (
+      <div className="p-6">
+        <Alert variant="destructive">
+          <AlertTitle>Couldn't load this task</AlertTitle>
+          <AlertDescription>{error?.message ?? "Not found"}</AlertDescription>
+        </Alert>
+      </div>
+    )
+  }
+
+  const task = trace.task
+  const usage = tokenUsageOf(task)
+
+  function handleSignal(name: "pause" | "resume" | "cancel") {
+    if (!taskId) return
+    signal.mutate(
+      { taskId, signal: name },
+      {
+        onError: (err) => {
+          toast.error(err instanceof ApiError ? err.message : `Could not ${name} the task.`)
+        },
+      },
+    )
+  }
+
+  return (
+    <div className="flex h-full flex-col gap-4 overflow-y-auto p-6 [&>*]:shrink-0">
+      <div>
+        <Link to="/tasks" className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+          <ArrowLeft className="size-3.5" /> Back to tasks
+        </Link>
+        <div className="mt-2 flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-lg font-semibold">{task.objective}</h1>
+            <p className="text-xs text-muted-foreground">
+              {task.id} · created {new Date(task.created_at).toLocaleString()}
+            </p>
+          </div>
+          <StatusBadge status={task.status} />
+        </div>
+      </div>
+
+      <div className="flex gap-2">
+        {PAUSABLE.has(task.status) && (
+          <Button variant="outline" size="sm" disabled={signal.isPending} onClick={() => handleSignal("pause")}>
+            Pause
+          </Button>
+        )}
+        {RESUMABLE.has(task.status) && (
+          <Button variant="outline" size="sm" disabled={signal.isPending} onClick={() => handleSignal("resume")}>
+            Resume
+          </Button>
+        )}
+        {CANCELLABLE.has(task.status) && (
+          <Button variant="outline" size="sm" disabled={signal.isPending} onClick={() => handleSignal("cancel")}>
+            Cancel
+          </Button>
+        )}
+      </div>
+
+      {typeof task.metadata.synthesized_answer === "string" && (
+        <div className="rounded-md border border-border bg-muted/40 p-3 text-sm">
+          {task.metadata.synthesized_answer}
+        </div>
+      )}
+
+      {usage && <CostPanel usage={usage} />}
+
+      <div>
+        <h2 className="mb-2 text-sm font-medium">
+          {advanced ? "Trace graph" : "Steps"}
+        </h2>
+        {advanced ? (
+          <TraceGraph invocations={trace.tool_invocations} />
+        ) : (
+          <OperatorHistoryList entries={trace.operator_history} />
+        )}
+      </div>
+
+      {advanced && (
+        <>
+          <EvidenceSection
+            files={trace.evidence.files}
+            urls={trace.evidence.urls}
+            commands={trace.evidence.commands}
+          />
+          <RawSection title={`Approvals (${trace.approvals.length})`} data={trace.approvals} />
+          <RawSection title={`Artifacts (${trace.artifacts.length})`} data={trace.artifacts} />
+          <RawSection title={`Audit events (${trace.audit.length})`} data={trace.audit} />
+        </>
+      )}
+
+      {!isTerminal(task.status) && (
+        <p className="text-xs text-muted-foreground">This task is still in progress - updating live.</p>
+      )}
+    </div>
+  )
+}
+
+function EvidenceSection({
+  files,
+  urls,
+  commands,
+}: {
+  files: { value: string }[]
+  urls: { value: string }[]
+  commands: { value: string }[]
+}) {
+  if (files.length === 0 && urls.length === 0 && commands.length === 0) return null
+  return (
+    <div>
+      <h2 className="mb-2 text-sm font-medium">What this task touched</h2>
+      <div className="flex flex-col gap-1 font-mono text-xs">
+        {files.map((f) => (
+          <div key={f.value}>{f.value}</div>
+        ))}
+        {urls.map((u) => (
+          <div key={u.value}>{u.value}</div>
+        ))}
+        {commands.map((c) => (
+          <div key={c.value}>{c.value}</div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function RawSection({ title, data }: { title: string; data: unknown[] }) {
+  if (data.length === 0) return null
+  return (
+    <details className="text-sm">
+      <summary className="cursor-pointer font-medium">{title}</summary>
+      <pre className="mt-2 max-h-64 overflow-auto rounded-md bg-muted p-3 font-mono text-xs">
+        {JSON.stringify(data, null, 2)}
+      </pre>
+    </details>
+  )
+}

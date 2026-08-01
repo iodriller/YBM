@@ -125,7 +125,7 @@ flowchart TD
 | Fulfillment check | `orchestration/fulfillment.py` | Deterministic, objective-text-inferred postconditions (no LLM, no PlanModel - that path was deleted, see HISTORY.md §1.1) |
 | Notifications | `channels/telegram_notifications.py` | Formats and sends the Telegram reply; per-step progress dedup keys off `operator_history` length |
 | Structured logging | `logging_setup.py` | structlog → JSON file + console per service, `task_id` bound as a contextvar for the duration of each `process_task()` call (HISTORY.md §2.1) |
-| Local web chat | `admin.py`'s `/api/chat/messages` routes + `admin_streamlit.py`'s Chat expander | Second channel (HISTORY.md Part 4 T2.8): one fixed local conversation, same `repositories.tasks.create()` path as Telegram, no classifier/voice/approval-keyboard parity - text answers only, `artifact.deliver` (Telegram-specific) is out of scope |
+| Local web chat | `admin.py`'s `/api/chat/messages` routes + `frontend/`'s Chat page | Second channel (HISTORY.md Part 4 T2.8): one fixed local conversation, same `repositories.tasks.create()` path as Telegram, no classifier/voice/approval-keyboard parity - text answers only, `artifact.deliver` (Telegram-specific) is out of scope |
 | Persona | `persona.py` + `tools/persona.py` | One global preference document injected into every Operator prompt via `cli.py`'s `_worker_config_context()`; distinct from per-conversation `channels/memory.py` |
 | Knowledge base | `knowledge_base.py` + `tools/knowledge_base.py` | Local keyword-overlap search over a folder of the user's own documents; reuses `filesystem_manage.py`'s text extraction, not embeddings |
 
@@ -353,7 +353,8 @@ YAML-set list replaces the default rather than merging with it).
 `ybm trace <task_id>` prints a full post-mortem — operator steps (tool, input, output,
 error), tool invocation count, audit event count — reading the DB directly, no running
 backend required (HISTORY.md §2.4). Add `--json` for the raw payload. The same data renders in
-the Streamlit admin UI's "Operator Steps" expander on each task card.
+the admin console's Trace page (`/admin/tasks/:taskId`), with a step list plus an Advanced-mode
+graph view for parallel/delegated tool calls (docs/UI_REWRITE_PLAN.md §12).
 
 Structured logs live under `.agent_control/logs/<service>.jsonl`, one JSON object per line,
 secrets redacted, `task_id` present on every line written while the Operator loop is
@@ -391,9 +392,6 @@ trail and how each item was fixed):
   real pass-rate measurement (49%) predates P3 entirely. The deterministic scenario tier is
   the trustworthy signal in the meantime: **33/33 green, zero skips**, runs in seconds, no
   live LLM cost.
-- **The 4-page Streamlit console restructure is not started** (*Now* / *Tasks* / *Access* /
-  *Settings*) — genuinely unblocked now (the UI shows correct data, secret vault UI landed),
-  but it's a multi-page redesign, scoped as its own effort rather than folded into a gap pass.
 - **Status requests cost two LLM calls.** The deleted plan path had an LLM-free shortcut for
   status-shaped objectives via hardcoded keyword matching; rebuilding that was considered and
   declined — it would reintroduce exactly the brittle, silently-misroutable pattern the

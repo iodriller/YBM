@@ -27,6 +27,11 @@ def service_summary(settings: AppSettings) -> dict[str, Any]:
 
 
 def _expected_services(settings: AppSettings) -> dict[str, bool]:
+    # No separate "admin_ui" entry: that used to be the Streamlit process
+    # (its own supervised service, own status.json). The React admin
+    # console removed at cutover (docs/UI_REWRITE_PLAN.md §19) is served by
+    # this same backend process - server.admin_enabled gates the /admin
+    # router directly, with nothing extra to supervise or health-check.
     return {
         "localdeploy": _expects_localdeploy(settings),
         "backend": True,
@@ -34,7 +39,6 @@ def _expected_services(settings: AppSettings) -> dict[str, bool]:
         "coding_session_watcher": True,
         "scheduler": bool(settings.scheduler.enabled),
         "telegram_polling": bool(settings.channels.telegram.enabled and settings.channels.telegram.polling),
-        "admin_ui": bool(settings.server.admin_enabled),
     }
 
 

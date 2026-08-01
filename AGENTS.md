@@ -4,8 +4,8 @@
 
 YBM is a configurable local agent-control system. A FastAPI/Python backend accepts
 Telegram and local requests, applies policy, schedules work, invokes configured tools
-or coding agents, and exposes a Streamlit admin UI. A VS Code extension provides the
-editor bridge.
+or coding agents, and serves a React admin console at `/admin`. A VS Code extension
+provides the editor bridge.
 
 Use these as the durable sources of truth:
 
@@ -48,14 +48,17 @@ Additional operator workflows:
 - `backend/src/agent_control/` owns domain models, policy, orchestration, adapters,
   persistence, and API behavior.
 - `backend/tests/` contains unit and deterministic scenario coverage.
+- `frontend/` is the React admin console (Vite/TypeScript); it talks to the backend
+  only through `/admin/api/*` and never embeds domain logic of its own. `ybm ui-build`
+  builds it into `backend/src/agent_control/static/admin/`, served at `/admin`.
 - `vscode-extension/` is a TypeScript bridge; keep editor-specific behavior out of
   the backend domain layer.
 - `scripts/ybm.ps1` is the public lifecycle interface. Keep service scripts behind it.
 - `config/config.example.yaml` is safe, committed configuration. Local
   `config/config.yaml` and `.env` are private runtime state.
 - `.agent_control/`, `backend/agent_control.db`, logs, screenshots, generated
-  workspaces, caches, `.venv`, and `node_modules` are generated and must not be
-  committed.
+  workspaces, caches, `.venv`, `node_modules`, and `backend/src/agent_control/static/`
+  are generated and must not be committed.
 
 Keep tool execution policy-bound. Preserve approval gates, allowlists, workspace
 boundaries, bounded retries, redaction, and the disabled-by-default settings for
@@ -84,6 +87,7 @@ Choose checks in proportion to the change:
   run `git diff --check`; application tests are not required.
 - Backend behavior: `.\scripts\ybm.ps1 test` and the focused affected test.
 - Python quality: from `backend`, run `uv run --frozen ruff check .`.
+- Admin console: from `frontend`, run `npx tsc -b --noEmit` and `npm run build`.
 - VS Code extension: from `vscode-extension`, run `npm run compile`.
 - Full runtime or integration changes: run `doctor`, then the narrowest relevant
   live or E2E flow only when its prerequisites and external effects are understood.

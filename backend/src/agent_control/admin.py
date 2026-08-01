@@ -2,14 +2,17 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
 import os
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import Field
 
+from agent_control.bootstrap import check_localdeploy
 from agent_control.config_sync import CONFIG_FILE_PATH, ConfigManager, read_env_value
 from agent_control.config import AppSettings, backend_base_url, is_loopback_host
 from agent_control.llm.providers import OpenAICompatibleProvider
@@ -114,6 +117,20 @@ class AdminChatMessageRequest(StrictBaseModel):
 # is the right scope for v1, the same way there is one Telegram user.
 WEB_CHAT_ID = "local"
 
+try:
+    _APP_VERSION = _pkg_version("agent-control-backend")
+except PackageNotFoundError:
+    # Running from a source checkout without an installed distribution
+    # (e.g. a fresh clone before `uv sync`) - not a real version, but not a
+    # crash either; the bootstrap endpoint's caller only displays this.
+    _APP_VERSION = "dev"
+
+# React console build output (docs/UI_REWRITE_PLAN.md §9 Phase 0.2/0.5,
+# frontend/vite.config.ts's build.outDir). Resolved relative to this file,
+# not cwd, so it works the same whether the backend is started from the
+# repo root (ybm start) or as an installed package.
+_STATIC_ADMIN_DIR = Path(__file__).parent / "static" / "admin"
+
 
 SettingsLoader = Callable[[], AppSettings]
 RepositoriesLoader = Callable[[], Repositories]
@@ -141,6 +158,45 @@ def _origin_is_trusted(request: Request) -> bool:
         return True
     host_header = request.headers.get("host", "")
     return urlparse(origin).netloc == host_header
+
+
+def _serve_admin_app(request: Request, sub_path: str) -> FileResponse | HTMLResponse:
+    """Serve the React console (docs/UI_REWRITE_PLAN.md §4/§9 Phase 0.2).
+
+    Deliberately NOT behind require_admin, same reasoning as
+    admin_bootstrap: the app shell (HTML/JS/CSS) is what shows the
+    token-entry screen in the first place, so it can't itself demand a
+    token. Actual data stays gated - every /api/* route this app calls is
+    unchanged. Still same-origin checked, for consistency with every other
+    admin route.
+
+    Three cases, in order:
+    1. ``sub_path`` resolves to a real file under the build output
+       (``/admin/assets/*.js``, ``/admin/favicon.svg``, ...) - serve it.
+    2. A build exists but ``sub_path`` doesn't match a file - serve
+       ``index.html`` so React Router's client-side routes
+       (``/admin/tasks``, ``/admin/access``, ...) work on a hard refresh.
+    3. No build exists yet - fall back to the pointer page that named this
+       function's predecessor, so an unbuilt checkout behaves exactly as it
+       always has rather than 404ing or crashing.
+    """
+    if not _origin_is_trusted(request):
+        raise HTTPException(
+            status_code=403,
+            detail="admin API refused: cross-origin request (Origin header does not match Host)",
+        )
+    if sub_path:
+        candidate = (_STATIC_ADMIN_DIR / sub_path).resolve()
+        try:
+            candidate.relative_to(_STATIC_ADMIN_DIR.resolve())
+        except ValueError:
+            raise HTTPException(status_code=404, detail="not found") from None
+        if candidate.is_file():
+            return FileResponse(candidate)
+    index_path = _STATIC_ADMIN_DIR / "index.html"
+    if index_path.is_file():
+        return FileResponse(index_path)
+    return HTMLResponse(_ADMIN_HTML)
 
 
 LLM_PRESETS: dict[str, dict[str, Any]] = {
@@ -231,10 +287,33 @@ def create_admin_router(
             raise HTTPException(status_code=401, detail="invalid admin token")
         return loaded
 
-    @router.get("", response_class=HTMLResponse)
-    def admin_page(request: Request) -> HTMLResponse:
-        require_admin(request)
-        return HTMLResponse(_ADMIN_HTML)
+    @router.get("", response_model=None)
+    def admin_page(request: Request) -> FileResponse | HTMLResponse:
+        return _serve_admin_app(request, "")
+
+    @router.get("/api/bootstrap")
+    def admin_bootstrap(request: Request) -> dict[str, Any]:
+        """What the SPA shell needs before its first real paint (docs/UI_REWRITE_PLAN.md
+        §9 Phase 0.3) - whether to show a token-entry screen, the onboarding
+        wizard, or the console directly. Deliberately NOT behind require_admin:
+        a token-required client cannot know it needs a token without calling
+        something first, so this is the one endpoint that answers that
+        without circularity. Still behind the same same-origin check as
+        everything else, and the response is deliberately minimal - no
+        capability config, no secrets, nothing require_admin's callers get.
+        """
+        loaded = settings()
+        if not _origin_is_trusted(request):
+            raise HTTPException(
+                status_code=403,
+                detail="admin API refused: cross-origin request (Origin header does not match Host)",
+            )
+        return {
+            "token_required": bool(read_env_value(loaded.server.admin_token_env)),
+            "onboarding_complete": CONFIG_FILE_PATH.exists(),
+            "llm_reachable": check_localdeploy(loaded).status == "ok",
+            "version": _APP_VERSION,
+        }
 
     @router.get("/api/summary")
     def admin_summary(request: Request, task_limit: int = Query(default=5, ge=1, le=100)) -> dict[str, Any]:
@@ -327,17 +406,27 @@ def create_admin_router(
 
     @router.get("/api/approvals")
     def admin_pending_approvals(request: Request) -> dict[str, Any]:
-        require_admin(request)
+        loaded = require_admin(request)
         repositories = repositories_loader()
         pending = repositories.approvals.list_pending()
         items = []
         for approval in pending:
             task = repositories.tasks.get(approval.task_id)
+            policy = loaded.capabilities.get(approval.capability)
+            action_payload = approval.action_payload if isinstance(approval.action_payload, dict) else {}
             items.append(
                 {
                     "approval": approval.model_dump(mode="json"),
                     "task_objective": task.objective if task is not None else None,
                     "task_status": task.status.value if task is not None else None,
+                    # Evidence Pack fields (docs/UI_REWRITE_PLAN.md §11.2) the
+                    # existing ApprovalRequest alone doesn't carry: the
+                    # configured ceiling this risk level is measured
+                    # against, and what the pending action would actually
+                    # touch, reusing the same key-matching approach the
+                    # task-trace evidence view already uses.
+                    "capability_max_risk_level": policy.max_risk_level.value if policy is not None else None,
+                    "blast_radius": _approval_blast_radius(action_payload),
                 }
             )
         return {"approvals": items}
@@ -752,6 +841,19 @@ def create_admin_router(
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         return {"profile": loaded.llm.default_profile, "output_preview": output[:500]}
 
+    @router.get("/{sub_path:path}", response_model=None)
+    def admin_app_catch_all(request: Request, sub_path: str) -> FileResponse | HTMLResponse:
+        """SPA fallback for client-side routes (/admin/tasks, /admin/access,
+        ...) - registered LAST so every literal /api/* route above always
+        wins the match first; FastAPI/Starlette try routes in registration
+        order, so this can never shadow a real endpoint, only catch what
+        nothing else claimed. A genuinely unmatched /admin/api/* path 404s
+        here rather than serving HTML - that's a caller bug, not a page.
+        """
+        if sub_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="not found")
+        return _serve_admin_app(request, sub_path)
+
     return router
 
 
@@ -935,6 +1037,24 @@ def _collect_evidence_values(source: dict[str, Any], keys: tuple[str, ...]) -> l
         else:
             values.append(str(value))
     return values
+
+
+def _approval_blast_radius(action_payload: dict[str, Any]) -> dict[str, list[str]]:
+    """Files/URLs/commands a PENDING approval's action would touch if
+    approved - the Evidence Pack's "blast radius" field
+    (docs/UI_REWRITE_PLAN.md §11.2). Reuses the same key-matching approach
+    as _extract_evidence() below (the task-trace "what did this touch"
+    view), just over one action's input instead of a whole task's
+    completed tool_invocations.
+    """
+    action_input = action_payload.get("input")
+    if not isinstance(action_input, dict):
+        return {"files": [], "urls": [], "commands": []}
+    return {
+        "files": _collect_evidence_values(action_input, _EVIDENCE_FILE_KEYS),
+        "urls": _collect_evidence_values(action_input, _EVIDENCE_URL_KEYS),
+        "commands": _collect_evidence_values(action_input, _EVIDENCE_COMMAND_KEYS),
+    }
 
 
 def _extract_evidence(tool_invocations: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -1141,11 +1261,11 @@ def _tool_group(name: str) -> str:
     return "other"
 
 
-# The Streamlit app (admin_streamlit.py) is the one real admin UI - this used
-# to be a second, ~1,300-line embedded-HTML console (docs/HISTORY.md P4).
-# Kept as a small pointer, not a 404, for anyone with the old /admin URL
-# bookmarked; the JSON API below it (everything /admin/api/*) is unchanged
-# and is what Streamlit itself talks to.
+# The React console (docs/UI_REWRITE_PLAN.md) is the one real admin UI,
+# built from frontend/ into static/admin/ and served by _serve_admin_app
+# above. This is only the case-3 fallback: no build exists yet at this
+# checkout (a fresh clone/CI, or before `ybm ui-build` has ever run) - a
+# small pointer telling the operator how to get one, not a 404 or crash.
 _ADMIN_HTML = """
 <!doctype html>
 <html lang="en">
@@ -1156,14 +1276,14 @@ _ADMIN_HTML = """
   <style>
     body { font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1.5rem; color: #1a1a1a; }
     a { color: #2563eb; }
+    code { background: #f1f1f1; padding: 0.1rem 0.35rem; border-radius: 0.25rem; }
   </style>
 </head>
 <body>
   <h1>Agent Control Admin</h1>
-  <p>The admin console has moved to the Streamlit app.</p>
-  <p><a href="http://127.0.0.1:8501">Open the admin console (Streamlit, port 8501)</a></p>
-  <p><code>ybm start</code> launches it along with the rest of the stack, if it isn't already running.</p>
-  <p>This page's JSON API (<code>/admin/api/*</code>) is unchanged and is what the Streamlit app itself uses.</p>
+  <p>No admin console build was found yet.</p>
+  <p>Run <code>ybm ui-build</code> (or <code>npm run build</code> in <code>frontend/</code>), then reload this page.</p>
+  <p>This page's JSON API (<code>/admin/api/*</code>) is unchanged and works regardless of whether a build exists.</p>
 </body>
 </html>
 """

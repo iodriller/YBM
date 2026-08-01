@@ -64,3 +64,24 @@ def test_safe_summary_redacts_secret_values() -> None:
 
     assert summary["channels"]["telegram"]["token"] == "***"
     assert summary["llm"]["profiles"]["default"]["api_key"] == "***"
+
+
+def test_safe_summary_strips_mcp_server_env_values() -> None:
+    settings = AppSettings(
+        _env_file=None,
+        mcp={
+            "servers": {
+                "github": {
+                    "command": "npx",
+                    "env": {"GITHUB_TOKEN": "ghp_super_secret"},
+                }
+            }
+        },
+    )
+
+    summary = settings.safe_summary()
+    server = summary["mcp"]["servers"]["github"]
+
+    assert server["env_keys"] == ["GITHUB_TOKEN"]
+    assert "env" not in server
+    assert "ghp_super_secret" not in str(summary)

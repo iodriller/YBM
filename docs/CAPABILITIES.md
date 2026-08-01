@@ -25,12 +25,12 @@ positioning and quickstart, and [docs/ARCHITECTURE.md](ARCHITECTURE.md) for how 
 - Retry policy with durable retry metadata
 - Cross-platform setup: `scripts/install.sh` / `scripts/install.ps1`, `ybm onboard`, and Windows-specific `scripts/ybm.ps1`
 - Basic FastAPI health endpoint
-- Streamlit admin UI backed by FastAPI admin APIs for task monitoring, traces, config, audit, VS Code bridge state, and gated controls
-- Legacy FastAPI admin page retained as a fallback
+- React admin console (served by the backend at `/admin`) for chat, task monitoring, trace graphs, access/capability controls, and settings, backed by the same FastAPI admin APIs
+- A small pointer page served at `/admin` if the console hasn't been built yet at this checkout
 - Admin configuration writes for Telegram and the default OpenAI-compatible orchestrator LLM profile
 - LLM-based Telegram task classification with readable audit events
 - Admin audit filters, capability access modes, and database summary
-- One-command local stack launcher for LocalDeploy, backend, Telegram polling, worker, scheduler, and Streamlit admin UI
+- One-command local stack launcher for LocalDeploy, backend, Telegram polling, worker, and scheduler
 - Worker completion notifications back to Telegram with tool output summaries
 - LLM-backed per-Telegram-chat rolling memory with a concise summary and recent-turn window
 - Launchable web-app flow with workspace materialization and localhost preview URLs; Codex/Copilot are only used when explicitly requested

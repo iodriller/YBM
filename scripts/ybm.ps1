@@ -36,11 +36,11 @@ YBM - local agentic control stack
   ybm setup                    create venv, install deps, bootstrap config/.env
   ybm doctor                   preflight: env, config, connectivity, ports
   ybm start [flags]            start the stack (runs doctor first)
-    -NoTelegram -NoWorker -NoScheduler -NoAdminUi -NoLocalDeploy -SkipDoctor
+    -NoTelegram -NoWorker -NoScheduler -NoLocalDeploy -SkipDoctor
   ybm stop                     stop all YBM background processes
   ybm restart [flags]          stop then start
   ybm status                   show per-service status and health
-  ybm logs <service> [-Follow] tail a service's log (backend, worker, admin_ui, ...)
+  ybm logs <service> [-Follow] tail a service's log (backend, worker, ...)
   ybm test [pytest-args]       run backend/tests
   ybm e2e [args]                passthrough to scripts/run_all_e2e_tests.py
   ybm db inspect|clean|reset   inspect / prune / wipe the local database
@@ -72,7 +72,12 @@ function Invoke-YbmSetup {
     Write-Host "Creating backend\.venv via uv sync (first run can take a minute)..."
     Push-Location (Join-Path $Script:YbmRoot "backend")
     try {
-      $extraArgs = @("--extra", "test", "--extra", "e2e", "--extra", "voice")
+      # Keep this extras list identical to scripts/install.sh's uv sync line -
+      # they drifted before (install.sh only had "--extra dev", silently
+      # skipping pytest/telethon/voice/desktop on a fresh Linux/macOS install).
+      # "dev" (ruff) is included so a fresh `ybm setup` can actually run the
+      # `uv run --frozen ruff check .` step AGENTS.md/CONTRIBUTING.md document.
+      $extraArgs = @("--extra", "test", "--extra", "e2e", "--extra", "voice", "--extra", "dev")
       if ($Argv -notcontains "--no-desktop") {
         $extraArgs += @("--extra", "desktop")
       }
@@ -125,7 +130,6 @@ function Stop-YbmOrphansForName {
     "coding_session_watcher" { @("run_coding_session_watcher.ps1", "agent_control.cli run-coding-session-watcher") }
     "scheduler" { @("run_scheduler.ps1", "agent_control.cli run-scheduler") }
     "telegram_polling" { @("run_telegram_polling.ps1", "agent_control.cli poll-telegram") }
-    "admin_ui" { @("run_admin_ui.ps1", "admin_streamlit.py") }
     default { @() }
   }
   if (-not $patterns) {
@@ -217,7 +221,6 @@ function Invoke-YbmStart {
   $noTelegram = $Argv -contains "-NoTelegram"
   $noWorker = $Argv -contains "-NoWorker"
   $noScheduler = $Argv -contains "-NoScheduler"
-  $noAdminUi = $Argv -contains "-NoAdminUi"
   $noLocalDeploy = $Argv -contains "-NoLocalDeploy"
   $skipDoctor = $Argv -contains "-SkipDoctor"
 
@@ -258,10 +261,6 @@ function Invoke-YbmStart {
   if (-not $noScheduler) {
     $results["scheduler"] = Start-YbmService -Name "scheduler" -ScriptPath (Join-Path $Script:YbmRoot "scripts\services\run_scheduler.ps1") -Required $true
   }
-  if (-not $noAdminUi) {
-    $results["admin_ui"] = Start-YbmService -Name "admin_ui" -ScriptPath (Join-Path $Script:YbmRoot "scripts\services\run_admin_ui.ps1") `
-      -ReadyUrl "http://127.0.0.1:8501" -ReadyTimeoutSeconds 30 -Required $true
-  }
 
   Write-Host ""
   Write-Host "Startup summary:"
@@ -285,8 +284,7 @@ function Invoke-YbmStart {
     Write-Host "One or more required services failed to start. See .agent_control\logs, or run '.\scripts\ybm.ps1 logs <service>'." -ForegroundColor Red
     exit 1
   }
-  Write-Host "Admin UI:        http://127.0.0.1:8501"
-  Write-Host "Legacy FastAPI:  http://127.0.0.1:8765/admin"
+  Write-Host "Admin UI:        http://127.0.0.1:8765/admin"
   Write-Host "Logs:            $Script:YbmLogDir"
 }
 
@@ -336,7 +334,7 @@ function Invoke-YbmStatus {
   foreach ($check in @(
     @{ Name = "LocalDeploy"; Url = "http://127.0.0.1:8000/health" },
     @{ Name = "Backend"; Url = "http://127.0.0.1:8765/health" },
-    @{ Name = "Admin UI"; Url = "http://127.0.0.1:8501" }
+    @{ Name = "Admin UI"; Url = "http://127.0.0.1:8765/admin" }
   )) {
     $ok = Test-YbmHttpOk -Url $check.Url -TimeoutSec 3
     $mark = if ($ok) { "[OK]  " } else { "[DOWN]" }

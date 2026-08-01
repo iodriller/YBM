@@ -1146,3 +1146,142 @@ fix or a clean retry; a third, narrower still, for the 3 that turned out to need
 message improvement, a test-assertion fix matching existing precedent, and a reworded objective,
 respectively) — scenario tier back to fully green, `backend` unit + scenario suite passing end to
 end (`pytest tests`, exit 0).
+
+# Part 5 — React admin console: build and cutover (2026-08-01)
+
+Context: `docs/UI_REWRITE_PLAN.md` (written after a competitive UI/UX pass, 2026-07-31) called for
+replacing the 1,776-line single-page Streamlit console with a React SPA served by the existing
+FastAPI backend, in six phases (0 backend readiness, 1 shell+chat, 2 approvals, 3 tasks+trace, 4
+access, 5 settings+wizard, 6 cutover). All six shipped; this entry records the cutover and the two
+things found only by actually building it rather than by re-reading the plan.
+
+**Phases 0–5, in brief** (full detail, including every scoping decision and what was deliberately
+cut, lives in `docs/UI_REWRITE_PLAN.md` §9–§14, kept current phase by phase as each landed):
+Vite + React 19 + TanStack Query/Table + React Flow + Zod, served from
+`backend/src/agent_control/static/admin/` at `/admin` with a dev-proxy fallback; an
+Evidence-Pack approval flow ordered for a sub-15-second decision; a Tasks/Trace view with a real
+lane graph grounded in a new `origin`/`parent_step_id` correlation field (zero DB migration - it
+already serialized generically); an Access page (capability toggles, kill switch, presets, secret
+vault); a Settings page (LLM/Telegram/adapters/MCP/diagnostics/audit) and a first-run wizard.
+Three items were deliberately not built and are disclosed as such in the plan doc rather than
+rushed: **D2** (time-boxed approval grants — real new backend machinery, the one change that
+widens the security surface), **D6** (task replay), and **A1–A3** (per-role model/prompt/delegate
+presets — need new config schema + storage, no shortcut available).
+
+**Before cutover: an actual feature audit, not just the plan's own checklist.** The plan's Phase 6
+section said "cut over once parity is reached"; taking that literally meant checking the React
+console against every one of Streamlit's `_render_*` functions, not just the ones the plan had
+already named. Four real, un-disclosed gaps turned up this way:
+
+- **VS Code bridge live-connection status** (heartbeat, active file, workspace folders) — shown in
+  Streamlit's header, absent from React entirely; the client never even fetched `summary.vscode`.
+- **"Live Activity"** — Streamlit's landing page listed every currently-running task (any channel,
+  not just local chat) with inline pause/cancel and a live output preview; React required opening
+  Tasks, filtering, then opening a trace to do the same thing.
+- **Computer-use live session monitor** — Streamlit showed the current computer-use task's
+  screenshot path and action count with a stop button; React's Computer Use card was config-only.
+- **A per-domain health strip** (LLM/Telegram/VS Code/Workspace/Database) — Streamlit showed this
+  as a persistent chip row; React had collapsed it to a single dot + active-task count.
+
+All four were closed before deleting anything: `ActiveTasksPanel` (reuses `useTasks`/
+`useTaskSignal`, no new endpoint) at the top of Tasks; a live-session block added to the Computer
+Use settings card; a connection-status block added to the VS Code settings card
+(`admin.py`'s existing `_vscode_summary()`); and a health breakdown added to `HealthIndicator` as
+a hover tooltip rather than a new persistent strip or a dropdown-menu popover — the first version
+used `@base-ui/react`'s Menu primitive and measurably cost the always-loaded Chat landing page
+~27kB gzip for a panel that duplicates data already in Settings; swapped for `Tooltip`, already
+loaded unconditionally by `main.tsx`, at zero marginal cost.
+
+**A real, unrelated security fix found while wiring the VS Code/MCP status data**:
+`config.py`'s `safe_summary()` — the function every admin/settings response is built from —
+redacted the Telegram token and every LLM `api_key`, but dumped `mcp.servers[*].env` completely
+raw. MCP servers routinely carry secrets there (API tokens for whatever the server wraps), so this
+was a real, live exposure to any admin caller, not a hypothetical. Fixed to strip `env` and return
+only `env_keys` — the same "list the key, never the value" invariant the secret vault already
+enforces — covered by `test_safe_summary_strips_mcp_server_env_values`. Confirmed against this
+machine's own real MCP servers (`ybm`, `filesystem`, `fetch`) post-fix: `env_keys` came back
+correctly, no `env` key present in the response at all.
+
+**Cutover, once parity actually held**: deleted `admin_streamlit.py` (1,776 lines) and
+`test_admin_streamlit.py` (599 lines); dropped `streamlit` from `REQUIRED_MODULES`
+(`bootstrap.py`) and from `backend/pyproject.toml`'s dependencies, and the `playwright` test extra
+(its only stated purpose — "Browser UI diagnosis (Streamlit admin at :8501)" — no longer applies;
+Playwright E2E for the React console is future work tracked in the plan doc, §15.1, not yet
+built); re-locked and re-synced the venv (`uv lock`, `uv sync --extra test --extra e2e --extra
+voice --extra desktop --extra dev`), which also dropped 22 now-unused transitive packages. Removed
+the `admin_ui` service from both supervisors (`agent_control.supervisor.build_service_specs()` and
+`scripts/ybm.ps1`/`scripts/lib/common.ps1`), the `-NoAdminUi`/`--no-admin-ui` flag from both (dead
+once there is nothing left to skip), the `admin_ui` entry from `_expected_services()`
+(`runtime_status.py` — it read a status file only the deleted Streamlit supervisor ever wrote),
+port 8501 from `bootstrap.py`'s `_check_ports()`, and `scripts/services/run_admin_ui.ps1`.
+Every "Admin UI" banner/status-check across both supervisors, `onboarding.py`, and the docs now
+points at `http://127.0.0.1:8765/admin` (the same backend, same port, no second service) instead
+of `:8501`. `admin.py`'s `_ADMIN_HTML` fallback (case 3 of `_serve_admin_app` — no build present
+at this checkout) no longer points at Streamlit; it tells the operator to run `ybm ui-build`.
+
+**Verified:** full backend suite green post-deletion (574 passed), `ruff check .` clean, `frontend`
+`tsc -b --noEmit` and `npm run build` both clean. Live: `ybm start`/`status`/`stop` with no
+`admin_ui` entry anywhere in the output; `/admin` serves the real React build; the health/VS-Code
+status panels confirmed against this machine's actual running VS Code bridge session (the real
+`active_file` it reported matched what was genuinely open at the time). **Not verified:** an actual
+Playwright/browser click-through end to end (still the standing gap §15.1 tracks) and the
+first-run wizard's "fresh checkout, no `config.yaml` yet" branch (would have meant deleting this
+machine's real config to trigger it, avoided as unnecessarily destructive for a UI check — covered
+instead by reading `admin_bootstrap()`'s exact `CONFIG_FILE_PATH.exists()` condition).
+
+**Same day: the user reported `ybm start` "didn't work" and asked for a real Playwright pass
+instead of another curl-only check** - a fair challenge, since every phase above had explicitly
+disclosed "not verified: an actual browser click-through" as a standing gap. `@playwright/test`
+was added to `frontend/` (dev dependency) and used ad hoc - navigate the real running console,
+screenshot every page, capture console/network errors - which is exactly what the disclosed gap
+predicted might be hiding something, and it was:
+
+- **A genuine blank-page bug at the exact URL every banner and README prints.**
+  `main.tsx`'s `<BrowserRouter basename={import.meta.env.BASE_URL}>` used Vite's own `base`
+  reflection, which carries a trailing slash (`/admin/`, from `vite.config.ts`'s `base` setting).
+  React Router's `basename` matches by exact string prefix, and `/admin` (no trailing slash - the
+  literal address `ybm start`'s own banner, `README.md`, and every doc print) does not start with
+  `/admin/`, so the router logged a warning and rendered nothing at all. Confirmed via the
+  console warning first, then via a totally blank page. Fixed by stripping the trailing slash
+  before passing it as `basename`. This is very likely the exact bug the user hit.
+- **A flexbox bug collapsing cards to a few pixels tall on every content-heavy page.**
+  `AccessPage`/`SettingsPage`/`TaskTracePage`/`TasksPage` all share
+  `<div className="flex h-full flex-col gap-4 overflow-y-auto ...">`. Flex items shrink
+  (`flex-shrink: 1`, the CSS default) *before* `overflow-y-auto` ever kicks in, so once a page's
+  total content exceeded the viewport, every child got proportionally squeezed instead of the
+  container scrolling - worst on the smallest cards (Access's Kill switch and Presets rendered as
+  a ~32px pill with a real button and description sitting fully present in the DOM, just given
+  zero visible height, confirmed via `getBoundingClientRect()` before guessing at a fix). Fixed by
+  adding `[&>*]:shrink-0` to all four containers. Re-screenshotted at a deliberately oversized
+  viewport (1440×3600) to force a true full-page capture and confirmed every card - Kill switch,
+  Presets, all nine access groups, the full Settings stack down through Diagnostics/Audit -
+  renders completely.
+- **A minor, related finding, fixed rather than patched around:** the trace graph's React Flow
+  `<MiniMap>` was rendering partially clipped by its container's `overflow-hidden` corner. Given
+  these graphs only ever hold a handful of lanes/nodes, a minimap adds little navigational value -
+  removed rather than fighting a third-party widget's positioning CSS.
+
+**Also found while comparing the two install paths (unprompted, while evaluating whether
+`install.ps1`/`install.sh` duplicate `ybm.ps1`'s start/setup logic):** they'd drifted.
+`scripts/ybm.ps1`'s `Invoke-YbmSetup` installs `--extra test --extra e2e --extra voice
+[--extra desktop]`; `scripts/install.sh` installed only `--extra dev` (ruff) - meaning a fresh
+Linux/macOS install via the documented one-liner never got `pytest`, `telethon`, or the
+voice/desktop extras at all. Fixed both to install the same extras (`test`, `e2e`, `voice`,
+`desktop`, `dev`), and added `dev` to `ybm.ps1` itself, which was *also* missing it - meaning a
+fresh Windows setup couldn't run the `uv run --frozen ruff check .` step AGENTS.md/CONTRIBUTING.md
+both document, either. `install.ps1`/`install.sh` otherwise already delegate correctly (clone →
+`ybm.ps1 setup`/`uv sync` → `ybm onboard`, which itself calls `start_all()`) rather than
+duplicating start logic - the real, deliberate duplication left standing is
+`agent_control.supervisor.py` (Python, cross-platform, for pip-installed non-Windows users) versus
+`scripts/ybm.ps1` (Windows-tested PowerShell) each independently implementing "start N services,
+check readiness" - documented and justified in `supervisor.py`'s own module docstring, not
+accidental drift, and not merged here.
+
+**Verified:** `frontend` `tsc -b --noEmit` and `npm run build` both clean after every fix; the
+basename fix confirmed by loading `http://127.0.0.1:8765/admin` (no trailing slash) and getting
+the full app instead of a blank page; the flex-shrink fix confirmed via `getBoundingClientRect()`
+before and after (Kill switch card: 32px → 126px) and visually via full-page screenshots of
+Access, Settings (both Advanced and Level 1), and the Trace graph. **Not verified:** the
+install.sh extras fix was not tested with a real fresh clone/install run (would mean installing a
+second copy of the whole toolchain); reviewed by direct comparison against `ybm.ps1`'s
+already-proven-working extras list instead.

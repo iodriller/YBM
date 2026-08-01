@@ -1,338 +1,491 @@
 # UI Rewrite Plan — React + FastAPI
 
-Status: **planned, not started.** Written 2026-07-31.
+Status: **built, cut over, and bug-hunted.** Written 2026-07-31; all six phases shipped and
+Streamlit removed 2026-08-01; a same-day Playwright pass then found and fixed two real bugs a
+curl-only verification pass had missed (§15.1). Full narrative in `docs/HISTORY.md` Part 5; this
+document keeps only what isn't obvious from the code. Remaining open items are tracked where
+they're scoped: D2/D6/A1–A3 in §9–14, a committed Playwright suite in §15.1.
 
 Replaces the single-page Streamlit console (`backend/src/agent_control/admin_streamlit.py`,
-1,776 lines, ~25 render functions stacked onto one page) with a React single-page app served
-by the existing FastAPI backend.
+1,776 lines, ~25 render functions stacked onto one page) with a React single-page app served by
+the existing FastAPI backend.
 
-This document is the end-to-end plan: the decision and its cost, the serving/auth architecture,
-the stack, phased delivery, testing, and cutover. It folds in the three UX workstreams that
-were previously scoped separately — first-run experience, console restructure, and approval UX.
-
----
-
-## 1. Decision, and its honest cost
-
-**Decision:** rewrite the admin console as a React SPA. Retire Streamlit.
-
-**The cost is real and should not be understated.** Streamlit's whole value here was speed —
-comparable dashboard work is roughly 1–3 days in Streamlit versus 2–6 weeks for a custom
-React front end. Streamlit 1.60 also already ships `st.navigation`/`st.Page`, so the
-multi-page restructure alone could have been done inside Streamlit in ~2 days. Choosing React
-buys control and a materially better product surface, and costs weeks. That trade is the
-premise of this document, not something it re-argues.
-
-**What makes it much smaller than a typical rewrite:** the backend does not change. The admin
-API already exists and is complete — **24 JSON endpoints** under `/admin/api/*` (plus the
-`/admin` HTML route the SPA will replace) covering summary, tasks, traces, approvals, audit,
-every config surface (LLM, Telegram, VS Code, workspace, computer-use, access modes), secrets,
-chat, and an LLM connectivity test. Streamlit is already a *pure client* of that API; it holds
-no business logic. So this is a **client swap**, not a system rewrite.
-
-**What we gain beyond aesthetics:**
-
-- Real client-side routing and state, instead of a full-script rerun on every interaction.
-- One fewer service and one fewer port — Streamlit (`:8501`) disappears, and `ybm start`
-  drops a process. `admin_ui` leaves `supervisor.py`'s service list and `ybm.ps1`'s.
-- The ability to make approvals a first-class, always-visible surface, which the
-  single-page Streamlit layout structurally cannot do.
-- A dependency drop: `streamlit` (and its transitive tree) leaves `pyproject.toml`.
+**Design goal, stated once and enforced throughout:** *simple enough that a first-time user
+never opens a menu, deep enough that an advanced user can debug, inspect, and change anything
+without leaving the app.* Section 6 makes that testable rather than aspirational.
 
 ---
 
-## 2. Architecture — serving and auth
+## 1. Competitive analysis — what we are actually up against
 
-**This section is the load-bearing one. Get it wrong and you weaken the security model that
-is the project's main differentiator.**
+| Project | Scale | What it is | Better than us at | Gap it leaves |
+|---|---|---|---|---|
+| **Open WebUI** | ~136k★ | Default Ollama front end | Fastest setup, best pure-chat UX, huge community | Chat UI, not an agent with machine access. No capability policy, no approvals. |
+| **LibreChat** | large | Polished ChatGPT clone | Multi-provider, SSO/OAuth, artifacts, token tracking, MCP, code interpreter | Team chat product. No OS-level tool governance. |
+| **AnythingLLM** | large | RAG/workspace-first | Best document chat; per-workspace vector config | Not an actuating agent. |
+| **OpenHands** | ~70k★ | SWE agent platform | Agent Canvas, built-in VS Code, delegation, **RBAC + audit trails**, event-stream arch, K8s | Scoped to software engineering in a sandbox. Not a personal, whole-machine assistant. |
+| **OpenClaw** | very large | Multi-channel agent gateway | Channels, community, distribution | Governance is not the product. |
 
-Today `admin.py`'s `require_admin()` does two independent things:
+**Two honest conclusions:**
 
-1. **Same-origin enforcement** — `_origin_is_trusted(request)` rejects any request whose
-   `Origin` header does not match `Host`. There is deliberately **no `CORSMiddleware`** on the
-   app; the code comments say so explicitly, so Starlette emits no
-   `Access-Control-Allow-Origin` and a malicious page's JS cannot read admin responses.
-2. **Token check** — `X-Agent-Control-Admin-Token` header (or `?token=`), compared against
-   `AGENT_ADMIN_TOKEN`. When no token is set *and* the host is loopback-only, it allows the
-   request; if the host is not loopback and no token is set, it refuses with 503.
+1. **We cannot win on chat UX.** Open WebUI and LibreChat are years ahead with far more
+   contributors. Do not try to out-chat them.
+2. **"Audit trail" is not a differentiator** — OpenHands already advertises audit trails *and*
+   RBAC *and* delegation. Claiming it as unique is the kind of overclaim a knowledgeable reader
+   instantly discounts.
 
-### The constraint this creates
+**Where the real gap is:** every product above either runs the agent *in a sandbox* (OpenHands)
+or *doesn't actuate at all* (the rest). YBM is a personal agent with real access to a real
+machine. In that category the **governance and inspection surface is the product**, and nobody
+is building that UI well.
 
-A React dev server on `:5173` calling the backend on `:8765` is **cross-origin** and will be
-**refused by design**. There are two ways to resolve that, and only one is acceptable:
+---
+
+## 2. Differentiation strategy
+
+Grounded in 2026 human-in-the-loop research, which is blunt that naive approval UX is the failure
+mode: *"Human-in-the-Loop Is Not a Button."* The guidance is to replace "Approve?" with a decision
+surface carrying **intent, data lineage, permissions chain, expected blast radius, and rollback
+plan**, compressed into an **"Evidence Pack" supporting sub-15-second decisions**. That is nearly
+a specification for a UI YBM's backend can already populate and no competitor here ships.
+
+| # | Differentiator | Backend status |
+|---|---|---|
+| **D1** | **Evidence-Pack approvals** — what/why/exactly-what/blast-radius/reversibility/authority/expiry | Data exists; `approval_reasons` shipped |
+| **D2** | **Bounded approval** — one-shot *or* time-boxed, exactly scoped | One-shot tokens exist; time-box needs a small addition |
+| **D3** | **Native local observability** — Langfuse-class trace, zero extra infra, zero egress | `build_task_trace()` already returns it |
+| **D4** | **OpenTelemetry export** (opt-in) so users can pipe to their own Langfuse/Phoenix | New, small |
+| **D5** | **Cost/token per task** with `by_source` split (operator/auditor/sub-agent) | Already computed |
+| **D6** | **Deterministic replay** — re-run a task against recorded LLM responses | Scenario-fixture machinery exists |
+
+**D3 deserves emphasis.** The 2026 observability stack is Langfuse or Arize Phoenix — both
+excellent, both a *separate service to deploy*, both a data-egress decision. `build_task_trace()`
+already returns `task`, `context`, `operator_history`, `timeline`, `tool_invocations`, `evidence`,
+`approvals`, `artifacts`, `signals`, `audit`. That is a Langfuse-class agent trace, **already
+implemented, entirely local, no extra infrastructure** — currently near-invisible because
+Streamlit renders it as stacked expanders. Making it first-class converts existing backend work
+into the headline feature.
+
+> **What we do not claim:** better chat than Open WebUI/LibreChat, a bigger tool ecosystem than
+> OpenClaw, or that audit trails are unique. Overclaiming against projects with 10–100× the
+> contributors is the fastest way to lose the audience we want.
+
+---
+
+## 3. Decision, and its honest cost
+
+**Decision:** rewrite the console as a React SPA. Retire Streamlit.
+
+**The cost is real.** Comparable dashboard work is ~1–3 days in Streamlit vs 2–6 weeks for a
+custom React front end, and Streamlit 1.60 already ships `st.navigation`/`st.Page`, so the
+multi-page restructure alone was ~2 days in place. React buys control and a materially better
+product surface, and costs weeks. That trade is the premise of this document.
+
+**What makes it far smaller than a typical rewrite:** the backend does not change. The admin API
+is complete — **24 JSON endpoints** under `/admin/api/*` (plus the `/admin` HTML route the SPA
+replaces). Streamlit holds **no business logic**; it is a pure client. This is a **client swap**.
+
+**Also gained:** one fewer service and port (`:8501` retires, `ybm start` drops a process), and
+`streamlit` leaves the dependency tree.
+
+---
+
+## 4. Architecture — serving and auth
+
+**The load-bearing section. Getting this wrong weakens the security model that is the product.**
+
+`admin.py`'s `require_admin()` enforces two independent controls:
+
+1. **Same-origin** — `_origin_is_trusted()` rejects any request whose `Origin` ≠ `Host`. There is
+   deliberately **no `CORSMiddleware`**; the code says so explicitly, so no
+   `Access-Control-Allow-Origin` is emitted and a malicious page's JS cannot read admin responses.
+2. **Token** — `X-Agent-Control-Admin-Token` header (or `?token=`) vs `AGENT_ADMIN_TOKEN`.
+
+### The constraint
+
+A Vite dev server on `:5173` calling `:8765` is cross-origin and **refused by design**.
 
 | Option | Verdict |
 |---|---|
-| Add `CORSMiddleware` with permissive origins | ❌ **Never.** Deletes control #1 above, which exists specifically to stop a malicious local page from driving the agent. |
-| Make the browser see one origin | ✅ Correct in both dev and prod. |
+| Add permissive `CORSMiddleware` | ❌ **Never.** Deletes control #1, which exists to stop a malicious local page driving the agent. |
+| Make the browser see one origin | ✅ Correct in dev and prod. |
 
-### Production: serve the SPA from FastAPI
-
-Build the SPA to static assets and mount them on the existing app, replacing the current
-`/admin` pointer route (`admin_page()` returning `_ADMIN_HTML`):
+**Production** — mount built assets on the existing app, replacing the `/admin` pointer route:
 
 ```
-GET /admin              -> index.html   (SPA shell)
-GET /admin/assets/*     -> hashed JS/CSS
-GET /admin/api/*        -> unchanged, existing router
+GET /admin           -> index.html (SPA shell)
+GET /admin/assets/*  -> hashed JS/CSS
+GET /admin/api/*     -> unchanged existing router
 ```
 
-Same scheme, host, and port for app and API. `Origin` matches `Host`. The same-origin check
-passes untouched, **no CORS relaxation anywhere**, and the token flow is unchanged. This is
-strictly better than today's two-origin Streamlit setup.
+Same scheme/host/port ⇒ `Origin` matches `Host` ⇒ same-origin check passes untouched, **no CORS
+relaxation anywhere**. Strictly better than today's two-origin Streamlit setup.
 
-### Development: Vite proxy
-
-`vite.config.ts` proxies `/admin/api` to `http://127.0.0.1:8765`, so the browser only ever
-talks to the Vite origin and the proxied request arrives with matching `Origin`/`Host`.
-No backend changes, no dev-only auth bypass, no CORS.
+**Development** — Vite proxy:
 
 ```ts
 server: { proxy: { "/admin/api": { target: "http://127.0.0.1:8765", changeOrigin: true } } }
 ```
 
-> `changeOrigin: true` is what rewrites the forwarded `Origin` to the target. Verify against
-> `_origin_is_trusted()` early in Phase 0 — this is the single highest-risk assumption in the
-> plan, so it gets proven before any UI is built.
+`changeOrigin: true` rewrites the forwarded `Origin`. **Verify against `_origin_is_trusted()` in
+Phase 0.1** — the highest-risk assumption here, proven before any UI is built.
 
-### Auth in the client
-
-- Token read from the same `AGENT_ADMIN_TOKEN` the backend expects, injected at page load
-  (see Phase 0.3) and sent as `X-Agent-Control-Admin-Token` on every request.
-- **Never** put the token in a URL query string in the browser — it lands in history and
-  logs. The header is the only client path; `?token=` stays for curl/scripts.
-- Keep it in memory (module-scope), not `localStorage`, to limit XSS blast radius.
+**Token handling:** header only; **never** in a browser URL (lands in history/logs — `?token=`
+stays for curl); kept in memory, not `localStorage`, to limit XSS blast radius.
 
 ---
 
-## 3. Stack
+## 5. Stack and packages
 
-| Concern | Choice | Why |
+Every choice below is justified, and the notable rejections are recorded — a dependency you
+didn't add is a dependency you never have to patch.
+
+| Concern | Choice | Why this one |
 |---|---|---|
-| Build | **Vite + React + TypeScript** | Fast, standard, first-class proxy support. Repo already has a Node 22 toolchain and TS config for `vscode-extension/`. |
-| Server state | **TanStack Query** | The console is ~90% polled server state. Gives caching, `refetchInterval`, request dedup, and stale/error states for free — replaces Streamlit's 3s whole-page rerun (`LIVE_REFRESH_SECONDS`) with per-query intervals. |
-| Routing | **React Router** | Four top-level pages, deep links into task traces. |
-| UI kit | **Tailwind + shadcn/ui** | Accessible primitives (dialog, alert, table, toast) copied into the repo rather than pinned as a dependency; no design system to invent. |
-| Response validation | **Zod** | Parse `/admin/api/*` payloads at the boundary. The API is untyped Python dicts; this stops a backend shape change from silently rendering `undefined`. |
-| Tests | **Vitest + Testing Library**, **Playwright** for E2E | Playwright is already a backend test dependency for UI diagnosis; reuse it. |
+| Build | **Vite + React + TypeScript** | Repo already has Node 22 + TS tooling for `vscode-extension/`. |
+| UI kit | **shadcn/ui + Tailwind + Radix** | Components are *copied into the repo*, not a pinned dependency — no upgrade treadmill, full control. **shadcn CLI v4 (Mar 2026) ships `shadcn/skills` context packs and native AI-agent integration**, so coding agents scaffold components correctly. Directly relevant: this repo is built with AI assistance *and* runs coding agents. |
+| Server state | **TanStack Query** (+ Devtools) | ~90% of this console is polled server state. Caching, `refetchInterval`, dedup, stale/error states free. Replaces Streamlit's 3s whole-page rerun with per-query intervals. |
+| Tables | **TanStack Table** | Headless (~3M weekly downloads); **TanStack Table + shadcn/ui is the most common 2026 pairing**, and shadcn ships a production data-table recipe. Needed for tasks, audit, capabilities. |
+| Graph / node UI | **React Flow (xyflow) v12** | The trace is a *tree*, not a list (see §7). Purpose-built, MIT core, actively maintained (v12, Jul 2026). |
+| Routing | **React Router** | Four pages + deep links into traces. |
+| Validation | **Zod** | Parse `/admin/api/*` at the boundary; the API returns untyped Python dicts. |
+| JSON inspection | **`@uiw/react-json-view`** | ~20KB gzipped, actively maintained, optional editing. Preferred over legacy `react-json-view` (~50KB). |
+| Code / prompt editing | **CodeMirror 6** via `@uiw/react-codemirror` | ~50kB tree-shakeable; used by Firefox DevTools and Replit. **Rejected Monaco**: 2–5MB for the full VS Code engine is disproportionate for a local console that must stay light and work offline. |
+| Charts | **Recharts**, only if needed | For the cost panel. Do not add until a real chart exists. |
+| Mocking | **MSW** | Develop/test UI states without a backend or LLM (§12.2). |
 
-**Location:** `frontend/` at repo root, sibling to `backend/` and `vscode-extension/` —
-matching the existing top-level layout.
+**Deliberately rejected:** Monaco (bundle size), MUI/Ant/Chakra (heavy opinionated themes when
+shadcn gives control), Redux/Zustand (TanStack Query owns server state; local UI state is small
+enough for `useState`/context — add a store only when a real need appears), and any charting
+library before there is a chart.
 
----
-
-## 4. Phase 0 — Backend readiness (~1 day)
-
-No UI yet. De-risk the assumptions first.
-
-- **0.1 Prove the Vite proxy satisfies `_origin_is_trusted()`.** Spike a throwaway Vite app,
-  call `/admin/api/summary`, confirm 200 not 403. *If this fails, the whole dev story changes* —
-  find out now, not in week three. Fallback if it fails: run Vite in middleware mode behind
-  FastAPI, or add an explicit dev-only trusted-origin allowlist gated on a loopback host check
-  (never a blanket CORS policy).
-- **0.2 Static mount.** Add a `StaticFiles` mount for the built SPA at `/admin`, with an
-  SPA-fallback so client-side routes (`/admin/tasks`, ...) return `index.html` instead of 404.
-  Keep `/admin/api/*` registered *before* the catch-all so it is never shadowed.
-- **0.3 Bootstrap endpoint.** `GET /admin/api/bootstrap` returning what the shell needs on
-  first paint: whether a token is required, whether onboarding is complete, whether an LLM
-  profile is reachable, and the app version. Lets the SPA decide between wizard and console
-  without a waterfall of calls.
-- **0.4 Decide live-update transport.** Start with **TanStack Query polling** (2–3s on active
-  views) — it matches today's behavior, needs zero backend work, and is trivially correct.
-  Only add SSE (`/admin/api/events`) if polling proves visibly laggy for approvals. *Do not
-  build SSE speculatively.*
-- **0.5 Frontend build wiring.** `frontend/` npm project; `ybm package-ui` (or a build step in
-  `ybm setup`) producing `backend/src/agent_control/static/admin/`. Ship the built assets in
-  the Python package so `pip install` users get a working console with no Node toolchain.
-
-**Exit criteria:** a hello-world React page served at `http://127.0.0.1:8765/admin`, calling
-`/admin/api/summary` successfully in both dev (proxy) and prod (static mount).
+**Location:** `frontend/` at repo root, sibling to `backend/` and `vscode-extension/`.
 
 ---
 
-## 5. Phase 1 — Shell + Chat *(first value)* (~3 days)
+## 6. The simple/advanced problem — made testable
 
-Implements the **console restructure** and the **value-before-configuration** principle.
+The central ask: *simple and nice for normal use, a real admin/debug console for advanced users.*
+These pull against each other, so the plan adopts a measurable standard rather than a vibe.
 
-**App shell:** persistent left nav with four destinations, a connection/health indicator, and
-a **global approval banner** (Phase 3) rendered above the router outlet so it is visible from
-every page.
+**Nielsen's 2026 "workbench test": a user should complete ~80% of their top tasks without opening
+any secondary drawer or menu.** Supporting research: deferring advanced features produced 30–50%
+faster initial task completion and ~40% fewer support tickets.
 
-| Route | Page | Replaces |
+### The rule this project adopts
+
+> **Every screen has one obvious primary action visible with zero clicks. Everything else lives
+> behind exactly one clearly-labelled disclosure — never two.**
+
+Two levels, never three. If something needs a third level, the information architecture is wrong.
+
+| Surface | Level 1 (always visible) | Level 2 (one disclosure) |
 |---|---|---|
-| `/admin` | **Chat** *(landing)* | `_render_local_chat` (currently an expander below the header) |
-| `/admin/tasks` | **Tasks** | `_render_live_activity`, `_render_tasks`, `_render_task_trace`, `_render_operations` |
-| `/admin/access` | **Access** | `_render_access_config`, `_render_kill_switch`, `_render_computer_use_config`, `_render_secrets_config` |
-| `/admin/settings` | **Settings** | `_render_llm_config`, `_render_telegram_config`, `_render_vscode_config`, `_render_workspace_config`, `_render_diagnostics`, `_render_audit` |
+| Chat | Message box, transcript, starter prompts | Per-message: token cost, task id, "open trace" |
+| Approval | Why · What · Exactly what · Approve/Deny | Full parameter JSON, policy decision path, raw audit |
+| Task | Status, objective, answer, duration | Full trace graph, tool I/O, raw audit, replay |
+| Access | Capability on/off toggles | Risk ceilings, scopes, allow/deny patterns, active grants |
+| Settings | Model picker, "Test connection" | Every adapter field, prompt overrides, OTel export |
 
-**Chat is the landing page.** It is the front door; a first-time user should be able to type
-something and get an answer without visiting any other screen.
+### The "Advanced" affordance
 
-- Transcript from `GET /admin/api/chat/messages`, send via `POST`.
-- Streaming-style status: a task moves `received → running → completed`; poll and update the
-  assistant bubble in place, reusing the status→text mapping logic from `_chat_answer_text`.
-- **Starter prompts** on empty state — three clickable examples, one of which deliberately
-  triggers an approval, so a new user meets the approval gate in their first minute rather
-  than discovering it later.
-- **Real empty states** everywhere, replacing today's empty tables.
+A single global **Advanced mode** toggle, persisted per user, that reveals Level 2 by default
+everywhere rather than requiring per-panel expansion. Simple users never touch it; power users
+flip it once and get a dense admin console permanently. This is one switch, not a per-screen
+maze — and it is why the answer to "simple *or* powerful" is "both, sequenced."
 
-**Exit criteria:** send a message, see it become a task, see the answer, with no other page
-implemented.
+**Acceptance criterion for the whole rewrite:** a new user can send a message, read the answer,
+and approve one action **without opening a single disclosure**. If that fails, Level 1 is wrong.
 
 ---
 
-## 6. Phase 2 — Approvals *(the differentiator)* (~2 days)
+## 7. React Flow — where a node UI genuinely belongs (and where it does not)
 
-The product's core claim is "it asks before it acts." This surface should be the best in the
-app, and it is the main thing the single-page Streamlit layout could not do well.
+The user asked whether a React Flow settings/workflow surface makes sense. The honest answer is
+**yes for one thing, no for another**, and the distinction matters.
 
-- **2.1 Global banner.** Persistent, unmissable, on every route. Count + one-click open.
-  Driven by `GET /admin/api/approvals` on a short interval.
-- **2.2 Approval detail.** Show, in this order: the plain-English **reason** (now populated by
-  `ToolDefinition.approval_reasons`), the **tool + operation**, the **exact parameters** in a
-  readable diff-style block, and **capability + risk level**. Never ask a human to approve
-  something they cannot inspect.
-- **2.3 Expiry countdown.** Approvals are one-shot and expiring (`decide_pending()` fails
-  closed past `expires_at`). Show a live countdown; grey the buttons out and say so on expiry,
-  rather than letting a click fail confusingly.
-- **2.4 Decide.** Approve / Deny via `POST /admin/api/approvals/{id}/decide`, with an
-  optimistic update and rollback on error.
-- **2.5 Deep link** to the requesting task's trace.
+### ✅ Use it: the trace graph — because the trace is genuinely a tree
 
-**Exit criteria:** trigger a `code.interpreter generate_and_run` from Chat, see the banner
-appear on every page, read *why* it needs approval, approve it, watch the task resume.
+This is a real, verified need, not decoration. Two shipped features made execution non-linear:
 
----
+- **`call_tools_parallel` (T1.1)** — N tool calls run concurrently via `asyncio.gather`.
+- **`delegate` (T1.2)** — a step spawns a bounded inner operator loop (`DELEGATE_MAX_STEPS = 6`)
+  with its own history.
 
-## 7. Phase 3 — Tasks (~3 days)
+A linear timeline **cannot** express "these three ran at once" or "this step spawned a sub-agent
+that made four calls of its own." React Flow can, and that is exactly what it is for.
 
-- Task list: status filter, search, live-updating rows.
-- **Trace view** — the highest-value debugging surface. Operator step timeline (tool, status,
-  input, output summary, error), tool invocations, audit events, evidence (files/URLs/commands).
-  Port from `_render_task_trace` / `_render_operator_history` / `_render_evidence`.
-- **Token/cost** panel per task (`metadata.token_usage`: total, call count, `by_source`
-  breakdown, `last_model`). Already computed; currently underexposed.
-- Task actions: cancel/pause signals via `POST /admin/api/tasks/{id}/signals`; clear via
-  `DELETE /admin/api/tasks`.
+**Backend gap, verified in the schema, now closed.** `tool_invocations` is:
 
----
+```sql
+id, task_id, tool_name, capability, request_json, result_json, status, created_at, completed_at
+```
 
-## 8. Phase 4 — Access (~2 days)
+There was **no parent/step correlation column**. `_run_delegate()` called the executor with the
+*parent's* `task_id`, so a sub-agent's tool calls landed in the same flat list, indistinguishable
+from the parent's own — and a parallel batch was likewise indistinguishable from three sequential
+calls. The data was all captured; the structure was lost on write.
 
-The security control room, and a place the product should feel confident.
+> **Done — turned out simpler than the migration originally scoped here.** `request_json` already
+> serializes the *entire* `ToolCallRequest` generically (confirmed: most existing fields —
+> `risk_level`, `scope_target`, `idempotency_key` — already have no dedicated column, they ride
+> inside this blob). So `ToolCallRequest` gained two plain fields, `origin: str = "operator"` and
+> `parent_step_id: str | None = None`, with **no migration and no repository change** — they flow
+> into `request_json` automatically, exactly like every other field already does.
+> `_run_parallel_calls` generates one `parallel_batch:<id>` per batch and tags every call in it
+> (including a nested batch inside a delegate, which composes to
+> `subagent:<id>/parallel_batch:<id>`); `_run_delegate` generates one `subagent:<id>` and tags
+> both its own tool calls *and* the summary entry it returns to the parent's `operator_history`,
+> so the parent-visible "delegate" step and its children share the same id and a trace UI can
+> nest them without prefix-parsing heuristics. Verified end to end (not just unit-level) by two
+> new tests in `test_worker_parallel_and_delegate.py` that assert the *same* origin string
+> appears in both `operator_history` and the persisted `tool_invocations` rows for a batch and for
+> a delegated sub-task.
 
-- Capability matrix: enabled, requires-approval, max risk level, scopes — per capability.
-- **Kill switch** and access-mode presets (`POST /admin/api/config/access-modes`).
-  Carry over the `bool(access_modes) and all(...)` empty-dict fix from the Streamlit version.
-- Make it explicit in the UI that presets — **including Full Access** — do not bypass
-  `approval_required_operations`. This is true, it is unusual, and it should be visible.
-- Secret vault: list `service.key` (**never values**), add, delete. Preserve the invariant that
-  values never appear in any response.
-- Destructive toggles get a confirm dialog naming the concrete consequence.
+### ✅ Use it: a read-only live pipeline diagram
 
----
+`Concierge → Operator loop → Auditor`, with the current task's position highlighted live. Small,
+honest, and genuinely educational — it teaches the architecture in one glance and makes the
+approval gate's position obvious.
 
-## 9. Phase 5 — Settings + first-run wizard (~3 days)
+### ❌ Do not use it: a drag-and-drop "agent workflow builder"
 
-- LLM config + preset selector + **"Test connection"** (`POST /admin/api/llm/test`).
-- Telegram, VS Code, workspace, computer-use config forms.
-- Audit log viewer with filters; diagnostics/health panel.
-
-**First-run wizard (web, not CLI).** If `bootstrap` reports onboarding incomplete, the SPA
-renders a centered card instead of the console:
-
-1. **Pick a brain** — auto-detected local Ollama / paste an API key / skip.
-2. **Pick a face** — web chat (default, zero setup) / also enable Telegram.
-3. Done → land on Chat with starter prompts.
-
-Skippable at every step; re-runnable from Settings. This complements the existing CLI
-`ybm onboard` (which stays for headless installs) rather than replacing it — a non-technical
-user should never need a terminal prompt.
-
-**One-time safety tour:** a dismissible banner — *"Everything dangerous is off by default.
-Enable capabilities in Access."* — tying the security story to the UI immediately.
+This is the trap, and it is worth being explicit about. The pipeline is **not data-driven**:
+Concierge, Operator, and Auditor are hardcoded classes; `OperatorConfig` contains exactly one
+field (`max_steps`). A node editor implying you can rewire or add pipeline stages would be **a UI
+that lies about the system** — the single fastest way to lose a technical user's trust. Build it
+only if and when the backend actually becomes a configurable graph, which is a large change
+nobody has asked for yet.
 
 ---
 
-## 10. Phase 6 — Cutover (~1 day)
+## 8. Agent settings — evaluation and a realistic roadmap
 
-Only after the React app reaches parity on the surfaces that matter.
+The user asked about supporting different agents in future. Here is the honest current state and
+a staged path, ordered by backend cost.
 
-Every touchpoint below was verified against the current tree:
+**Today:** three fixed roles — **Concierge** (classify intake), **Operator** (the decide loop),
+**Auditor** (verify `done` is grounded). Prompts are markdown files under `prompts/base/`
+(system) and `prompts/tasks/` (user). Model selection is *global* (`default_profile`,
+`major_profile`, `fallback_profile`), not per-role. `delegate_tools` already lets a sub-agent be
+restricted to a tool subset, and skills are user-droppable markdown.
 
-1. Remove the `admin_ui` spec from `supervisor.py`'s `build_service_specs()` (~L136–148) and
-   the equivalent in `ybm.ps1` (~L262); delete `scripts/services/run_admin_ui.ps1`.
-2. Update the "Admin UI" URL banners now pointing at 8501 — `supervisor.py` (~L268),
-   `ybm.ps1` (~L288), and the health-check entry in `ybm.ps1` (~L339) — to
-   `http://127.0.0.1:8765/admin`.
-3. Update `_check_ports()` in `bootstrap.py` (~L121): 8501 is no longer expected.
-4. Drop `"streamlit"` from `REQUIRED_MODULES` in `bootstrap.py` (~L28) — `ybm doctor` checks
-   it — and from `backend/pyproject.toml` dependencies.
-5. Delete `admin_streamlit.py` (1,776 lines) and `backend/tests/test_admin_streamlit.py`.
-6. Update `README.md`, `docs/LOCAL_SETUP.md`, `docs/ARCHITECTURE.md`, `docs/CAPABILITIES.md`:
-   the admin console is now `http://127.0.0.1:8765/admin`.
-7. Add a `docs/HISTORY.md` entry recording what changed and why, per the repo's conventions.
+| Stage | What | Backend cost | Value |
+|---|---|---|---|
+| **A1. Per-role model** | Concierge on a cheap model, Operator on a strong one, Auditor on a cheap one | **Small** — profiles already exist; add optional per-role profile keys | **High.** Immediate cost win; classification and audit do not need the strong model. Extends the existing `prefer_major` tiering philosophy. |
+| **A2. Per-role prompt override** | Edit any agent's system prompt from Settings; stored as an override in `.agent_control/`, falling back to the shipped file | **Small–medium** — prompts are already files | **High for advanced users**, and a strong differentiator: most tools hide their prompts. Ship with a "reset to default" and a visible diff. |
+| **A3. Named delegate presets** | Save `{name, objective template, delegate_tools}` — e.g. *researcher* (browser + knowledge), *coder* (code.interpreter) — selectable by the Operator | **Medium** — builds directly on existing `delegate_tools` | **High.** This is the realistic "different agents" feature, and it needs no pipeline change. |
+| **A4. Pluggable pipeline / agent registry** | Add or reorder pipeline stages | **Large** — the pipeline must become data-driven | **Deferred.** No demand yet; this is where a node *editor* would eventually belong. |
 
-**Do not delete Streamlit until the React app is genuinely at parity.** Keeping both briefly
-costs one dependency; cutting over early costs the ability to operate the system.
+**Recommendation: ship A1 + A2, design A3, defer A4.** A1 and A2 land inside the Settings page in
+this plan (Phase 5). A3 gets a Settings section once designed. A4 is explicitly out of scope, and
+§7 explains why building its UI early would be dishonest.
+
+**Prompt editing needs a guardrail.** Prompt text is load-bearing: changing it invalidates
+recorded scenario fixtures (they are keyed on exact prompt text). The editor must warn about
+that, and A2 must never silently break the deterministic test tier.
 
 ---
 
-## 11. Testing
+## 9–14. Phases 0–5 — backend readiness through Settings — ✅ all done
+
+All six build phases shipped; the day-by-day build log (what was found, what broke, what was
+verified at each step) lives in `docs/HISTORY.md` Part 5, not duplicated here. This section keeps
+only what a future reader needs that isn't obvious from the code:
+
+- **Phase 0 (backend readiness):** the Vite dev proxy needed an explicit `Origin` rewrite to pass
+  `_origin_is_trusted()` (`changeOrigin` alone only rewrites `Host`). Trace correlation
+  (`origin`/`parent_step_id` on `ToolCallRequest`) needed no DB migration - it already flows
+  through `tool_invocations.request_json` generically.
+- **Phase 1 (Shell + Chat):** Chat is the landing route on purpose (§10's original "first-time
+  user must get an answer without visiting another screen" still holds).
+- **Phase 2 (Approvals):** the Evidence Pack ships in full (Why → What → Exactly what → Blast
+  radius → Reversibility → Authority → expiry). **D2 (time-boxed grants) not built** - it's the
+  one change in this whole plan that makes the system *more* permissive, and needs real new
+  backend machinery (scope-widening tests, capped TTL, executor-side enforcement) that deserves
+  its own pass, not a rushed add-on. No "Approve for 10 min" button exists anywhere, not even
+  disabled.
+- **Phase 3 (Tasks + Trace):** Level 1 renders `operator_history` (not the originally-planned raw
+  `timeline` field - real data showed `operator_history` is already the right shape, with
+  `origin`/`parallel` built in). Level 2 is a React Flow **lane graph** grouped by `origin`
+  (main sequence / parallel batch / delegated sub-task) - a disclosed simplification, not a full
+  precision tree; it does not draw an edge from a lane back to the exact step that spawned it.
+  **D6 (replay) not built** - always flagged cuttable. TanStack Table + React Flow pushed the main
+  bundle over Vite's 500kB warning; fixed with route-level code-splitting so Chat's own load
+  stays light.
+- **Phase 4 (Access):** needed zero new backend endpoints. Presets (Read-only / Approval required
+  / Full autonomy) are client-composed, not a backend concept - each walks a mode-preference list
+  against every group's own `options` array (not every group supports every mode). Confirm
+  dialogs are gated on the one transition that actually removes a human checkpoint (selecting
+  Full access). Per-capability risk ceilings/scopes/allow-deny patterns are shown **read-only** -
+  there's no write endpoint for those individual fields, only the coarse access-mode groups.
+- **Phase 5 (Settings + wizard):** found and fixed a real, unrelated **security bug** while
+  wiring MCP status: `config.py`'s `safe_summary()` returned MCP server `env` values (commonly
+  API tokens) completely unredacted, unlike every other secret it already masked. Fixed to return
+  `env_keys` only. The first-run wizard reuses existing config endpoints (zero new backend
+  surface); skipping every step never writes `config.yaml`, so the wizard reappears next load -
+  arguably correct (nothing was configured) rather than a bug.
+- **Not built anywhere (A1–A3, D4):** per-role model selection, per-role prompt overrides,
+  delegate presets, and an OpenTelemetry export toggle are all genuinely new backend machinery
+  (§8's own cost table flagged this) - deferred for the same "don't rush it" reasoning as D2/D6.
+
+---
+
+## 15. Developer tooling & debugging
+
+Deliberately substantial: this project's thesis is inspectability, and the dev loop should reflect
+it.
+
+### 15.1 Playwright — installed and proven useful; no formal harness yet
+
+`@playwright/test` is a `frontend/` dev dependency (the Python extra pointed at the now-deleted
+Streamlit admin was dropped at cutover, §19). It has been used once, ad hoc (not as committed spec
+files) to screenshot every page of the real running console end to end - and found two real,
+shipped bugs a curl/API-contract-only verification pass could never have caught: `BrowserRouter`'s
+`basename` carried Vite's trailing slash, so the exact URL every banner/README prints
+(`http://.../admin`, no trailing slash) made the router refuse to render anything at all; and
+several pages' `flex h-full flex-col ... overflow-y-auto` containers let their children shrink
+below content size (flexbox's default `flex-shrink: 1`) instead of scrolling, silently collapsing
+the least "greedy" cards (Access's Kill switch/Presets) to a couple of pixels tall whenever a
+page's content exceeded the viewport. Both fixed; see `docs/HISTORY.md` for the full account.
+**What's still open** is a committed, CI-running spec suite - the list below is unchanged from the
+original plan:
+
+- **Trace viewer on by default in CI and on retry locally:** `trace: "retain-on-failure"`,
+  `video: "retain-on-failure"`, `screenshot: "only-on-failure"`. The bundle carries **DOM
+  snapshots, network calls, and console output** — DOM snapshots being the widely underused part:
+  you can select elements inside a past moment of a run and see exactly what the browser saw. For
+  an approval-gated agent UI that is the difference between "the button didn't work" and a root
+  cause.
+- **ARIA snapshots over CSS selectors** — assert against the accessibility tree, not brittle class
+  names. More stable, and it forces the console to be accessible.
+- **Upload traces as CI artifacts** so a failed run is debuggable without local reproduction.
+- **Use the Playwright CLI, not the MCP server, for agent-assisted work** — Microsoft's own 2026
+  guidance is that the CLI uses ~4× fewer tokens per session. Directly relevant: YBM runs coding
+  agents.
+
+### 15.2 Frontend dev loop
+
+- **TanStack Query Devtools** — every query, its state, refetch timing. Highest-value devtool here
+  given the console is almost entirely polled server state.
+- **MSW** — develop and test UI states (empty, loading, error, pending-approval, failed-task,
+  mid-delegation) without a backend or a real LLM. Reuse the recorded API responses from 15.4.
+- **Error boundary + toast on every mutation.** Streamlit's failure mode was a silent rerun; the
+  React app must never fail silently.
+- **shadcn `skills` context packs** — keep them current so coding agents working in this repo
+  scaffold components correctly instead of inventing markup.
+
+### 15.3 Backend-side debuggability (keep and extend)
+
+- `ybm trace <task_id>` already prints a full post-mortem from the DB with no running backend —
+  keep it; it shares `build_task_trace()` with the API so the two cannot drift.
+- `ybm logs <service> -f`, `ybm doctor`, `ybm status` — unchanged.
+- Add `ybm ui-dev` / `ybm ui-build` so the frontend is reachable from the same CLI as everything
+  else.
+
+### 15.4 Contract tests — the drift guard
+
+The API returns untyped Python dicts; the SPA parses with Zod. A backend shape change would
+otherwise surface as `undefined` in the UI. Record real `/admin/api/*` responses as fixtures and
+parse them against the Zod schemas in CI — the same philosophy as the backend's recorded scenario
+fixtures, applied to the API boundary.
+
+### 15.5 CI
+
+Add a `frontend` job (Node 22, matching the existing `vscode-extension` job): `npm ci`, `lint`,
+`test` (Vitest), `build`, `npm audit --audit-level=high`, plus Playwright E2E with trace artifact
+upload.
+
+---
+
+## 16. Testing
 
 | Layer | Tool | Scope |
 |---|---|---|
-| Unit | Vitest + Testing Library | Status mapping, countdown/expiry logic, form validation, Zod schemas |
-| Contract | Vitest | Zod schemas parsed against **recorded real** `/admin/api/*` responses — same philosophy as the backend's recorded scenario fixtures. Catches backend shape drift. |
-| E2E | Playwright | Send a chat message → task appears; trigger approval → banner → approve → task resumes; toggle a capability → persists |
-| Backend | existing pytest | Unchanged. Add tests for the static mount, SPA fallback, and `/admin/api/bootstrap` |
-
-Add a `frontend` job to `.github/workflows/ci.yml` (Node 22, matching the existing
-`vscode-extension` job): `npm ci`, `npm run lint`, `npm run test`, `npm run build`,
-`npm audit --audit-level=high`.
+| Unit | Vitest + Testing Library | Status mapping, expiry/countdown, blast-radius derivation, graph-tree construction, form validation |
+| Contract | Vitest + Zod | Schemas vs. recorded real API responses (15.4) |
+| E2E | Playwright | Chat → task → answer; approval → Evidence Pack → approve → resume; capability toggle persists; wizard completes; **workbench test** — first answer + first approval with zero disclosures opened |
+| Backend | existing pytest | Add: static mount, SPA fallback, `/admin/api/bootstrap`, trace correlation field, time-boxed grant scope-widening attempts |
 
 ---
 
-## 12. Risks
+## 17. Risks
 
 | Risk | Severity | Mitigation |
 |---|---|---|
-| Vite proxy fails `_origin_is_trusted()` | **High** | Proven in Phase 0.1 before any UI work. Documented fallbacks. |
-| Scope creep turns weeks into months | **High** | Phases 1–2 (Chat + Approvals) are the value. Ship those before Tasks/Access/Settings polish. |
-| Long parity gap where neither UI is good | Medium | Keep Streamlit fully working until Phase 6. Never delete ahead of parity. |
-| Built assets not shipped to pip users | Medium | Phase 0.5 — assets committed/packaged; CI asserts the built bundle exists. |
-| Token handling regression | Medium | Header-only in browser; never query string; never `localStorage`. Covered by a Playwright assertion. |
-| Node toolchain becomes a hard install prereq | Low | Ship prebuilt assets; Node needed only for frontend development. |
+| Vite proxy fails `_origin_is_trusted()` | **High** | Proven in 0.1 before UI work; documented fallbacks; never blanket CORS |
+| Time-boxed grants (D2) widen the security surface | **High** | Bind to exact tool+operation; short max TTL; visible + revocable in Access; backend tests for scope-widening |
+| Trace graph without 0.6 correlation data | **High** | Do not build the graph until the field exists. A subtly-wrong tree is worse than an honest list |
+| Scope creep turns weeks into months | **High** | Phases 1–2 are the value. Ship Chat + Approvals before polishing anything |
+| React Flow tempts a fake workflow builder | Medium | §7 is explicit: read-only diagram + trace graph only, until the pipeline is genuinely data-driven |
+| Prompt overrides (A2) silently break scenario fixtures | Medium | Fixtures key on exact prompt text — warn in-editor, and cover with a test |
+| Long parity gap where neither UI is good | Medium | Keep Streamlit working until Phase 6; never delete ahead of parity |
+| Built assets not shipped to pip users | Medium | Phase 0.5; CI asserts the bundle exists |
+| Token handling regression | Medium | Header-only; never query string; never `localStorage`; Playwright assertion |
 
 ---
 
-## 13. Effort
+## 18. Effort
 
 | Phase | Estimate |
 |---|---|
-| 0 — Backend readiness | ~1 day |
+| 0 — Backend readiness (incl. trace correlation) | ~1.5 days |
 | 1 — Shell + Chat | ~3 days |
-| 2 — Approvals | ~2 days |
-| 3 — Tasks | ~3 days |
+| 2 — Evidence-Pack approvals | ~3 days |
+| 3 — Tasks + Trace (timeline + graph) | ~4.5 days |
 | 4 — Access | ~2 days |
-| 5 — Settings + wizard | ~3 days |
+| 5 — Settings + agents + wizard | ~4 days |
 | 6 — Cutover | ~1 day |
-| **Total** | **~15 working days** |
+| Dev tooling (§15, spread across phases) | ~2 days |
+| **Total** | **~21 working days** |
 
-Consistent with the 2–6 week industry range for a custom front end, at the low end because the
-API layer already exists and needs no work.
+**Minimum shippable slice: Phases 0 + 1 + 2 (~7.5 days)** — a React console that can chat and
+approve, i.e. the two things that define the product, while Streamlit serves everything else.
 
-**Minimum shippable slice:** Phases 0 + 1 + 2 (~6 days) delivers a React console that can chat
-and approve — the two things that define the product — while Streamlit continues to serve
-everything else until its phase lands.
+**Highest value per day: Phase 3 (Trace).** It converts already-written backend capability into
+the feature most likely to make a technical user choose this project.
 
 ---
 
-## 14. Open questions
+## 19. Phase 6 — Cutover (~1 day) — ✅ done, 2026-08-01
 
-- **Dark mode** — worth it, but not before parity.
-- **Mobile/responsive** — the Telegram channel already covers phone use. Desktop-first is
-  defensible; revisit after launch.
-- **SSE vs polling** — deferred by design (Phase 0.4). Decide with evidence from real use.
-- **Bundled vs CDN fonts/icons** — bundle. The console must work fully offline and on an
-  air-gapped machine.
+Streamlit (`admin_streamlit.py`, 1,776 lines) and its test file deleted; the `admin_ui` service
+removed from both supervisors (`agent_control.supervisor` and `scripts/ybm.ps1`) along with the
+now-pointless `-NoAdminUi` flag; `streamlit` and the `playwright` (Python) test extra dropped from
+`pyproject.toml`; every "Admin UI" URL across supervisors/docs/onboarding repointed at
+`http://127.0.0.1:8765/admin`. Full mechanics and the parity-check process (a real audit against
+every Streamlit `_render_*` function, not just this section's own checklist - it found four
+undisclosed gaps, closed before deleting anything) are in `docs/HISTORY.md` Part 5.
+
+---
+
+## 20. Open questions
+
+- **Dark mode** — worth it, not before parity.
+- **Mobile/responsive** — Telegram already covers phone use; desktop-first is defensible.
+- **SSE vs polling** — deferred by design (0.4); decide from real usage.
+- **Storybook** — likely overkill at this size; MSW + Vitest should cover it. Revisit if the
+  component count grows.
+- **A3 delegate presets** — needs a design pass before implementation (§8).
+- **Bundled vs CDN fonts/icons** — bundle. The console must work offline and air-gapped.
+
+---
+
+## 21. References
+
+- [Open WebUI vs LibreChat vs AnythingLLM](https://www.local-llm.net/compare/open-webui-vs-librechat-vs-anythingllm/) ·
+  [OpenHands platform](https://ai-infrastructure.net/openhands-platform/)
+- [Human-in-the-Loop Is Not a Button](https://digitalthoughtdisruption.com/2026/07/12/human-in-the-loop-ai-agent-approval-paths/) ·
+  [HITL approval framework pattern](https://www.agentic-patterns.com/patterns/human-in-loop-approval-framework/)
+- [Top agent observability tools 2026](https://mlflow.org/top-5-agent-observability-tools/) ·
+  [Best LLM tracing tools 2026](https://www.braintrust.dev/articles/best-llm-tracing-tools-2026)
+- [Progressive disclosure — UXPin](https://www.uxpin.com/studio/blog/what-is-progressive-disclosure/) ·
+  [Progressive disclosure — IxDF](https://ixdf.org/literature/topics/progressive-disclosure)
+- [React Flow / xyflow](https://reactflow.dev/) ·
+  [React Flow guide 2026](https://velt.dev/blog/react-flow-guide-advanced-node-based-ui)
+- [Best React UI component libraries 2026](https://hashbyt.com/blog/best-react-ui-component-libraries) ·
+  [Best React table libraries 2026](https://www.pkgpulse.com/guides/best-react-table-libraries-2026)
+- [Monaco vs CodeMirror 6 vs Sandpack](https://www.pkgpulse.com/guides/monaco-editor-vs-codemirror-6-vs-sandpack-in-browser-2026) ·
+  [Best JSON editor libraries for React 2026](https://www.merge-json-files.com/blog/best-json-editor-for-react)
+- [Playwright end-to-end story — Microsoft](https://developer.microsoft.com/blog/the-complete-playwright-end-to-end-story-tools-ai-and-real-world-workflows/) ·
+  [Playwright AI ecosystem 2026](https://testdino.com/blog/playwright-ai-ecosystem)

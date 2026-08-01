@@ -563,6 +563,18 @@ class ToolCallRequest(StrictBaseModel):
     idempotency_key: str = Field(default_factory=lambda: new_id("idem"))
     requires_approval: bool = False
     created_at: datetime = Field(default_factory=utc_now)
+    # Trace-graph correlation (docs/UI_REWRITE_PLAN.md §7/§9 Phase 0.6): which
+    # execution context issued this call - "operator" (the parent's own
+    # direct call, the default), "parallel_batch:<id>" (one of N concurrent
+    # calls from one call_tools_parallel), or "subagent:<id>" (a delegated
+    # sub-task's own call), optionally with a "/parallel_batch:<id>" suffix
+    # when a sub-task itself fans out. No dedicated tool_invocations column
+    # needed - like every other ToolCallRequest field except id/task_id/
+    # tool_name/capability, this rides inside the existing request_json blob
+    # and is read back via ToolInvocationRepository.list_for_task()'s
+    # existing _load(row["request_json"]) with no repository change.
+    origin: str = "operator"
+    parent_step_id: str | None = None
 
 
 class ToolCallResult(StrictBaseModel):

@@ -4,6 +4,8 @@ import argparse
 import asyncio
 import json
 import logging
+import os
+from pathlib import Path
 import sys
 
 from agent_control.bootstrap import run_doctor, run_setup
@@ -49,6 +51,43 @@ def build_repositories() -> tuple[Repositories, AuditLogger]:
     database.initialize()
     repositories = Repositories.for_database(database)
     return repositories, AuditLogger(repositories.audit, settings.logging.redact_patterns)
+
+
+def _frontend_dir() -> Path:
+    return Path(__file__).resolve().parents[3] / "frontend"
+
+
+def ui_build() -> int:
+    """`npm run build` for the React console (docs/UI_REWRITE_PLAN.md §12.3) -
+    output lands under agent_control/static/admin per vite.config.ts's
+    build.outDir, where admin.py's SPA route serves it from."""
+    import subprocess
+
+    frontend_dir = _frontend_dir()
+    if not frontend_dir.exists():
+        print(f"no frontend/ checkout found at {frontend_dir}")
+        return 1
+    if not (frontend_dir / "node_modules").exists():
+        print("frontend/node_modules is missing - run `npm install` in frontend/ first")
+        return 1
+    result = subprocess.run(["npm", "run", "build"], cwd=frontend_dir, shell=(os.name == "nt"))
+    return result.returncode
+
+
+def ui_dev() -> int:
+    """`npm run dev` for the React console - the Vite dev server with hot
+    reload, proxying /admin/api/* to this backend (vite.config.ts)."""
+    import subprocess
+
+    frontend_dir = _frontend_dir()
+    if not frontend_dir.exists():
+        print(f"no frontend/ checkout found at {frontend_dir}")
+        return 1
+    if not (frontend_dir / "node_modules").exists():
+        print("frontend/node_modules is missing - run `npm install` in frontend/ first")
+        return 1
+    result = subprocess.run(["npm", "run", "dev"], cwd=frontend_dir, shell=(os.name == "nt"))
+    return result.returncode
 
 
 def init_db() -> None:
@@ -368,7 +407,7 @@ def _configure_logging_for_command(command: str) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser("agent-control")
+    parser = argparse.ArgumentParser("ybm")
     parser.add_argument(
         "command",
         choices=[
@@ -379,6 +418,8 @@ def main() -> None:
             "stop",
             "status",
             "logs",
+            "ui-build",
+            "ui-dev",
             "init-db",
             "config-summary",
             "config-set",
@@ -408,7 +449,6 @@ def main() -> None:
     parser.add_argument("--no-telegram", action="store_true", help="for `start`: skip the Telegram polling service")
     parser.add_argument("--no-worker", action="store_true", help="for `start`: skip the worker + coding session watcher")
     parser.add_argument("--no-scheduler", action="store_true", help="for `start`: skip the scheduler")
-    parser.add_argument("--no-admin-ui", action="store_true", help="for `start`: skip the Streamlit admin UI")
     parser.add_argument("--no-localdeploy", action="store_true", help="for `start`: skip launching LocalDeploy")
     args = parser.parse_args()
 
@@ -424,7 +464,7 @@ def main() -> None:
         from agent_control.supervisor import start_all
         raise SystemExit(start_all(
             no_telegram=args.no_telegram, no_worker=args.no_worker,
-            no_scheduler=args.no_scheduler, no_admin_ui=args.no_admin_ui,
+            no_scheduler=args.no_scheduler,
             no_localdeploy=args.no_localdeploy,
         ))
     elif args.command == "stop":
@@ -438,13 +478,17 @@ def main() -> None:
         if not args.path:
             raise SystemExit("usage: ybm logs <service> [--follow] [--lines N]")
         raise SystemExit(tail_log(args.path, follow=args.follow, lines=args.lines))
+    elif args.command == "ui-build":
+        raise SystemExit(ui_build())
+    elif args.command == "ui-dev":
+        raise SystemExit(ui_dev())
     elif args.command == "init-db":
         init_db()
     elif args.command == "config-summary":
         config_summary()
     elif args.command == "config-set":
         if not args.path or args.value is None:
-            raise SystemExit("usage: agent-control config-set <dotted.path> <value>")
+            raise SystemExit("usage: ybm config-set <dotted.path> <value>")
         ok, message = set_config_path(args.path, args.value)
         print(message)
         raise SystemExit(0 if ok else 1)
@@ -456,7 +500,7 @@ def main() -> None:
         raise SystemExit(db_reset(yes=args.yes))
     elif args.command == "trace-task":
         if not args.path:
-            raise SystemExit("usage: agent-control trace-task <task_id> [--json]")
+            raise SystemExit("usage: ybm trace-task <task_id> [--json]")
         raise SystemExit(trace_task(args.path, as_json=args.json))
     elif args.command == "poll-telegram":
         asyncio.run(poll_telegram())

@@ -460,10 +460,19 @@ class TaskWorker:
         })
         return self.repositories.tasks.update_metadata(recorded.id, {**recorded.metadata, "operator_history": history})
 
-    async def _run_parallel_calls(self, task_id: str, calls: list[ParallelToolCall]) -> list[dict[str, Any]]:
+    async def _run_parallel_calls(
+        self, task_id: str, calls: list[ParallelToolCall], *, origin_prefix: str = ""
+    ) -> list[dict[str, Any]]:
         """Execute independent tool calls concurrently (docs/HISTORY.md Part 3
         T1.1) and return one history-entry dict per call, same shape as a
         normal call_tool entry plus ``"parallel": True``.
+
+        Every call in one batch shares a single ``parallel_batch:<id>``
+        ``ToolCallRequest.origin`` (docs/UI_REWRITE_PLAN.md §7/§9 Phase 0.6),
+        so a trace UI can render them as siblings that ran at once instead of
+        indistinguishable sequential calls. ``origin_prefix`` lets
+        ``_run_delegate`` nest this correctly when a sub-task itself fans
+        out - the batch's origin becomes ``subagent:<id>/parallel_batch:<id>``.
 
         Deliberately narrow, not a general CALL_TOOL replacement: skips the
         approval/retry/background-wait machinery entirely, because none of
@@ -487,6 +496,7 @@ class TaskWorker:
         call when N ran at once, and that's an acceptable, disclosed
         property of a parallel batch, not a bug.
         """
+        batch_origin = f"{origin_prefix}parallel_batch:{uuid4().hex[:12]}"
 
         async def _one(call: ParallelToolCall) -> dict[str, Any]:
             tool_def = self.executor.tool_definitions.get(call.tool_name)
@@ -494,11 +504,11 @@ class TaskWorker:
                 return {
                     "tool_name": call.tool_name, "input": call.tool_input,
                     "status": "failed", "error": f"unregistered tool: {call.tool_name}",
-                    "parallel": True,
+                    "parallel": True, "origin": batch_origin,
                 }
             request = ToolCallRequest(
                 task_id=task_id, tool_name=call.tool_name, capability=tool_def.capability,
-                risk_level=call.risk_level, input=call.tool_input,
+                risk_level=call.risk_level, input=call.tool_input, origin=batch_origin,
             )
             result = await self.executor.execute(request)
             if result.status == ToolResultStatus.NEEDS_APPROVAL:
@@ -509,7 +519,7 @@ class TaskWorker:
                         "this call needs approval, which call_tools_parallel does not support - "
                         "reissue it alone via call_tool if it actually needs to run"
                     ),
-                    "parallel": True,
+                    "parallel": True, "origin": batch_origin,
                 }
             if _is_background_external_tool_result(call.tool_name, result):
                 return {
@@ -519,7 +529,7 @@ class TaskWorker:
                         "this call started a background session, which call_tools_parallel does not "
                         "support - reissue it alone via call_tool"
                     ),
-                    "parallel": True,
+                    "parallel": True, "origin": batch_origin,
                 }
             self._record_tool_result(task_id, call.tool_name, result)
             output_text = _tool_output_text(result) if result.status == ToolResultStatus.SUCCEEDED else None
@@ -528,7 +538,7 @@ class TaskWorker:
                 "status": result.status.value,
                 "output_summary": output_text[:2000] if output_text else None,
                 "error": result.error_message,
-                "parallel": True,
+                "parallel": True, "origin": batch_origin,
             }
 
         return list(await asyncio.gather(*[_one(call) for call in calls]))
@@ -560,6 +570,7 @@ class TaskWorker:
         parent sees the reason in its own history and can handle that step
         directly with a normal call_tool instead of delegating it.
         """
+        delegate_origin = f"subagent:{uuid4().hex[:12]}"
         objective = decision.delegate_objective or ""
         allowed_tools = set(decision.delegate_tools) if decision.delegate_tools else None
         extra_context = ""
@@ -580,6 +591,7 @@ class TaskWorker:
                 return task, {
                     "tool_name": "delegate", "input": summary_input, "status": "failed",
                     "output_summary": None, "error": f"sub-task decide() failed: {exc}",
+                    "origin": delegate_origin,
                 }
             task = self._record_llm_usage(task, "subagent", getattr(self.operator, "last_usage", None))
 
@@ -587,12 +599,14 @@ class TaskWorker:
                 return task, {
                     "tool_name": "delegate", "input": summary_input, "status": "succeeded",
                     "output_summary": (sub_decision.final_answer or "")[:2000], "error": None,
+                    "origin": delegate_origin,
                 }
             if sub_decision.action == OperatorAction.BLOCKED:
                 return task, {
                     "tool_name": "delegate", "input": summary_input, "status": "failed",
                     "output_summary": None,
                     "error": f"sub-task blocked: {sub_decision.reason or 'no reason given'}",
+                    "origin": delegate_origin,
                 }
             if sub_decision.action == OperatorAction.ASK_USER:
                 return task, {
@@ -602,6 +616,7 @@ class TaskWorker:
                         "sub-task needs user input, which delegation does not support: "
                         f"{sub_decision.question or ''}"
                     ),
+                    "origin": delegate_origin,
                 }
             if sub_decision.action == OperatorAction.DELEGATE:
                 sub_history.append({
@@ -617,7 +632,9 @@ class TaskWorker:
                         "error": f"one or more tools are not in this sub-task's allowed set: {sorted(allowed_tools)}",
                     })
                     continue
-                sub_history.extend(await self._run_parallel_calls(task.id, calls))
+                sub_history.extend(
+                    await self._run_parallel_calls(task.id, calls, origin_prefix=f"{delegate_origin}/")
+                )
                 continue
 
             # CALL_TOOL
@@ -636,7 +653,7 @@ class TaskWorker:
                 continue
             request = ToolCallRequest(
                 task_id=task.id, tool_name=sub_decision.tool_name, capability=tool_def.capability,
-                risk_level=sub_decision.risk_level, input=sub_decision.tool_input,
+                risk_level=sub_decision.risk_level, input=sub_decision.tool_input, origin=delegate_origin,
             )
             result = await self.executor.execute(request)
             if result.status == ToolResultStatus.NEEDS_APPROVAL:
@@ -664,6 +681,7 @@ class TaskWorker:
             "tool_name": "delegate", "input": summary_input, "status": "failed",
             "output_summary": None,
             "error": f"sub-task step budget ({self.DELEGATE_MAX_STEPS}) exhausted without finishing",
+            "origin": delegate_origin,
         }
 
     def _operator_retry_or_ask(

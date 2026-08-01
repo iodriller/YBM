@@ -42,7 +42,7 @@ Telegram (optional — the built-in web chat needs no setup), writes your config
 environment, and starts the stack. A couple of minutes on a machine with nothing installed but
 git and Python 3.12+.
 
-Already have it running? Talk to it at `http://127.0.0.1:8501`.
+Already have it running? Talk to it at `http://127.0.0.1:8765/admin`.
 
 ## What it can do
 
@@ -72,6 +72,11 @@ Windows also has the original, equally-supported `scripts\ybm.ps1` interface (`s
 `start`, `stop`, `status`, `logs`, `test`, `db`, `config`, `clean`, `trace`, `scenario`,
 `package-extension`, and more — run `.\scripts\ybm.ps1 help` for the full list).
 
+The admin console is a React app (`frontend/`) served by the backend at `/admin` — see
+[docs/UI_REWRITE_PLAN.md](docs/UI_REWRITE_PLAN.md) for its design and phase-by-phase build record.
+`ybm ui-dev` runs it with hot reload against a running backend; `ybm ui-build` builds it into
+`backend/src/agent_control/static/admin/`, served directly at `/admin` once built.
+
 Run tests:
 
 ```bash
@@ -94,7 +99,7 @@ runtime detail.
 
 - [Architecture and message flow](docs/ARCHITECTURE.md) — how the system works now, plus known gaps
 - [Capabilities](docs/CAPABILITIES.md) — the full implemented/not-yet-implemented list
-- [UI rewrite plan](docs/UI_REWRITE_PLAN.md) — planned React console replacing the Streamlit one
+- [UI rewrite plan](docs/UI_REWRITE_PLAN.md) — the React admin console's design and build record
 - [Threat model](docs/THREAT_MODEL.md) — trust boundaries, enforced controls, limitations
 - [Security policy](SECURITY.md) — supported versions and private vulnerability reporting
 - [Contributing](CONTRIBUTING.md)
