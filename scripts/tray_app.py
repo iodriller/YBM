@@ -34,6 +34,7 @@ except ImportError:
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 YBM_PS1 = REPO_ROOT / "scripts" / "ybm.ps1"
+LOGO_PATH = Path(__file__).resolve().parent / "assets" / "logo_256.png"
 APP_NAME = "YBM Control"
 
 
@@ -55,15 +56,20 @@ def _admin_port() -> int:
 
 
 def _make_icon_image() -> Image.Image:
-    """A simple generated badge - no binary asset to keep in the repo.
-    Matches the admin console's primary-blue brand color at a glance."""
-    size = 64
-    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    """The real mark (docs/UI_UX_AUDIT.md Phase 10), not a placeholder -
+    scripts/assets/logo_256.png is a rasterized copy of
+    frontend/public/favicon.svg (the same purple/blue bolt already shown
+    in the browser tab), so the tray icon and the browser tab agree
+    instead of the tray showing a generic Lucide-icon badge nothing else
+    in the product uses. Falls back to a plain generated badge only if the
+    asset is somehow missing, so a packaging mistake degrades visibly
+    rather than crashing the tray app outright.
+    """
+    if LOGO_PATH.exists():
+        return Image.open(LOGO_PATH).convert("RGBA")
+    image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-    draw.ellipse((2, 2, size - 2, size - 2), fill=(37, 99, 235, 255))
-    draw.rectangle((18, 22, 46, 42), fill=(255, 255, 255, 255))
-    draw.ellipse((22, 14, 30, 22), fill=(255, 255, 255, 255))
-    draw.ellipse((34, 14, 42, 22), fill=(255, 255, 255, 255))
+    draw.ellipse((2, 2, 62, 62), fill=(126, 20, 255, 255))
     return image
 
 

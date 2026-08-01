@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { NavLink, Outlet } from "react-router-dom"
-import { Bot, BrainCircuit, ListTree, MessageSquare, Settings, ShieldCheck, Sparkles } from "lucide-react"
+import { BrainCircuit, ListTree, MessageSquare, Settings, ShieldCheck, Sparkles } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { HealthIndicator } from "@/components/layout/HealthIndicator"
 import { ApprovalBanner } from "@/components/approvals/ApprovalBanner"
@@ -114,11 +114,15 @@ export function AppShell() {
 }
 
 function Brand() {
+  // The same mark as the browser tab (public/favicon.svg), not a Lucide
+  // Bot glyph in a colored box (docs/UI_UX_AUDIT.md Phase 10) - the two
+  // disagreeing was the actual gap, not a missing logo; a real one already
+  // existed and just wasn't reused here. BASE_URL-prefixed the same way
+  // main.tsx's router basename is, since this app is served at /admin in
+  // production, not domain root.
   return (
     <div className="flex items-center gap-2.5">
-      <span className="flex size-8 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm shadow-primary/25">
-        <Bot className="size-4.5" />
-      </span>
+      <img src={`${import.meta.env.BASE_URL}favicon.svg`} alt="" className="size-8" />
       <span className="text-base font-semibold tracking-tight text-sidebar-foreground">YBM Control</span>
     </div>
   )

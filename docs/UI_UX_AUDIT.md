@@ -320,27 +320,40 @@ Every item here is a defect, not a feature. Three are defects in work shipped ea
 - Acceptance (as shipped): an operator can decide an approval without scrolling, tell success from
   failure in the task list without opening anything, and clear history from the console.
 
-### Phase 10 — One command to run it, and a real identity
+### Phase 10 — One command to run it, and a real identity (**shipped, reduced scope**)
 
-The current story is an *install* script plus a lifecycle CLI with ~20 subcommands. That is a
+The starting story was an *install* script plus a lifecycle CLI with ~20 subcommands - a
 developer's interface. The target user should never see a terminal after the first double-click.
 
-- **One entry point: `ybm run`** (wrapped by a double-clickable `YBM.bat` at the repo root, and a
-  desktop/Start-menu shortcut). It detects what is missing, installs only that, applies pending
-  database migrations, checks for an update and applies it if one exists, starts the stack, and
-  opens the console. Running it when everything is already current should just open the browser.
-- **Demote, don't delete, the power-user surface.** `setup`, `doctor`, `start`, `stop`, `status`,
-  `logs` keep working for development and for `AGENTS.md`'s verification matrix; they stop being
-  the documented front door. `install.ps1`/`install.sh` shrink to "clone, then call `run`".
-- Reorganize `scripts/` so the human-facing entry points are visually obvious and the service
-  runners move out of the top level.
-- **A real logo.** Today the mark is a stock Lucide `Bot` glyph reused in the sidebar, the tray
-  icon, and the favicon. Design one custom SVG mark plus a wordmark, and use it consistently
-  across console, favicon, tray icon, installer, and README. Honest scope note: this pass can
-  produce a clean, simple geometric mark - a distinctive brand identity is a designer's job, and
-  the plan should not pretend otherwise.
-- Acceptance: a non-developer can go from a downloaded folder to a working console by
-  double-clicking one file, and can update the same way.
+- Shipped: **`ybm run`**, wrapped by a double-clickable **`YBM.bat`** at the repo root. It's an
+  orchestration wrapper around what already existed, not new install/start logic - calls the
+  already-idempotent setup step (skips venv creation once `.venv` exists, leaves an existing
+  `config.yaml` alone), runs an unconditional `uv sync` (fast no-op when nothing changed, but
+  catches a venv from before a dependency was added), checks for an update and prints a note if
+  one exists, then starts the stack and opens the browser - the same `start -Open` path that
+  already ran doctor preflight. Running it with nothing to do just opens the console.
+  `install.ps1` now delegates its setup+start half to `ybm run` directly. Caught and fixed a real
+  bug via live testing (not just static checks): redirecting `uv sync`'s output turned its routine
+  stderr progress into a fatal error under this script's strict error mode.
+- **Update is checked, never auto-applied.** Pulling and restarting onto new, unreviewed code
+  without being asked is an external-write action this script doesn't take on its own - same
+  reasoning as `check-updates` itself (Phase 6). This is a deliberate, permanent scope boundary,
+  not a gap to fill later.
+- **A real logo - except one wasn't needed.** The plan assumed the mark was a stock Lucide `Bot`
+  glyph everywhere, including the favicon. Checking before designing anything found that was only
+  half true: `frontend/public/favicon.svg` already had a real, distinctive mark (a purple-to-blue
+  bolt) from the React console rewrite - it just wasn't reused anywhere else. Fixed the actual gap
+  instead of duplicating design work: the sidebar `Brand` component now renders the same
+  `favicon.svg`, and the tray icon loads a rasterized copy of it
+  (`scripts/assets/logo_256.png`, generated once via headless-browser rendering) instead of a
+  hand-drawn placeholder badge. Verified with a real screenshot of the running console, not just a
+  build check.
+- Not built: a Start-menu/desktop shortcut beyond `YBM.bat` itself, and a `scripts/` folder
+  reorganization. The second is lower-value than planned - `YBM.bat` at the repo root already *is*
+  the obvious human-facing entry point, more prominent than any reshuffle inside `scripts/` would
+  make it, and moving files around risks breaking path references for comparatively little gain.
+- Acceptance (as shipped): a non-developer can go from a downloaded folder to a working console by
+  double-clicking one file, and running it again when nothing changed just opens the console.
 
 ### Phase 11 — Console redesign: one place to configure the agent
 
