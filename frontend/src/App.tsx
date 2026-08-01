@@ -2,7 +2,9 @@ import { lazy, Suspense, useState } from "react"
 import { Route, Routes } from "react-router-dom"
 import { AppShell } from "@/components/layout/AppShell"
 import { ChatPage } from "@/pages/ChatPage"
+import { TokenEntryScreen } from "@/components/onboarding/TokenEntryScreen"
 import { useBootstrap } from "@/lib/queries"
+import { getAdminToken } from "@/lib/api"
 
 // Chat is the landing page and should stay light (docs/UI_REWRITE_PLAN.md
 // §10: "a first-time user must get an answer without visiting any other
@@ -26,10 +28,25 @@ const OnboardingWizard = lazy(() =>
 function App() {
   const { data: bootstrap, isPending } = useBootstrap()
   const [manualWizard, setManualWizard] = useState(false)
+  // Bumped after TokenEntryScreen verifies a manually-typed token, to force
+  // this component to re-render past the token gate below (the token itself
+  // lives outside React state in lib/api.ts, so setting it alone wouldn't
+  // trigger a re-render).
+  const [tokenVersion, setTokenVersion] = useState(0)
 
   // Bootstrap is the one request that must resolve before any real paint
   // (docs/UI_REWRITE_PLAN.md §9 Phase 0.3) - it decides wizard vs console.
   if (isPending) return null
+
+  // A real, previously-missing gap (see TokenEntryScreen's own comment):
+  // `run_setup()` always auto-generates AGENT_ADMIN_TOKEN, and every /api/*
+  // route except bootstrap enforces it - without this gate, a fresh install
+  // 401s on every page with no way to recover from the browser. The
+  // ?token= URL case (same-machine `ybm start` auto-open) is captured and
+  // stripped synchronously in lib/api.ts, before this ever renders.
+  if (bootstrap?.token_required && !getAdminToken()) {
+    return <TokenEntryScreen key={tokenVersion} onVerified={() => setTokenVersion((v) => v + 1)} />
+  }
 
   const showWizard = manualWizard || (bootstrap ? !bootstrap.onboarding_complete : false)
   if (showWizard) {

@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# One-command bootstrap for YBM on Linux/macOS:
+# One-command bootstrap for YBM Control on Linux/macOS:
 #   curl -fsSL https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.sh | sh
 #
 # Clones the repo (if not already inside it), installs Python dependencies
-# via uv, and hands off to the interactive `ybm onboard` wizard - which
-# writes config/config.yaml and .env, runs `ybm doctor`, and offers to start
-# the stack. See docs/LOCAL_SETUP.md for what onboarding actually configures
-# and CONTRIBUTING.md for the development (not just install) path.
+# via uv, runs the non-interactive `ybm setup` (writes config/config.yaml
+# and .env, generates admin/vault tokens, builds the React admin console),
+# then `ybm start --open` to launch the stack and open the admin console in
+# a browser. The LLM/Telegram choice happens in that browser (the first-run
+# wizard), not in this terminal. See docs/LOCAL_SETUP.md for what `setup`
+# configures and CONTRIBUTING.md for the development (not just install)
+# path. The interactive `ybm onboard` CLI wizard still exists for
+# headless/SSH-only installs with no browser to open.
 set -euo pipefail
 
 REPO_URL="https://github.com/iodriller/YBM.git"
@@ -60,6 +64,12 @@ log "Installing Python dependencies (uv sync)"
 # pytest/telethon/voice/desktop entirely, unlike the Windows path).
 uv sync --extra test --extra e2e --extra voice --extra desktop --extra dev
 
-log "Starting the onboarding wizard"
 cd "$REPO_DIR"
-exec "$REPO_DIR/backend/.venv/bin/ybm" onboard
+log "Setting up config, tokens, and the admin console"
+"$REPO_DIR/backend/.venv/bin/ybm" setup
+
+log "Starting YBM Control"
+"$REPO_DIR/backend/.venv/bin/ybm" start --open || fail "ybm start failed. Run 'ybm doctor' to diagnose."
+
+echo ""
+log "Pick a model and (optionally) Telegram in the admin console that just opened."

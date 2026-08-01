@@ -450,6 +450,7 @@ def main() -> None:
     parser.add_argument("--no-worker", action="store_true", help="for `start`: skip the worker + coding session watcher")
     parser.add_argument("--no-scheduler", action="store_true", help="for `start`: skip the scheduler")
     parser.add_argument("--no-localdeploy", action="store_true", help="for `start`: skip launching LocalDeploy")
+    parser.add_argument("--open", action="store_true", help="for `start`: open the admin console in a browser once ready")
     args = parser.parse_args()
 
     _configure_logging_for_command(args.command)
@@ -466,6 +467,7 @@ def main() -> None:
             no_telegram=args.no_telegram, no_worker=args.no_worker,
             no_scheduler=args.no_scheduler,
             no_localdeploy=args.no_localdeploy,
+            open_browser=args.open,
         ))
     elif args.command == "stop":
         from agent_control.supervisor import stop_all

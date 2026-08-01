@@ -8,6 +8,7 @@ deep in a supervised background process (see docs/HISTORY.md P0).
 from __future__ import annotations
 
 import importlib.util
+import json
 import secrets as secrets_module
 import shutil
 import socket
@@ -162,6 +163,42 @@ def check_localdeploy(settings: AppSettings) -> Check:
     else:
         detail += "; no fallback_profile configured, LLM calls will fail"
     return Check("LocalDeploy", "warn", detail)
+
+
+OLLAMA_TAGS_URL = "http://127.0.0.1:11434/api/tags"
+
+
+def check_llm_configured(settings: AppSettings) -> bool:
+    """Best-effort "is the current default LLM profile actually usable"
+    check - used to decide whether the first-run wizard still has something
+    to do (admin.py's /api/bootstrap onboarding_complete).
+
+    Deliberately broader than check_localdeploy(), which only validates a
+    LocalDeploy-shaped local /health endpoint and reports "ok" for *any*
+    non-local profile without checking anything - accurate for its own
+    doctor-check purpose (LocalDeploy specifically) but wrong as a general
+    "will this respond" signal: it would call a bare Ollama setup or an
+    unconfigured cloud profile "reachable" with nothing actually verified.
+    """
+    profile = settings.llm.profiles.get(settings.llm.default_profile)
+    if profile is None:
+        return False
+    base_url = (profile.base_url or "").rstrip("/")
+    if base_url.startswith("http://127.0.0.1:11434") or base_url.startswith("http://localhost:11434"):
+        return bool(_http_json(OLLAMA_TAGS_URL, timeout=2.0))
+    if any(host in base_url for host in ("127.0.0.1", "localhost")):
+        return check_localdeploy(settings).status == "ok"
+    return bool(profile.api_key) or bool(profile.api_key_env and read_env_value(profile.api_key_env))
+
+
+def _http_json(url: str, timeout: float = 2.0) -> dict | None:
+    try:
+        with urlopen(url, timeout=timeout) as resp:  # noqa: S310 - local-only probe URLs
+            if 200 <= resp.status < 300:
+                return json.loads(resp.read().decode("utf-8"))
+    except (URLError, OSError, ValueError):
+        return None
+    return None
 
 
 def _check_telegram(settings: AppSettings) -> Check:

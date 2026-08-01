@@ -167,8 +167,22 @@ def test_admin_bootstrap_reports_onboarding_incomplete_without_config(monkeypatc
 def test_admin_bootstrap_reports_onboarding_complete_and_token_required(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     (tmp_path / "config").mkdir()
-    (tmp_path / "config" / "config.yaml").write_text("{}", encoding="utf-8")
+    # onboarding_complete now means "a real LLM is configured", not just
+    # "config.yaml exists" (ybm setup always creates one) - so this config
+    # needs a default profile with a present api key, not an empty file.
+    (tmp_path / "config" / "config.yaml").write_text(
+        "llm:\n"
+        "  default_profile: cloud\n"
+        "  profiles:\n"
+        "    cloud:\n"
+        "      provider: openai_compatible\n"
+        "      model: gpt-4.1\n"
+        "      base_url: https://api.openai.com/v1\n"
+        "      api_key_env: TEST_OPENAI_KEY\n",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("AGENT_ADMIN_TOKEN", "secret-token")
+    monkeypatch.setenv("TEST_OPENAI_KEY", "sk-test")
     monkeypatch.setenv("AGENT_STORAGE__DATABASE_URL", f"sqlite:///{tmp_path / 'admin.db'}")
     client = TestClient(app)
 
@@ -178,6 +192,30 @@ def test_admin_bootstrap_reports_onboarding_complete_and_token_required(monkeypa
     body = response.json()
     assert body["token_required"] is True
     assert body["onboarding_complete"] is True
+    assert body["llm_reachable"] is True
+
+
+def test_admin_bootstrap_reports_onboarding_incomplete_when_config_exists_but_no_llm_works(
+    monkeypatch, tmp_path
+) -> None:
+    # The regression this guards: `ybm setup` always creates config.yaml
+    # now (bootstrap.run_setup builds the admin console + generates
+    # tokens automatically), so "config.yaml exists" alone can never be
+    # the signal that first-run choices were actually made - every fresh
+    # install would satisfy it immediately and the wizard would never show.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.yaml").write_text("{}", encoding="utf-8")
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    monkeypatch.setenv("AGENT_STORAGE__DATABASE_URL", f"sqlite:///{tmp_path / 'admin.db'}")
+    client = TestClient(app)
+
+    response = client.get("/admin/api/bootstrap")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["onboarding_complete"] is False
+    assert body["llm_reachable"] is False
 
 
 def test_admin_bootstrap_rejects_cross_origin_request_even_without_token(monkeypatch, tmp_path) -> None:
@@ -191,6 +229,42 @@ def test_admin_bootstrap_rejects_cross_origin_request_even_without_token(monkeyp
     response = client.get("/admin/api/bootstrap", headers={"origin": "http://evil.example"})
 
     assert response.status_code == 403
+
+
+def test_admin_setup_detect_reports_real_ollama_models_and_credential_presence(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("YBM_LOCALDEPLOY_ROOT", raising=False)
+    monkeypatch.setattr(
+        admin_module, "_http_json",
+        lambda url, timeout=2.0: {"models": [{"name": "qwen3:8b"}, {"name": "mistral:7b"}]},
+    )
+    repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
+    client = _admin_client(repositories)
+
+    response = client.get("/admin/api/setup/detect")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ollama"] == {"available": True, "models": ["qwen3:8b", "mistral:7b"]}
+    assert body["localdeploy_root_present"] is False
+    assert body["openai_key_present"] is False
+    assert body["telegram_token_present"] is True
+
+
+def test_admin_setup_detect_reports_no_ollama_when_unreachable(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    monkeypatch.setattr(admin_module, "_http_json", lambda url, timeout=2.0: None)
+    repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
+    client = _admin_client(repositories)
+
+    response = client.get("/admin/api/setup/detect")
+
+    assert response.status_code == 200
+    assert response.json()["ollama"] == {"available": False, "models": []}
 
 
 def test_admin_serves_built_index_html_when_a_build_exists(monkeypatch, tmp_path) -> None:

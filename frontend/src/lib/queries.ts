@@ -6,6 +6,7 @@ import {
   getBootstrap,
   getEffectiveConfig,
   getSettingsSummary,
+  getSetupDetect,
   getSummary,
   getTaskTrace,
   listAudit,
@@ -52,6 +53,15 @@ export function useBootstrap() {
     queryFn: getBootstrap,
     // Onboarding/config state changes rarely; no need to poll continuously.
     staleTime: 30_000,
+  })
+}
+
+export function useSetupDetect(enabled: boolean) {
+  return useQuery({
+    queryKey: ["setup", "detect"],
+    queryFn: getSetupDetect,
+    enabled,
+    staleTime: 10_000,
   })
 }
 

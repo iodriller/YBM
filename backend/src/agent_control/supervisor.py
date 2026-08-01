@@ -216,7 +216,7 @@ def _wait_ready(url: str, timeout_seconds: float) -> bool:
     return False
 
 
-def start_all(**flags) -> int:
+def start_all(*, open_browser: bool = False, **flags) -> int:
     specs = build_service_specs(**flags)
     print(f"Starting {len(specs)} service(s)...")
     hard_failure = False
@@ -252,9 +252,30 @@ def start_all(**flags) -> int:
     if hard_failure:
         print("One or more required services failed to start. Check the logs above, then `ybm status` / `ybm logs <name>`.")
         return 1
-    print("Admin UI:   http://127.0.0.1:8765/admin")
+    admin_url = "http://127.0.0.1:8765/admin"
+    print(f"Admin UI:   {admin_url}")
     print("Backend:    http://127.0.0.1:8765/health")
     print("Stop with:  ybm stop")
+    if open_browser:
+        # Carries AGENT_ADMIN_TOKEN (if set) as a one-time ?token= URL param
+        # so the browser's very first request is already authenticated -
+        # without this, a fresh install (which always generates a real
+        # token, see bootstrap.run_setup) would 401 on every page with no
+        # way to recover, since nothing else in the UI ever collects one.
+        # lib/api.ts strips it from the URL/history on load. Only requested
+        # explicitly (`ybm start --open`, used by the installers) - a bare
+        # `ybm start` during normal development never pops a browser tab.
+        import webbrowser
+
+        token = read_env_value("AGENT_ADMIN_TOKEN")
+        target = f"{admin_url}?token={token}" if token else admin_url
+        try:
+            if not webbrowser.open(target):
+                raise webbrowser.Error("no browser handler available")
+        except webbrowser.Error:
+            # Headless/SSH-only environment - real and expected there, not a
+            # failure of `start` itself (every service above already started).
+            print(f"Could not open a browser automatically. Open {target} manually.")
     return 0
 
 

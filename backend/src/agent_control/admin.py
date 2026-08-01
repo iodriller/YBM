@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import Field
 
-from agent_control.bootstrap import check_localdeploy
+from agent_control.bootstrap import OLLAMA_TAGS_URL, _http_json, check_llm_configured
 from agent_control.config_sync import CONFIG_FILE_PATH, ConfigManager, read_env_value
 from agent_control.config import AppSettings, backend_base_url, is_loopback_host
 from agent_control.llm.providers import OpenAICompatibleProvider
@@ -308,11 +308,40 @@ def create_admin_router(
                 status_code=403,
                 detail="admin API refused: cross-origin request (Origin header does not match Host)",
             )
+        llm_configured = check_llm_configured(loaded)
         return {
             "token_required": bool(read_env_value(loaded.server.admin_token_env)),
-            "onboarding_complete": CONFIG_FILE_PATH.exists(),
-            "llm_reachable": check_localdeploy(loaded).status == "ok",
+            # Not just "does config.yaml exist" - `ybm setup` always creates
+            # one now (bootstrap.run_setup), so that alone would never show
+            # the wizard. A real LLM being configured is the actual signal
+            # that first-run choices have been made; re-runnable any time
+            # from Settings regardless of this value.
+            "onboarding_complete": CONFIG_FILE_PATH.exists() and llm_configured,
+            "llm_reachable": llm_configured,
             "version": _APP_VERSION,
+        }
+
+    @router.get("/api/setup/detect")
+    def admin_setup_detect(request: Request) -> dict[str, Any]:
+        """What the first-run wizard needs to ask real questions instead of
+        blind ones - a local Ollama server's actual installed models, whether
+        LocalDeploy/a cloud key/a Telegram token are already present (never
+        the values), and the current LLM profile's status. Runs after the
+        token gate (App.tsx checks bootstrap.token_required before ever
+        rendering the wizard), so this is a normal require_admin route,
+        unlike /api/bootstrap.
+        """
+        loaded = require_admin(request)
+        ollama = _http_json(OLLAMA_TAGS_URL, timeout=2.0)
+        ollama_models = [str(m.get("name")) for m in (ollama or {}).get("models", []) if m.get("name")]
+        return {
+            "ollama": {"available": bool(ollama_models), "models": ollama_models},
+            "localdeploy_root_present": bool(read_env_value("YBM_LOCALDEPLOY_ROOT")),
+            "openai_key_present": bool(read_env_value("OPENAI_API_KEY")),
+            "telegram_token_present": bool(read_env_value("TELEGRAM_BOT_TOKEN")),
+            "current_llm_profile": loaded.llm.default_profile,
+            "llm_configured": check_llm_configured(loaded),
+            "telegram_enabled": loaded.channels.telegram.enabled,
         }
 
     @router.get("/api/summary")

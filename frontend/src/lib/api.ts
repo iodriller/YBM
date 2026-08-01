@@ -16,11 +16,26 @@ import { z } from "zod"
 const ADMIN_TOKEN_STORAGE_KEY = "ybm-admin-token"
 
 // In-memory only, never localStorage - limits XSS blast radius (plan §4).
-// Seeded once from sessionStorage so a page refresh during development
-// doesn't force re-entering the token; sessionStorage still clears on tab
-// close, unlike localStorage.
+// Seeded synchronously at module load (before any component renders or
+// query fires), checking two sources in order:
+//  1. A `?token=` URL param - how `ybm start`'s auto-opened browser tab
+//     carries the auto-generated AGENT_ADMIN_TOKEN on a fresh install, so
+//     the one-click flow never hits TokenEntryScreen at all. Stripped from
+//     the URL immediately (history.replaceState) so it never lingers in
+//     browser history or gets shared via a copied link.
+//  2. sessionStorage - so a page refresh during the same tab session
+//     doesn't force re-entering the token; still clears on tab close,
+//     unlike localStorage.
 let adminToken: string | null = (() => {
   try {
+    const url = new URL(window.location.href)
+    const urlToken = url.searchParams.get("token")
+    if (urlToken) {
+      url.searchParams.delete("token")
+      window.history.replaceState({}, "", url.pathname + url.search + url.hash)
+      sessionStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, urlToken)
+      return urlToken
+    }
     return sessionStorage.getItem(ADMIN_TOKEN_STORAGE_KEY)
   } catch {
     return null
@@ -158,6 +173,30 @@ export type Bootstrap = z.infer<typeof BootstrapResponseSchema>
 
 export function getBootstrap() {
   return apiFetch("/api/bootstrap", BootstrapResponseSchema)
+}
+
+// ---- Setup detection (docs/UI_REWRITE_PLAN.md's first-run wizard) --------
+//
+// Real detection so the wizard asks real questions instead of blind ones -
+// an actual Ollama model list, and "already configured" booleans (never
+// values) for LocalDeploy/a cloud key/Telegram, matching bootstrap.py's
+// _prompt_llm_choice/_prompt_telegram_choice CLI logic exactly so the
+// browser wizard and the (still-available, headless-friendly) `ybm onboard`
+// CLI wizard make the same decisions from the same signals.
+
+export const SetupDetectResponseSchema = z.object({
+  ollama: z.object({ available: z.boolean(), models: z.array(z.string()) }),
+  localdeploy_root_present: z.boolean(),
+  openai_key_present: z.boolean(),
+  telegram_token_present: z.boolean(),
+  current_llm_profile: z.string(),
+  llm_configured: z.boolean(),
+  telegram_enabled: z.boolean(),
+})
+export type SetupDetect = z.infer<typeof SetupDetectResponseSchema>
+
+export function getSetupDetect() {
+  return apiFetch("/api/setup/detect", SetupDetectResponseSchema)
 }
 
 // ---- VS Code bridge status -------------------------------------------

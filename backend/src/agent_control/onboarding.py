@@ -15,25 +15,8 @@ all, so the wizard asks exactly those two and defaults everything else:
 
 from __future__ import annotations
 
-import json
-from urllib.error import URLError
-from urllib.request import urlopen
-
-from agent_control.bootstrap import run_doctor, run_setup
+from agent_control.bootstrap import OLLAMA_TAGS_URL, _http_json, run_doctor, run_setup
 from agent_control.config_sync import ConfigManager, read_env_value
-
-
-OLLAMA_TAGS_URL = "http://127.0.0.1:11434/api/tags"
-
-
-def _http_json(url: str, timeout: float = 2.0) -> dict | None:
-    try:
-        with urlopen(url, timeout=timeout) as resp:  # noqa: S310 - local-only probe URLs
-            if 200 <= resp.status < 300:
-                return json.loads(resp.read().decode("utf-8"))
-    except (URLError, OSError, ValueError):
-        return None
-    return None
 
 
 def _prompt(question: str, default: str | None = None) -> str:
@@ -141,16 +124,14 @@ def run_onboard() -> int:
     start_choice = _prompt("\nStart YBM now?", default="Y").lower()
     if start_choice in ("", "y", "yes"):
         from agent_control.supervisor import start_all
-        rc = start_all()
-        if rc == 0:
-            # The one moment this is worth doing automatically: the very end
-            # of first-run onboarding, where "open a browser tab" is exactly
-            # the one-click experience being onboarded into. `ybm start` on
-            # its own (a developer restarting the stack) deliberately does
-            # NOT do this - it would be a nuisance popup on every restart.
-            import webbrowser
-            webbrowser.open("http://127.0.0.1:8765/admin")
-        return rc
+        # open_browser=True is the one moment this is worth doing
+        # automatically: the very end of first-run onboarding, where "open a
+        # browser tab" (pre-authenticated via ?token=, see start_all) is
+        # exactly the one-click experience being onboarded into. `ybm start`
+        # on its own (a developer restarting the stack) deliberately does
+        # NOT do this by default - it would be a nuisance popup on every
+        # restart.
+        return start_all(open_browser=True)
 
     print("\nWhen you're ready: `ybm start` (or `.\\scripts\\ybm.ps1 start` on Windows).")
     print("Then open http://127.0.0.1:8765/admin for the admin console and web chat.")

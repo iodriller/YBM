@@ -36,7 +36,7 @@ YBM - local agentic control stack
   ybm setup                    create venv, install deps, bootstrap config/.env
   ybm doctor                   preflight: env, config, connectivity, ports
   ybm start [flags]            start the stack (runs doctor first)
-    -NoTelegram -NoWorker -NoScheduler -NoLocalDeploy -SkipDoctor
+    -NoTelegram -NoWorker -NoScheduler -NoLocalDeploy -SkipDoctor -Open
   ybm stop                     stop all YBM background processes
   ybm restart [flags]          stop then start
   ybm status                   show per-service status and health
@@ -223,6 +223,9 @@ function Invoke-YbmStart {
   $noScheduler = $Argv -contains "-NoScheduler"
   $noLocalDeploy = $Argv -contains "-NoLocalDeploy"
   $skipDoctor = $Argv -contains "-SkipDoctor"
+  # Only the installers pass this - never a bare `ybm.ps1 start`, which
+  # would otherwise pop a nuisance browser tab on every dev restart.
+  $openBrowser = $Argv -contains "-Open"
 
   if (-not $skipDoctor) {
     Write-Host "Preflight (ybm doctor)..."
@@ -284,8 +287,20 @@ function Invoke-YbmStart {
     Write-Host "One or more required services failed to start. See .agent_control\logs, or run '.\scripts\ybm.ps1 logs <service>'." -ForegroundColor Red
     exit 1
   }
-  Write-Host "Admin UI:        http://127.0.0.1:8765/admin"
+  $adminUrl = "http://127.0.0.1:8765/admin"
+  Write-Host "Admin UI:        $adminUrl"
   Write-Host "Logs:            $Script:YbmLogDir"
+  if ($openBrowser) {
+    # Carries AGENT_ADMIN_TOKEN (if set) as a one-time ?token= URL param so
+    # the browser's very first request is already authenticated - a fresh
+    # install always generates a real token (bootstrap.run_setup), and
+    # nothing else in the UI collects one from the user. lib/api.ts strips
+    # it from the URL/history on load. Already loaded into $env: by this
+    # script's own top-level Import-DotEnv call.
+    $token = $env:AGENT_ADMIN_TOKEN
+    $target = if ($token) { "${adminUrl}?token=$token" } else { $adminUrl }
+    Start-Process $target
+  }
 }
 
 function Invoke-YbmStop {
