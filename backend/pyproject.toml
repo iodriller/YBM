@@ -37,7 +37,7 @@ voice = [
   "faster-whisper>=1.1",
   "kokoro-onnx>=0.5",
   "numpy>=2.0.2",
-  "pyarrow>=24",
+  "pyarrow>=25.0.0",
 ]
 e2e = [
   "telethon>=1.36",
