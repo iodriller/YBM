@@ -25,16 +25,16 @@ export function extractLastOutput(task: TaskRecord): string | null {
   const out = result.output ?? {}
   const text =
     out.stdout ?? out.summary ?? out.response ?? out.content ?? out.text ?? out.result
-  if (text) return String(text)
-  if (result.error_message) return `Error: ${result.error_message}`
-  if (typeof meta.last_worker_error === "string") return `Error: ${meta.last_worker_error}`
+  if (text) return sanitizeDisplayedText(String(text))
+  if (result.error_message) return `Error: ${sanitizeDisplayedText(result.error_message)}`
+  if (typeof meta.last_worker_error === "string") return `Error: ${sanitizeDisplayedText(meta.last_worker_error)}`
   return null
 }
 
 export function chatAnswerText(task: TaskRecord): string {
   const meta = task.metadata
   if (typeof meta.synthesized_answer === "string" && meta.synthesized_answer) {
-    return meta.synthesized_answer
+    return sanitizeDisplayedText(meta.synthesized_answer)
   }
   const lastOutput = extractLastOutput(task)
   switch (task.status) {
@@ -56,5 +56,13 @@ export function chatAnswerText(task: TaskRecord): string {
 }
 
 export function isTerminal(status: TaskRecord["status"]): boolean {
-  return status === "completed" || status === "failed" || status === "cancelled"
+  return status === "completed" || status === "failed" || status === "blocked" || status === "cancelled"
+}
+
+// Defense in depth for old task records created before transport errors were
+// sanitized server-side. Telegram embeds its bot token in request URLs, and
+// httpx includes those URLs in exception text. Never render that credential
+// shape even if a historical record still contains it.
+export function sanitizeDisplayedText(value: string): string {
+  return value.replace(/(\/bot)\d{5,}:[A-Za-z0-9_-]{20,}/g, "$1***")
 }

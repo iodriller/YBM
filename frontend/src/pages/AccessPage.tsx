@@ -1,9 +1,11 @@
 import { useState } from "react"
 import { toast } from "sonner"
+import { Eye, Power, ShieldCheck, UserCheck, Zap } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Skeleton } from "@/components/ui/skeleton"
+import { PageHeader } from "@/components/layout/PageHeader"
 import { ConfirmDialog } from "@/components/access/ConfirmDialog"
 import { AccessGroupCard } from "@/components/access/AccessGroupCard"
 import { SecretVaultCard } from "@/components/access/SecretVaultCard"
@@ -64,6 +66,9 @@ export function AccessPage() {
   const accessModes = data.access_modes
   const groups = Object.values(accessModes)
   const allOff = groups.length > 0 && groups.every((g) => g.mode === "off")
+  const enabledCount = groups.filter((group) => group.mode !== "off").length
+  const approvalCount = groups.filter((group) => group.mode !== "off" && group.requires_approval).length
+  const autonomousCount = groups.filter((group) => group.mode !== "off" && !group.requires_approval).length
 
   function handleKillSwitch() {
     setPendingAction({
@@ -92,13 +97,19 @@ export function AccessPage() {
   }
 
   return (
-    <div className="flex h-full flex-col gap-4 overflow-y-auto p-6 [&>*]:shrink-0">
-      <div>
-        <h1 className="text-lg font-semibold">Access</h1>
-        <p className="text-sm text-muted-foreground">
-          What the agent is allowed to do, and whether it needs your approval first.
-        </p>
-      </div>
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto flex max-w-6xl flex-col gap-6 p-4 sm:p-6 lg:p-8 [&>*]:shrink-0">
+      <PageHeader
+        eyebrow="Policy control"
+        title="Access"
+        description="Choose what YBM can observe, what requires your review, and what may run autonomously. Runtime approval gates still apply to critical operations."
+        actions={
+          <Button variant="destructive" disabled={allOff || update.isPending} onClick={handleKillSwitch}>
+            <Power className="size-4" />
+            Disable all
+          </Button>
+        }
+      />
 
       {data.warnings.length > 0 && (
         <Alert variant="destructive">
@@ -113,50 +124,78 @@ export function AccessPage() {
         </Alert>
       )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Kill switch</CardTitle>
-          <CardDescription>
-            Sets every access group below to Off in one action. The worker keeps running but every
-            gated capability stops being usable until you turn groups back on.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Button variant="destructive" disabled={allOff || update.isPending} onClick={handleKillSwitch}>
-            Disable everything now
-          </Button>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Presets</CardTitle>
-          <CardDescription>Apply a preset to every access group at once.</CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-2">
-          {ACCESS_PRESETS.map((preset) => (
-            <div
-              key={preset.key}
-              className="flex items-center justify-between gap-3 rounded-md border border-border p-2"
-            >
-              <div>
-                <p className="text-sm font-medium">{preset.label}</p>
-                <p className="text-xs text-muted-foreground">{preset.description}</p>
-              </div>
-              <Button
-                variant={preset.destructive ? "destructive" : "outline"}
-                size="sm"
-                disabled={update.isPending}
-                onClick={() => handlePreset(preset.key)}
-              >
-                Apply
-              </Button>
+      <Card className="bg-card shadow-sm ring-border">
+        <CardContent className="grid gap-5 sm:grid-cols-[1fr_auto] sm:items-center">
+          <div className="flex items-start gap-3">
+            <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+              <ShieldCheck className="size-5" />
+            </span>
+            <div>
+              <h2 className="font-semibold">Current safety posture</h2>
+              <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                {allOff
+                  ? "All capability groups are disabled. YBM can still chat, but gated tools cannot run."
+                  : autonomousCount > 0
+                    ? `${autonomousCount} group${autonomousCount === 1 ? "" : "s"} can act without a per-action review.`
+                    : "Every enabled action group is either read-only or pauses for your review."}
+              </p>
             </div>
-          ))}
+          </div>
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <Metric value={enabledCount} label="Enabled" tone="info" />
+            <Metric value={approvalCount} label="Guarded" tone="warning" />
+            <Metric value={autonomousCount} label="Autonomous" tone={autonomousCount > 0 ? "danger" : "neutral"} />
+          </div>
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+      <section>
+        <div className="mb-3">
+          <h2 className="text-base font-semibold">Choose a starting posture</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Presets update every group; you can fine-tune individual capabilities below.</p>
+        </div>
+        <div className="grid gap-3 lg:grid-cols-3">
+          {ACCESS_PRESETS.map((preset) => {
+            const expected = computePreset(accessModes, preset.key)
+            const active = Object.entries(expected).every(([name, mode]) => accessModes[name]?.mode === mode)
+            const Icon = preset.key === "read_only" ? Eye : preset.key === "approval_required" ? UserCheck : Zap
+            return (
+              <button
+                key={preset.key}
+                type="button"
+                aria-pressed={active}
+                disabled={update.isPending || active}
+                onClick={() => handlePreset(preset.key)}
+                className={`group rounded-2xl border p-4 text-left transition-all disabled:cursor-default ${
+                  active
+                    ? "border-primary bg-primary/7 ring-2 ring-primary/15"
+                    : preset.destructive
+                      ? "border-destructive/20 bg-card hover:border-destructive/45 hover:bg-destructive/5"
+                      : "border-border bg-card hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md"
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <span className={`flex size-9 items-center justify-center rounded-xl ${preset.destructive ? "bg-destructive/10 text-destructive" : "bg-primary/10 text-primary"}`}>
+                    <Icon className="size-4.5" />
+                  </span>
+                  <span className={`text-xs font-semibold ${active ? "text-primary" : "text-muted-foreground"}`}>
+                    {active ? "Current" : "Apply"}
+                  </span>
+                </div>
+                <p className="mt-3 font-semibold">{preset.label}</p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">{preset.description}</p>
+              </button>
+            )
+          })}
+        </div>
+      </section>
+
+      <section>
+        <div className="mb-3">
+          <h2 className="text-base font-semibold">Capability groups</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Adjust one area without changing the rest of your policy.</p>
+        </div>
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         {groups.map((group) => (
           <AccessGroupCard
             key={group.name}
@@ -172,7 +211,8 @@ export function AccessPage() {
             }
           />
         ))}
-      </div>
+        </div>
+      </section>
 
       <SecretVaultCard />
 
@@ -189,6 +229,22 @@ export function AccessPage() {
           if (pendingAction) apply(pendingAction.modes, "Access updated.")
         }}
       />
+      </div>
+    </div>
+  )
+}
+
+function Metric({ value, label, tone }: { value: number; label: string; tone: "info" | "warning" | "danger" | "neutral" }) {
+  const toneClass = {
+    info: "bg-info/10 text-info",
+    warning: "bg-warning/10 text-warning",
+    danger: "bg-destructive/10 text-destructive",
+    neutral: "bg-muted text-muted-foreground",
+  }[tone]
+  return (
+    <div className={`min-w-17 rounded-xl px-2.5 py-2 ${toneClass}`}>
+      <div className="text-lg font-semibold leading-none">{value}</div>
+      <div className="mt-1 text-[10px] font-medium uppercase tracking-wide">{label}</div>
     </div>
   )
 }

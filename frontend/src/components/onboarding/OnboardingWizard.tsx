@@ -15,6 +15,7 @@ import {
   useUpdateLLMConfig,
   useUpdateTelegramConfig,
 } from "@/lib/queries"
+import { ThemeToggle } from "@/components/layout/ThemeToggle"
 
 type Step = "brain" | "face" | "done"
 
@@ -48,7 +49,8 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
   const presets = settingsData?.integrations.llm.presets ?? []
 
   return (
-    <div className="flex h-svh w-full items-center justify-center bg-background p-6">
+    <div className="relative flex h-svh w-full items-center justify-center bg-background p-6">
+      <div className="absolute top-4 right-4"><ThemeToggle /></div>
       <Card className="w-full max-w-md">
         <CardHeader>
           <CardTitle>Welcome to YBM Control</CardTitle>

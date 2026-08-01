@@ -461,8 +461,8 @@ undisclosed gaps, closed before deleting anything) are in `docs/HISTORY.md` Part
 
 ## 20. Open questions
 
-- **Dark mode** — worth it, not before parity.
-- **Mobile/responsive** — Telegram already covers phone use; desktop-first is defensible.
+- **Dark mode** — implemented after parity with semantic light/dark tokens and a persisted system-aware toggle; see `docs/UI_UX_AUDIT.md`.
+- **Mobile/responsive** — implemented after parity with a mobile header, bottom navigation, responsive page widths, and overflow checks at 390px.
 - **SSE vs polling** — deferred by design (0.4); decide from real usage.
 - **Storybook** — likely overkill at this size; MSW + Vitest should cover it. Revisit if the
   component count grows.

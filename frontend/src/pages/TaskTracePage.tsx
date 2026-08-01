@@ -55,15 +55,17 @@ export function TaskTracePage() {
   }
 
   return (
-    <div className="flex h-full flex-col gap-4 overflow-y-auto p-6 [&>*]:shrink-0">
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto flex max-w-6xl flex-col gap-5 p-4 sm:p-6 lg:p-8 [&>*]:shrink-0">
       <div>
         <Link to="/tasks" className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
           <ArrowLeft className="size-3.5" /> Back to tasks
         </Link>
-        <div className="mt-2 flex items-start justify-between gap-4">
-          <div>
-            <h1 className="text-lg font-semibold">{task.objective}</h1>
-            <p className="text-xs text-muted-foreground">
+        <div className="mt-3 flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <p className="mb-1 text-xs font-semibold uppercase tracking-[0.14em] text-primary">Task trace</p>
+            <h1 className="text-xl font-semibold tracking-tight [overflow-wrap:anywhere]">{task.objective}</h1>
+            <p className="mt-1 text-xs text-muted-foreground [overflow-wrap:anywhere]">
               {task.id} · created {new Date(task.created_at).toLocaleString()}
             </p>
           </div>
@@ -90,7 +92,7 @@ export function TaskTracePage() {
       </div>
 
       {typeof task.metadata.synthesized_answer === "string" && (
-        <div className="rounded-md border border-border bg-muted/40 p-3 text-sm">
+        <div className="whitespace-pre-wrap rounded-xl border border-primary/15 bg-primary/5 p-4 text-sm leading-6 [overflow-wrap:anywhere]">
           {task.metadata.synthesized_answer}
         </div>
       )}
@@ -124,6 +126,7 @@ export function TaskTracePage() {
       {!isTerminal(task.status) && (
         <p className="text-xs text-muted-foreground">This task is still in progress - updating live.</p>
       )}
+      </div>
     </div>
   )
 }
@@ -143,13 +146,13 @@ function EvidenceSection({
       <h2 className="mb-2 text-sm font-medium">What this task touched</h2>
       <div className="flex flex-col gap-1 font-mono text-xs">
         {files.map((f) => (
-          <div key={f.value}>{f.value}</div>
+          <div key={f.value} className="[overflow-wrap:anywhere]">{f.value}</div>
         ))}
         {urls.map((u) => (
-          <div key={u.value}>{u.value}</div>
+          <div key={u.value} className="[overflow-wrap:anywhere]">{u.value}</div>
         ))}
         {commands.map((c) => (
-          <div key={c.value}>{c.value}</div>
+          <div key={c.value} className="[overflow-wrap:anywhere]">{c.value}</div>
         ))}
       </div>
     </div>

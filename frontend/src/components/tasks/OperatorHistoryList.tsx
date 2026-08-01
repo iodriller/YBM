@@ -52,9 +52,9 @@ export function OperatorHistoryList({ entries }: { entries: OperatorHistoryEntry
               )}
             </div>
             {entry.output_summary && (
-              <p className="pl-6 text-xs text-muted-foreground">{entry.output_summary}</p>
+              <p className="pl-6 text-xs text-muted-foreground [overflow-wrap:anywhere]">{entry.output_summary}</p>
             )}
-            {entry.error && <p className="pl-6 text-xs text-destructive">{entry.error}</p>}
+            {entry.error && <p className="pl-6 text-xs text-destructive [overflow-wrap:anywhere]">{entry.error}</p>}
           </div>
         )
       })}

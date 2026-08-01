@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
+import { ListTree, Search } from "lucide-react"
 import { flexRender, getCoreRowModel, useReactTable, createColumnHelper } from "@tanstack/react-table"
 import { Input } from "@/components/ui/input"
 import {
@@ -21,6 +22,8 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { StatusBadge } from "@/components/tasks/StatusBadge"
 import { ActiveTasksPanel } from "@/components/tasks/ActiveTasksPanel"
+import { PageHeader } from "@/components/layout/PageHeader"
+import { Card, CardContent } from "@/components/ui/card"
 import { useTasks } from "@/lib/queries"
 import type { TaskRecord, TaskStatus } from "@/lib/api"
 
@@ -77,19 +80,35 @@ export function TasksPage() {
   })
 
   return (
-    <div className="flex h-full flex-col gap-4 overflow-y-auto p-6 [&>*]:shrink-0">
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto flex max-w-6xl flex-col gap-6 p-4 sm:p-6 lg:p-8 [&>*]:shrink-0">
+      <PageHeader
+        eyebrow="Activity"
+        title="Tasks"
+        description="Monitor every request, open its evidence trail, and quickly find failures or work still in progress."
+        actions={
+          <div className="flex items-center gap-2 rounded-xl bg-card px-3 py-2 text-sm shadow-sm ring-1 ring-border">
+            <ListTree className="size-4 text-primary" />
+            <span className="font-semibold">{data?.pagination.total ?? 0}</span>
+            <span className="text-muted-foreground">total</span>
+          </div>
+        }
+      />
       <ActiveTasksPanel />
 
-      <div className="flex items-center gap-2">
-        <Input
-          placeholder="Search objectives..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="max-w-sm"
-        />
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <div className="relative min-w-0 flex-1 sm:max-w-md">
+          <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            placeholder="Search objectives..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="h-10 bg-card pl-9 shadow-sm"
+          />
+        </div>
         <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as TaskStatus | "all")}>
-          <SelectTrigger className="w-48">
-            <SelectValue />
+          <SelectTrigger className="h-10 w-full bg-card shadow-sm sm:w-48">
+            <SelectValue>{statusFilter === "all" ? "All statuses" : statusFilter.replace(/_/g, " ")}</SelectValue>
           </SelectTrigger>
           <SelectContent>
             {STATUS_OPTIONS.map((s) => (
@@ -117,7 +136,26 @@ export function TasksPage() {
       )}
 
       {!isPending && filtered.length > 0 && (
-        <Table>
+        <>
+        <div className="flex flex-col gap-2 sm:hidden">
+          {filtered.map((task) => (
+            <button
+              key={task.id}
+              type="button"
+              onClick={() => navigate(`/tasks/${task.id}`)}
+              className="flex min-w-0 flex-col gap-2 rounded-xl bg-card p-3 text-left shadow-sm ring-1 ring-border transition-colors hover:bg-muted/40"
+            >
+              <div className="flex min-w-0 items-start justify-between gap-2">
+                <span className="line-clamp-2 min-w-0 text-sm font-medium [overflow-wrap:anywhere]">{task.objective}</span>
+                <StatusBadge status={task.status} />
+              </div>
+              <span className="text-xs text-muted-foreground">{new Date(task.created_at).toLocaleString()}</span>
+            </button>
+          ))}
+        </div>
+        <Card className="hidden py-0 shadow-sm ring-border sm:block">
+          <CardContent className="px-0">
+          <Table>
           <TableHeader>
             {table.getHeaderGroups().map((headerGroup) => (
               <TableRow key={headerGroup.id}>
@@ -133,7 +171,7 @@ export function TasksPage() {
             {table.getRowModel().rows.map((row) => (
               <TableRow
                 key={row.id}
-                className="cursor-pointer"
+                className="cursor-pointer transition-colors hover:bg-muted/60"
                 onClick={() => navigate(`/tasks/${row.original.id}`)}
               >
                 {row.getVisibleCells().map((cell) => (
@@ -145,7 +183,11 @@ export function TasksPage() {
             ))}
           </TableBody>
         </Table>
+          </CardContent>
+        </Card>
+        </>
       )}
+      </div>
     </div>
   )
 }

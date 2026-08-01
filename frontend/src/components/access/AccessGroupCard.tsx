@@ -1,15 +1,10 @@
 import { useState } from "react"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
+import { Eye, LockKeyhole, ShieldCheck, Zap } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ConfirmDialog } from "@/components/access/ConfirmDialog"
 import { describeCapability } from "@/lib/capability"
+import { cn } from "@/lib/utils"
 import type { CapabilityAccessMode, CapabilityAccessSummary, CapabilityPolicy } from "@/lib/api"
 
 /**
@@ -49,34 +44,52 @@ export function AccessGroupCard({
   }
 
   const currentLabel = group.options.find((o) => o.value === group.mode)?.label ?? group.mode
+  const state = accessState(group.mode, group.requires_approval)
+  const StateIcon = state.icon
 
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between gap-2">
-        <div>
+    <Card className="shadow-sm ring-border transition-shadow hover:shadow-md">
+      <CardHeader className="flex flex-row items-start justify-between gap-3">
+        <div className="min-w-0">
           <CardTitle>{group.label ?? group.name}</CardTitle>
-          <p className="text-xs text-muted-foreground">{group.capabilities.join(", ")}</p>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">{state.description}</p>
         </div>
-        <Badge variant={group.mode === "off" ? "outline" : group.requires_approval ? "secondary" : "destructive"}>
+        <Badge variant="outline" className={cn("gap-1 border-transparent", state.badgeClass)}>
+          <StateIcon className="size-3" />
           {currentLabel}
         </Badge>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
-        <Select value={group.mode} onValueChange={handleSelect}>
-          <SelectTrigger className="w-56" disabled={pending}>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {group.options.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                {option.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <div className="grid gap-1.5 rounded-xl bg-muted/70 p-1.5" style={{ gridTemplateColumns: `repeat(${group.options.length}, minmax(0, 1fr))` }}>
+          {group.options.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              aria-pressed={option.value === group.mode}
+              disabled={pending}
+              onClick={() => handleSelect(option.value)}
+              className={cn(
+                "min-w-0 rounded-lg px-2 py-2 text-xs font-medium leading-4 transition-all disabled:opacity-50",
+                option.value === group.mode
+                  ? "bg-card text-foreground shadow-sm ring-1 ring-border"
+                  : "text-muted-foreground hover:bg-card/60 hover:text-foreground",
+              )}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex flex-wrap gap-1.5">
+          {group.capabilities.map((capability) => (
+            <span key={capability} className="rounded-md bg-muted px-2 py-1 font-mono text-[10px] text-muted-foreground">
+              {capability}
+            </span>
+          ))}
+        </div>
 
         {advanced && (
-          <div className="flex flex-col gap-2 rounded-md border border-border/60 bg-muted/30 p-2 text-xs">
+          <div className="flex min-w-0 flex-col gap-2 rounded-xl border border-border/60 bg-muted/35 p-3 text-xs">
             <p className="font-medium text-muted-foreground">
               Risk ceilings & patterns (read-only — edit config.yaml to change)
             </p>
@@ -84,9 +97,9 @@ export function AccessGroupCard({
               const policy = rawPolicies[capability]
               if (!policy) return null
               return (
-                <div key={capability} className="flex flex-col gap-0.5">
+                <div key={capability} className="flex min-w-0 flex-col gap-0.5">
                   <span className="font-mono">{capability}</span>
-                  <span className="text-muted-foreground">
+                  <span className="text-muted-foreground [overflow-wrap:anywhere]">
                     {describeCapability(capability)} · ceiling: {policy.max_risk_level}
                     {policy.scopes.length > 0 && ` · scopes: ${policy.scopes.join(", ")}`}
                     {policy.allow_patterns.length > 0 && ` · allow: ${policy.allow_patterns.join(", ")}`}
@@ -114,4 +127,33 @@ export function AccessGroupCard({
       />
     </Card>
   )
+}
+
+function accessState(mode: CapabilityAccessMode, requiresApproval: boolean) {
+  if (mode === "off") {
+    return {
+      icon: LockKeyhole,
+      description: "This capability group cannot be used.",
+      badgeClass: "bg-muted text-muted-foreground",
+    }
+  }
+  if (mode === "read_only") {
+    return {
+      icon: Eye,
+      description: "YBM can observe, but cannot change anything here.",
+      badgeClass: "bg-info/10 text-info",
+    }
+  }
+  if (requiresApproval) {
+    return {
+      icon: ShieldCheck,
+      description: "Actions pause so you can review the exact operation.",
+      badgeClass: "bg-warning/10 text-warning",
+    }
+  }
+  return {
+    icon: Zap,
+    description: "Allowed actions run immediately without a per-action review.",
+    badgeClass: "bg-destructive/10 text-destructive",
+  }
 }

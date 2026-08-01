@@ -1,7 +1,5 @@
 # YBM Control
 
-**The auditable personal agent — it asks before it acts, and proves what it did.**
-
 ```
 You:  organize my Downloads folder by file type, then tell me what you moved
 YBM:  Sorted 41 files into 6 folders (Images, Documents, Archives, Installers,
@@ -108,6 +106,7 @@ runtime detail.
 - [Architecture and message flow](docs/ARCHITECTURE.md) — how the system works now, plus known gaps
 - [Capabilities](docs/CAPABILITIES.md) — the full implemented/not-yet-implemented list
 - [UI rewrite plan](docs/UI_REWRITE_PLAN.md) — the React admin console's design and build record
+- [UI/UX audit and roadmap](docs/UI_UX_AUDIT.md) — current feature coverage, competitive review, gaps, and phased improvements
 - [Threat model](docs/THREAT_MODEL.md) — trust boundaries, enforced controls, limitations
 - [Security policy](SECURITY.md) — supported versions and private vulnerability reporting
 - [Contributing](CONTRIBUTING.md)

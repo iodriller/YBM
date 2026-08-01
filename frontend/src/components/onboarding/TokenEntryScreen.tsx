@@ -5,6 +5,7 @@ import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { ApiError, getSummary, setAdminToken } from "@/lib/api"
+import { ThemeToggle } from "@/components/layout/ThemeToggle"
 
 /**
  * Shown when `bootstrap.token_required` is true and no admin token is
@@ -42,7 +43,8 @@ export function TokenEntryScreen({ onVerified }: { onVerified: () => void }) {
   }
 
   return (
-    <div className="flex h-svh w-full items-center justify-center bg-background p-6">
+    <div className="relative flex h-svh w-full items-center justify-center bg-background p-6">
+      <div className="absolute top-4 right-4"><ThemeToggle /></div>
       <Card className="w-full max-w-md">
         <CardHeader>
           <CardTitle>Admin token required</CardTitle>

@@ -38,8 +38,10 @@ export function ActiveTasksPanel() {
   }
 
   return (
-    <div className="flex flex-col gap-2">
-      <h2 className="text-sm font-medium">Active now</h2>
+    <div className="flex flex-col gap-2 rounded-2xl border border-info/20 bg-info/5 p-4">
+      <h2 className="flex items-center gap-2 text-sm font-semibold">
+        <span className="size-2 animate-pulse rounded-full bg-info" /> Active now
+      </h2>
       {active.map((task) => (
         <ActiveTaskRow key={task.id} task={task} onSignal={handleSignal} pending={signal.isPending} />
       ))}
@@ -61,7 +63,7 @@ function ActiveTaskRow({
   const stepsTaken = Array.isArray(history) ? history.length : 0
 
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-border p-3">
+    <div className="flex flex-col gap-2 rounded-xl border border-border bg-card p-3 shadow-sm">
       <div className="flex items-start justify-between gap-3">
         <Link to={`/tasks/${task.id}`} className="min-w-0 flex-1 hover:underline">
           <p className="truncate text-sm font-medium">{task.objective}</p>

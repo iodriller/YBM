@@ -9,6 +9,7 @@ import { AuditViewerCard } from "@/components/settings/AuditViewerCard"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { useAdvancedMode } from "@/lib/advanced-mode"
+import { PageHeader } from "@/components/layout/PageHeader"
 
 /**
  * docs/UI_REWRITE_PLAN.md §14. Level 1: LLM + Telegram. Level 2/Advanced
@@ -22,11 +23,13 @@ export function SettingsPage({ onRerunWizard }: { onRerunWizard: () => void }) {
   const { advanced } = useAdvancedMode()
 
   return (
-    <div className="flex h-full flex-col gap-4 overflow-y-auto p-6 [&>*]:shrink-0">
-      <div>
-        <h1 className="text-lg font-semibold">Settings</h1>
-        <p className="text-sm text-muted-foreground">LLM, channels, and adapters this instance uses.</p>
-      </div>
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto flex max-w-6xl flex-col gap-6 p-4 sm:p-6 lg:p-8 [&>*]:shrink-0">
+      <PageHeader
+        eyebrow="Configuration"
+        title="Settings"
+        description="Connect the model, channels, editor bridge, and local adapters used by this YBM instance."
+      />
 
       <LLMSettingsCard />
       <TelegramSettingsCard />
@@ -53,6 +56,7 @@ export function SettingsPage({ onRerunWizard }: { onRerunWizard: () => void }) {
           </Button>
         </CardContent>
       </Card>
+      </div>
     </div>
   )
 }

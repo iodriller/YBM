@@ -5,6 +5,7 @@ import { ReactQueryDevtools } from "@tanstack/react-query-devtools"
 import { BrowserRouter } from "react-router-dom"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { Toaster } from "@/components/ui/sonner"
+import { ThemeProvider } from "next-themes"
 import "./index.css"
 import App from "./App.tsx"
 
@@ -21,10 +22,11 @@ const queryClient = new QueryClient({
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      {/* Base UI's prop is "delay", not Radix's "delayDuration" - this
-          shadcn generation is built on @base-ui/react, not Radix. */}
-      <TooltipProvider delay={200}>
-        {/* Vite's base="/admin/" (vite.config.ts) only rewrites asset URLs,
+      <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
+        {/* Base UI's prop is "delay", not Radix's "delayDuration" - this
+            shadcn generation is built on @base-ui/react, not Radix. */}
+        <TooltipProvider delay={200}>
+          {/* Vite's base="/admin/" (vite.config.ts) only rewrites asset URLs,
             not the router - basename must be passed explicitly or route
             matching breaks against the real mounted URL. import.meta.env.BASE_URL
             is Vite's own runtime reflection of that same base config, so the
@@ -35,12 +37,13 @@ createRoot(document.getElementById("root")!).render(
             banner/README/doctor output in this repo prints) and silently
             renders nothing. Confirmed live via Playwright: that mismatch was
             a real blank-page bug on first load, not a hypothetical. */}
-        <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-          <App />
-        </BrowserRouter>
-      </TooltipProvider>
-      <Toaster />
-      {import.meta.env.DEV && <ReactQueryDevtools initialIsOpen={false} />}
+          <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, "")}>
+            <App />
+          </BrowserRouter>
+        </TooltipProvider>
+        <Toaster richColors closeButton />
+        {import.meta.env.DEV && <ReactQueryDevtools initialIsOpen={false} />}
+      </ThemeProvider>
     </QueryClientProvider>
   </StrictMode>,
 )

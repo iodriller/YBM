@@ -65,7 +65,7 @@ export function HealthIndicator() {
         className={cn("size-2 shrink-0 rounded-full", {
           "bg-muted-foreground/40": state === "loading",
           "bg-destructive": state === "error",
-          "bg-emerald-500": state === "ok",
+          "bg-success": state === "ok",
         })}
         aria-hidden
       />
@@ -88,7 +88,7 @@ export function HealthIndicator() {
             <span className="opacity-80">{item.label}</span>
             <span className="flex items-center gap-1.5 font-medium">
               <span
-                className={cn("size-1.5 rounded-full", item.ok ? "bg-emerald-500" : "bg-destructive")}
+                className={cn("size-1.5 rounded-full", item.ok ? "bg-success" : "bg-destructive")}
                 aria-hidden
               />
               {item.value}

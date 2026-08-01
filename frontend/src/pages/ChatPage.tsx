@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from "react"
-import { Send } from "lucide-react"
+import { Bot, LoaderCircle, Send, ShieldCheck, Sparkles, User } from "lucide-react"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { chatAnswerText, isTerminal } from "@/lib/chat"
@@ -39,9 +38,22 @@ export function ChatPage() {
   }
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex-1 overflow-y-auto px-6 py-6">
-        <div className="mx-auto flex max-w-2xl flex-col gap-4">
+    <div className="flex h-full min-w-0 flex-col">
+      <header className="shrink-0 border-b border-border/70 bg-card/60 px-4 py-3 backdrop-blur sm:px-6">
+        <div className="mx-auto flex max-w-3xl items-center justify-between gap-4">
+          <div>
+            <h1 className="text-sm font-semibold">Local chat</h1>
+            <p className="text-xs text-muted-foreground">Ask, approve, and inspect from one conversation.</p>
+          </div>
+          <div className="flex items-center gap-1.5 rounded-full bg-success/10 px-2.5 py-1 text-xs font-medium text-success">
+            <ShieldCheck className="size-3.5" />
+            Policy protected
+          </div>
+        </div>
+      </header>
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6 sm:py-7">
+        <div className="mx-auto flex min-w-0 max-w-3xl flex-col gap-5">
           {isError && (
             <Alert variant="destructive">
               <AlertTitle>Couldn't load chat</AlertTitle>
@@ -57,16 +69,20 @@ export function ChatPage() {
           )}
 
           {!isPending && !isError && tasks.length === 0 && (
-            <div className="flex flex-col items-center gap-4 py-16 text-center">
-              <p className="text-sm text-muted-foreground">
-                No messages yet — say something below, or try:
+            <div className="flex flex-col items-center py-10 text-center sm:py-20">
+              <span className="mb-5 flex size-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-lg shadow-primary/20">
+                <Sparkles className="size-5" />
+              </span>
+              <h2 className="text-xl font-semibold tracking-tight">What can I help you do?</h2>
+              <p className="mt-2 max-w-md text-sm leading-6 text-muted-foreground">
+                YBM can answer questions or carry out policy-gated work on this machine.
               </p>
-              <div className="flex flex-col gap-2 sm:flex-row">
+              <div className="mt-7 grid w-full gap-2 sm:grid-cols-3">
                 {STARTER_PROMPTS.map((prompt) => (
                   <Button
                     key={prompt}
                     variant="outline"
-                    size="sm"
+                    className="h-auto min-h-14 justify-start whitespace-normal px-3 py-2.5 text-left text-xs leading-5"
                     onClick={() => handleSend(prompt)}
                   >
                     {prompt}
@@ -84,26 +100,44 @@ export function ChatPage() {
       </div>
 
       <form
-        className="border-t border-border p-4"
+        className="shrink-0 border-t border-border/70 bg-background/90 px-4 py-3 backdrop-blur sm:px-6 sm:py-4"
         onSubmit={(event) => {
           event.preventDefault()
           handleSend(draft)
         }}
       >
-        <div className="mx-auto flex max-w-2xl gap-2">
-          <Input
+        <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-2xl border border-input bg-card p-2 shadow-sm focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/20">
+          <textarea
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
-            placeholder="Message the agent..."
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault()
+                handleSend(draft)
+              }
+            }}
+            placeholder="Ask YBM to do something..."
             disabled={sendMessage.isPending}
             autoFocus
+            rows={1}
+            aria-label="Message YBM"
+            className="max-h-36 min-h-10 min-w-0 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-5 outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50"
           />
-          <Button type="submit" disabled={sendMessage.isPending || !draft.trim()}>
-            <Send className="size-4" />
+          <Button
+            type="submit"
+            size="icon"
+            className="size-9 rounded-xl"
+            aria-label="Send message"
+            disabled={sendMessage.isPending || !draft.trim()}
+          >
+            {sendMessage.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Send className="size-4" />}
           </Button>
         </div>
+        <p className="mx-auto mt-1.5 hidden max-w-3xl px-2 text-[11px] text-muted-foreground sm:block">
+          Enter to send · Shift + Enter for a new line
+        </p>
         {sendMessage.isError && (
-          <p className="mx-auto mt-2 max-w-2xl text-xs text-destructive">
+          <p className="mx-auto mt-2 max-w-3xl text-xs text-destructive">
             {sendMessage.error.message}
           </p>
         )}
@@ -139,21 +173,29 @@ function Bubble({
   status?: string
 }) {
   const isUser = role === "user"
+  const failed = status === "failed" || status === "blocked"
   return (
-    <div className={cn("flex items-start gap-3", isUser && "flex-row-reverse")}>
-      <Avatar className="size-8 shrink-0">
-        <AvatarFallback className="text-xs">{isUser ? "You" : "Y"}</AvatarFallback>
+    <div className={cn("flex min-w-0 items-start gap-3", isUser && "flex-row-reverse")}>
+      <Avatar className="size-8 shrink-0 border border-border shadow-sm">
+        <AvatarFallback className={cn("text-xs", isUser ? "bg-muted" : "bg-primary/10 text-primary")}>
+          {isUser ? <User className="size-3.5" /> : <Bot className="size-3.5" />}
+        </AvatarFallback>
       </Avatar>
       <div
         className={cn(
-          "max-w-[80%] rounded-lg px-4 py-2 text-sm",
-          isUser ? "bg-primary text-primary-foreground" : "bg-secondary text-secondary-foreground",
-          pending && "animate-pulse",
+          "min-w-0 max-w-[84%] whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-[0.925rem] leading-6 [overflow-wrap:anywhere] sm:max-w-[78%]",
+          isUser
+            ? "rounded-tr-sm bg-primary text-primary-foreground shadow-sm shadow-primary/10"
+            : "rounded-tl-sm border border-border/80 bg-card text-card-foreground shadow-sm",
+          failed && !isUser && "border-destructive/25 bg-destructive/5",
         )}
       >
         {text}
         {pending && status && (
-          <span className="ml-1 text-xs opacity-70">({status})</span>
+          <span className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+            <LoaderCircle className="size-3 animate-spin" />
+            {status.replace(/_/g, " ")}
+          </span>
         )}
       </div>
     </div>

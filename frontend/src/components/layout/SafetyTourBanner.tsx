@@ -14,7 +14,7 @@ export function SafetyTourBanner() {
   if (dismissed) return null
 
   return (
-    <div className="flex w-full items-center justify-between gap-2 border-b border-border bg-muted/50 px-4 py-2 text-sm">
+    <div className="flex w-full items-center justify-between gap-2 border-b border-info/20 bg-info/7 px-4 py-2 text-sm">
       <span>
         Everything dangerous is off by default. Enable capabilities in{" "}
         <Link to="/access" className="underline underline-offset-2 hover:text-foreground">

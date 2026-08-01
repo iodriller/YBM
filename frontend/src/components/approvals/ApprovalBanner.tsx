@@ -42,10 +42,10 @@ export function ApprovalBanner() {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="flex w-full items-center justify-between gap-2 border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-sm text-destructive-foreground transition-colors hover:bg-destructive/15"
+        className="flex w-full items-center justify-between gap-2 border-b border-warning/30 bg-warning/10 px-4 py-2 text-sm text-foreground transition-colors hover:bg-warning/15"
       >
         <span className="flex items-center gap-2 font-medium">
-          <ShieldAlert className="size-4" />
+          <ShieldAlert className="size-4 text-warning" />
           {items.length} pending approval{items.length === 1 ? "" : "s"}
         </span>
         <span className="underline underline-offset-2">Review</span>
