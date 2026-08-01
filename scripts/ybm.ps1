@@ -396,8 +396,19 @@ function Invoke-YbmLogs {
 function Invoke-YbmTest {
   param([string[]]$Argv)
   $env:PYTHONPATH = "$Script:YbmRoot\backend\src"
+  # The wrapper imports the repo's .env at startup for normal operator
+  # commands. The unit suite creates isolated TestClient instances that do
+  # not send the real local admin token, so carrying it into pytest turns
+  # otherwise-valid admin API tests into blanket 401s. Individual auth tests
+  # set their own token explicitly with monkeypatch.
+  $savedAdminToken = $env:AGENT_ADMIN_TOKEN
+  Remove-Item Env:AGENT_ADMIN_TOKEN -ErrorAction SilentlyContinue
   & (Get-YbmPython) -m pytest "$Script:YbmRoot\backend\tests" @Argv
-  exit $LASTEXITCODE
+  $testExitCode = $LASTEXITCODE
+  if ($null -ne $savedAdminToken) {
+    $env:AGENT_ADMIN_TOKEN = $savedAdminToken
+  }
+  exit $testExitCode
 }
 
 function Invoke-YbmE2e {
