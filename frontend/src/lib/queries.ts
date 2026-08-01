@@ -1,12 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   clearAudit,
+  clearTaskHistory,
   createMemoryFact,
   decideApproval,
   deleteMemoryFact,
   deleteSecret,
   getBootstrap,
   getEffectiveConfig,
+  getServiceLog,
   getSettingsSummary,
   getSetupDetect,
   getSummary,
@@ -21,6 +23,7 @@ import {
   listSecrets,
   listSkills,
   listTasks,
+  runDoctor,
   selectLLMPreset,
   sendChatMessage,
   sendTaskSignal,
@@ -147,6 +150,16 @@ export function useTasks(limit = 50) {
   })
 }
 
+export function useClearTaskHistory() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (includeActive: boolean) => clearTaskHistory(includeActive),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["tasks"] })
+    },
+  })
+}
+
 export function useTaskTrace(taskId: string | undefined) {
   return useQuery({
     queryKey: ["tasks", "trace", taskId],
@@ -258,6 +271,20 @@ export function useSettingsSummary() {
     // mutations change it, and each of those invalidates this key.
     staleTime: 30_000,
   })
+}
+
+/** Modeled as a mutation, not a query: doctor takes a couple of seconds
+ * (it probes ports/DB/LocalDeploy for real) and is explicitly
+ * operator-triggered, never polled (docs/UI_UX_AUDIT.md Phase 9). */
+export function useRunDoctor() {
+  return useMutation({ mutationFn: runDoctor })
+}
+
+/** Also a mutation, not a per-service query: a person views one service's
+ * log at a time, on click - no benefit to caching six services' worth of
+ * log tails that go stale the moment anything writes to them. */
+export function useServiceLog() {
+  return useMutation({ mutationFn: (service: string) => getServiceLog(service) })
 }
 
 function useSettingsMutation<TInput>(mutationFn: (input: TInput) => Promise<unknown>) {

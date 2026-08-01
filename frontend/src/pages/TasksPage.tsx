@@ -22,6 +22,8 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { StatusBadge } from "@/components/tasks/StatusBadge"
 import { ActiveTasksPanel } from "@/components/tasks/ActiveTasksPanel"
+import { TaskOutcomeCell } from "@/components/tasks/TaskOutcomeCell"
+import { ClearHistoryButton } from "@/components/tasks/ClearHistoryButton"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { Card, CardContent } from "@/components/ui/card"
 import { useTasks } from "@/lib/queries"
@@ -65,6 +67,11 @@ export function TasksPage() {
         header: "Status",
         cell: (info) => <StatusBadge status={info.getValue()} />,
       }),
+      columnHelper.display({
+        id: "outcome",
+        header: "Outcome",
+        cell: (info) => <TaskOutcomeCell task={info.row.original} />,
+      }),
       columnHelper.accessor("created_at", {
         header: "Created",
         cell: (info) => new Date(info.getValue()).toLocaleString(),
@@ -87,10 +94,13 @@ export function TasksPage() {
         title="Tasks"
         description="Monitor every request, open its evidence trail, and quickly find failures or work still in progress."
         actions={
-          <div className="flex items-center gap-2 rounded-xl bg-card px-3 py-2 text-sm shadow-sm ring-1 ring-border">
-            <ListTree className="size-4 text-primary" />
-            <span className="font-semibold">{data?.pagination.total ?? 0}</span>
-            <span className="text-muted-foreground">total</span>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 rounded-xl bg-card px-3 py-2 text-sm shadow-sm ring-1 ring-border">
+              <ListTree className="size-4 text-primary" />
+              <span className="font-semibold">{data?.pagination.total ?? 0}</span>
+              <span className="text-muted-foreground">total</span>
+            </div>
+            <ClearHistoryButton />
           </div>
         }
       />
@@ -149,6 +159,7 @@ export function TasksPage() {
                 <span className="line-clamp-2 min-w-0 text-sm font-medium [overflow-wrap:anywhere]">{task.objective}</span>
                 <StatusBadge status={task.status} />
               </div>
+              <TaskOutcomeCell task={task} />
               <span className="text-xs text-muted-foreground">{new Date(task.created_at).toLocaleString()}</span>
             </button>
           ))}

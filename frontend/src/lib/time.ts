@@ -28,6 +28,17 @@ export function useCountdown(isoTimestamp: string): number {
   return remaining
 }
 
+/** How long a task ran/took - shared by the Task Receipt card and the
+ * Tasks list outcome column (docs/UI_UX_AUDIT.md Phase 9) rather than
+ * each computing their own copy of the same rounding rules. */
+export function formatDuration(seconds: number): string {
+  if (seconds < 1) return "under a second"
+  if (seconds < 60) return `${Math.round(seconds)}s`
+  const minutes = Math.floor(seconds / 60)
+  const rest = Math.round(seconds % 60)
+  return rest > 0 ? `${minutes}m ${rest}s` : `${minutes}m`
+}
+
 /** "2m ago" / "just now" - not live-ticking (no per-second re-render), the
  * task/summary polls this reads from already refresh every few seconds. */
 export function formatRelativeTime(isoTimestamp: string): string {

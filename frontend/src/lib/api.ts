@@ -417,6 +417,14 @@ export function listTasks(limit = 50, offset = 0) {
   return apiFetch(`/api/tasks?limit=${limit}&offset=${offset}`, TaskListResponseSchema)
 }
 
+const ClearTaskHistoryResponseSchema = z.object({ deleted_tasks: z.number().int(), include_active: z.boolean() })
+
+export function clearTaskHistory(includeActive: boolean) {
+  return apiFetch(`/api/tasks?include_active=${includeActive}`, ClearTaskHistoryResponseSchema, {
+    method: "DELETE",
+  })
+}
+
 // One tool_invocations row (storage/repositories.py's ToolInvocationRepository.
 // list_for_task) - request/result are the full serialized ToolCallRequest/
 // ToolCallResult, deliberately loose (z.record) rather than exhaustively
@@ -477,11 +485,26 @@ const EvidenceItemSchema = z.object({
   at: z.string().nullable(),
 })
 
+// build_task_trace's _trace_timeline() (admin.py): audit events and tool
+// invocations merged and time-sorted - the full "what happened, in order"
+// record, richer than operator_history (policy decisions, approvals,
+// classification are audit events with no operator_history entry of
+// their own).
+export const TimelineItemSchema = z.object({
+  at: z.string().nullable(),
+  kind: z.enum(["audit", "tool"]),
+  title: z.string().nullable(),
+  summary: z.string().nullable(),
+  actor: z.string().nullable(),
+  details: z.record(z.string(), z.unknown()).nullable(),
+})
+export type TimelineItem = z.infer<typeof TimelineItemSchema>
+
 const TaskTraceSchema = z.object({
   task: TaskRecordSchema,
   context: z.record(z.string(), z.unknown()),
   operator_history: z.array(OperatorHistoryEntrySchema),
-  timeline: z.array(z.record(z.string(), z.unknown())),
+  timeline: z.array(TimelineItemSchema),
   tool_invocations: z.array(ToolInvocationSchema),
   evidence: z.object({
     files: z.array(EvidenceItemSchema),
@@ -820,6 +843,31 @@ export type LLMProfileConfig = z.infer<typeof LLMProfileConfigSchema>
 
 export function getSettingsSummary() {
   return apiFetch("/api/summary?task_limit=1", SettingsSummarySchema)
+}
+
+const DoctorCheckSchema = z.object({
+  name: z.string(),
+  status: z.enum(["ok", "warn", "fail"]),
+  detail: z.string(),
+})
+export type DoctorCheck = z.infer<typeof DoctorCheckSchema>
+
+const DoctorResponseSchema = z.object({ checks: z.array(DoctorCheckSchema), ok: z.boolean() })
+
+/** Runs the same checks `ybm doctor` runs (docs/UI_UX_AUDIT.md Phase 9) -
+ * takes a couple of seconds, so this is operator-triggered, never polled. */
+export function runDoctor() {
+  return apiFetch("/api/doctor", DoctorResponseSchema)
+}
+
+const ServiceLogResponseSchema = z.object({
+  service: z.string(),
+  log_path: z.string().nullable(),
+  lines: z.array(z.string()),
+})
+
+export function getServiceLog(service: string, lines = 200) {
+  return apiFetch(`/api/logs/${encodeURIComponent(service)}?lines=${lines}`, ServiceLogResponseSchema)
 }
 
 // ---- Settings mutations -------------------------------------------------

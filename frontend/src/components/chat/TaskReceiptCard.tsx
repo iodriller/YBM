@@ -4,14 +4,7 @@ import type { TaskReceipt, TaskStatus } from "@/lib/api"
 import { useTaskReceipt } from "@/lib/queries"
 import { cn } from "@/lib/utils"
 import { StatusBadge } from "@/components/tasks/StatusBadge"
-
-function formatDuration(seconds: number): string {
-  if (seconds < 1) return "under a second"
-  if (seconds < 60) return `${Math.round(seconds)}s`
-  const minutes = Math.floor(seconds / 60)
-  const rest = Math.round(seconds % 60)
-  return rest > 0 ? `${minutes}m ${rest}s` : `${minutes}m`
-}
+import { formatDuration } from "@/lib/time"
 
 /** Plain-text export (docs/UI_UX_AUDIT.md Phase 2) - human-readable, not a
  * raw JSON dump, so it reads the same way the card does. Client-side only:

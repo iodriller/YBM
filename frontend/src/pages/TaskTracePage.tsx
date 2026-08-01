@@ -1,3 +1,4 @@
+import { useState } from "react"
 import { Link, useParams } from "react-router-dom"
 import { ArrowLeft } from "lucide-react"
 import { toast } from "sonner"
@@ -8,17 +9,22 @@ import { StatusBadge } from "@/components/tasks/StatusBadge"
 import { CostPanel } from "@/components/tasks/CostPanel"
 import { OperatorHistoryList } from "@/components/tasks/OperatorHistoryList"
 import { TraceGraph } from "@/components/tasks/TraceGraph"
+import { TraceTimeline } from "@/components/tasks/TraceTimeline"
 import { useTaskSignal, useTaskTrace } from "@/lib/queries"
 import { useAdvancedMode } from "@/lib/advanced-mode"
 import { ApiError, tokenUsageOf } from "@/lib/api"
 import { isTerminal } from "@/lib/chat"
 import { CANCELLABLE, PAUSABLE, RESUMABLE } from "@/lib/task-signals"
+import { cn } from "@/lib/utils"
+
+type TraceView = "steps" | "timeline" | "graph"
 
 export function TaskTracePage() {
   const { taskId } = useParams<{ taskId: string }>()
   const { data: trace, isPending, isError, error } = useTaskTrace(taskId)
   const { advanced } = useAdvancedMode()
   const signal = useTaskSignal()
+  const [view, setView] = useState<TraceView>("steps")
 
   if (isPending) {
     return (
@@ -100,11 +106,15 @@ export function TaskTracePage() {
       {usage && <CostPanel usage={usage} />}
 
       <div>
-        <h2 className="mb-2 text-sm font-medium">
-          {advanced ? "Trace graph" : "Steps"}
-        </h2>
-        {advanced ? (
+        <div className="mb-2 flex items-center gap-1">
+          <ViewTab label="Steps" active={view === "steps"} onClick={() => setView("steps")} />
+          <ViewTab label="Timeline" active={view === "timeline"} onClick={() => setView("timeline")} />
+          {advanced && <ViewTab label="Graph" active={view === "graph"} onClick={() => setView("graph")} />}
+        </div>
+        {view === "graph" && advanced ? (
           <TraceGraph invocations={trace.tool_invocations} />
+        ) : view === "timeline" ? (
+          <TraceTimeline items={trace.timeline} />
         ) : (
           <OperatorHistoryList entries={trace.operator_history} />
         )}
@@ -156,6 +166,21 @@ function EvidenceSection({
         ))}
       </div>
     </div>
+  )
+}
+
+function ViewTab({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "rounded-lg px-2.5 py-1 text-xs font-medium transition-colors",
+        active ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted",
+      )}
+    >
+      {label}
+    </button>
   )
 }
 
