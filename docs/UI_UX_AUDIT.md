@@ -133,7 +133,7 @@ numbers below are the actual build order.
   new one, matching Telegram's existing behavior (shared via clarification.py).
 - Acceptance: ruff, full pytest suite, tsc, and vite build all green with no known-red tests.
 
-### Phase 1 — Complete Chat
+### Phase 1 — Complete Chat (**shipped**)
 
 - Sanitized Markdown rendering, a Stop button wired to the existing cancel signal, inline
   clarifications (reusing Phase 0's resume path), artifact cards, inline approvals
@@ -143,7 +143,7 @@ numbers below are the actual build order.
   clarifying question without leaving the conversation, and approve or deny a pending action
   without opening a separate page.
 
-### Phase 2 — Task Receipts
+### Phase 2 — Task Receipts (**shipped**)
 
 - A human-readable "Done" card in Chat and a full receipt view: result summary, changes made,
   services contacted, whether data left the machine (needs per-task egress tracking), approvals,
@@ -151,7 +151,7 @@ numbers below are the actual build order.
 - Acceptance: a completed task's outcome is understandable without opening the technical trace;
   every receipt states plainly whether anything left the machine.
 
-### Phase 3 — Connections
+### Phase 3 — Connections (**blocked on the repository owner**)
 
 - A Connections page; GitHub first (OAuth app already has capability plumbing via
   `github.read`/`github.push`), then Google (Calendar, then Gmail/Drive sharing one consent flow).
@@ -162,21 +162,32 @@ numbers below are the actual build order.
 - Acceptance: a connection can be added, scoped, tested, and revoked entirely from the console; no
   token is ever displayed after entry.
 
-### Phase 4 — Structured memory
+### Phase 4 — Structured memory (**shipped, reduced scope**)
 
-- A real schema (provenance, confidence, category, contradiction handling), remember/edit/forget
-  controls, a Memory page, and full-text/entity retrieval - replacing the current rolling summary
-  + keyword search with something inspectable and correctable.
-- Acceptance: a user can see why the agent believes something, correct it, and have the
-  correction stick.
+- Shipped: a real schema (provenance via `MemorySource`, confidence, category), a `memory_facts`
+  table, remember/edit/forget controls on the admin API, a Memory page, keyword search, and a
+  `memory.manage` tool so the agent can save a fact mid-task (always stamped `task_derived` -
+  the model cannot claim a different source).
+- Not built: contradiction handling and full-text/entity retrieval. `supersedes_id` exists on the
+  schema as a reserved field but nothing sets it yet - two facts that conflict just both exist;
+  there is no auto-detection or merge step. Search is a plain `LIKE` query, not an index.
+- Acceptance (as shipped): a user can see why the agent believes something (category + source +
+  confidence), correct it, and have the correction stick. The stronger "contradiction handling"
+  half of the original acceptance criterion is not met.
 
-### Phase 5 — Skills lifecycle
+### Phase 5 — Skills lifecycle (**shipped, reduced scope**)
 
-- A skill manifest format, a Skills page (catalog, permission labels, install/uninstall, version
-  pinning, updates, integrity verification) - `skills.use` today is list/read over a directory with
-  no lifecycle concept at all.
-- Acceptance: a skill can be installed, its permissions inspected before installing, and removed,
-  entirely from the console.
+- Shipped: an extended manifest (optional `version` and `tools` frontmatter fields), a Skills page
+  (catalog, install, uninstall), and inferred permission labels (which registered tools a skill's
+  body references, scanned against the real tool registry when not explicitly declared).
+- Not built as originally scoped: there is no skill registry or distribution channel for this
+  product, so "version pinning, updates, integrity verification" would mean inventing trust
+  infrastructure with nothing real behind it. What shipped instead is honest about that: a
+  `version` string an author can bump, and a content hash shown per skill so a person can notice
+  "this changed since I last looked" - not a signature or a source to pin against.
+- Acceptance (as shipped): a skill can be installed, its permission labels inspected before
+  installing (or immediately after, live from the same install call), and removed, entirely from
+  the console.
 
 ### Phase 6 — Packaging
 
