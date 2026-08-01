@@ -56,8 +56,14 @@ Filesystem search/organize inside allowed roots, terminal-run coding via Codex/C
 Code/Copilot CLI or a bounded local/Docker Python interpreter, Chrome browser automation, VS Code
 bridge, desktop screenshot/control (Windows), scheduled recurring tasks, MCP client/server, PDF
 and document generation, per-task LLM cost tracking, parallel tool calls and sub-agent
-delegation, user-droppable skills, a persona/preferences layer, and local keyword search over
-your own documents — all through Telegram or the local web chat, all policy-gated.
+delegation, a persona/preferences layer, and local keyword search over your own documents — all
+through Telegram or the local web chat, all policy-gated.
+
+Structured memory (facts with a category, confidence, and provenance — did the agent save it
+itself mid-task, or did you type it into the console — remember/edit/forget from a dedicated
+Memory page) and a skill catalog (install/uninstall from the console, with inferred permission
+labels showing which tools a skill's instructions reference) round out the admin console
+alongside Access, Tasks, and Chat.
 
 See [docs/CAPABILITIES.md](docs/CAPABILITIES.md) for the full, detailed list and
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the pieces fit together.
@@ -76,7 +82,10 @@ ybm stop              # stop everything
 
 Windows also has the original, equally-supported `scripts\ybm.ps1` interface (`setup`, `doctor`,
 `start`, `stop`, `status`, `logs`, `test`, `db`, `config`, `clean`, `trace`, `scenario`,
-`package-extension`, and more — run `.\scripts\ybm.ps1 help` for the full list).
+`package-extension`, `tray`, `autostart`, `backup`, `check-updates`, and more — run
+`.\scripts\ybm.ps1 help` for the full list). `ybm autostart enable` puts a system tray icon
+(Open Admin Console / Start / Stop / Restart / Status) in your Startup folder so it launches at
+login — no terminal needed after that one command.
 
 The admin console is a React app (`frontend/`) served by the backend at `/admin` — see
 [docs/UI_REWRITE_PLAN.md](docs/UI_REWRITE_PLAN.md) for its design and phase-by-phase build record.
