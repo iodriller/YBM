@@ -1,8 +1,9 @@
 import { Link } from "react-router-dom"
-import { CheckCircle2, Download, ExternalLink, Globe, HardDrive, LoaderCircle } from "lucide-react"
-import type { TaskReceipt } from "@/lib/api"
+import { Download, ExternalLink, Globe, HardDrive, LoaderCircle } from "lucide-react"
+import type { TaskReceipt, TaskStatus } from "@/lib/api"
 import { useTaskReceipt } from "@/lib/queries"
 import { cn } from "@/lib/utils"
+import { StatusBadge } from "@/components/tasks/StatusBadge"
 
 function formatDuration(seconds: number): string {
   if (seconds < 1) return "under a second"
@@ -29,10 +30,15 @@ function formatReceiptAsText(receipt: TaskReceipt): string {
   if (receipt.result_summary) {
     lines.push("Result:", receipt.result_summary, "")
   }
-  const changed = [...receipt.changes.files, ...receipt.changes.commands, ...receipt.changes.urls]
-  if (changed.length > 0) {
-    lines.push("Changed:")
-    for (const item of changed) lines.push(`- ${item.value}`)
+  const touched = [...receipt.changes.files, ...receipt.changes.commands, ...receipt.changes.urls]
+  if (touched.length > 0) {
+    // Not "Changed": this list merges tool inputs and outputs, so it mixes
+    // files merely read or searched with ones actually written, and
+    // commands merely requested with ones actually run. Real per-item
+    // classification is planned (docs/UI_UX_AUDIT.md Phase 12); until then
+    // this label doesn't claim more precision than the data has.
+    lines.push("Touched during this task:")
+    for (const item of touched) lines.push(`- ${item.value}`)
     lines.push("")
   }
   if (receipt.tools_used.length > 0) {
@@ -43,7 +49,9 @@ function formatReceiptAsText(receipt: TaskReceipt): string {
   lines.push(
     receipt.data_left_machine
       ? `Data left this computer: yes - ${receipt.services_contacted.map((s) => s.host).join(", ") || "cloud model"}`
-      : "Data left this computer: no",
+      // Not "no": only http.request calls record_egress today, so a false
+      // here means no transfer was RECORDED, not that none happened.
+      : "No external transfer was recorded",
   )
   if (receipt.approvals.length > 0) {
     lines.push("", "Approvals:")
@@ -69,13 +77,21 @@ function downloadReceipt(receipt: TaskReceipt) {
   URL.revokeObjectURL(url)
 }
 
+const OUTCOME_STYLE: Partial<Record<TaskStatus, { border: string; bg: string; text: string }>> = {
+  completed: { border: "border-success/25", bg: "bg-success/5", text: "text-success" },
+  failed: { border: "border-destructive/25", bg: "bg-destructive/5", text: "text-destructive" },
+  blocked: { border: "border-destructive/25", bg: "bg-destructive/5", text: "text-destructive" },
+  cancelled: { border: "border-border", bg: "bg-muted/40", text: "text-muted-foreground" },
+}
+const DEFAULT_OUTCOME_STYLE = { border: "border-success/25", bg: "bg-success/5", text: "text-success" }
+
 /**
- * The "Done" result format (docs/UI_UX_AUDIT.md Phase 2) - what a
- * completed task actually did, in plain language, instead of asking the
- * user to open the technical trace to find out. Deliberately only shown
- * for status "completed": failed/blocked tasks already have their error
- * text in the bubble above this, and a receipt about a failure it never
- * finished would be more confusing than useful.
+ * The "Done" result format (docs/UI_UX_AUDIT.md Phase 2), extended in
+ * Phase 8 to every terminal state, not only "completed" - a task that
+ * modified files, contacted a service, or spent an approval before
+ * failing is exactly when the user most needs to see what happened. The
+ * header now reflects the real outcome (StatusBadge's own colors/icons)
+ * instead of always showing a green checkmark regardless of status.
  */
 export function TaskReceiptCard({ taskId }: { taskId: string }) {
   const { data: receipt, isPending } = useTaskReceipt(taskId)
@@ -92,17 +108,28 @@ export function TaskReceiptCard({ taskId }: { taskId: string }) {
   const changedItems = [...receipt.changes.files, ...receipt.changes.commands]
   const usedTools = receipt.tools_used.map((t) => t.tool_name)
   const contactedHosts = [...new Set(receipt.services_contacted.map((s) => s.host).filter(Boolean))] as string[]
+  const style = OUTCOME_STYLE[receipt.status] ?? DEFAULT_OUTCOME_STYLE
+  const partial = receipt.status !== "completed" && (changedItems.length > 0 || receipt.tools_used.length > 0)
 
   return (
-    <div className="mt-2.5 flex flex-col gap-2 rounded-lg border border-success/25 bg-success/5 p-3 text-xs">
-      <div className="flex items-center gap-1.5 font-medium text-success">
-        <CheckCircle2 className="size-3.5" />
+    <div className={cn("mt-2.5 flex flex-col gap-2 rounded-lg border p-3 text-xs", style.border, style.bg)}>
+      <div className={cn("flex items-center gap-1.5 font-medium", style.text)}>
+        <StatusBadge status={receipt.status} />
         Receipt
       </div>
+      {partial && (
+        <p className="text-muted-foreground">
+          Work happened before this task {receipt.status} - shown below, exactly as recorded.
+        </p>
+      )}
 
       {changedItems.length > 0 && (
         <div>
-          <p className="font-medium text-muted-foreground">Changed</p>
+          {/* Not "Changed" - the backend merges tool inputs and outputs, so
+              this genuinely mixes reads/searches with writes and
+              merely-requested commands with executed ones (real
+              classification: docs/UI_UX_AUDIT.md Phase 12). */}
+          <p className="font-medium text-muted-foreground">Touched during this task</p>
           <ul className="mt-0.5 list-disc space-y-0.5 pl-4">
             {changedItems.slice(0, 8).map((item) => (
               <li key={item.value} className="[overflow-wrap:anywhere]">
@@ -129,10 +156,13 @@ export function TaskReceiptCard({ taskId }: { taskId: string }) {
         {receipt.data_left_machine ? <Globe className="size-3.5 shrink-0" /> : <HardDrive className="size-3.5 shrink-0" />}
         {receipt.data_left_machine
           ? `Contacted: ${contactedHosts.length > 0 ? contactedHosts.join(", ") : "a cloud model"}`
-          : "Nothing left this computer"}
+          : // Not an absolute "nothing left" claim: only http.request calls
+            // record_egress today, so this reflects what was recorded, not
+            // a guarantee that nothing else contacted anywhere.
+            "No external transfer was recorded"}
       </div>
 
-      <div className="flex items-center justify-between border-t border-success/15 pt-2 text-[11px] text-muted-foreground">
+      <div className="flex items-center justify-between border-t border-current/15 pt-2 text-[11px] text-muted-foreground">
         <span>Time: {formatDuration(receipt.duration_seconds)}</span>
         <div className="flex items-center gap-3">
           <button

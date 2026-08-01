@@ -272,7 +272,10 @@ function ChatExchange({ task }: { task: TaskRecord }) {
         </div>
       ))}
       <Bubble role="assistant" text={chatAnswerText(task)} pending={!settled} status={task.status}>
-        {task.status === "completed" && <TaskReceiptCard taskId={task.id} />}
+        {/* Every terminal state gets a receipt, not just completed - a task
+            that modified files then failed is exactly when the user most
+            needs to see what happened (docs/UI_UX_AUDIT.md Phase 8). */}
+        {settled && <TaskReceiptCard taskId={task.id} />}
         {!settled && !clarifying && (
           <Button
             type="button"

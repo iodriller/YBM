@@ -141,6 +141,22 @@ export const ArtifactSchema = z.object({
 })
 export type Artifact = z.infer<typeof ArtifactSchema>
 
+/**
+ * A plain <a href>/window.open navigation can't attach the
+ * X-Agent-Control-Admin-Token header apiFetch normally sends - the admin
+ * token has to ride in the URL instead, which require_admin's own
+ * query_params.get("token") fallback already accepts (docs/UI_UX_AUDIT.md
+ * Phase 8: artifact download).
+ */
+export function artifactDownloadUrl(artifactId: string, options: { inline?: boolean } = {}): string {
+  const params = new URLSearchParams()
+  const token = getAdminToken()
+  if (token) params.set("token", token)
+  if (options.inline) params.set("inline", "true")
+  const query = params.toString()
+  return `/admin/api/artifacts/${encodeURIComponent(artifactId)}/download${query ? `?${query}` : ""}`
+}
+
 export const TaskRecordSchema = z.object({
   id: z.string(),
   objective: z.string(),
@@ -507,7 +523,7 @@ const ReceiptApprovalSchema = z.object({
 export const TaskReceiptSchema = z.object({
   task_id: z.string(),
   objective: z.string(),
-  status: z.string(),
+  status: TaskStatusSchema,
   result_summary: z.string().nullable(),
   changes: z.object({
     files: z.array(EvidenceItemSchema),
