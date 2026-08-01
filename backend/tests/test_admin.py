@@ -20,6 +20,7 @@ from agent_control.schemas import (
     AuditEventType,
     Capability,
     CapabilityAccessMode,
+    MemoryFact,
     RiskLevel,
     ScheduleRecord,
     TaskStatus,
@@ -698,6 +699,53 @@ def test_admin_task_trace_evidence_aggregates_files_urls_and_commands(monkeypatc
     assert [item["value"] for item in evidence["urls"]] == ["https://example.com"]
     assert evidence["commands"] == []
     assert evidence["files"][0]["tool_name"] == "filesystem.manage"
+
+
+def test_admin_memory_create_list_update_and_forget(monkeypatch, tmp_path) -> None:
+    """docs/UI_UX_AUDIT.md Phase 4: remember/edit/forget over a real,
+    inspectable table - not a black box deciding on its own what to keep."""
+    client, repositories = _chat_client(monkeypatch, tmp_path)
+
+    created = client.post("/admin/api/memory", json={"category": "preference", "content": "Prefers concise answers"})
+    assert created.status_code == 200
+    fact = created.json()["fact"]
+    assert fact["source"] == "operator_admin"
+
+    listed = client.get("/admin/api/memory").json()["facts"]
+    assert len(listed) == 1
+    assert listed[0]["id"] == fact["id"]
+
+    updated = client.patch(f"/admin/api/memory/{fact['id']}", json={"category": "preference", "content": "Prefers very concise answers"})
+    assert updated.status_code == 200
+    assert updated.json()["fact"]["content"] == "Prefers very concise answers"
+
+    deleted = client.delete(f"/admin/api/memory/{fact['id']}")
+    assert deleted.status_code == 200
+    assert deleted.json() == {"fact_id": fact["id"], "deleted": True}
+    assert client.get("/admin/api/memory").json()["facts"] == []
+
+    events = repositories.audit.list_recent(limit=20)
+    actions = {e.payload.get("action") for e in events if e.payload.get("section") == "memory"}
+    assert actions == {"create", "edit", "forget"}
+
+
+def test_admin_memory_update_and_delete_404_for_an_unknown_fact(monkeypatch, tmp_path) -> None:
+    client, _repositories = _chat_client(monkeypatch, tmp_path)
+
+    assert client.patch("/admin/api/memory/mem_missing", json={"category": "x", "content": "y"}).status_code == 404
+    assert client.delete("/admin/api/memory/mem_missing").status_code == 404
+
+
+def test_admin_memory_search_filters_by_category_and_query(monkeypatch, tmp_path) -> None:
+    client, repositories = _chat_client(monkeypatch, tmp_path)
+    repositories.memory_facts.create(MemoryFact(category="preference", content="Likes dark mode"))
+    repositories.memory_facts.create(MemoryFact(category="project", content="Works in Python"))
+
+    by_category = client.get("/admin/api/memory?category=project").json()["facts"]
+    assert [f["content"] for f in by_category] == ["Works in Python"]
+
+    by_query = client.get("/admin/api/memory?q=dark").json()["facts"]
+    assert [f["content"] for f in by_query] == ["Likes dark mode"]
 
 
 def test_admin_task_receipt_404s_for_an_unknown_task(monkeypatch, tmp_path) -> None:

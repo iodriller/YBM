@@ -643,6 +643,32 @@ class Artifact(StrictBaseModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class MemorySource(StrEnum):
+    USER_STATED = "user_stated"
+    TASK_DERIVED = "task_derived"
+    OPERATOR_ADMIN = "operator_admin"
+
+
+class MemoryFact(StrictBaseModel):
+    """One durable, structured fact (docs/UI_UX_AUDIT.md Phase 4) - the
+    replacement for treating the rolling conversation summary as the only
+    memory. Deliberately flat and inspectable: a person can read
+    `category: content` and understand exactly what the agent believes,
+    where it came from, and how sure it is - a free-text summary blob
+    can't offer any of that.
+    """
+
+    id: str = Field(default_factory=lambda: new_id("mem"))
+    category: str = Field(min_length=1, max_length=60)
+    content: str = Field(min_length=1, max_length=2000)
+    source: MemorySource = MemorySource.USER_STATED
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    task_id: str | None = None
+    supersedes_id: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class AuditEvent(StrictBaseModel):
     id: str = Field(default_factory=lambda: new_id("audit"))
     type: AuditEventType

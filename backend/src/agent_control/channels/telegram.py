@@ -552,6 +552,7 @@ class TelegramIntakeService:
                     self.repositories.conversation_memory.get(conversation_id),
                     recent_turns=3,
                     max_chars=900,
+                    remembered_facts=self.repositories.memory_facts.list_all(),
                 )
             )
             try:
@@ -633,6 +634,7 @@ class TelegramIntakeService:
             self.repositories.conversation_memory.get(conversation_id),
             recent_turns=5,
             max_chars=1600,
+            remembered_facts=self.repositories.memory_facts.list_all(),
         )
         task = self.repositories.tasks.create(
             objective,

@@ -74,16 +74,35 @@ class ConversationMemoryService:
         return _clean_summary(output, self.max_summary_chars)
 
 
-def memory_context(memory_record: dict[str, Any] | None, *, recent_turns: int = 4, max_chars: int = 1800) -> str:
+def memory_context(
+    memory_record: dict[str, Any] | None,
+    *,
+    recent_turns: int = 4,
+    max_chars: int = 1800,
+    remembered_facts: list[Any] | None = None,
+) -> str:
+    """``remembered_facts`` (docs/UI_UX_AUDIT.md Phase 4): structured
+    MemoryFact rows, distinct from the rolling summary below - a fact the
+    user or a task explicitly recorded, not a model's compressed guess at
+    what mattered in recent turns. Rendered first and not subject to
+    max_chars trimming, since a person deliberately added these and
+    silently dropping one because the summary ran long would defeat the
+    point of "remember".
+    """
+    facts_block = ""
+    if remembered_facts:
+        lines = "\n".join(f"- [{f.category}] {f.content}" for f in remembered_facts)
+        facts_block = f"Remembered facts:\n{lines}\n"
+
     if not memory_record:
-        return DEFAULT_SUMMARY
+        return facts_block + DEFAULT_SUMMARY if facts_block else DEFAULT_SUMMARY
     summary = str(memory_record.get("summary") or DEFAULT_SUMMARY)
     state = dict(memory_record.get("facts") or {})
     turns = _recent_turns(state)[-recent_turns:]
     if not turns:
-        return _clean_summary(summary, max_chars)
+        return facts_block + _clean_summary(summary, max_chars)
     recent = "\n".join(f"- {turn['role']}: {turn['text']}" for turn in turns)
-    return _clean_summary(f"{summary}\nRecent turns:\n{recent}", max_chars)
+    return facts_block + _clean_summary(f"{summary}\nRecent turns:\n{recent}", max_chars)
 
 
 def _summary_system_prompt(max_summary_chars: int) -> str:

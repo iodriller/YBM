@@ -21,6 +21,7 @@ from agent_control.orchestration.signals import apply_task_signal
 from agent_control.policy import apply_access_modes_to_config, summarize_access_modes
 from agent_control.prompts import render_prompt
 from agent_control.runtime_status import service_summary
+from agent_control.channels.memory import memory_context
 from agent_control.clarification import find_clarifying_task, resume_clarifying_task
 from agent_control.schemas import (
     ApprovalGrant,
@@ -30,6 +31,8 @@ from agent_control.schemas import (
     Capability,
     CapabilityAccessMode,
     ChannelType,
+    MemoryFact,
+    MemorySource,
     StrictBaseModel,
     TaskRecord,
     TaskStatus,
@@ -126,6 +129,16 @@ class AdminSecretSetRequest(StrictBaseModel):
     service: str = Field(min_length=1, max_length=80)
     key: str = Field(min_length=1, max_length=80)
     value: str = Field(min_length=1, max_length=8000)
+
+
+class AdminMemoryFactCreateRequest(StrictBaseModel):
+    category: str = Field(min_length=1, max_length=60)
+    content: str = Field(min_length=1, max_length=2000)
+
+
+class AdminMemoryFactUpdateRequest(StrictBaseModel):
+    category: str = Field(min_length=1, max_length=60)
+    content: str = Field(min_length=1, max_length=2000)
 
 
 class AdminChatMessageRequest(StrictBaseModel):
@@ -659,6 +672,57 @@ def create_admin_router(
         deleted = repositories.audit.clear_all()
         return {"deleted_audit_events": deleted}
 
+    @router.get("/api/memory")
+    def admin_list_memory_facts(request: Request, q: str | None = None, category: str | None = None) -> dict[str, Any]:
+        loaded = require_admin(request)
+        repositories = repositories_loader()
+        facts = repositories.memory_facts.list_all(category=category, query=q)
+        return {"facts": [_redact_admin_output(f.model_dump(mode="json"), loaded) for f in facts]}
+
+    @router.post("/api/memory")
+    def admin_create_memory_fact(request: Request, payload: AdminMemoryFactCreateRequest) -> dict[str, Any]:
+        """"Remember" (docs/UI_UX_AUDIT.md Phase 4): an operator-entered fact,
+        distinct from anything a task inferred - MemorySource.OPERATOR_ADMIN
+        so a Memory page reader can always tell "I told it this" apart from
+        "it figured this out itself".
+        """
+        loaded = require_admin(request)
+        repositories = repositories_loader()
+        fact = repositories.memory_facts.create(
+            MemoryFact(category=payload.category, content=payload.content, source=MemorySource.OPERATOR_ADMIN)
+        )
+        AuditLogger(repositories.audit, loaded.logging.redact_patterns).append(
+            AuditEventType.CONFIG_UPDATED, actor="admin",
+            payload={"section": "memory", "action": "create", "fact_id": fact.id, "category": fact.category},
+        )
+        return {"fact": fact.model_dump(mode="json")}
+
+    @router.patch("/api/memory/{fact_id}")
+    def admin_update_memory_fact(request: Request, fact_id: str, payload: AdminMemoryFactUpdateRequest) -> dict[str, Any]:
+        loaded = require_admin(request)
+        repositories = repositories_loader()
+        if repositories.memory_facts.get(fact_id) is None:
+            raise HTTPException(status_code=404, detail="memory fact not found")
+        updated = repositories.memory_facts.update_content(fact_id, category=payload.category, content=payload.content)
+        AuditLogger(repositories.audit, loaded.logging.redact_patterns).append(
+            AuditEventType.CONFIG_UPDATED, actor="admin",
+            payload={"section": "memory", "action": "edit", "fact_id": fact_id},
+        )
+        return {"fact": updated.model_dump(mode="json") if updated else None}
+
+    @router.delete("/api/memory/{fact_id}")
+    def admin_delete_memory_fact(request: Request, fact_id: str) -> dict[str, Any]:
+        loaded = require_admin(request)
+        repositories = repositories_loader()
+        deleted = repositories.memory_facts.delete(fact_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="memory fact not found")
+        AuditLogger(repositories.audit, loaded.logging.redact_patterns).append(
+            AuditEventType.CONFIG_UPDATED, actor="admin",
+            payload={"section": "memory", "action": "forget", "fact_id": fact_id},
+        )
+        return {"fact_id": fact_id, "deleted": True}
+
     @router.get("/api/config/effective")
     def admin_effective_config(request: Request) -> dict[str, Any]:
         loaded = require_admin(request)
@@ -1010,6 +1074,14 @@ def create_admin_router(
         if attachment_note:
             objective = f"{objective}\n\n[Attached files: {attachment_note}]"
 
+        # Web chat never set this before - Telegram's task-creation path
+        # always has (channels/telegram.py), so this was the one channel
+        # where a remembered fact (or the rolling summary) never reached
+        # the operator at all.
+        memory_ctx = memory_context(
+            repositories.conversation_memory.get(conversation_id),
+            remembered_facts=repositories.memory_facts.list_all(),
+        )
         task = repositories.tasks.create(
             objective,
             conversation_id=conversation_id,
@@ -1017,6 +1089,7 @@ def create_admin_router(
                 "source_chat_id": WEB_CHAT_ID,
                 "source_channel": ChannelType.WEB.value,
                 "attachment_ids": [a.id for a in attached],
+                "memory_context": memory_ctx,
             },
         )
         for artifact in attached:

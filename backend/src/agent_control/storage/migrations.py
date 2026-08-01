@@ -137,6 +137,20 @@ SCHEMA_STATEMENTS = [
         FOREIGN KEY(task_id) REFERENCES tasks(id)
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS memory_facts (
+        id TEXT PRIMARY KEY,
+        category TEXT NOT NULL,
+        content TEXT NOT NULL,
+        source TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        task_id TEXT,
+        supersedes_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(task_id) REFERENCES tasks(id)
+    )
+    """,
 ]
 
 

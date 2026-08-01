@@ -17,6 +17,7 @@ from agent_control.schemas import (
     Capability,
     ChannelType,
     InboundMessage,
+    MemoryFact,
     ScheduleRecord,
     ScheduleStatus,
     TaskRecord,
@@ -801,6 +802,79 @@ class ArtifactRepository:
         )
 
 
+class MemoryFactRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def create(self, fact: MemoryFact) -> MemoryFact:
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO memory_facts (
+                    id, category, content, source, confidence, task_id,
+                    supersedes_id, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    fact.id, fact.category, fact.content, fact.source.value, fact.confidence,
+                    fact.task_id, fact.supersedes_id, _dt(fact.created_at), _dt(fact.updated_at),
+                ),
+            )
+        return fact
+
+    def get(self, fact_id: str) -> MemoryFact | None:
+        with self.database.connect() as connection:
+            row = connection.execute("SELECT * FROM memory_facts WHERE id = ?", (fact_id,)).fetchone()
+        return self._row_to_fact(row) if row is not None else None
+
+    def list_all(self, *, category: str | None = None, query: str | None = None) -> list[MemoryFact]:
+        sql = "SELECT * FROM memory_facts"
+        clauses: list[str] = []
+        params: list[object] = []
+        if category:
+            clauses.append("category = ?")
+            params.append(category)
+        if query:
+            clauses.append("(content LIKE ? OR category LIKE ?)")
+            like = f"%{query}%"
+            params.extend([like, like])
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY updated_at DESC"
+        with self.database.connect() as connection:
+            rows = connection.execute(sql, tuple(params)).fetchall()
+        return [self._row_to_fact(row) for row in rows]
+
+    def update_content(self, fact_id: str, *, category: str, content: str) -> MemoryFact | None:
+        now = _dt(utc_now())
+        with self.database.connect() as connection:
+            connection.execute(
+                "UPDATE memory_facts SET category = ?, content = ?, updated_at = ? WHERE id = ?",
+                (category, content, now, fact_id),
+            )
+        return self.get(fact_id)
+
+    def delete(self, fact_id: str) -> bool:
+        with self.database.connect() as connection:
+            cursor = connection.execute("DELETE FROM memory_facts WHERE id = ?", (fact_id,))
+        return cursor.rowcount > 0
+
+    @staticmethod
+    def _row_to_fact(row: sqlite3.Row) -> MemoryFact:
+        return MemoryFact(
+            id=row["id"],
+            category=row["category"],
+            content=row["content"],
+            source=row["source"],
+            confidence=row["confidence"],
+            task_id=row["task_id"],
+            supersedes_id=row["supersedes_id"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+
 class ScheduleRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
@@ -1027,6 +1101,7 @@ class Repositories:
     approval_grants: ApprovalGrantRepository
     tool_invocations: ToolInvocationRepository
     artifacts: ArtifactRepository
+    memory_facts: MemoryFactRepository
     schedules: ScheduleRepository
     audit: AuditRepository
 
@@ -1042,6 +1117,7 @@ class Repositories:
             approval_grants=ApprovalGrantRepository(database),
             tool_invocations=ToolInvocationRepository(database),
             artifacts=ArtifactRepository(database),
+            memory_facts=MemoryFactRepository(database),
             schedules=ScheduleRepository(database),
             audit=AuditRepository(database),
         )
