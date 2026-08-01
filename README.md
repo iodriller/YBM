@@ -48,6 +48,10 @@ Telegram (optional — the built-in web chat needs no setup), writes your config
 environment, and starts the stack. A couple of minutes on a machine with nothing installed but
 git and Python 3.12+.
 
+That's the only time a terminal command is needed. After that, double-click **`YBM.bat`** in
+the repo folder — installs anything new, checks for an update, and opens the console. Nothing to
+remember, and running it again when everything's already current just starts the console.
+
 Already have it running? Talk to it at `http://127.0.0.1:8765/admin`.
 
 ## What it can do
@@ -80,8 +84,8 @@ ybm logs worker -f    # follow one service's log
 ybm stop              # stop everything
 ```
 
-Windows also has the original, equally-supported `scripts\ybm.ps1` interface (`setup`, `doctor`,
-`start`, `stop`, `status`, `logs`, `test`, `db`, `config`, `clean`, `trace`, `scenario`,
+Windows also has the original, equally-supported `scripts\ybm.ps1` interface (`run`, `setup`,
+`doctor`, `start`, `stop`, `status`, `logs`, `test`, `db`, `config`, `clean`, `trace`, `scenario`,
 `package-extension`, `tray`, `autostart`, `backup`, `check-updates`, and more — run
 `.\scripts\ybm.ps1 help` for the full list). `ybm autostart enable` puts a system tray icon
 (Open Admin Console / Start / Stop / Restart / Status) in your Startup folder so it launches at

@@ -1,15 +1,19 @@
 # One-command bootstrap for YBM Control on Windows:
 #   iwr https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.ps1 -UseBasicParsing | iex
 #
-# Clones the repo (if not already inside it), delegates venv/dependency
-# setup (config.yaml, admin/vault tokens, and the React admin console
-# build) to the existing, Windows-tested `scripts\ybm.ps1 setup`, then
-# starts the stack and opens the admin console in a browser. The LLM/
-# Telegram choice happens in that browser (the first-run wizard), not in
-# this terminal - see docs/LOCAL_SETUP.md for what `setup` configures and
+# Clones the repo (if not already inside it), then delegates everything
+# else to `scripts\ybm.ps1 run` (docs/UI_UX_AUDIT.md Phase 10) - venv/
+# dependency setup, config.yaml, admin/vault tokens, the update check,
+# starting the stack, and opening the admin console. The LLM/Telegram
+# choice happens in that browser (the first-run wizard), not in this
+# terminal - see docs/LOCAL_SETUP.md for what `setup` configures and
 # CONTRIBUTING.md for the development (not just install) path. The
 # interactive `ybm onboard` CLI wizard still exists for headless/SSH-only
 # installs with no browser to open.
+#
+# This script only needs to run once, to get the code onto the machine -
+# every launch after that is YBM.bat (double-click, no terminal) or
+# `ybm run`, both idempotent: nothing to install/update just starts it.
 
 $ErrorActionPreference = "Stop"
 
@@ -55,16 +59,11 @@ if ($inRepo) {
 }
 
 Set-Location $RepoDir
-Write-Step "Setting up backend\.venv, config, and the admin console"
-& "$RepoDir\scripts\ybm.ps1" setup
+Write-Step "Installing and starting YBM Control"
+& "$RepoDir\scripts\ybm.ps1" run
 if ($LASTEXITCODE -ne 0) {
-  Fail "ybm.ps1 setup failed (exit $LASTEXITCODE)."
-}
-
-Write-Step "Starting YBM Control"
-& "$RepoDir\scripts\ybm.ps1" start -Open
-if ($LASTEXITCODE -ne 0) {
-  Fail "ybm.ps1 start failed (exit $LASTEXITCODE). Run '.\scripts\ybm.ps1 doctor' to diagnose."
+  Fail "ybm.ps1 run failed (exit $LASTEXITCODE). Run '.\scripts\ybm.ps1 doctor' to diagnose."
 }
 Write-Host ""
 Write-Host "Pick a model and (optionally) Telegram in the admin console that just opened." -ForegroundColor Cyan
+Write-Host "Next time, just double-click YBM.bat in $RepoDir - no terminal needed." -ForegroundColor Cyan

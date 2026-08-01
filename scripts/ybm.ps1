@@ -4,6 +4,7 @@
   Replaces the 15+ separate scripts that used to live here (see docs/HISTORY.md P1).
 
 .EXAMPLE
+  .\scripts\ybm.ps1 run
   .\scripts\ybm.ps1 setup
   .\scripts\ybm.ps1 doctor
   .\scripts\ybm.ps1 start -NoTelegram
@@ -15,7 +16,7 @@
 #>
 param(
   [Parameter(Position = 0)]
-  [ValidateSet("setup", "doctor", "start", "stop", "restart", "status", "logs", "test", "e2e", "e2e-login", "send", "trace", "scenario", "db", "config", "clean", "package-extension", "tray", "autostart", "backup", "check-updates", "help")]
+  [ValidateSet("run", "setup", "doctor", "start", "stop", "restart", "status", "logs", "test", "e2e", "e2e-login", "send", "trace", "scenario", "db", "config", "clean", "package-extension", "tray", "autostart", "backup", "check-updates", "help")]
   [string]$Command = "help",
 
   [Parameter(Position = 1)]
@@ -33,6 +34,8 @@ function Show-YbmHelp {
   @"
 YBM - local agentic control stack
 
+  ybm run                      the one command: install/update what's missing, start, open the console
+                                (double-click YBM.bat at the repo root for the same thing, no terminal)
   ybm setup                    create venv, install deps, bootstrap config/.env
   ybm doctor                   preflight: env, config, connectivity, ports
   ybm start [flags]            start the stack (runs doctor first)
@@ -152,7 +155,70 @@ function Invoke-YbmSetup {
     $pyArgs += @("--telegram-token", $telegramToken)
   }
   & (Get-YbmPython) @pyArgs
-  exit $LASTEXITCODE
+  # Deliberately no `exit` here (there used to be one) - Invoke-YbmRun calls
+  # this as a sub-step and needs to keep going afterward. $LASTEXITCODE from
+  # the python call above is left set in the caller's scope either way; the
+  # "setup" dispatch case below is what turns it into a process exit code
+  # when this runs as the top-level command.
+}
+
+function Invoke-YbmRun {
+  # The one command a non-developer should ever need (docs/UI_UX_AUDIT.md
+  # Phase 10): install whatever's missing, do nothing when there's nothing
+  # to do, and start the console. Wrapped by the double-clickable YBM.bat
+  # at the repo root, so "run this file" is the entire instruction.
+  #
+  # Every step below is already idempotent on its own - this is an
+  # orchestration wrapper, not new install/start logic:
+  #   - Invoke-YbmSetup already no-ops past venv creation once .venv
+  #     exists, and config_manager already leaves an existing config.yaml
+  #     alone.
+  #   - `uv sync` is fast and does nothing when the lockfile hasn't moved
+  #     since last time - run unconditionally so a venv from before this
+  #     session's own new dependency (pystray, added for the tray icon)
+  #     actually picks it up, which "venv exists -> skip" alone would not.
+  #   - Invoke-YbmStart already runs doctor preflight and is the one that
+  #     actually opens the browser (-Open).
+  Write-Host "YBM Control" -ForegroundColor Cyan
+  Write-Host "==========="
+  Write-Host ""
+
+  Write-Host "Checking install..." -ForegroundColor Cyan
+  Invoke-YbmSetup -Argv @()
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Host "Setup failed (exit $LASTEXITCODE) - see the message above." -ForegroundColor Red
+    exit $LASTEXITCODE
+  }
+
+  $uvCmd = Get-Command uv -ErrorAction SilentlyContinue
+  if ($uvCmd) {
+    Push-Location (Join-Path $Script:YbmRoot "backend")
+    try {
+      # No output redirection here on purpose: uv writes routine progress
+      # ("Resolved N packages...") to stderr, and *>/2>&1 redirection
+      # under this script's $ErrorActionPreference = "Stop" turns that
+      # into a fatal NativeCommandError even on success - confirmed live,
+      # not a hypothetical (this exact line halted `ybm run` the first
+      # time). Letting it print normally avoids the whole gotcha.
+      & uv sync --extra test --extra e2e --extra voice --extra tray --extra dev --extra desktop
+    } finally {
+      Pop-Location
+    }
+  }
+
+  Write-Host ""
+  Write-Host "Checking for updates..." -ForegroundColor Cyan
+  $env:PYTHONPATH = "$Script:YbmRoot\backend\src"
+  & (Get-YbmPython) -m agent_control.cli check-updates
+  # Deliberately informational only, never auto-applied: pulling and
+  # restarting onto new, unreviewed code without being asked is an
+  # external-write action this script doesn't take on its own - same
+  # reasoning as `ybm check-updates` itself (docs/UI_UX_AUDIT.md Phase 6).
+
+  Write-Host ""
+  Write-Host "Starting..." -ForegroundColor Cyan
+  Invoke-YbmStart -Argv @("-Open")
 }
 
 function Invoke-YbmDoctor {
@@ -512,7 +578,8 @@ function Invoke-YbmConfig {
 
 switch ($Command) {
   "help" { Show-YbmHelp }
-  "setup" { Invoke-YbmSetup -Argv (@($Sub) + $Rest | Where-Object { $_ }) }
+  "setup" { Invoke-YbmSetup -Argv (@($Sub) + $Rest | Where-Object { $_ }); exit $LASTEXITCODE }
+  "run" { Invoke-YbmRun }
   "doctor" { Invoke-YbmDoctor; exit $LASTEXITCODE }
   "start" { Invoke-YbmStart -Argv (@($Sub) + $Rest | Where-Object { $_ }) }
   "stop" { Invoke-YbmStop }

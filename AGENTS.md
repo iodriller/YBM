@@ -19,7 +19,11 @@ configuration examples aligned with the code that exists.
 
 ## Supported Commands
 
-Use `scripts/ybm.ps1` instead of assembling service commands by hand:
+The end-user entry point is `YBM.bat` at the repo root (double-click, no terminal) or
+`ybm run` - installs/updates whatever's missing, then starts and opens the console.
+Idempotent: run it again with nothing changed and it just starts.
+
+For development, use `scripts/ybm.ps1` instead of assembling service commands by hand:
 
 ```powershell
 .\scripts\ybm.ps1 setup
