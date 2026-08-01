@@ -20,6 +20,7 @@ right next to the DB that's supposed to be protecting them.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -29,9 +30,18 @@ import structlog
 from agent_control.storage.redaction import redact_payload
 
 
-def _redact_event(patterns: list[str]) -> Any:
+def _secret_values_from_environment(patterns: list[str]) -> tuple[str, ...]:
+    lowered_patterns = tuple(pattern.lower() for pattern in patterns)
+    return tuple(
+        value
+        for name, value in os.environ.items()
+        if value and any(pattern in name.lower() for pattern in lowered_patterns)
+    )
+
+
+def _redact_event(patterns: list[str], secret_values: tuple[str, ...] = ()) -> Any:
     def processor(logger: Any, method_name: str, event_dict: dict) -> dict:
-        return redact_payload(event_dict, patterns)
+        return redact_payload(event_dict, patterns, secret_values=secret_values)
 
     return processor
 
@@ -48,6 +58,7 @@ def configure_logging(settings: Any, service_name: str, *, log_dir: Path | None 
     level = getattr(logging, getattr(level_name, "level", "INFO"), logging.INFO)
     json_logs = bool(getattr(level_name, "json_logs", True))
     redact_patterns = list(getattr(level_name, "redact_patterns", None) or [])
+    secret_values = _secret_values_from_environment(redact_patterns)
 
     log_dir = log_dir or Path(".agent_control") / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -60,7 +71,7 @@ def configure_logging(settings: Any, service_name: str, *, log_dir: Path | None 
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
-        _redact_event(redact_patterns),
+        _redact_event(redact_patterns, secret_values),
     ]
 
     structlog.configure(
