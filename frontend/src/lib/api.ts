@@ -795,7 +795,26 @@ const LLMPresetSchema = z.object({
   active: z.boolean(),
 }).passthrough()
 
+const ToolItemSchema = z.object({
+  name: z.string(),
+  group: z.string(),
+  capability: z.string(),
+  enabled: z.boolean(),
+  lifecycle: z.string(),
+  operations: z.array(z.string()),
+  default_operation: z.string().nullable(),
+  risk_level: RiskLevelSchema,
+  input_schema: z.string().nullable(),
+  output_schema: z.string().nullable(),
+}).passthrough()
+export type ToolItem = z.infer<typeof ToolItemSchema>
+
 const SettingsSummarySchema = z.object({
+  tool_registry: z.object({
+    total: z.number().int(),
+    enabled: z.number().int(),
+    tools: z.array(ToolItemSchema),
+  }),
   config: z.object({
     identity: z.object({ instance_name: z.string(), owner_label: z.string() }).passthrough(),
     channels: z.object({ telegram: TelegramConfigSchema }).passthrough(),

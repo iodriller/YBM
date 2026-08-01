@@ -19,6 +19,8 @@ const TaskTracePage = lazy(() =>
 const AccessPage = lazy(() => import("@/pages/AccessPage").then((m) => ({ default: m.AccessPage })))
 const MemoryPage = lazy(() => import("@/pages/MemoryPage").then((m) => ({ default: m.MemoryPage })))
 const SkillsPage = lazy(() => import("@/pages/SkillsPage").then((m) => ({ default: m.SkillsPage })))
+const ToolsPage = lazy(() => import("@/pages/ToolsPage").then((m) => ({ default: m.ToolsPage })))
+const AgentHubPage = lazy(() => import("@/pages/AgentHubPage").then((m) => ({ default: m.AgentHubPage })))
 const SettingsPage = lazy(() =>
   import("@/pages/SettingsPage").then((m) => ({ default: m.SettingsPage })),
 )
@@ -88,6 +90,14 @@ function App() {
           }
         />
         <Route
+          path="agent"
+          element={
+            <Suspense fallback={<PageFallback />}>
+              <AgentHubPage />
+            </Suspense>
+          }
+        />
+        <Route
           path="memory"
           element={
             <Suspense fallback={<PageFallback />}>
@@ -100,6 +110,14 @@ function App() {
           element={
             <Suspense fallback={<PageFallback />}>
               <SkillsPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="tools"
+          element={
+            <Suspense fallback={<PageFallback />}>
+              <ToolsPage />
             </Suspense>
           }
         />

@@ -1751,6 +1751,13 @@ def _tool_registry_summary(settings: AppSettings, repositories: Repositories, au
                 "lifecycle": definition.lifecycle,
                 "operations": operations,
                 "default_operation": definition.default_operation,
+                # The tool's own required_risk() for its default operation -
+                # a representative risk level for the Tools page
+                # (docs/UI_UX_AUDIT.md Phase 11), not every operation's
+                # individual risk (operation_risks, already in
+                # operation_schemas' sibling data if a caller needs that
+                # detail).
+                "risk_level": definition.required_risk({"operation": definition.default_operation}).value,
                 "input_schema": definition.input_schema.__name__ if definition.input_schema else None,
                 "output_schema": definition.output_schema.__name__ if definition.output_schema else None,
                 "operation_schemas": {

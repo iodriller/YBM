@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { NavLink, Outlet } from "react-router-dom"
-import { BrainCircuit, ListTree, MessageSquare, Settings, ShieldCheck, Sparkles } from "lucide-react"
+import { Bot, ListTree, MessageSquare, Settings, ShieldCheck } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { HealthIndicator } from "@/components/layout/HealthIndicator"
 import { ApprovalBanner } from "@/components/approvals/ApprovalBanner"
@@ -10,16 +10,18 @@ import { Label } from "@/components/ui/label"
 import { AdvancedModeContext, readAdvancedMode, writeAdvancedMode } from "@/lib/advanced-mode"
 import { ThemeToggle } from "@/components/layout/ThemeToggle"
 
-// Matches docs/UI_REWRITE_PLAN.md §10's table, plus Memory (Phase 4) and
-// Skills (Phase 5) from docs/UI_UX_AUDIT.md - Chat is the landing
-// page/first route on purpose (plan: "a first-time user must get an
-// answer without visiting any other screen").
+// Matches docs/UI_REWRITE_PLAN.md §10's table. Memory (Phase 4), Skills
+// (Phase 5), and Tools (Phase 11) all live under one "Agent" entry rather
+// than three separate top-level items - docs/UI_UX_AUDIT.md Phase 11's
+// regroup, in response to direct feedback that they read as scattered
+// ("these are basically agentic setup... should live at one place").
+// Chat is the landing page/first route on purpose (plan: "a first-time
+// user must get an answer without visiting any other screen").
 const NAV_ITEMS = [
   { to: "/", label: "Chat", icon: MessageSquare, end: true },
   { to: "/tasks", label: "Tasks", icon: ListTree, end: false },
   { to: "/access", label: "Access", icon: ShieldCheck, end: false },
-  { to: "/memory", label: "Memory", icon: BrainCircuit, end: false },
-  { to: "/skills", label: "Skills", icon: Sparkles, end: false },
+  { to: "/agent", label: "Agent", icon: Bot, end: false },
   { to: "/settings", label: "Settings", icon: Settings, end: false },
 ] as const
 
@@ -90,7 +92,7 @@ export function AppShell() {
             <Outlet />
           </main>
         </div>
-        <nav className="fixed inset-x-0 bottom-0 z-40 grid h-17 grid-cols-6 border-t border-sidebar-border bg-sidebar/95 px-2 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
+        <nav className="fixed inset-x-0 bottom-0 z-40 grid h-17 grid-cols-5 border-t border-sidebar-border bg-sidebar/95 px-2 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
           {NAV_ITEMS.map(({ to, label, icon: Icon, end }) => (
             <NavLink
               key={to}
