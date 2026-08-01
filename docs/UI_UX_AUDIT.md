@@ -137,8 +137,10 @@ numbers below are the actual build order.
 
 - Sanitized Markdown rendering, a Stop button wired to the existing cancel signal, inline
   clarifications (reusing Phase 0's resume path), artifact cards, inline approvals
-  (Deny / Approve once / Allow for this task, backed by a real task-scoped grant), and
-  attachments + folder selection.
+  (Deny / Approve once / Allow for this task, backed by a real task-scoped grant), and file
+  attachments. **Folder selection was deferred, not shipped** - a browser directory picker exposes
+  no usable absolute path, so it needs the server-side browser planned in Phase 14. This bullet
+  previously read "attachments + folder selection", which overstated what landed.
 - Acceptance: a user can read code/tables in an answer, stop a runaway task in one click, answer a
   clarifying question without leaving the conversation, and approve or deny a pending action
   without opening a separate page.
@@ -216,13 +218,39 @@ numbers below are the actual build order.
 - Needs the repository owner's direct decisions on public content and hosting - not something this
   agent originates unprompted.
 
-## Observability and Control Depth (Phases 8-11, **planned, not shipped**)
+## Phases 8-15 (**planned, not shipped**)
 
-Added 2026-08-01 after an operator review of the shipped console. The theme: the runtime already
-records far more than the UI shows, and three surfaces (approvals, tasks, diagnostics) are
-functional but visually poor. Grounding facts established by reading the code first, because they
-change the cost of each item substantially:
+Added 2026-08-01 after an operator review of the shipped console, then extended the same day with
+a second, sharper review. Two themes: the runtime records far more than the UI shows, and several
+shipped surfaces claim more precision than the code actually delivers.
 
+### Findings from the second review — all verified against the code before planning
+
+Each was checked rather than accepted, because three of them are defects in work shipped earlier
+in this same pass and the wording of the fix depends on what is actually true:
+
+| Finding | Verified | Evidence |
+|---|---|---|
+| Cancelling a task leaves its pending approvals pending | **Confirmed** | `apply_task_signal`'s cancel branch only calls `update_metadata(..., CANCELLED)` — no approval rejection, no grant revocation, no invocation cleanup (`orchestration/signals.py:38`) |
+| Receipts label reads *and* writes as "Changed" | **Confirmed** | `TaskReceiptCard.tsx:34,105` render "Changed" over `_extract_evidence`, which merges paths from tool **inputs and outputs** without distinguishing effect |
+| Receipts only exist for `completed` tasks | **Confirmed** | `ChatPage.tsx:275` gates on `task.status === "completed"`; a task that modified files then failed produces no receipt |
+| "Nothing left this computer" is overconfident | **Confirmed** | `record_egress` has exactly **one** caller, `tools/http_request.py:82`. Browser, MCP, coding agents, and Telegram send record nothing, yet `TaskReceiptCard.tsx:132` still prints the absolute claim |
+| Local artifacts can't be opened or downloaded | **Confirmed** | No artifact download route exists; `FileResponse` in `admin.py` only serves the admin SPA |
+| "Folder selection" is documented as shipped but was deferred | **Confirmed** | Phase 1's bullet (line 141) says "attachments + folder selection"; the implementation deferred it because browser directory pickers expose no usable absolute path |
+| Every remembered fact is injected into every task, uncapped | **Confirmed** | `channels/memory.py:93` renders all facts and is *deliberately* exempt from `max_chars` |
+| `user_stated` provenance is effectively unreachable | **Confirmed** | Only `task_derived` (the tool) and `operator_admin` (the admin API) are ever written; the Memory page's "You told it" label has no producer |
+| `memory.manage` can forget facts with no approval | **Confirmed** | One capability covers list/remember/forget at `requires_approval: false`, `max_risk_level: low` (`config.example.yaml:137`) |
+| Skill "permission labels" don't constrain anything | **Confirmed** | `detect_referenced_tools` is a literal substring scan of the body; a skill saying "use the shell" registers nothing, and the label is called a *permission* in three places |
+
+The first item is an operational reliability bug and outranks every feature below it.
+
+### Grounding facts from the first review
+
+- `build_task_trace()` already returns `timeline` (audit + tool calls, merged and time-sorted) and
+  `context` (inbound message, classification, classifier LLM). **The frontend reads neither.**
+- `DELETE /api/tasks` (with `include_active`, audit-logged) already exists and **no UI calls it**.
+- `_tool_registry_summary()` already returns every tool's name, group, capability, enabled state,
+  lifecycle, operations, and schemas; `DiagnosticsCard` deliberately dropped that table.
 - `build_task_trace()` already returns `timeline` (audit + tool calls, merged and time-sorted) and
   `context` (inbound message, classification, classifier LLM). **The frontend reads neither.**
 - `DELETE /api/tasks` (with `include_active`, audit-logged) already exists and **no UI calls it**.
@@ -234,7 +262,37 @@ change the cost of each item substantially:
 - LLM prompts are **not persisted anywhere**; `render_prompt()` builds them per call. This is the
   only genuinely new backend capability in this group.
 
-### Phase 8 — Wave 1: surfaces over data that already exists
+### Phase 8 — P0: correctness and honesty (blocks everything below)
+
+Every item here is a defect, not a feature. Three are defects in work shipped earlier in this pass.
+
+- **Cancellation cleanup.** Cancelling a task must reject its pending approvals, revoke its
+  task-scoped grants, mark in-flight invocations cancelled where the adapter allows it, stop
+  waiting on external sessions, and release the worker to claim the next queued task. Today a
+  cancelled task can leave a stale approval that blocks the single worker. This is the highest
+  priority item in the entire roadmap.
+- **Receipt honesty.** Rename "Changed" to **"Touched during this task"** - `_extract_evidence`
+  merges tool inputs and outputs, so the list genuinely mixes reads, searches, writes, and
+  merely-requested commands. Replace the absolute "Nothing left this computer" with
+  **"No external transfer was recorded"** until every network-capable adapter calls
+  `record_egress` (today only `http.request` does). Both are wording fixes to stop over-claiming;
+  the real classification work is Phase 12.
+- **Receipts for every terminal state**, not just `completed`. A task that modified files and then
+  failed is exactly when a receipt matters most. Cover completed, failed, cancelled, and blocked.
+- **Artifact download.** Add `GET /admin/api/artifacts/{artifact_id}/download`, serving only
+  artifacts registered in the database whose resolved path stays inside approved artifact or
+  workspace roots. Wire Open / Download / Copy path into the artifact card. A generated file the
+  user cannot open is not delivered.
+- **Skill label wording.** Rename to **"Tools referenced in these instructions"** with an
+  explicit "Informational only - actual actions remain governed by YBM's normal permissions" note.
+  A literal substring scan cannot see "use the shell", and calling it a *permission* implies a
+  constraint the manifest cannot yet enforce. Update the three places that say "permission label".
+- **Fix the Phase 1 folder-selection claim** in this document; it says shipped, the implementation
+  deferred it. Real folder selection is Phase 14.
+- Acceptance: no shipped label claims more than the code can support, and cancelling a task always
+  frees the worker.
+
+### Phase 9 — Console surfaces over data that already exists
 
 - Rebuild the pending-approval window: one approval at a time with a pager, two-column layout,
   sticky action bar, risk-colored header, collapsed-by-default parameter JSON, keyboard shortcuts.
@@ -248,7 +306,49 @@ change the cost of each item substantially:
 - Acceptance: an operator can decide an approval without scrolling, tell success from failure in
   the task list without opening anything, and clear history from the console.
 
-### Phase 9 — Wave 2: the rich, clickable trace
+### Phase 10 — One command to run it, and a real identity
+
+The current story is an *install* script plus a lifecycle CLI with ~20 subcommands. That is a
+developer's interface. The target user should never see a terminal after the first double-click.
+
+- **One entry point: `ybm run`** (wrapped by a double-clickable `YBM.bat` at the repo root, and a
+  desktop/Start-menu shortcut). It detects what is missing, installs only that, applies pending
+  database migrations, checks for an update and applies it if one exists, starts the stack, and
+  opens the console. Running it when everything is already current should just open the browser.
+- **Demote, don't delete, the power-user surface.** `setup`, `doctor`, `start`, `stop`, `status`,
+  `logs` keep working for development and for `AGENTS.md`'s verification matrix; they stop being
+  the documented front door. `install.ps1`/`install.sh` shrink to "clone, then call `run`".
+- Reorganize `scripts/` so the human-facing entry points are visually obvious and the service
+  runners move out of the top level.
+- **A real logo.** Today the mark is a stock Lucide `Bot` glyph reused in the sidebar, the tray
+  icon, and the favicon. Design one custom SVG mark plus a wordmark, and use it consistently
+  across console, favicon, tray icon, installer, and README. Honest scope note: this pass can
+  produce a clean, simple geometric mark - a distinctive brand identity is a designer's job, and
+  the plan should not pretend otherwise.
+- Acceptance: a non-developer can go from a downloaded folder to a working console by
+  double-clicking one file, and can update the same way.
+
+### Phase 11 — Console redesign: one place to configure the agent
+
+Tools, Skills, MCP servers, Connections, and Memory are all currently separate top-level
+destinations (or absent), but conceptually they are one thing: **what the agent is made of**.
+Access is a different thing: **what it is allowed to do**. Chat and Tasks are a third: **what it
+is doing**. The current five-to-seven-item flat nav does not express that.
+
+- Regroup the console into three areas - *Work* (Chat, Tasks), *Agent* (Tools, Skills, MCP,
+  Connections, Memory, Persona), and *Control* (Access, Settings, Diagnostics) - with the Agent
+  area as a single hub page whose sections are panels, not separate routes.
+- Within the Agent hub: a Tools catalog with counts, enabled state, capability, operations and
+  risk (data `_tool_registry_summary` already returns); MCP server add/edit/test (a new write
+  endpoint - MCP is config-file-only today); an `adapter.factory` surface to review, sandbox, and
+  promote generated tools, which the engine already supports headlessly; and a bundled starter
+  skill catalog shipped in-repo (`.agent_control/skills` is generated, so starters must live
+  somewhere committed) with browse/install, edit-in-place, and duplicate.
+- Keep deep links working - regrouping navigation must not break `/tasks/:id` or bookmarked routes.
+- Acceptance: a new user can see everything the agent is made of on one screen, and extend it
+  there, without reading config.
+
+### Phase 12 — The rich, clickable trace
 
 - Persist LLM calls (`task_id`, `step_index`, `source`, `model`, messages, raw response, tokens,
   latency), written through the existing `redact_payload` with a per-call size cap. Enabled by
@@ -264,18 +364,38 @@ change the cost of each item substantially:
   output, tokens, latency, and the audit events scoped to that step.
 - Acceptance: "why did it do that" is answerable from the console alone, for any past task.
 
-### Phase 10 — Wave 3: tools and skills as first-class surfaces
+### Phase 13 — Memory: real retrieval, real provenance, gated forgetting
 
-- A Tools page: catalog grouped by domain with counts, enabled state, capability, operations, and
-  risk; enable/disable mapped onto the existing access-mode engine; MCP server add/edit/test
-  (a new write endpoint - MCP is config-file-only today); and an `adapter.factory` surface to
-  review, sandbox, and promote generated tools, which the engine already supports headlessly.
-- A bundled starter skill catalog in-repo (`.agent_control/skills` is generated, so starters must
-  ship somewhere committed), browsable and installable from the Skills page, plus edit-in-place
-  and a live preview of inferred permission labels while authoring.
-- Acceptance: a new user sees what the agent can do, and can extend it, without reading config.
+Structured memory shipped, but retrieval did not. All three sub-items are correctness, not polish.
 
-### Phase 11 — Wave 4: a second channel
+- **Deterministic relevance selection.** Today every fact is injected into every task and is
+  explicitly exempt from `max_chars`. That is fine at five facts and actively harmful at a
+  thousand. Score by exact entity match, keyword overlap with the objective, category relevance,
+  recency of use, and current folder/service context; take the top 10-20; always include pinned
+  global preferences. Still no vector database - the reasoning in Phase 4 holds, and a
+  deterministic scorer is inspectable in a way an embedding search is not.
+- **A real `user_stated` route.** The enum value exists with no producer, so the Memory page's
+  "You told it" badge can never appear. Detect an explicit "remember that ..." in the user's own
+  message at the runtime level, store the user's actual words, and stamp `user_stated` - with the
+  provenance decided by the runtime, never selectable by the model, exactly as `task_derived`
+  already works.
+- **Split `memory.manage` by operation.** One capability currently covers list, remember, and
+  forget at `requires_approval: false` / `low`. Deleting durable facts should not be ungated:
+  keep list and remember low, and give **forget** a medium risk floor with approval required, via
+  the existing `operation_risks` / `approval_required_operations` mechanism.
+- Acceptance: memory stays useful at 1,000 facts, "You told it" is reachable, and the agent cannot
+  silently erase something the user asked it to remember.
+
+### Phase 14 — Server-side folder picker
+
+- Browser directory pickers cannot yield a usable absolute path, which is why Phase 1 deferred
+  this. The correct implementation is server-side: list the configured allowed roots, browse
+  subdirectories through the backend, select one, and insert a server-recognized folder reference
+  into the task. Path resolution is validated against the allowed roots on every request - no
+  traversal outside them, and no reliance on the browser's directory-upload as a stand-in.
+- Acceptance: "organize this folder" is expressible from the console without typing a path.
+
+### Phase 15 — A second channel
 
 - Refactor `channels/` into a channel-adapter interface (Telegram already provides the shape:
   intake -> classify -> task -> notify) so a new channel is an adapter, not a fork.
