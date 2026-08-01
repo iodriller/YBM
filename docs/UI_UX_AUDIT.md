@@ -189,11 +189,25 @@ numbers below are the actual build order.
   installing (or immediately after, live from the same install call), and removed, entirely from
   the console.
 
-### Phase 6 — Packaging
+### Phase 6 — Packaging (**shipped, reduced scope**)
 
-- Windows installer, tray app, automatic startup, versioned updates, backup, a stable release
-  channel.
-- Acceptance: install-to-running-tray-app in one click, no terminal required.
+- Shipped: a tray icon (`scripts/tray_app.py`, `ybm tray`) that opens the admin console and shells
+  out to `ybm.ps1` for start/stop/restart/status - no process-supervision logic of its own.
+  `ybm autostart enable|disable|status` registers/removes a per-user Startup-folder shortcut, no
+  admin rights needed. `ybm backup [--out <dir>]` zips the database, config.yaml, .env, and the
+  secret vault. `ybm check-updates` compares the installed version against GitHub's latest release
+  (read-only, no auto-apply).
+- Not built: a compiled one-click Windows installer (`.msi`/`.exe`). This would need a real build
+  toolchain (Inno Setup or NSIS) that isn't present in this environment, and installing one
+  unprompted is a bigger, less reversible step than adding a Python dependency -
+  `install.ps1`/`install.sh` remain the actual installer (`iwr ... | iex`, one command, no terminal
+  *after* that one command - not literally the "no terminal required" acceptance criterion below).
+  There is also no published release yet - `check-updates` currently and correctly reports that,
+  since cutting and pushing the first tag/release is a public, external action for the repository
+  owner to trigger, not one this agent originates unprompted (same reasoning as Phase 7).
+- Acceptance (as shipped): starting from a checkout, one command (`ybm autostart enable`) gets a
+  running tray icon at every future login; "install-to-running-tray-app" from *zero* still requires
+  running `install.ps1`/`install.sh` first, which itself needs a terminal.
 
 ### Phase 7 — Public launch
 
