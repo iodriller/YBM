@@ -355,25 +355,37 @@ developer's interface. The target user should never see a terminal after the fir
 - Acceptance (as shipped): a non-developer can go from a downloaded folder to a working console by
   double-clicking one file, and running it again when nothing changed just opens the console.
 
-### Phase 11 — Console redesign: one place to configure the agent
+### Phase 11 — Console redesign: one place to configure the agent (**shipped, reduced scope**)
 
-Tools, Skills, MCP servers, Connections, and Memory are all currently separate top-level
-destinations (or absent), but conceptually they are one thing: **what the agent is made of**.
-Access is a different thing: **what it is allowed to do**. Chat and Tasks are a third: **what it
-is doing**. The current five-to-seven-item flat nav does not express that.
+Tools, Skills, and Memory were separate top-level destinations, but conceptually they are one
+thing: **what the agent is made of**. Access is a different thing: **what it is allowed to do**.
+Chat and Tasks are a third: **what it is doing**. The flat nav didn't express that - direct
+feedback named it: "these are basically agentic setup... should live at one place."
 
-- Regroup the console into three areas - *Work* (Chat, Tasks), *Agent* (Tools, Skills, MCP,
-  Connections, Memory, Persona), and *Control* (Access, Settings, Diagnostics) - with the Agent
-  area as a single hub page whose sections are panels, not separate routes.
-- Within the Agent hub: a Tools catalog with counts, enabled state, capability, operations and
-  risk (data `_tool_registry_summary` already returns); MCP server add/edit/test (a new write
-  endpoint - MCP is config-file-only today); an `adapter.factory` surface to review, sandbox, and
-  promote generated tools, which the engine already supports headlessly; and a bundled starter
-  skill catalog shipped in-repo (`.agent_control/skills` is generated, so starters must live
-  somewhere committed) with browse/install, edit-in-place, and duplicate.
-- Keep deep links working - regrouping navigation must not break `/tasks/:id` or bookmarked routes.
-- Acceptance: a new user can see everything the agent is made of on one screen, and extend it
-  there, without reading config.
+- Shipped: a **Tools page** - every registered tool grouped by domain, with capability, effective
+  risk (`ToolDefinition.required_risk()` for its default operation, reused, not re-derived), the
+  operations list, and enabled state. All of it was already computed by `_tool_registry_summary`
+  for internal use; none of it was previously rendered. Read-only by design - enabling/disabling a
+  tool means changing its capability, which Access already owns as the one place that does it, so
+  this isn't a second control surface for the same toggle. An **Agent hub page** replacing three
+  separate top-level nav entries (Memory, Skills, the new Tools) with one "Agent" entry landing on
+  three live-stat cards - nav is back to five items. The starter skill catalog moved from Phase 5's
+  aspiration to actually shipped: six skills under `skills/starter/` (committed, unlike the
+  generated `adapters.skills.root_dir`), a `GET /api/skills/catalog` endpoint, and a browse/install
+  panel on the Skills page reusing the exact same install call the manual form uses.
+- Not built: MCP server add/edit/test (still config-file-only - a real write endpoint, genuinely
+  new backend surface, not done this pass), an `adapter.factory` review/sandbox/promote UI (the
+  engine supports it headlessly; no console surface for it), and skill edit-in-place/duplicate on
+  the Skills page (install/uninstall only). The three-area *Work/Agent/Control* full regroup this
+  bullet originally described was narrowed to the one grouping that had a concrete, named
+  complaint behind it (Tools/Skills/Memory) - Access and Settings staying separate top-level items
+  is a smaller, lower-risk change than moving them too on no specific complaint about them.
+- Known gap: visiting `/memory` or `/skills` directly (a bookmark, or a hub card click) doesn't
+  highlight "Agent" in the sidebar - `NavLink`'s active-match only covers `/agent` itself, not its
+  sibling routes. Making those true nested routes would fix it properly but changes their URLs;
+  not done without a stronger reason than a nav-highlight cosmetic.
+- Acceptance (as shipped): what the agent is made of (tools, skills, memory) is visible from one
+  place, and installing a skill from a bundled starter takes one click.
 
 ### Phase 12 — The rich, clickable trace
 
