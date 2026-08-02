@@ -7,6 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { ArtifactCard } from "@/components/chat/ArtifactCard"
 import { ChatMarkdown } from "@/components/chat/ChatMarkdown"
+import { FolderPicker } from "@/components/chat/FolderPicker"
 import { InlineApproval } from "@/components/chat/InlineApproval"
 import { TaskReceiptCard } from "@/components/chat/TaskReceiptCard"
 import { chatAnswerText, displayedObjective, isTerminal } from "@/lib/chat"
@@ -85,6 +86,10 @@ export function ChatPage() {
 
   function removeAttachment(key: string) {
     setAttachments((prev) => prev.filter((a) => a.key !== key))
+  }
+
+  function handleFolderSelect(path: string) {
+    setDraft((prev) => (prev.trim() ? `${prev.trimEnd()} ${path} ` : `${path} `))
   }
 
   function handleSend(text: string) {
@@ -231,6 +236,7 @@ export function ChatPage() {
             >
               <Paperclip className="size-4" />
             </Button>
+            <FolderPicker onSelect={handleFolderSelect} />
             <textarea
               value={draft}
               onChange={(event) => setDraft(event.target.value)}

@@ -1143,3 +1143,26 @@ export function uninstallSkill(name: string) {
     method: "DELETE",
   })
 }
+
+// ---- Folders (docs/UI_UX_AUDIT.md Phase 13) ------------------------------
+
+const FolderEntrySchema = z.object({ name: z.string(), path: z.string() })
+
+const FolderListingSchema = z.object({
+  current_path: z.string().nullable(),
+  parent_path: z.string().nullable(),
+  roots: z.array(z.string()),
+  entries: z.array(FolderEntrySchema),
+})
+export type FolderListing = z.infer<typeof FolderListingSchema>
+export type FolderEntry = z.infer<typeof FolderEntrySchema>
+
+/** Server-side folder browsing for the Chat composer's folder picker - a
+ * browser directory picker cannot yield a usable absolute path. Scoped to
+ * the same computer_use.allowed_roots filesystem.manage itself is scoped
+ * to, so anything reachable here is something the agent can actually act
+ * on. `path` omitted returns the configured roots. */
+export function listFolders(path?: string) {
+  const query = path ? `?path=${encodeURIComponent(path)}` : ""
+  return apiFetch(`/api/folders${query}`, FolderListingSchema)
+}

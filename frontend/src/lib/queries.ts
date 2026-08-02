@@ -18,6 +18,7 @@ import {
   installSkill,
   listAudit,
   listChatMessages,
+  listFolders,
   listMemoryFacts,
   listPendingApprovals,
   listSecrets,
@@ -430,5 +431,16 @@ export function useUninstallSkill() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["skills"] })
     },
+  })
+}
+
+// ---- Folders (docs/UI_UX_AUDIT.md Phase 13) ------------------------------
+
+export function useFolders(path: string | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: ["folders", path ?? null],
+    queryFn: () => listFolders(path),
+    enabled,
+    staleTime: 10_000,
   })
 }
