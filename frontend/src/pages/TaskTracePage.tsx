@@ -7,6 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { PageBreadcrumb } from "@/components/layout/PageBreadcrumb"
 import { StatusBadge } from "@/components/tasks/StatusBadge"
 import { CostPanel } from "@/components/tasks/CostPanel"
+import { DurationChart } from "@/components/tasks/DurationChart"
 import { OperatorHistoryList } from "@/components/tasks/OperatorHistoryList"
 import { TraceGraph } from "@/components/tasks/TraceGraph"
 import { TraceTimeline } from "@/components/tasks/TraceTimeline"
@@ -18,7 +19,7 @@ import { EFFECT_DISPLAY } from "@/lib/evidence"
 import { CANCELLABLE, PAUSABLE, RESUMABLE } from "@/lib/task-signals"
 import { cn } from "@/lib/utils"
 
-type TraceView = "steps" | "timeline" | "graph"
+type TraceView = "steps" | "timeline" | "duration" | "graph"
 
 export function TaskTracePage() {
   const { taskId } = useParams<{ taskId: string }>()
@@ -108,12 +109,15 @@ export function TaskTracePage() {
         <div className="mb-2 flex items-center gap-1">
           <ViewTab label="Steps" active={view === "steps"} onClick={() => setView("steps")} />
           <ViewTab label="Timeline" active={view === "timeline"} onClick={() => setView("timeline")} />
+          <ViewTab label="Duration" active={view === "duration"} onClick={() => setView("duration")} />
           {advanced && <ViewTab label="Graph" active={view === "graph"} onClick={() => setView("graph")} />}
         </div>
         {view === "graph" && advanced ? (
           <TraceGraph invocations={trace.tool_invocations} />
         ) : view === "timeline" ? (
           <TraceTimeline items={trace.timeline} />
+        ) : view === "duration" ? (
+          <DurationChart trace={trace} />
         ) : (
           <OperatorHistoryList entries={trace.operator_history} />
         )}
