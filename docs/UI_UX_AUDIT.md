@@ -20,7 +20,7 @@ The redesign establishes a clearer control-plane hierarchy:
 
 ## Where We Are
 
-Phases 0-11 are done. Phases 12-16 are open, and Phases 3 and 7 are blocked on the repository
+Phases 0-12 are done. Phases 13-16 are open, and Phases 3 and 7 are blocked on the repository
 owner. Full write-ups of shipped phases were removed on 2026-08-01 to keep this document about
 what is *left*; the detail lives in git history (`git log --grep "Phase N"`) and in the code
 comments each change left behind.
@@ -39,6 +39,7 @@ comments each change left behind.
 | 9 | Console surfaces over data that already existed: approval window rebuilt (pager, sticky actions, keyboard), Tasks outcome column, clear-history, a Timeline tab, Diagnostics rebuilt with service cards and a doctor runner | Per-task delete (bulk clear only) |
 | 10 | One command to run it: `ybm run` + double-clickable `YBM.bat`, consistent logo across console/tray/favicon. Second pass: fingerprinted dependency sync and console build — a fully-warm launch went from ~60-90s to ~9s | Consolidating the CLI's several per-command Python process launches (the remaining gap to "a few seconds") |
 | 11 | Console regrouped: a Tools page, an Agent hub over Tools/Skills/Memory, and a bundled starter skill catalog | MCP server add/edit/test, an `adapter.factory` review UI, skill edit-in-place |
+| 12 | Console UX pass: a chat width control, expired approvals swept out of the list instead of leading it, breadcrumbs + fixed nav active-state on every sub-page, one entry point for adding a skill, an explicit disabled-tool affordance on Tools | — |
 
 ### Blocked on the repository owner
 
@@ -51,7 +52,6 @@ comments each change left behind.
 
 | # | Phase | Why it's next |
 |---|---|---|
-| 12 | Console UX pass | Daily irritations: cramped chat, dead expired approvals at the top of the list, no way back from a sub-page, confusing "add a skill" flow |
 | 13 | Server-side folder picker | The README's own first example is "organize my Downloads folder", but that still requires typing a path |
 | 14 | Task timeline and graph overhaul | The trace can't answer "what took so long" or "why did it do that" |
 | 15 | Memory: retrieval, provenance, gated forgetting | Every fact is injected into every task, uncapped |
@@ -155,48 +155,32 @@ Two findings from earlier reviews are repeated here because open phases depend o
 - LLM prompts are **not persisted anywhere**; `render_prompt()` builds them per call. This is the
   only genuinely new backend capability any open phase needs. Phase 14.
 
-### Phase 12 — Console UX pass
+### Phase 12 — Console UX pass (**shipped**)
 
-Four unrelated daily irritations, grouped because they are all small, all in the console, and all
-verified in the code before being written down. Nothing here needs new backend domain logic.
+Four unrelated daily irritations, grouped because they were all small, all in the console, and all
+verified in the code before being written down.
 
-- **Chat is locked to a narrow column.** `ChatPage` hardcodes `max-w-3xl` (768px) in three places,
-  so a wide monitor shows a thin ribbon of text with a code block scrolling inside it. Add a width
-  control (comfortable / wide / full) persisted in `localStorage`, reusing the exact pattern
-  `lib/advanced-mode.ts` already established for a global user preference - not a new mechanism.
-- **Expired approvals sort to the top and cannot be acted on.** `list_pending` orders by
-  `created_at ASC` and does not filter on expiry, so the oldest approval leads the list even once
-  it is dead - and `decide_pending` fails closed on an expired row, so every button on it is
-  disabled. The result is a permanently stuck first card in the review dialog. Fix at both ends:
-  sweep genuinely expired rows to `EXPIRED` instead of leaving them `PENDING`, and order what
-  remains by soonest expiry (most urgent first) rather than oldest created. An expired item should
-  leave the actionable list, not head it.
-- **There is no way back from a sub-page.** A `Breadcrumb` component exists in `components/ui/`
-  and is used by **nothing**; `TaskTracePage`'s hardcoded "Back to tasks" link is the only back
-  affordance in the entire app. Reaching Memory, Skills, or Tools from the Agent hub leaves no
-  route back, and the sidebar does not even mark "Agent" active on those routes (a known gap
-  recorded in Phase 11). Fix the whole navigation model: breadcrumbs on every sub-page, active-state
-  matching that covers a section's child routes, and a consistent back affordance. Walk every route
-  rather than patching the two that were complained about.
-- **"Add a skill" is two competing entry points.** The Skills page header offers both "Browse
-  catalog" and "Install a skill", which open two separate stacked panels, and the empty state then
-  describes a third route (drop a file in the directory). Collapse to one primary action opening
-  one surface with two tabs - *Catalog* and *Write your own* - so there is a single answer to "how
-  do I add a skill":
-
-  ```
-  before                              after
-  [Browse catalog] [Install a skill]  [+ Add a skill]
-   -> panel A (grid of starters)         -> one dialog
-   -> panel B (blank form)                  ( Catalog | Write your own )
-   -> empty state mentions a 3rd way        installed items marked in the catalog
-  ```
-
-  The Tools page has the mirror-image problem: it is read-only by design because Access owns
-  enabling/disabling, but it never says so on the page, so a tool that cannot run reads as broken
-  rather than un-permitted. Give each disabled tool an explicit "Disabled - manage in Access"
-  affordance linking to the group that controls it, and say once at the top that this page is the
-  inventory, not the switchboard.
+- **Chat width.** `ChatPage` hardcoded `max-w-3xl` in three places. `lib/chat-width.ts` (same
+  read/write-`localStorage` shape as `advanced-mode.ts`, plain state instead of a Context since
+  nothing outside `ChatPage` needs it) adds a three-way comfortable/wide/full toggle in the header.
+- **Expired approvals.** `ApprovalRepository.list_pending()` now calls a new `expire_stale()` first
+  (sweeps `PENDING` rows past `expires_at` to `EXPIRED` in one indexed `UPDATE`) and orders the
+  remainder by `expires_at ASC` instead of `created_at ASC`. An expired approval no longer appears
+  at all, let alone leads the list. Verified live against two real approvals from earlier in this
+  session that were still sitting `PENDING` a full day past expiry - both swept to `EXPIRED` on the
+  next list call, confirmed by querying the database directly, not just trusting the API response.
+- **Navigation.** A new `PageBreadcrumb` component (wrapping the `Breadcrumb` primitive that
+  existed and was used by nothing) now appears on Memory, Skills, Tools, and a task's trace.
+  `AppShell`'s active-state matching gained a `matchPaths` list per nav item instead of relying on
+  `NavLink`'s own prefix match, so "Agent" now highlights correctly on `/memory`, `/skills`, and
+  `/tools` - the exact gap Phase 11 recorded and left open.
+- **"Add a skill."** Collapsed "Browse catalog" and "Install a skill" (two buttons, two stacked
+  panels, plus a third route mentioned only in the empty state) into one `[+ Add a skill]` button
+  opening one panel with two tabs (`Tabs`/`TabsList`/`TabsContent`, unused elsewhere in the app
+  until now). `SkillInstallForm` gained a `bare` prop so it can drop its own `Card` wrapper when
+  nested inside the tab panel's. Tools' read-only-by-design stance is now stated on the page itself,
+  and a disabled tool gets an explicit warning-toned "Disabled - enable `<capability>` in Access"
+  link instead of the same subdued link an enabled tool gets.
 - Acceptance: chat uses the width the operator chose; the approvals list contains only items that
   can actually be decided; every sub-page can be left without the browser back button; and there is
   exactly one obvious way to add a skill.
