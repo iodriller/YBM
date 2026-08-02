@@ -12,8 +12,9 @@ import { TraceGraph } from "@/components/tasks/TraceGraph"
 import { TraceTimeline } from "@/components/tasks/TraceTimeline"
 import { useTaskSignal, useTaskTrace } from "@/lib/queries"
 import { useAdvancedMode } from "@/lib/advanced-mode"
-import { ApiError, tokenUsageOf } from "@/lib/api"
+import { ApiError, tokenUsageOf, type EvidenceItem } from "@/lib/api"
 import { isTerminal } from "@/lib/chat"
+import { EFFECT_DISPLAY } from "@/lib/evidence"
 import { CANCELLABLE, PAUSABLE, RESUMABLE } from "@/lib/task-signals"
 import { cn } from "@/lib/utils"
 
@@ -144,24 +145,29 @@ function EvidenceSection({
   urls,
   commands,
 }: {
-  files: { value: string }[]
-  urls: { value: string }[]
-  commands: { value: string }[]
+  files: EvidenceItem[]
+  urls: EvidenceItem[]
+  commands: EvidenceItem[]
 }) {
   if (files.length === 0 && urls.length === 0 && commands.length === 0) return null
+  const items = [...files, ...urls, ...commands]
   return (
     <div>
       <h2 className="mb-2 text-sm font-medium">What this task touched</h2>
-      <div className="flex flex-col gap-1 font-mono text-xs">
-        {files.map((f) => (
-          <div key={f.value} className="[overflow-wrap:anywhere]">{f.value}</div>
-        ))}
-        {urls.map((u) => (
-          <div key={u.value} className="[overflow-wrap:anywhere]">{u.value}</div>
-        ))}
-        {commands.map((c) => (
-          <div key={c.value} className="[overflow-wrap:anywhere]">{c.value}</div>
-        ))}
+      <div className="flex flex-col gap-1 text-xs">
+        {items.map((item) => {
+          const effect = EFFECT_DISPLAY[item.effect]
+          const Icon = effect.icon
+          return (
+            <div key={item.value} className="flex items-start gap-1.5">
+              <Icon className={cn("mt-0.5 size-3 shrink-0", effect.className)} />
+              <span className="[overflow-wrap:anywhere]">
+                <span className={cn("font-medium", effect.className)}>{effect.label}</span>{" "}
+                <span className="font-mono">{item.value}</span>
+              </span>
+            </div>
+          )
+        })}
       </div>
     </div>
   )

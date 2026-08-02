@@ -5,6 +5,7 @@ import { useTaskReceipt } from "@/lib/queries"
 import { cn } from "@/lib/utils"
 import { StatusBadge } from "@/components/tasks/StatusBadge"
 import { formatDuration } from "@/lib/time"
+import { EFFECT_DISPLAY } from "@/lib/evidence"
 
 /** Plain-text export (docs/UI_UX_AUDIT.md Phase 2) - human-readable, not a
  * raw JSON dump, so it reads the same way the card does. Client-side only:
@@ -25,13 +26,13 @@ function formatReceiptAsText(receipt: TaskReceipt): string {
   }
   const touched = [...receipt.changes.files, ...receipt.changes.commands, ...receipt.changes.urls]
   if (touched.length > 0) {
-    // Not "Changed": this list merges tool inputs and outputs, so it mixes
-    // files merely read or searched with ones actually written, and
-    // commands merely requested with ones actually run. Real per-item
-    // classification is planned (docs/UI_UX_AUDIT.md Phase 12); until then
-    // this label doesn't claim more precision than the data has.
-    lines.push("Touched during this task:")
-    for (const item of touched) lines.push(`- ${item.value}`)
+    // Each item carries its own real effect label (docs/UI_UX_AUDIT.md
+    // Phase 14) - this list still merges tool inputs and outputs, so a
+    // single task can genuinely contain both a "Read" and a "Modified"
+    // item, which is exactly why the label lives per-item, not as one
+    // blanket heading.
+    lines.push("What this task touched:")
+    for (const item of touched) lines.push(`- [${EFFECT_DISPLAY[item.effect].label}] ${item.value}`)
     lines.push("")
   }
   if (receipt.tools_used.length > 0) {
@@ -118,17 +119,25 @@ export function TaskReceiptCard({ taskId }: { taskId: string }) {
 
       {changedItems.length > 0 && (
         <div>
-          {/* Not "Changed" - the backend merges tool inputs and outputs, so
-              this genuinely mixes reads/searches with writes and
-              merely-requested commands with executed ones (real
-              classification: docs/UI_UX_AUDIT.md Phase 12). */}
-          <p className="font-medium text-muted-foreground">Touched during this task</p>
-          <ul className="mt-0.5 list-disc space-y-0.5 pl-4">
-            {changedItems.slice(0, 8).map((item) => (
-              <li key={item.value} className="[overflow-wrap:anywhere]">
-                {item.value}
-              </li>
-            ))}
+          {/* Each item shows its own real effect (docs/UI_UX_AUDIT.md
+              Phase 14) - the backend still merges tool inputs and outputs
+              into one list, so a single task can genuinely contain both a
+              Read and a Modified item; that's exactly why the label is
+              per-item, not one blanket "Changed"/"Touched" heading. */}
+          <p className="font-medium text-muted-foreground">What this task touched</p>
+          <ul className="mt-0.5 flex flex-col gap-0.5">
+            {changedItems.slice(0, 8).map((item) => {
+              const effect = EFFECT_DISPLAY[item.effect]
+              const Icon = effect.icon
+              return (
+                <li key={item.value} className="flex items-start gap-1.5 [overflow-wrap:anywhere]">
+                  <Icon className={cn("mt-0.5 size-3 shrink-0", effect.className)} />
+                  <span>
+                    <span className={cn("font-medium", effect.className)}>{effect.label}</span> {item.value}
+                  </span>
+                </li>
+              )
+            })}
           </ul>
         </div>
       )}

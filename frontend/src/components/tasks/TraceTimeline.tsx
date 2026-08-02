@@ -1,11 +1,8 @@
 import { useState } from "react"
-import { ChevronDown, ChevronRight, ShieldCheck, Wrench } from "lucide-react"
+import { ChevronDown, ChevronRight } from "lucide-react"
 import type { TimelineItem } from "@/lib/api"
-
-const KIND_STYLE: Record<TimelineItem["kind"], { dot: string; icon: typeof Wrench }> = {
-  tool: { dot: "bg-info", icon: Wrench },
-  audit: { dot: "bg-muted-foreground", icon: ShieldCheck },
-}
+import { timelineItemDisplay } from "@/lib/timeline"
+import { formatDurationMs } from "@/lib/time"
 
 /**
  * The full chronological record - audit events (policy decisions,
@@ -15,6 +12,10 @@ const KIND_STYLE: Record<TimelineItem["kind"], { dot: string; icon: typeof Wrenc
  * only shows tool decisions, this shows everything the runtime logged
  * about the task, in the order it actually happened, starting from
  * whatever triggered the task in the first place.
+ *
+ * Phase 14: each row's icon/color now comes from its real category
+ * (approval, tool, artifact, egress, ...) instead of a flat two-kind
+ * tool/audit split, and shows real duration for tool calls.
  */
 export function TraceTimeline({ items }: { items: TimelineItem[] }) {
   if (items.length === 0) {
@@ -32,14 +33,14 @@ export function TraceTimeline({ items }: { items: TimelineItem[] }) {
 
 function TimelineRow({ item, isLast }: { item: TimelineItem; isLast: boolean }) {
   const [expanded, setExpanded] = useState(false)
-  const style = KIND_STYLE[item.kind]
-  const Icon = style.icon
+  const { icon: Icon, className } = timelineItemDisplay(item)
+  const bgClassName = className.replace("text-", "bg-") + "/10"
   const hasDetails = item.details != null && Object.keys(item.details).length > 0
 
   return (
     <div className="flex gap-3">
       <div className="flex flex-col items-center">
-        <span className={`mt-1 flex size-5 shrink-0 items-center justify-center rounded-full text-background ${style.dot}`}>
+        <span className={`mt-1 flex size-5 shrink-0 items-center justify-center rounded-full ${bgClassName} ${className}`}>
           <Icon className="size-3" />
         </span>
         {!isLast && <span className="w-px flex-1 bg-border" />}
@@ -47,6 +48,12 @@ function TimelineRow({ item, isLast }: { item: TimelineItem; isLast: boolean }) 
       <div className="min-w-0 flex-1 pb-4">
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
           <span className="text-sm font-medium [overflow-wrap:anywhere]">{item.title ?? item.kind}</span>
+          <span className={`rounded-full px-1.5 py-0 text-[10px] font-medium uppercase tracking-wide ${bgClassName} ${className}`}>
+            {item.category.replace(/_/g, " ")}
+          </span>
+          {item.duration_ms != null && (
+            <span className="text-[11px] font-medium text-muted-foreground">{formatDurationMs(item.duration_ms)}</span>
+          )}
           {item.at && (
             <span className="text-[11px] text-muted-foreground">{new Date(item.at).toLocaleString()}</span>
           )}

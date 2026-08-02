@@ -479,24 +479,43 @@ const TokenUsageSchema = z.object({
 })
 export type TokenUsage = z.infer<typeof TokenUsageSchema>
 
-const EvidenceItemSchema = z.object({
+// "effect" (docs/UI_UX_AUDIT.md Phase 14): what actually happened to this
+// item - read/created/modified/moved/deleted/command_executed/
+// website_visited/message_sent/other - replacing the earlier "everything
+// is just touched" wording fix (Phase 8) with a real per-item label.
+// "other" is an honest fallback for a tool/operation pair the backend's
+// classifier doesn't recognize yet, not a bug.
+export const EvidenceEffectSchema = z.enum([
+  "read", "created", "modified", "moved", "deleted",
+  "command_executed", "website_visited", "message_sent", "other",
+])
+export type EvidenceEffect = z.infer<typeof EvidenceEffectSchema>
+
+export const EvidenceItemSchema = z.object({
   value: z.string(),
   tool_name: z.string().nullable(),
   at: z.string().nullable(),
+  effect: EvidenceEffectSchema,
 })
+export type EvidenceItem = z.infer<typeof EvidenceItemSchema>
 
 // build_task_trace's _trace_timeline() (admin.py): audit events and tool
 // invocations merged and time-sorted - the full "what happened, in order"
 // record, richer than operator_history (policy decisions, approvals,
 // classification are audit events with no operator_history entry of
-// their own).
+// their own). `category` is a plain string, not a strict enum, matching
+// the backend's own CATEGORY_BY_TYPE - it can grow independently without
+// a frontend schema update; an unrecognized value just falls back to a
+// neutral display (docs/UI_UX_AUDIT.md Phase 14).
 export const TimelineItemSchema = z.object({
   at: z.string().nullable(),
   kind: z.enum(["audit", "tool"]),
+  category: z.string(),
   title: z.string().nullable(),
   summary: z.string().nullable(),
   actor: z.string().nullable(),
   details: z.record(z.string(), z.unknown()).nullable(),
+  duration_ms: z.number().nullable(),
 })
 export type TimelineItem = z.infer<typeof TimelineItemSchema>
 
@@ -998,14 +1017,16 @@ const AuditEventTypeSchema = z.enum([
   "message_received", "message_sent", "config_updated", "telegram_access_decision",
   "message_classified", "task_spawn_failed", "task_created", "task_state_changed",
   "plan_created", "policy_decision", "approval_requested", "approval_decided",
-  "tool_requested", "tool_completed", "artifact_created", "error",
+  "tool_requested", "tool_completed", "artifact_created", "egress_contacted",
+  "error", "task_cancelled",
 ])
 
 // Mirrors storage/audit_view.py's CATEGORY_BY_TYPE value set - a small,
 // derived grouping (event type -> coarser category), not a schema of its own.
 export const AUDIT_CATEGORIES = [
   "raw_telegram", "telegram_access", "classification", "failed_classification",
-  "spawned_task", "policy", "config", "tool", "approval", "error", "system",
+  "spawned_task", "policy", "config", "tool", "approval", "task_state", "artifact",
+  "egress", "error", "system",
 ] as const
 
 const FormattedAuditEventSchema = z.object({

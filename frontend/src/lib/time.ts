@@ -39,6 +39,21 @@ export function formatDuration(seconds: number): string {
   return rest > 0 ? `${minutes}m ${rest}s` : `${minutes}m`
 }
 
+/** How long one step took - a separate formatter from formatDuration
+ * above, not a duplicate: that one is tuned for whole-task durations
+ * (usually multi-second, "under a second" is precise enough), this one
+ * is for individual tool-call/LLM-call durations shown in the Timeline,
+ * Steps list, Graph, and duration chart (docs/UI_UX_AUDIT.md Phase 14),
+ * which are routinely sub-second and need real millisecond precision to
+ * be useful at all. */
+export function formatDurationMs(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
+  const minutes = Math.floor(ms / 60_000)
+  const seconds = Math.round((ms % 60_000) / 1000)
+  return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`
+}
+
 /** "2m ago" / "just now" - not live-ticking (no per-second re-render), the
  * task/summary polls this reads from already refresh every few seconds. */
 export function formatRelativeTime(isoTimestamp: string): string {
