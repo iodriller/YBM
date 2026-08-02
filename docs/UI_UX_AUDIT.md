@@ -20,7 +20,7 @@ The redesign establishes a clearer control-plane hierarchy:
 
 ## Where We Are
 
-Phases 0-14 are done. Phases 15-16 are open, and Phases 3 and 7 are blocked on the repository
+Phases 0-15 are done. Phase 16 is open, and Phases 3 and 7 are blocked on the repository
 owner. Full write-ups of shipped phases were removed on 2026-08-01 to keep this document about
 what is *left*; the detail lives in git history (`git log --grep "Phase N"`) and in the code
 comments each change left behind.
@@ -42,6 +42,7 @@ comments each change left behind.
 | 12 | Console UX pass: a chat width control, expired approvals swept out of the list instead of leading it, breadcrumbs + fixed nav active-state on every sub-page, one entry point for adding a skill, an explicit disabled-tool affordance on Tools | — |
 | 13 | Server-side folder picker: `GET /admin/api/folders`, scoped to the same `computer_use.allowed_roots` `filesystem.manage` uses, with a `FolderPicker` dialog in the Chat composer | — |
 | 14 | Timeline gained real categories, colors, and durations; Steps and the Graph gained real per-step/per-node durations; a new Duration/Gantt tab showing tool calls, approval waits (rendered as an outline), and LLM-call latency on one time axis, with any uncovered gap honestly labeled "inferred"; real per-item effect classification for receipts and evidence; `llm_calls` persistence (`task_id`, `source`, `model`, `step_index`, messages, response, tokens, latency), redacted and size-capped, wired into `ybm db clean`/`db reset`; a stable `step_id` stamped through operator history, `ToolCallRequest.parent_step_id`, approvals, and LLM calls, surviving an approval or background-external wait; and Graph v2 - rooted at the task's query, one node per real step (LLM decision + tool call(s) + approval gate grouped together), with duration/token badges and a click-to-inspect dialog showing the exact prompt, response, and tool input/output | Connecting a parallel/subagent lane in the graph back to the exact step that spawned it - step_id doesn't nest, only `origin` does |
+| 15 | Deterministic relevance selection (`score_facts`: keyword/entity overlap with the objective, category relevance, recency; facts with no `task_id` always included as durable global preferences) replacing "inject every fact into every task, uncapped"; a real `user_stated` route via `detect_remember_request` ("remember that ..." / "don't forget that ..."), detected at the runtime level before any LLM sees the message, wired into Telegram's plain-text command layer; `memory.manage`'s `forget` operation gated behind approval (medium risk floor) while `list`/`remember` stay free, via the same `operation_risks`/`approval_required_operations` mechanism `schedule.manage` uses | The fifth scoring signal (current folder/service context) - no caller has that signal available today; the same "remember that ..." interception for the web-chat intake path, which has no equivalent pre-classifier hook yet |
 
 ### Blocked on the repository owner
 
@@ -54,7 +55,6 @@ comments each change left behind.
 
 | # | Phase | Why it's next |
 |---|---|---|
-| 15 | Memory: retrieval, provenance, gated forgetting | Every fact is injected into every task, uncapped |
 | 16 | A second channel | Telegram is the only real channel |
 
 ## Current Feature Coverage
@@ -199,28 +199,6 @@ verified in the code before being written down.
   listing roots, browsing into one, and rejecting a path outside them (`C:\Windows`, 400) all
   behaved correctly against the running backend, not just in tests.
 - Acceptance: "organize this folder" is expressible from the console without typing a path.
-
-### Phase 15 — Memory: real retrieval, real provenance, gated forgetting
-
-Structured memory shipped, but retrieval did not. All three sub-items are correctness, not polish.
-
-- **Deterministic relevance selection.** Today every fact is injected into every task and is
-  explicitly exempt from `max_chars`. That is fine at five facts and actively harmful at a
-  thousand. Score by exact entity match, keyword overlap with the objective, category relevance,
-  recency of use, and current folder/service context; take the top 10-20; always include pinned
-  global preferences. Still no vector database - the reasoning in Phase 4 holds, and a
-  deterministic scorer is inspectable in a way an embedding search is not.
-- **A real `user_stated` route.** The enum value exists with no producer, so the Memory page's
-  "You told it" badge can never appear. Detect an explicit "remember that ..." in the user's own
-  message at the runtime level, store the user's actual words, and stamp `user_stated` - with the
-  provenance decided by the runtime, never selectable by the model, exactly as `task_derived`
-  already works.
-- **Split `memory.manage` by operation.** One capability currently covers list, remember, and
-  forget at `requires_approval: false` / `low`. Deleting durable facts should not be ungated:
-  keep list and remember low, and give **forget** a medium risk floor with approval required, via
-  the existing `operation_risks` / `approval_required_operations` mechanism.
-- Acceptance: memory stays useful at 1,000 facts, "You told it" is reachable, and the agent cannot
-  silently erase something the user asked it to remember.
 
 ### Phase 16 — A second channel
 
