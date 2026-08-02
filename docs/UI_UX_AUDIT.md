@@ -300,6 +300,21 @@ Every item here is a defect, not a feature. Three are defects in work shipped ea
 - Acceptance: no shipped label claims more than the code can support, and cancelling a task always
   frees the worker.
 
+**Second pass, same day (shipped):** cancellation cleanup fixed the *cancelled* case; a normally
+*decided* approval had the identical blocking bug for a different reason. `AWAITING_APPROVAL`
+stayed in `WORKABLE_STATUSES` so the worker could notice a decision landing, but `claim_next`'s
+`ORDER BY created_at ASC` meant it always re-picked that same older task ahead of any newer one -
+with the default `max_parallel_tasks=1`, a task submitted *after* an approval-gated one couldn't
+run until the gated one resolved, even though the gated task itself wasn't stuck (a human just
+hadn't answered yet). Fixed by removing `AWAITING_APPROVAL` from `WORKABLE_STATUSES` entirely -
+`claim_next` never re-selects it, the same way it already never re-selected `AWAITING_EXTERNAL` -
+and releasing the claim the moment a task lands there. The other half:
+`orchestration/signals.py`'s new `requeue_after_approval_decision()` flips the task back to
+`RUNNING` the instant a decision is made (called from all three decision paths - the admin API,
+Telegram inline buttons, Telegram plain-text "approve"), so it becomes claimable again without
+needing that same task re-polled. Regression-tested at the worker level (a second task really does
+get claimed while the first awaits approval) and through all three decision call sites.
+
 ### Phase 9 — Console surfaces over data that already exists (**shipped, reduced scope**)
 
 - Shipped: the pending-approval window rebuilt (one approval at a time, pager, two-column layout,
@@ -328,13 +343,12 @@ developer's interface. The target user should never see a terminal after the fir
 - Shipped: **`ybm run`**, wrapped by a double-clickable **`YBM.bat`** at the repo root. It's an
   orchestration wrapper around what already existed, not new install/start logic - calls the
   already-idempotent setup step (skips venv creation once `.venv` exists, leaves an existing
-  `config.yaml` alone), runs an unconditional `uv sync` (fast no-op when nothing changed, but
-  catches a venv from before a dependency was added), checks for an update and prints a note if
-  one exists, then starts the stack and opens the browser - the same `start -Open` path that
-  already ran doctor preflight. Running it with nothing to do just opens the console.
-  `install.ps1` now delegates its setup+start half to `ybm run` directly. Caught and fixed a real
-  bug via live testing (not just static checks): redirecting `uv sync`'s output turned its routine
-  stderr progress into a fatal error under this script's strict error mode.
+  `config.yaml` alone), syncs dependencies (see the fingerprinting note below), checks for an
+  update and prints a note if one exists, then starts the stack and opens the browser - the same
+  `start -Open` path that already ran doctor preflight. Running it with nothing to do just opens
+  the console. `install.ps1` now delegates its setup+start half to `ybm run` directly. Caught and
+  fixed a real bug via live testing (not just static checks): redirecting `uv sync`'s output turned
+  its routine stderr progress into a fatal error under this script's strict error mode.
 - **Update is checked, never auto-applied.** Pulling and restarting onto new, unreviewed code
   without being asked is an external-write action this script doesn't take on its own - same
   reasoning as `check-updates` itself (Phase 6). This is a deliberate, permanent scope boundary,
@@ -348,12 +362,45 @@ developer's interface. The target user should never see a terminal after the fir
   (`scripts/assets/logo_256.png`, generated once via headless-browser rendering) instead of a
   hand-drawn placeholder badge. Verified with a real screenshot of the running console, not just a
   build check.
-- Not built: a Start-menu/desktop shortcut beyond `YBM.bat` itself, and a `scripts/` folder
-  reorganization. The second is lower-value than planned - `YBM.bat` at the repo root already *is*
-  the obvious human-facing entry point, more prominent than any reshuffle inside `scripts/` would
-  make it, and moving files around risks breaking path references for comparatively little gain.
 - Acceptance (as shipped): a non-developer can go from a downloaded folder to a working console by
   double-clicking one file, and running it again when nothing changed just opens the console.
+
+**Second pass, same day (shipped):** "fast no-op when nothing changed" turned out to be false for
+both of `ybm run`'s two potentially-slow steps - `uv sync` ran unconditionally every single launch
+(genuinely fast once resolved, but still real wall-clock time on every double-click, not the "opens
+in a few seconds" the acceptance line above claims), and the admin console (`tsc` + `vite build`)
+rebuilt unconditionally too, which timing proved was the *larger* of the two costs. Both now skip
+via a fingerprint written after a successful run and compared on the next one: `backend/uv.lock` +
+`pyproject.toml`'s combined hash for the dependency sync (`backend/.venv/.ybm_sync_fingerprint`),
+and an (mtime, size) fingerprint over `frontend/`'s source files for the console build
+(`backend/src/agent_control/static/admin/.ybm_build_fingerprint`, content hashing would cost more
+than the build it exists to skip). `uv sync` failures now check `$LASTEXITCODE` and stop with a
+clear message immediately, instead of silently continuing into the update check and start.
+Consumer syncs also install a narrower extras set (voice/tray/desktop, not test/e2e/dev - a
+developer typing `ybm setup` themselves still gets the full set) via a new `-RuntimeOnly` flag on
+`Invoke-YbmSetup`.
+
+Caught two real bugs via live testing that static checks alone would have missed:
+- The narrower consumer extras set was a plain `uv sync`, which is *exact* - it removes anything
+  not covered by the given extras, not just installs what's missing. Run against this repo's own
+  shared dev venv, it silently uninstalled `ruff` and `pytest`. Fixed with `--inexact` ("do not
+  remove extraneous packages"), confirmed by re-running against the same venv and checking `ruff`
+  and `pytest` both still imported afterward.
+- The admin-console fingerprint path was written relative to the wrong directory (missing the
+  `backend/` prefix - `run_setup()`'s CWD is the repo root, not `backend/`), which silently created
+  a bogus `src/agent_control/static/admin/` at the repo root instead of writing next to the real
+  build output. Caught by checking the filesystem after a live run, not by reading the code back.
+  A regression test for this exact mistake is in `test_bootstrap.py`.
+
+Measured, not assumed: a fully-warm `ybm run` (nothing changed since the last one) went from
+~60-90s to ~9s. Genuinely "a few seconds" would mean consolidating the several separate Python
+process launches this still makes (setup, check-updates, doctor, start each pay their own
+interpreter and import startup cost) - a larger refactor of the CLI's own structure, not attempted
+this pass.
+- Not built: a Start-menu/desktop shortcut beyond `YBM.bat` itself, `scripts/` folder
+  reorganization (still lower-value than planned - `YBM.bat` at the repo root already *is* the
+  obvious entry point), and consolidating the CLI's multiple per-command Python process launches
+  into one (the remaining gap between "~9s" and "a few seconds" above).
 
 ### Phase 11 — Console redesign: one place to configure the agent (**shipped, reduced scope**)
 
@@ -387,7 +434,21 @@ feedback named it: "these are basically agentic setup... should live at one plac
 - Acceptance (as shipped): what the agent is made of (tools, skills, memory) is visible from one
   place, and installing a skill from a bundled starter takes one click.
 
-### Phase 12 — The rich, clickable trace
+### Phase 12 — Server-side folder picker
+
+Reordered ahead of the trace and memory work below (moved from its original Phase 14 slot) on
+direct feedback: the README's own first example is "organize my Downloads folder", but a web-chat
+user still has to type or already know a filesystem path to ask for that - a real, everyday gap
+that outranks trace depth for a "regular person" using this day to day.
+
+- Browser directory pickers cannot yield a usable absolute path, which is why Phase 1 deferred
+  this. The correct implementation is server-side: list the configured allowed roots, browse
+  subdirectories through the backend, select one, and insert a server-recognized folder reference
+  into the task. Path resolution is validated against the allowed roots on every request - no
+  traversal outside them, and no reliance on the browser's directory-upload as a stand-in.
+- Acceptance: "organize this folder" is expressible from the console without typing a path.
+
+### Phase 13 — The rich, clickable trace
 
 - Persist LLM calls (`task_id`, `step_index`, `source`, `model`, messages, raw response, tokens,
   latency), written through the existing `redact_payload` with a per-call size cap. Enabled by
@@ -409,7 +470,7 @@ feedback named it: "these are basically agentic setup... should live at one plac
 - Acceptance: "why did it do that" is answerable from the console alone, for any past task, and a
   receipt's evidence list says what actually happened to each item, not just that it was touched.
 
-### Phase 13 — Memory: real retrieval, real provenance, gated forgetting
+### Phase 14 — Memory: real retrieval, real provenance, gated forgetting
 
 Structured memory shipped, but retrieval did not. All three sub-items are correctness, not polish.
 
@@ -430,15 +491,6 @@ Structured memory shipped, but retrieval did not. All three sub-items are correc
   the existing `operation_risks` / `approval_required_operations` mechanism.
 - Acceptance: memory stays useful at 1,000 facts, "You told it" is reachable, and the agent cannot
   silently erase something the user asked it to remember.
-
-### Phase 14 — Server-side folder picker
-
-- Browser directory pickers cannot yield a usable absolute path, which is why Phase 1 deferred
-  this. The correct implementation is server-side: list the configured allowed roots, browse
-  subdirectories through the backend, select one, and insert a server-recognized folder reference
-  into the task. Path resolution is validated against the allowed roots on every request - no
-  traversal outside them, and no reliance on the browser's directory-upload as a stand-in.
-- Acceptance: "organize this folder" is expressible from the console without typing a path.
 
 ### Phase 15 — A second channel
 
