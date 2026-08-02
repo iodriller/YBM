@@ -20,7 +20,8 @@ The redesign establishes a clearer control-plane hierarchy:
 
 ## Where We Are
 
-Phases 0-15 are done. Phase 16 is open, and Phases 3 and 7 are blocked on the repository
+Phases 0-15 are done. Phase 16 is partially shipped (the channel-adapter interface; an actual
+second channel remains open), and Phases 3 and 7 are blocked on the repository
 owner. Full write-ups of shipped phases were removed on 2026-08-01 to keep this document about
 what is *left*; the detail lives in git history (`git log --grep "Phase N"`) and in the code
 comments each change left behind.
@@ -43,6 +44,7 @@ comments each change left behind.
 | 13 | Server-side folder picker: `GET /admin/api/folders`, scoped to the same `computer_use.allowed_roots` `filesystem.manage` uses, with a `FolderPicker` dialog in the Chat composer | — |
 | 14 | Timeline gained real categories, colors, and durations; Steps and the Graph gained real per-step/per-node durations; a new Duration/Gantt tab showing tool calls, approval waits (rendered as an outline), and LLM-call latency on one time axis, with any uncovered gap honestly labeled "inferred"; real per-item effect classification for receipts and evidence; `llm_calls` persistence (`task_id`, `source`, `model`, `step_index`, messages, response, tokens, latency), redacted and size-capped, wired into `ybm db clean`/`db reset`; a stable `step_id` stamped through operator history, `ToolCallRequest.parent_step_id`, approvals, and LLM calls, surviving an approval or background-external wait; and Graph v2 - rooted at the task's query, one node per real step (LLM decision + tool call(s) + approval gate grouped together), with duration/token badges and a click-to-inspect dialog showing the exact prompt, response, and tool input/output | Connecting a parallel/subagent lane in the graph back to the exact step that spawned it - step_id doesn't nest, only `origin` does |
 | 15 | Deterministic relevance selection (`score_facts`: keyword/entity overlap with the objective, category relevance, recency; facts with no `task_id` always included as durable global preferences) replacing "inject every fact into every task, uncapped"; a real `user_stated` route via `detect_remember_request` ("remember that ..." / "don't forget that ..."), detected at the runtime level before any LLM sees the message, wired into Telegram's plain-text command layer; `memory.manage`'s `forget` operation gated behind approval (medium risk floor) while `list`/`remember` stay free, via the same `operation_risks`/`approval_required_operations` mechanism `schedule.manage` uses | The fifth scoring signal (current folder/service context) - no caller has that signal available today; the same "remember that ..." interception for the web-chat intake path, which has no equivalent pre-classifier hook yet |
+| 16 | Channel-adapter interface, first half: the "classify -> task" stage extracted from `TelegramIntakeService` into channel-agnostic functions (`channels/base.py`'s `classify_and_spawn_task`, `resume_clarifying_reply`, `status_summary`) behind a `ChannelAdapter` Protocol and shared `ChannelUpdateResult` type; `ChatResponder`/`LLMChatResponder`/`StaticChatResponder` lost their misleading Telegram-only names (implementations were already channel-agnostic) | The intake/notify/command stages (Telegram JSON parsing, `/command` syntax, inline-keyboard callbacks, voice transcription, `TelegramTaskNotifier`) and an actual second channel - deliberately deferred until a real second channel exists to validate the seam against, see the Phase 16 write-up below |
 
 ### Blocked on the repository owner
 
@@ -55,7 +57,7 @@ comments each change left behind.
 
 | # | Phase | Why it's next |
 |---|---|---|
-| 16 | A second channel | Telegram is the only real channel |
+| 16 | A second channel, built on the adapter interface's first half (see Shipped above) | Telegram is still the only real channel |
 
 ## Current Feature Coverage
 
@@ -202,12 +204,35 @@ verified in the code before being written down.
 
 ### Phase 16 — A second channel
 
-- Refactor `channels/` into a channel-adapter interface (Telegram already provides the shape:
-  intake -> classify -> task -> notify) so a new channel is an adapter, not a fork.
-- Candidate order by reach-per-effort: WhatsApp (Baileys), Discord, Email/IMAP, Slack, Signal.
-  iMessage needs a macOS host and is out of scope on this machine.
+**Channel-adapter interface (shipped, first half).** The "classify -> task" half of intake ->
+classify -> task -> notify never actually depended on anything Telegram-specific - it was just
+inlined as private methods on `TelegramIntakeService`. It's now `channels/base.py`:
+`classify_and_spawn_task`, `resume_clarifying_reply`, and `status_summary` are plain functions
+over `InboundMessage`/`Repositories`, plus a `ChannelAdapter` Protocol and shared
+`ChannelUpdateResult` type `TelegramAdapter` now formally implements. `ChatResponder`/
+`LLMChatResponder`/`StaticChatResponder` (`channels/responder.py`) lost their misleading
+Telegram-flavored names - the implementations were already channel-agnostic, only the names
+weren't. Verified both by the full existing Telegram test suite staying green (the extraction
+moved code, it didn't rewrite behavior) and by new tests calling `classify_and_spawn_task`
+directly with `ChannelType.DISCORD`/`SLACK` inbound messages, confirming the audit trail, task
+metadata, and outbound replies are genuinely channel-derived, not secretly still Telegram-shaped.
+
+**Deliberately not done, and why:** the intake stage itself (`TelegramAdapter`'s Telegram-JSON
+parsing) and the notify/command stage (`/command` slash syntax, inline-keyboard callback
+queries, voice transcription via Telegram's file API, `TelegramTaskNotifier`) were not extracted
+- there is no second implementation yet to validate an extracted shape against, and guessing that
+boundary now risks getting it wrong in a way that would need reworking once a real second channel
+exists. `task_chat_id()` (schemas.py) and `tools/artifact_delivery.py`'s Telegram-only sending are
+correctly Telegram-only today for the same reason: their only two callers only know how to reach
+Telegram, so generalizing them without a caller that needs it would be speculative. `ChannelsConfig`
+still has a single `telegram` field, not a list of channel configs.
+
+**What's left for a real second channel:**
+- Pick one (candidate order by reach-per-effort: WhatsApp (Baileys), Discord, Email/IMAP, Slack,
+  Signal; iMessage needs a macOS host and is out of scope on this machine) and build its
+  `ChannelAdapter` + notify transport, validating (and likely revising) the seam this phase started.
 - Comparable prior art: OpenClaw (MIT, self-hosted) routes ~25 chat platforms through one local
-  gateway into a single agent - the same architecture this refactor points at.
+  gateway into a single agent - the same architecture this points at.
 - Every new channel is new untrusted input; the taint-tracking idea in the research notes should
   land before the channel count grows.
 
