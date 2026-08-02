@@ -11,7 +11,7 @@ from agent_control.clarification import find_clarifying_task, resume_clarifying_
 from agent_control.config import AppSettings, TelegramConfig
 from agent_control.config_sync import read_env_value
 from agent_control.channels.responder import TelegramResponder, gateway_context
-from agent_control.channels.memory import ConversationMemoryService, memory_context
+from agent_control.channels.memory import ConversationMemoryService, detect_remember_request, memory_context
 from agent_control.llm.classifier import MessageClassifier, classification_trace
 from agent_control.orchestration.signals import apply_task_signal, requeue_after_approval_decision
 from agent_control.schemas import (
@@ -24,6 +24,8 @@ from agent_control.schemas import (
     CommandEnvelope,
     InboundMessage,
     IntentRoute,
+    MemoryFact,
+    MemorySource,
     MessageClassification,
     MessageKind,
     OutboundMessage,
@@ -546,13 +548,14 @@ class TelegramIntakeService:
             # memory. Falls back to the narrower memory-only context when no
             # settings are available (e.g. a caller that never wired them).
             classification_context = (
-                gateway_context(self.settings, self.repositories, conversation_id)
+                gateway_context(self.settings, self.repositories, conversation_id, query_text=inbound.text or "")
                 if self.settings is not None
                 else memory_context(
                     self.repositories.conversation_memory.get(conversation_id),
                     recent_turns=3,
                     max_chars=900,
                     remembered_facts=self.repositories.memory_facts.list_all(),
+                    objective=inbound.text or "",
                 )
             )
             try:
@@ -635,6 +638,7 @@ class TelegramIntakeService:
             recent_turns=5,
             max_chars=1600,
             remembered_facts=self.repositories.memory_facts.list_all(),
+            objective=objective,
         )
         task = self.repositories.tasks.create(
             objective,
@@ -876,7 +880,25 @@ class TelegramIntakeService:
             return self._out(chat_id, f"Usage: /{name} <task_id>")
         return None
 
+    def _remember_from_message(self, inbound: InboundMessage) -> OutboundMessage | None:
+        content = detect_remember_request(inbound.text or "")
+        if content is None:
+            return None
+        self.repositories.memory_facts.create(
+            MemoryFact(category="user_note", content=content, source=MemorySource.USER_STATED)
+        )
+        return self._out(inbound.chat_id, f"Got it, I'll remember: {content}")
+
     def _plain_text_command_response(self, inbound: InboundMessage) -> OutboundMessage | None:
+        # "Remember that ..." (docs/UI_UX_AUDIT.md Phase 15) is checked here,
+        # at the runtime level, before the LLM classifier ever sees the
+        # message - provenance is decided by the runtime, never selectable
+        # by the model, same guarantee task_derived facts already have via
+        # memory.manage. Same precedence as every other plain-text command:
+        # it wins even while a clarification is pending (see the caller).
+        remember_response = self._remember_from_message(inbound)
+        if remember_response is not None:
+            return remember_response
         text = (inbound.text or "").strip().lower()
         if text in {"approve", "approved", "approve it", "yes approve", "yes, approve"}:
             return self._approve_latest_pending(inbound)

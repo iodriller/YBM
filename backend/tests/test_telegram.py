@@ -11,7 +11,7 @@ from agent_control.channels.responder import StaticTelegramResponder
 from agent_control.config import AppSettings, CapabilityPolicy, DesktopAdapterConfig, StorageConfig, TelegramConfig
 from agent_control.llm import LLMMessageClassifier, StaticMessageClassifier
 from agent_control.observation import ArtifactService, ScreenshotService
-from agent_control.schemas import ApprovalRequest, ApprovalStatus, AuditEventType, ChannelType, MessageClassification, TaskStatus, TaskType
+from agent_control.schemas import ApprovalRequest, ApprovalStatus, AuditEventType, ChannelType, MemorySource, MessageClassification, TaskStatus, TaskType
 from agent_control.schemas import Capability, RiskLevel
 from agent_control.schemas import utc_now
 from agent_control.storage import AuditLogger, Database, Repositories
@@ -525,6 +525,79 @@ def test_telegram_plain_approve_approves_latest_pending_task(tmp_path) -> None:
     # make the task claimable again, not leave it stuck in a status
     # claim_next no longer re-selects.
     assert repos.tasks.get(task.id).status == TaskStatus.RUNNING
+
+
+def test_telegram_remember_that_stores_a_user_stated_fact_without_the_llm(tmp_path) -> None:
+    """docs/UI_UX_AUDIT.md Phase 15: provenance must be decided by the
+    runtime, never selectable by the model - no classifier is configured
+    here at all, proving the detection and storage happen before any LLM
+    would even be reachable."""
+    service, repos = _service(
+        tmp_path,
+        TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
+    )
+
+    result = service.handle_update(
+        {
+            "message": {
+                "message_id": 15,
+                "from": {"id": 42},
+                "chat": {"id": 100},
+                "text": "Remember that I prefer dark roast coffee",
+            }
+        }
+    )
+
+    assert result.outbound_message is not None
+    assert "dark roast coffee" in result.outbound_message.text
+    facts = repos.memory_facts.list_all()
+    assert len(facts) == 1
+    assert facts[0].source == MemorySource.USER_STATED
+    assert facts[0].content == "I prefer dark roast coffee"
+    assert facts[0].task_id is None
+
+
+def test_telegram_remember_that_does_not_match_unrelated_messages(tmp_path) -> None:
+    service, repos = _service(
+        tmp_path,
+        TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
+    )
+
+    service.handle_update(
+        {
+            "message": {
+                "message_id": 16,
+                "from": {"id": 42},
+                "chat": {"id": 100},
+                "text": "remembering our trip was fun",
+            }
+        }
+    )
+
+    assert repos.memory_facts.list_all() == []
+
+
+def test_telegram_remember_to_is_a_reminder_not_a_memory_fact(tmp_path) -> None:
+    """"remember to X" is reminder-shaped, not "remember that X" - it must
+    still reach the classifier and become a task, not get silently
+    swallowed into a memory fact just because it starts with "remember"."""
+    service, repos = _service(
+        tmp_path,
+        TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
+    )
+
+    service.handle_update(
+        {
+            "message": {
+                "message_id": 17,
+                "from": {"id": 42},
+                "chat": {"id": 100},
+                "text": "remember to call the plumber tomorrow",
+            }
+        }
+    )
+
+    assert repos.memory_facts.list_all() == []
 
 
 class _FakeBotApiForCallbacks:

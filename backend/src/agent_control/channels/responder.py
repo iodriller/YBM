@@ -24,7 +24,7 @@ class LLMTelegramResponder:
     async def answer(self, message: InboundMessage, conversation_id: str | None = None) -> str:
         return await self.provider.generate_text(
             _system_prompt(),
-            _user_prompt(message, gateway_context(self.settings, self.repositories, conversation_id)),
+            _user_prompt(message, gateway_context(self.settings, self.repositories, conversation_id, query_text=message.text or "")),
         )
 
 
@@ -46,7 +46,9 @@ def _user_prompt(message: InboundMessage, context: str) -> str:
     return render_prompt("tasks/telegram_gateway_user.md", context=context, message_text=message.text or "")
 
 
-def gateway_context(settings: AppSettings, repositories: Repositories, conversation_id: str | None = None) -> str:
+def gateway_context(
+    settings: AppSettings, repositories: Repositories, conversation_id: str | None = None, *, query_text: str = ""
+) -> str:
     tasks = repositories.tasks.list_recent(5)
     active_statuses = {TaskStatus.RECEIVED, TaskStatus.INTERPRETING, TaskStatus.PLANNED, TaskStatus.RUNNING, TaskStatus.RETRYING, TaskStatus.AWAITING_APPROVAL}
     active_count = len([task for task in tasks if task.status in active_statuses])
@@ -67,7 +69,7 @@ def gateway_context(settings: AppSettings, repositories: Repositories, conversat
     workspace_approval = "approval-free" if workspace_policy and not workspace_policy.requires_approval else "approval-gated"
     adapter_factory_enabled = bool(settings.adapters.adapter_factory.enabled and workspace_policy and workspace_policy.enabled)
     memory_record = repositories.conversation_memory.get(conversation_id) if conversation_id else None
-    memory = memory_context(memory_record, remembered_facts=repositories.memory_facts.list_all())
+    memory = memory_context(memory_record, remembered_facts=repositories.memory_facts.list_all(), objective=query_text)
 
     return f"""LLM profile: {settings.llm.default_profile}
 Telegram receive/send: enabled

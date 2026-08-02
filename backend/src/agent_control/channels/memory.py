@@ -7,12 +7,101 @@ from typing import Any
 
 from agent_control.llm.providers import LLMProvider
 from agent_control.prompts import render_prompt
+from agent_control.schemas import MemoryFact, utc_now
 from agent_control.storage.repositories import Repositories
 
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_SUMMARY = "No durable conversation memory yet."
+
+# "Remember that ..." (docs/UI_UX_AUDIT.md Phase 15) - shared by every
+# channel (Telegram, web chat) so provenance is decided identically
+# everywhere: at the runtime level, before any LLM sees the message, never
+# selectable by the model. Matched against the ORIGINAL-case text so the
+# stored fact preserves the user's actual words, not a lowercased copy.
+#
+# Requires "that" (or a ":"/"," separator) right after remember/don't
+# forget, not just the bare verb - "remember to call the plumber" is a
+# reminder-shaped request that should still reach the classifier and
+# become a task, not get silently swallowed into a memory fact just
+# because it starts with "remember".
+_REMEMBER_PATTERN = re.compile(
+    r"^(?:please\s+)?(?:remember|don'?t\s+forget)(?:\s+that|[:,])\s+(.+)$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def detect_remember_request(text: str) -> str | None:
+    """Extracts the content of a "remember that ..." message, or None if
+    ``text`` doesn't match. Capped to MemoryFact.content's 2000-char limit
+    so a caller can construct one directly without a validation error.
+    """
+    match = _REMEMBER_PATTERN.match(text.strip())
+    if match is None:
+        return None
+    content = match.group(1).strip()
+    return content[:2000] if content else None
+
+_STOPWORDS = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "to", "of", "in", "on", "at",
+    "for", "and", "or", "with", "this", "that", "it", "its", "my", "me", "please", "can", "you",
+    "i", "do", "does", "did", "will", "would", "should", "could", "have", "has", "had", "not",
+})
+
+
+def _keywords(text: str) -> set[str]:
+    return {word for word in re.findall(r"[a-z0-9]+", text.lower()) if len(word) > 2 and word not in _STOPWORDS}
+
+
+def score_facts(facts: list[MemoryFact], objective: str, *, limit: int = 15) -> list[MemoryFact]:
+    """Deterministic relevance selection (docs/UI_UX_AUDIT.md Phase 15) -
+    replaces "inject every fact into every task," which is fine at five
+    facts and actively harmful at a thousand. No vector database: a scorer
+    built from word overlap, category match, and recency is fully
+    inspectable in a way an embedding search is not.
+
+    Facts with no ``task_id`` are treated as durable, global preferences -
+    set by a human via the Memory page or a "remember that ..." message,
+    not incidentally learned mid-task - and always included, unscored.
+    There is no explicit "pinned" flag in the schema; this is the closest
+    grounded proxy available: a fact tied to one specific task's context is
+    exactly the kind that stops being relevant once that task is old news,
+    while a fact with no task behind it doesn't decay that way.
+
+    Scoring combines four of the roadmap's five signals into one ranking:
+    - entity match: a capitalized word/phrase in the fact (a proper-noun
+      proxy - "Python", "Chrome") that also appears in the objective,
+      weighted heavily.
+    - keyword overlap: shared lowercase words with the objective, minus
+      stopwords.
+    - category relevance: the fact's own category name (split into words,
+      so "coding_style" matches "coding" or "style") overlapping with the
+      objective's keywords.
+    - recency: an exponential-ish decay on ``updated_at`` age in days.
+    The fifth - "current folder/service context" - is NOT implemented: no
+    caller of this function has a folder/service signal available today
+    (a disclosed gap, not a silent one), a natural follow-up once one does.
+    """
+    pinned = [fact for fact in facts if fact.task_id is None]
+    scoped = [fact for fact in facts if fact.task_id is not None]
+    if not scoped:
+        return pinned
+
+    objective_keywords = _keywords(objective)
+    now = utc_now()
+
+    def score(fact: MemoryFact) -> float:
+        entities = re.findall(r"\b[A-Z][A-Za-z0-9]{2,}\b", fact.content)
+        entity_score = sum(4.0 for entity in entities if entity.lower() in objective_keywords)
+        keyword_score = float(len(_keywords(fact.content) & objective_keywords))
+        category_score = 2.0 if _keywords(fact.category) & objective_keywords else 0.0
+        age_days = max((now - fact.updated_at).total_seconds() / 86400, 0.0)
+        recency_score = 1.0 / (1.0 + age_days / 30)
+        return entity_score + keyword_score + category_score + recency_score
+
+    ranked = sorted(scoped, key=score, reverse=True)
+    return pinned + ranked[:limit]
 
 
 class ConversationMemoryService:
@@ -80,6 +169,7 @@ def memory_context(
     recent_turns: int = 4,
     max_chars: int = 1800,
     remembered_facts: list[Any] | None = None,
+    objective: str = "",
 ) -> str:
     """``remembered_facts`` (docs/UI_UX_AUDIT.md Phase 4): structured
     MemoryFact rows, distinct from the rolling summary below - a fact the
@@ -88,10 +178,16 @@ def memory_context(
     max_chars trimming, since a person deliberately added these and
     silently dropping one because the summary ran long would defeat the
     point of "remember".
+
+    ``objective`` (docs/UI_UX_AUDIT.md Phase 15) scores and caps
+    ``remembered_facts`` via score_facts before rendering - callers still
+    pass the full, unfiltered fact list; the selection happens here, once,
+    rather than duplicated at every call site.
     """
+    scored_facts = score_facts(list(remembered_facts), objective) if remembered_facts else []
     facts_block = ""
-    if remembered_facts:
-        lines = "\n".join(f"- [{f.category}] {f.content}" for f in remembered_facts)
+    if scored_facts:
+        lines = "\n".join(f"- [{f.category}] {f.content}" for f in scored_facts)
         facts_block = f"Remembered facts:\n{lines}\n"
 
     if not memory_record:

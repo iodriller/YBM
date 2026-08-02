@@ -1211,6 +1211,7 @@ def create_admin_router(
         memory_ctx = memory_context(
             repositories.conversation_memory.get(conversation_id),
             remembered_facts=repositories.memory_facts.list_all(),
+            objective=objective,
         )
         task = repositories.tasks.create(
             objective,
