@@ -11,7 +11,7 @@ input at all.
 
 from __future__ import annotations
 
-from agent_control.schemas import Capability, MemoryFact, MemorySource, ToolCallRequest, ToolCallResult, ToolResultStatus
+from agent_control.schemas import Capability, MemoryFact, MemorySource, RiskLevel, ToolCallRequest, ToolCallResult, ToolResultStatus
 from agent_control.storage.repositories import Repositories
 from agent_control.tools.contracts import MemoryManageInput, MemoryManageOutput
 from agent_control.tools.spec import (
@@ -99,6 +99,20 @@ def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -
             output_schema=MemoryManageOutput,
             operation_output_schemas=same_output_schema(("remember", "list", "forget"), MemoryManageOutput),
             default_operation="remember",
+            # docs/UI_UX_AUDIT.md Phase 15: remember/list stay low-risk,
+            # no-approval - forgetting a durable fact is the one operation
+            # that erases something a human may have relied on the agent
+            # to keep, so it gets a real gate, the same pattern
+            # schedule.manage already uses for its own destructive ops.
+            operation_risks={
+                "remember": RiskLevel.LOW,
+                "list": RiskLevel.LOW,
+                "forget": RiskLevel.MEDIUM,
+            },
+            approval_required_operations=("forget",),
+            approval_reasons={
+                "forget": "permanently deletes a remembered fact - the agent cannot silently erase something you asked it to remember",
+            },
             examples=(
                 {"operation": "remember", "category": "preference", "content": "Prefers metric units"},
                 {"operation": "list", "query": "preference"},

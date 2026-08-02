@@ -137,8 +137,15 @@ capabilities:
   memory.manage:
     enabled: false
     scopes: []
+    # docs/UI_UX_AUDIT.md Phase 15: requires_approval stays false here
+    # (unlike schedule.manage above, which gates every operation at this
+    # level) so list/remember stay approval-free - the tool's own
+    # approval_required_operations=("forget",) is what gates forget
+    # specifically. max_risk_level is "medium", not "low", only because
+    # forget's own operation_risks entry is medium and a lower ceiling here
+    # would deny it outright instead of routing it to approval.
     requires_approval: false
-    max_risk_level: "low"
+    max_risk_level: "medium"
 
 approval_policy:
   default_timeout_seconds: 900
