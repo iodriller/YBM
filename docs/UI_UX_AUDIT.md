@@ -41,6 +41,7 @@ comments each change left behind.
 | 11 | Console regrouped: a Tools page, an Agent hub over Tools/Skills/Memory, and a bundled starter skill catalog | MCP server add/edit/test, an `adapter.factory` review UI, skill edit-in-place |
 | 12 | Console UX pass: a chat width control, expired approvals swept out of the list instead of leading it, breadcrumbs + fixed nav active-state on every sub-page, one entry point for adding a skill, an explicit disabled-tool affordance on Tools | — |
 | 13 | Server-side folder picker: `GET /admin/api/folders`, scoped to the same `computer_use.allowed_roots` `filesystem.manage` uses, with a `FolderPicker` dialog in the Chat composer | — |
+| 14 | Timeline gained real categories, colors, and durations; Steps and the Graph gained real per-step/per-node durations; a new Duration/Gantt tab showing tool calls, approval waits (rendered as an outline), and LLM-call latency on one time axis, with any uncovered gap honestly labeled "inferred"; real per-item effect classification for receipts and evidence; and `llm_calls` persistence (`task_id`, `source`, `model`, `step_index`, messages, response, tokens, latency), redacted and size-capped, wired into `ybm db clean`/`db reset` | Graph v2 (rooted at the query, typed nodes, click-to-inspect) and stable `step_id` linking (the remaining half of Phase 14) |
 
 ### Blocked on the repository owner
 
@@ -53,7 +54,7 @@ comments each change left behind.
 
 | # | Phase | Why it's next |
 |---|---|---|
-| 14 | Task timeline and graph overhaul | The trace can't answer "what took so long" or "why did it do that" |
+| 14 | Graph v2 and stable `step_id` linking | The graph still has no root, no node types, and no click target |
 | 15 | Memory: retrieval, provenance, gated forgetting | Every fact is injected into every task, uncapped |
 | 16 | A second channel | Telegram is the only real channel |
 
@@ -200,85 +201,26 @@ verified in the code before being written down.
   behaved correctly against the running backend, not just in tests.
 - Acceptance: "organize this folder" is expressible from the console without typing a path.
 
-### Phase 14 — Task timeline and graph overhaul
+### Phase 14 — Graph v2 and stable step linking (remainder)
 
-Today the trace answers *what* ran but neither *how long* anything took nor *why* it was chosen.
-The timeline renders two event kinds in two colors with two icons; the graph is a lane layout of
-tool calls with no duration, no root, and no click target.
+Timeline categories/colors/durations, the Duration/Gantt view, per-step durations in Steps and the
+Graph, real per-item effect classification, and `llm_calls` persistence all shipped (`#14` in
+Shipped above; detail in git history). Two items remain:
 
-**What the data already supports, with no backend change:** `tool_invocations` carries both
-`created_at` and `completed_at`, so exact per-call duration is derivable client-side right now.
-Task total duration is `task.created_at` to `updated_at`. That is enough for the whole duration
-story below except per-LLM-call latency.
-
-The three views should become one system rather than three unrelated tabs, each answering a
-different question about the same run:
-
-```
-Steps     "what did it do, in order"        - exists, gains durations
-Timeline  "everything that happened, when"  - exists, gains categories + colors + durations
-Duration  "where did the time go"           - NEW, the horizontal bar/Gantt view
-Graph     "how did the pieces relate"       - exists, gains a root, node types, and click-through
-```
-
-Sketch of the duration view (x-axis is wall-clock elapsed from task start):
-
-```
-                0s        5s       10s       15s       20s
-task received   |
-concierge       |▓▓|                                          0.9s  classify
-operator think     |▓▓▓▓▓|                                    2.4s  (inferred)
-filesystem.search        |▓▓▓▓▓▓▓▓▓▓|                         4.8s  ok
-operator think                      |▓▓▓|                     1.6s  (inferred)
-APPROVAL WAIT                          |░░░░░░░░░░░░░|        6.1s  you decided
-artifact.deliver                                    |▓▓|      1.1s  ok
-auditor                                                |▓|    0.7s  sufficient
-                                                       └ completed 17.6s total
-```
-
-Approval waits are the case that matters most and is invisible today: a task that looks slow is
-often a task that spent most of its life waiting on a human, which is not a performance problem
-at all. That distinction should be obvious at a glance, so human-wait segments render in a
-different treatment (outline, not fill) from machine time.
-
-- **A duration bar chart (the requested Gantt / project-planning view).** One horizontal row per
-  step, x-axis = elapsed time from task start, bar length = that step's real duration, colored by
-  outcome. It answers "what took so long" at a glance, which no current view does. The gaps
-  *between* tool calls are the Operator deciding what to do next - render them as distinct
-  inferred-thinking segments and label them as inferred, because until this phase's LLM-call
-  persistence lands they are computed from the gap, not measured. Not a new charting dependency:
-  positioned divs on a time axis, the same approach the existing Diagnostics database bars use.
-- **Per-step duration everywhere else too** - in the timeline rows, on the graph nodes, and in the
-  step list, not only in the new chart.
-- **A real event vocabulary for the timeline.** Currently every row is either "tool" (blue wrench)
-  or "audit" (grey shield). The backend's `format_audit_event` already computes a `category`
-  (`approval`, `policy`, `classification`, `tool`, `error`, `spawned_task`, `config`, `system`,
-  ...) - it just is not included in the timeline payload. Add `category` and `duration_ms` to each
-  timeline item, then give each category its own icon and semantic color: approvals in warning,
-  failures in danger, successful tool calls in success, external contact with a globe, artifacts
-  with a file mark. Reuses the existing semantic color roles rather than inventing a palette.
 - **Graph v2, rooted at the actual query.** Node types for query, classification, operator decision
   (with its reasoning), tool call, approval gate, artifact, and final answer - not just tool calls.
   Duration and token badges per node, status ring, and colors matching the timeline's vocabulary so
   the two views read as one system.
 - **Click any node or row to inspect it**: the exact prompt sent, the raw model response, tool input
-  and output, tokens, latency, and the audit events scoped to that step.
-- **Persist LLM calls** (`task_id`, `step_index`, `source`, `model`, messages, raw response, tokens,
-  latency) through the existing `redact_payload` with a per-call size cap. Enabled by default - the
-  product's whole claim is that it shows the receipts - with a config flag to disable and pruning
-  through `ybm db clean`. This is what turns inferred thinking-time into measured latency and makes
-  "why did it do that" answerable.
+  and output, tokens, latency, and the audit events scoped to that step. Needs the `step_id` below
+  to know which LLM call/tool invocation/approval belong to which step in the first place.
 - **Give each operator step a stable `step_id`** and stamp it into `ToolCallRequest.parent_step_id`,
   linking operator history, tool invocations, approvals, and LLM calls into one real tree. Root-cause
-  fix for the graph's disclosed gap, not a display workaround.
-- **Real per-item effect classification** for receipts and evidence, replacing Phase 8's "Touched
-  during this task" wording fix with actual read / created / modified / moved / deleted /
-  command-executed / website-visited / message-sent labels. A mapping table from each tool's
-  `operation` name to an effect kind (`filesystem.manage` already distinguishes `read_file` from
-  `write_text_file` from `open_file` at the source), not a redesign of evidence extraction.
-- Acceptance: an operator can see where a task spent its time without reading JSON, tell an approval
-  apart from a failure apart from a tool call at a glance, and answer "why did it do that" from the
-  console alone for any past task.
+  fix for the graph's disclosed gap (it currently infers structure from `origin` tags, not a real
+  parent-child link), not a display workaround.
+- Acceptance: the graph shows how a task actually branched (parallel calls, delegated sub-tasks)
+  rooted at the query that started it, and clicking any step answers "why did it do that" with the
+  real prompt and response, not an inference.
 
 ### Phase 15 — Memory: real retrieval, real provenance, gated forgetting
 
