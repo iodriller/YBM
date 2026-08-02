@@ -111,6 +111,28 @@ function Invoke-YbmAutostart {
 # discards whatever is passed in (confirmed the hard way - see git history).
 # Use $Argv instead.
 
+# Dependencies actually needed for the app to run: voice (STT/TTS), tray
+# (the tray icon), desktop (screenshot/control capability) - none of it is
+# developer tooling. Kept as a function, not a constant, so -RuntimeOnly
+# and the full developer set (below) can share the --no-desktop opt-out
+# without duplicating that check.
+#
+# --inexact matters here specifically: this repo has exactly one venv,
+# shared by the consumer run path and a developer's own `ybm setup`/`ybm
+# test`/ruff. `uv sync` without it is EXACT - it uninstalls anything not
+# covered by the given extras, not just installs what's missing. A
+# runtime-only sync run against a venv that already has the dev extras
+# (ruff, pytest, telethon) would silently strip them - confirmed the hard
+# way running this exact change live, not a hypothetical.
+function Get-YbmRuntimeExtraArgs {
+  param([string[]]$Argv)
+  $extraArgs = @("--extra", "voice", "--extra", "tray", "--inexact")
+  if ($Argv -notcontains "--no-desktop") {
+    $extraArgs += @("--extra", "desktop")
+  }
+  return $extraArgs
+}
+
 function Invoke-YbmSetup {
   param([string[]]$Argv)
 
@@ -122,14 +144,22 @@ function Invoke-YbmSetup {
     Write-Host "Creating backend\.venv via uv sync (first run can take a minute)..."
     Push-Location (Join-Path $Script:YbmRoot "backend")
     try {
-      # Keep this extras list identical to scripts/install.sh's uv sync line -
-      # they drifted before (install.sh only had "--extra dev", silently
-      # skipping pytest/telethon/voice/desktop on a fresh Linux/macOS install).
-      # "dev" (ruff) is included so a fresh `ybm setup` can actually run the
-      # `uv run --frozen ruff check .` step AGENTS.md/CONTRIBUTING.md document.
-      $extraArgs = @("--extra", "test", "--extra", "e2e", "--extra", "voice", "--extra", "tray", "--extra", "dev")
-      if ($Argv -notcontains "--no-desktop") {
-        $extraArgs += @("--extra", "desktop")
+      if ($Argv -contains "-RuntimeOnly") {
+        # The consumer path (YBM.bat / `ybm run` / install.ps1, which now
+        # just calls `ybm run` - docs/UI_UX_AUDIT.md Phase 10, second
+        # review): a person double-clicking their way to a running console
+        # has no use for pytest, ruff, or the Telethon E2E client. Every
+        # dev-tooling extra stays behind the bare `ybm setup` a developer
+        # types themselves, which keeps its original full set below.
+        $extraArgs = Get-YbmRuntimeExtraArgs -Argv $Argv
+      } else {
+        # Keep this extras list identical to scripts/install.sh's
+        # developer-path uv sync line - they drifted before (install.sh
+        # only had "--extra dev", silently skipping pytest/telethon/voice/
+        # desktop on a fresh Linux/macOS install). "dev" (ruff) is included
+        # so a fresh `ybm setup` can actually run the
+        # `uv run --frozen ruff check .` step AGENTS.md/CONTRIBUTING.md document.
+        $extraArgs = @("--extra", "test", "--extra", "e2e", "--extra", "dev") + (Get-YbmRuntimeExtraArgs -Argv $Argv)
       }
       & uv sync @extraArgs
       if ($LASTEXITCODE -ne 0) {
@@ -162,29 +192,40 @@ function Invoke-YbmSetup {
   # when this runs as the top-level command.
 }
 
+function Get-YbmSyncFingerprintPath {
+  Join-Path $Script:YbmRoot "backend\.venv\.ybm_sync_fingerprint"
+}
+
+function Get-YbmLockFingerprint {
+  # Combines pyproject.toml and uv.lock: uv.lock alone would miss the rare
+  # case of a hand-edited pyproject.toml that hasn't been re-locked yet -
+  # `uv sync` (no --frozen here) resolves fresh in that case, and the
+  # fingerprint needs to change too or a stale venv would look "up to date."
+  $paths = @(
+    (Join-Path $Script:YbmRoot "backend\pyproject.toml"),
+    (Join-Path $Script:YbmRoot "backend\uv.lock")
+  ) | Where-Object { Test-Path -LiteralPath $_ }
+  if ($paths.Count -eq 0) { return $null }
+  $hashes = $paths | ForEach-Object { (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash }
+  return ($hashes -join ":")
+}
+
 function Invoke-YbmRun {
   # The one command a non-developer should ever need (docs/UI_UX_AUDIT.md
-  # Phase 10): install whatever's missing, do nothing when there's nothing
-  # to do, and start the console. Wrapped by the double-clickable YBM.bat
-  # at the repo root, so "run this file" is the entire instruction.
-  #
-  # Every step below is already idempotent on its own - this is an
-  # orchestration wrapper, not new install/start logic:
-  #   - Invoke-YbmSetup already no-ops past venv creation once .venv
-  #     exists, and config_manager already leaves an existing config.yaml
-  #     alone.
-  #   - `uv sync` is fast and does nothing when the lockfile hasn't moved
-  #     since last time - run unconditionally so a venv from before this
-  #     session's own new dependency (pystray, added for the tray icon)
-  #     actually picks it up, which "venv exists -> skip" alone would not.
-  #   - Invoke-YbmStart already runs doctor preflight and is the one that
-  #     actually opens the browser (-Open).
+  # Phase 10, second review): install whatever's missing, do nothing when
+  # there's nothing to do, and start the console in a few seconds - not
+  # "double-click, then wait while a dependency manager evaluates the
+  # complete developer environment." Wrapped by the double-clickable
+  # YBM.bat at the repo root, so "run this file" is the entire instruction.
   Write-Host "YBM Control" -ForegroundColor Cyan
   Write-Host "==========="
   Write-Host ""
 
   Write-Host "Checking install..." -ForegroundColor Cyan
-  Invoke-YbmSetup -Argv @()
+  # -RuntimeOnly: a person double-clicking their way to a running console
+  # has no use for pytest, ruff, or the Telethon E2E client - those stay
+  # behind the bare `ybm setup` a developer types themselves.
+  Invoke-YbmSetup -Argv @("-RuntimeOnly")
   if ($LASTEXITCODE -ne 0) {
     Write-Host ""
     Write-Host "Setup failed (exit $LASTEXITCODE) - see the message above." -ForegroundColor Red
@@ -193,17 +234,33 @@ function Invoke-YbmRun {
 
   $uvCmd = Get-Command uv -ErrorAction SilentlyContinue
   if ($uvCmd) {
-    Push-Location (Join-Path $Script:YbmRoot "backend")
-    try {
-      # No output redirection here on purpose: uv writes routine progress
-      # ("Resolved N packages...") to stderr, and *>/2>&1 redirection
-      # under this script's $ErrorActionPreference = "Stop" turns that
-      # into a fatal NativeCommandError even on success - confirmed live,
-      # not a hypothetical (this exact line halted `ybm run` the first
-      # time). Letting it print normally avoids the whole gotcha.
-      & uv sync --extra test --extra e2e --extra voice --extra tray --extra dev --extra desktop
-    } finally {
-      Pop-Location
+    $fingerprintPath = Get-YbmSyncFingerprintPath
+    $currentFingerprint = Get-YbmLockFingerprint
+    $storedFingerprint = if (Test-Path -LiteralPath $fingerprintPath) { Get-Content -LiteralPath $fingerprintPath -Raw } else { $null }
+    if ($currentFingerprint -and $storedFingerprint -eq $currentFingerprint) {
+      Write-Host "Dependencies up to date - skipping sync." -ForegroundColor DarkGray
+    } else {
+      Write-Host "Syncing dependencies..." -ForegroundColor Cyan
+      Push-Location (Join-Path $Script:YbmRoot "backend")
+      try {
+        # No output redirection here on purpose: uv writes routine progress
+        # ("Resolved N packages...") to stderr, and *>/2>&1 redirection
+        # under this script's $ErrorActionPreference = "Stop" turns that
+        # into a fatal NativeCommandError even on success - confirmed live,
+        # not a hypothetical (this exact line halted `ybm run` the first
+        # time). Letting it print normally avoids the whole gotcha.
+        & uv sync @(Get-YbmRuntimeExtraArgs -Argv @())
+        if ($LASTEXITCODE -ne 0) {
+          Write-Host ""
+          Write-Host "Dependency sync failed (exit $LASTEXITCODE) - see the message above." -ForegroundColor Red
+          exit $LASTEXITCODE
+        }
+      } finally {
+        Pop-Location
+      }
+      if ($currentFingerprint) {
+        Set-Content -LiteralPath $fingerprintPath -Value $currentFingerprint -NoNewline
+      }
     }
   }
 

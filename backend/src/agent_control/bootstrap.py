@@ -7,6 +7,7 @@ deep in a supervised background process (see docs/HISTORY.md P0).
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import secrets as secrets_module
@@ -319,16 +320,55 @@ def run_setup(*, telegram_token: str | None = None) -> int:
     return 0
 
 
+_ADMIN_CONSOLE_SOURCE_GLOBS = ("src/**/*", "public/**/*", "index.html", "package.json", "package-lock.json", "vite.config.ts", "tsconfig*.json")
+
+
+def _admin_console_fingerprint(frontend_dir: Path) -> str:
+    """(mtime, size) per source file, not content - reading every file's
+    bytes would cost more than the build this exists to skip. A real edit
+    always changes mtime on save, and git checkout resetting mtimes just
+    means one extra rebuild, not a wrong skip."""
+    entries: list[str] = []
+    for pattern in _ADMIN_CONSOLE_SOURCE_GLOBS:
+        for path in sorted(frontend_dir.glob(pattern)):
+            if path.is_file():
+                stat = path.stat()
+                entries.append(f"{path.relative_to(frontend_dir)}:{stat.st_mtime_ns}:{stat.st_size}")
+    return hashlib.sha256("\n".join(entries).encode("utf-8")).hexdigest()
+
+
 def _build_admin_console() -> None:
     """Build the React admin console so `/admin` serves the real app instead
     of the "no build yet, run `ybm ui-build`" fallback page - without this,
     a fresh install runs fine but silently shows an unfinished-looking admin
     UI on first launch. Best-effort: a missing/broken Node toolchain warns
     loudly (with the exact fix) rather than failing the whole setup, since
-    the backend and every non-admin-console feature works without it."""
+    the backend and every non-admin-console feature works without it.
+
+    Skips the actual `npm run build` (the slow part - several seconds of
+    tsc + vite on every single call) when nothing under frontend/ has
+    changed since the last successful build, tracked by a fingerprint next
+    to the build output itself (docs/UI_UX_AUDIT.md Phase 10, second
+    review - `ybm run` is meant to open the console in a few seconds, not
+    rebuild the console every launch regardless of whether anything
+    changed)."""
     frontend_dir = Path("frontend")
     if not frontend_dir.exists():
         return
+
+    # Relative to this process's CWD, which is the repo root here (run_setup()
+    # is invoked from ybm.ps1 without a Push-Location into backend/) - NOT
+    # relative to frontend_dir or this file. Confirmed the hard way: an
+    # earlier version of this path was missing the backend/ prefix and
+    # silently wrote a bogus src/agent_control/static/admin/ at the repo
+    # root instead of the real backend/src/agent_control/static/admin/.
+    static_dir = Path("backend/src/agent_control/static/admin")
+    fingerprint_path = static_dir / ".ybm_build_fingerprint"
+    current_fingerprint = _admin_console_fingerprint(frontend_dir)
+    if (static_dir / "index.html").exists() and fingerprint_path.exists():
+        if fingerprint_path.read_text(encoding="utf-8").strip() == current_fingerprint:
+            print("\nadmin console up to date - skipping build.")
+            return
 
     print("\n-- Building the admin console --")
     npm = shutil.which("npm")
@@ -350,5 +390,10 @@ def _build_admin_console() -> None:
     build_result = subprocess.run(["npm", "run", "build"], cwd=frontend_dir, shell=use_shell, check=False)
     if build_result.returncode == 0:
         print("admin console built - /admin will serve the real app.")
+        static_dir.mkdir(parents=True, exist_ok=True)
+        # Reuses the fingerprint computed before the build, not a fresh one -
+        # the build only writes into static_dir, which is outside frontend/
+        # and therefore outside every glob _admin_console_fingerprint reads.
+        fingerprint_path.write_text(current_fingerprint, encoding="utf-8")
     else:
         print("WARN: admin console build failed - run `ybm ui-build` to see the full error.")
