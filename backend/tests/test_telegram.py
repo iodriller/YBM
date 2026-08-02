@@ -495,6 +495,7 @@ def test_telegram_plain_approve_approves_latest_pending_task(tmp_path) -> None:
         conversation_id=conversation_id,
         metadata={"source_chat_id": "100"},
     )
+    repos.tasks.update_metadata(task.id, task.metadata, TaskStatus.AWAITING_APPROVAL)
     approval = repos.approvals.create(
         ApprovalRequest(
             task_id=task.id,
@@ -520,6 +521,10 @@ def test_telegram_plain_approve_approves_latest_pending_task(tmp_path) -> None:
     assert updated.id == approval.id
     assert updated.status == ApprovalStatus.APPROVED
     assert result.outbound_message is not None
+    # docs/UI_UX_AUDIT.md Phase 8, second review: a decided approval must
+    # make the task claimable again, not leave it stuck in a status
+    # claim_next no longer re-selects.
+    assert repos.tasks.get(task.id).status == TaskStatus.RUNNING
 
 
 class _FakeBotApiForCallbacks:
@@ -544,6 +549,7 @@ def test_telegram_inline_keyboard_reject_denies_approval_and_answers_callback(tm
         conversation_id=conversation_id,
         metadata={"source_chat_id": "100"},
     )
+    repos.tasks.update_metadata(task.id, task.metadata, TaskStatus.AWAITING_APPROVAL)
     approval = repos.approvals.create(
         ApprovalRequest(
             task_id=task.id,
@@ -570,6 +576,13 @@ def test_telegram_inline_keyboard_reject_denies_approval_and_answers_callback(tm
     assert updated.status == ApprovalStatus.REJECTED
     assert bot_api.answered == [("cbq1", None)]
     assert result.authorized is True
+    # docs/UI_UX_AUDIT.md Phase 8, second review: a rejection must requeue
+    # the task too, not just an approval - it's the worker's next
+    # process_task() call (separately tested) that turns a rejected
+    # decision into BLOCKED; this layer's job is only to make the task
+    # claimable again instead of leaving it stuck in a status claim_next
+    # no longer re-selects.
+    assert repos.tasks.get(task.id).status == TaskStatus.RUNNING
 
 
 def test_telegram_inline_keyboard_approve_grants_approval(tmp_path) -> None:
@@ -585,6 +598,7 @@ def test_telegram_inline_keyboard_approve_grants_approval(tmp_path) -> None:
         conversation_id=conversation_id,
         metadata={"source_chat_id": "100"},
     )
+    repos.tasks.update_metadata(task.id, task.metadata, TaskStatus.AWAITING_APPROVAL)
     approval = repos.approvals.create(
         ApprovalRequest(
             task_id=task.id,
@@ -610,6 +624,7 @@ def test_telegram_inline_keyboard_approve_grants_approval(tmp_path) -> None:
     updated = repos.approvals.list_for_task(task.id)[0]
     assert updated.status == ApprovalStatus.APPROVED
     assert bot_api.answered == [("cbq2", None)]
+    assert repos.tasks.get(task.id).status == TaskStatus.RUNNING
 
 
 def test_telegram_updates_conversation_memory(tmp_path) -> None:

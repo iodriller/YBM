@@ -17,7 +17,7 @@ from agent_control.config_sync import CONFIG_FILE_PATH, ConfigManager, read_env_
 from agent_control.config import AppSettings, backend_base_url, is_loopback_host
 from agent_control.llm.providers import OpenAICompatibleProvider
 from agent_control.observation.artifacts import ArtifactService
-from agent_control.orchestration.signals import apply_task_signal
+from agent_control.orchestration.signals import apply_task_signal, requeue_after_approval_decision
 from agent_control.policy import apply_access_modes_to_config, summarize_access_modes
 from agent_control.prompts import render_prompt
 from agent_control.runtime_status import KNOWN_SERVICE_NAMES, service_summary
@@ -647,6 +647,7 @@ def create_admin_router(
             updated = repositories.approvals.get(approval_id)
             state = updated.status.value if updated is not None else "unavailable"
             raise HTTPException(status_code=409, detail=f"approval could not be decided; current status is {state}")
+        requeue_after_approval_decision(repositories, approval.task_id)
         audit = AuditLogger(repositories.audit, loaded.logging.redact_patterns)
         audit.append(
             AuditEventType.APPROVAL_DECIDED,

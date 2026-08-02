@@ -566,6 +566,26 @@ def test_admin_decide_approval_reject_updates_status(monkeypatch, tmp_path) -> N
     assert repositories.approvals.get(approval.id).status == ApprovalStatus.REJECTED
 
 
+def test_admin_decide_approval_requeues_a_task_stuck_awaiting_approval(monkeypatch, tmp_path) -> None:
+    """docs/UI_UX_AUDIT.md Phase 8, second review: deciding an approval must
+    make the task claimable again (AWAITING_APPROVAL isn't in
+    WORKABLE_STATUSES), not just flip the ApprovalRequest's own status -
+    otherwise a decided approval is never revisited and the task hangs
+    forever even though the human already answered."""
+    monkeypatch.chdir(tmp_path)
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    task = repositories.tasks.create("write a report")
+    repositories.tasks.update_metadata(task.id, task.metadata, TaskStatus.AWAITING_APPROVAL)
+    approval = _pending_approval(repositories, task.id)
+    client = _admin_client(repositories)
+
+    response = client.post(f"/admin/api/approvals/{approval.id}/decide", json={"decision": "approve"})
+
+    assert response.status_code == 200
+    assert repositories.tasks.get(task.id).status == TaskStatus.RUNNING
+
+
 def test_admin_decide_approval_404_for_unknown_id(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     database_url = f"sqlite:///{tmp_path / 'admin.db'}"

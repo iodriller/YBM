@@ -13,7 +13,7 @@ from agent_control.config_sync import read_env_value
 from agent_control.channels.responder import TelegramResponder, gateway_context
 from agent_control.channels.memory import ConversationMemoryService, memory_context
 from agent_control.llm.classifier import MessageClassifier, classification_trace
-from agent_control.orchestration.signals import apply_task_signal
+from agent_control.orchestration.signals import apply_task_signal, requeue_after_approval_decision
 from agent_control.schemas import (
     ApprovalStatus,
     AuditEventType,
@@ -965,6 +965,7 @@ class TelegramIntakeService:
                     payload={"approval_id": approval.id, "decision": "approve", "source": "plain_text"},
                 )
             if approved_count:
+                requeue_after_approval_decision(self.repositories, task.id)
                 return self._out(chat_id, f"Approved {approved_count} pending approval(s) for {task.id}.")
         return self._out(chat_id, "No live pending approval found.")
 
@@ -983,21 +984,22 @@ class TelegramIntakeService:
 
     def _apply_callback(self, payload: dict[str, Any], actor: str) -> TaskSignal | None:
         if payload.get("kind") == "approval":
+            approval_id = str(payload.get("approval_id") or "")
+            approval = self.repositories.approvals.get(approval_id) if approval_id else None
             decision = payload.get("decision")
             decided = False
             if decision == "approve":
-                decided = self.repositories.approvals.decide_pending(
-                    payload["approval_id"], ApprovalStatus.APPROVED
-                )
+                decided = self.repositories.approvals.decide_pending(approval_id, ApprovalStatus.APPROVED)
             elif decision == "reject":
-                decided = self.repositories.approvals.decide_pending(
-                    payload["approval_id"], ApprovalStatus.REJECTED
-                )
+                decided = self.repositories.approvals.decide_pending(approval_id, ApprovalStatus.REJECTED)
             if decided:
+                if approval is not None:
+                    requeue_after_approval_decision(self.repositories, approval.task_id)
                 self.audit.append(
                     AuditEventType.APPROVAL_DECIDED,
                     actor=actor,
-                    payload={"approval_id": payload.get("approval_id"), "decision": decision},
+                    task_id=approval.task_id if approval is not None else None,
+                    payload={"approval_id": approval_id, "decision": decision},
                 )
             return None
 

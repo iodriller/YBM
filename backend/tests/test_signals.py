@@ -13,7 +13,7 @@ import json
 from datetime import timedelta
 
 from agent_control.config import AppSettings
-from agent_control.orchestration.signals import apply_task_signal
+from agent_control.orchestration.signals import apply_task_signal, requeue_after_approval_decision
 from agent_control.schemas import (
     ApprovalGrant,
     ApprovalRequest,
@@ -180,3 +180,40 @@ def test_cancelling_an_already_completed_tool_invocation_leaves_it_alone(tmp_pat
 
     invocations = repositories.tool_invocations.list_for_task(task.id)
     assert invocations[0]["status"] == "succeeded"
+
+
+# ---- requeue_after_approval_decision (docs/UI_UX_AUDIT.md Phase 8, second review) ----
+
+
+def test_requeue_after_approval_decision_makes_the_task_claimable_again(tmp_path) -> None:
+    """The other half of the worker-blocking fix: AWAITING_APPROVAL was
+    removed from WORKABLE_STATUSES so claim_next stops re-selecting a task
+    stuck waiting on a human, but something still has to notice a decision
+    landing and put the task back where the worker's poll will find it."""
+    repositories, audit = make_repos(tmp_path)
+    task = repositories.tasks.create("write a report")
+    repositories.tasks.update_metadata(task.id, task.metadata, TaskStatus.AWAITING_APPROVAL)
+
+    requeue_after_approval_decision(repositories, task.id)
+
+    assert repositories.tasks.get(task.id).status == TaskStatus.RUNNING
+
+
+def test_requeue_after_approval_decision_is_a_noop_for_a_task_not_awaiting_approval(tmp_path) -> None:
+    """Every caller (admin API, Telegram inline buttons, Telegram plain-text
+    approve) invokes this after a decide_pending call succeeds - it must not
+    blindly stamp RUNNING over a task that moved on for some other reason
+    (cancelled, already resumed by a concurrent decision) in the meantime."""
+    repositories, audit = make_repos(tmp_path)
+    task = repositories.tasks.create("write a report")
+    repositories.tasks.update_metadata(task.id, task.metadata, TaskStatus.CANCELLED)
+
+    requeue_after_approval_decision(repositories, task.id)
+
+    assert repositories.tasks.get(task.id).status == TaskStatus.CANCELLED
+
+
+def test_requeue_after_approval_decision_is_a_noop_for_an_unknown_task(tmp_path) -> None:
+    repositories, audit = make_repos(tmp_path)
+
+    requeue_after_approval_decision(repositories, "task_does_not_exist")  # must not raise

@@ -130,6 +130,35 @@ def _stop_awaiting_external_session(task, settings: AppSettings, audit: AuditLog
     )
 
 
+def requeue_after_approval_decision(repositories: Repositories, task_id: str) -> None:
+    """Makes an AWAITING_APPROVAL task workable again once its approval has
+    been decided (docs/UI_UX_AUDIT.md Phase 8, second pass).
+
+    worker.py's WORKABLE_STATUSES deliberately excludes AWAITING_APPROVAL
+    now - claim_next never re-selects a task sitting in it, the same way it
+    already never re-selected AWAITING_EXTERNAL - so a pending approval no
+    longer monopolizes the single worker's claim while a human decides.
+    This is the other half of that fix: without it, a decided approval
+    would never be revisited, since nothing would flip its status back to
+    something claimable. Flipping to RUNNING here means the worker's very
+    next poll picks it up - _process_operator_awaiting_approval already
+    knows how to resume from metadata["operator_pending_call"] regardless
+    of which status the task was in when it got there.
+
+    Every caller (admin API, Telegram inline buttons, Telegram plain-text
+    "approve") should call this right after a `decide_pending` that
+    actually changed a PENDING approval to APPROVED or REJECTED - not
+    speculatively, and not on a no-op decide (already decided, expired).
+    Best-effort and idempotent: a no-op if the task isn't currently
+    AWAITING_APPROVAL (already resumed, or this is a race between two
+    decision paths for the same approval).
+    """
+    task = repositories.tasks.get(task_id)
+    if task is None or task.status != TaskStatus.AWAITING_APPROVAL:
+        return
+    repositories.tasks.update_metadata(task_id, task.metadata, TaskStatus.RUNNING)
+
+
 def _resume_target(current_status: TaskStatus, paused_from_status: str | None) -> TaskStatus:
     if current_status != TaskStatus.PAUSED:
         return current_status

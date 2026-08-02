@@ -502,12 +502,18 @@ async def test_operator_loop_awaiting_approval_stays_put_while_pending(tmp_path)
 
 @pytest.mark.asyncio
 async def test_run_forever_sleeps_instead_of_busy_looping_on_a_pending_approval(tmp_path, monkeypatch) -> None:
-    """docs/UI_UX_AUDIT.md Phase 8: process_next() returns the SAME
-    AWAITING_APPROVAL task on every call (claim_next always re-picks the
-    oldest task this worker already claimed, and this check returns
-    instantly) - without a sleep here, run_forever span the CPU at 100%
-    hammering the DB for as long as a human takes to decide, and gave any
-    other queued task in this same worker's slot no chance to run either.
+    """docs/UI_UX_AUDIT.md Phase 8: originally, process_next() returned the
+    SAME AWAITING_APPROVAL task on every call (claim_next always re-picked
+    the oldest task this worker already claimed, and that check returned
+    instantly) - without a sleep here, run_forever spun the CPU at 100%
+    hammering the DB for as long as a human takes to decide.
+
+    Second pass (docs/UI_UX_AUDIT.md Phase 8, second review): AWAITING_APPROVAL
+    was removed from WORKABLE_STATUSES entirely, so process_next() now
+    returns None here (nothing else is queued in this test) rather than
+    re-picking the same task - but the risk of a busy loop is the same
+    shape (a fast, empty return with no sleep), so this test still earns
+    its keep even though the specific mechanism it guards against changed.
     """
     repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("needs approval")
@@ -560,6 +566,41 @@ async def test_operator_loop_resumes_and_executes_after_approval_granted(tmp_pat
     completed = await worker.process_task(resumed.id)
     assert completed.status == TaskStatus.COMPLETED
     assert completed.metadata["synthesized_answer"] == "42"
+
+
+@pytest.mark.asyncio
+async def test_a_pending_approval_no_longer_blocks_the_worker_from_a_second_task(tmp_path) -> None:
+    """docs/UI_UX_AUDIT.md Phase 8, second review: the CPU busy-loop was
+    fixed, but the architectural bottleneck wasn't - with the default
+    single worker, an AWAITING_APPROVAL task stayed claimable so the
+    worker could notice when a decision landed, and claim_next's
+    ORDER BY created_at ASC meant it always re-picked that same older task
+    ahead of any newer one, starving every later task for as long as a
+    human took to decide.
+
+    This is the actual regression test for that: Task A goes to
+    AWAITING_APPROVAL, Task B is submitted after it, and the worker's next
+    process_next() call must reach Task B - not return None, and not
+    re-select Task A.
+    """
+    repos, audit = make_repos(tmp_path)
+    task_a = repos.tasks.create("needs approval")
+    task_b = repos.tasks.create("a second, unrelated task")
+    executor = _executor(_approval_settings(), audit, repos, output={"answer": "ok"})
+    operator = QueueOperator([
+        OperatorDecision(action=OperatorAction.CALL_TOOL, tool_name="llm", tool_input={}, risk_level=RiskLevel.LOW),
+        OperatorDecision(action=OperatorAction.DONE, final_answer="ok"),
+    ])
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator)
+
+    awaiting = await worker.process_task(task_a.id)
+    assert awaiting.status == TaskStatus.AWAITING_APPROVAL
+
+    claimed = await worker.process_next()
+
+    assert claimed is not None
+    assert claimed.id == task_b.id
+    assert claimed.status == TaskStatus.COMPLETED
 
 
 @pytest.mark.asyncio
