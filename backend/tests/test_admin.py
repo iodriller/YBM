@@ -652,6 +652,12 @@ def test_admin_task_trace_includes_operator_history_tool_calls_and_audit(monkeyp
     repositories = _repositories(database_url)
     audit = AuditLogger(repositories.audit)
     task = repositories.tasks.create("create a test app")
+    request = ToolCallRequest(
+        task_id=task.id,
+        tool_name="vscode.copilot_terminal",
+        capability=Capability.VSCODE_WRITE_FILES,
+        input={"prompt": "build the app", "cwd": "workspace"},
+    )
     repositories.tasks.update_metadata(
         task.id,
         {
@@ -662,15 +668,10 @@ def test_admin_task_trace_includes_operator_history_tool_calls_and_audit(monkeyp
                     "status": "succeeded",
                     "output_summary": "created files",
                     "error": None,
+                    "request_id": request.id,
                 }
             ]
         },
-    )
-    request = ToolCallRequest(
-        task_id=task.id,
-        tool_name="vscode.copilot_terminal",
-        capability=Capability.VSCODE_WRITE_FILES,
-        input={"prompt": "build the app", "cwd": "workspace"},
     )
     repositories.tool_invocations.create(request)
     repositories.tool_invocations.complete(
@@ -696,9 +697,35 @@ def test_admin_task_trace_includes_operator_history_tool_calls_and_audit(monkeyp
     assert "plan" not in body
     assert body["operator_history"][0]["tool_name"] == "vscode.copilot_terminal"
     assert body["operator_history"][0]["output_summary"] == "created files"
+    assert body["operator_history"][0]["duration_ms"] is not None
+    assert body["operator_history"][0]["duration_ms"] >= 0
     assert body["tool_invocations"][0]["request"]["input"]["prompt"] == "build the app"
     assert body["tool_invocations"][0]["result"]["output"]["terminal_output"][0]["content"] == "created files"
     assert body["audit"][0]["details"]["action"] == "operator_decision"
+
+
+def test_admin_task_trace_operator_history_entry_without_request_id_has_no_duration(monkeypatch, tmp_path) -> None:
+    """docs/UI_UX_AUDIT.md Phase 14: pseudo-check entries (audit/fulfillment
+    gap) and other non-tool-call steps carry no request_id, so they must not
+    be given a fabricated duration by matching against an unrelated
+    tool_invocations row."""
+    monkeypatch.chdir(tmp_path)
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    task = repositories.tasks.create("do something")
+    repositories.tasks.update_metadata(
+        task.id,
+        {
+            "operator_history": [
+                {"tool_name": "_fulfillment_check", "input": None, "status": "fulfillment_gap", "error": "..."},
+            ]
+        },
+    )
+    client = _admin_client(repositories)
+
+    response = client.get(f"/admin/api/tasks/{task.id}/trace")
+
+    assert response.json()["operator_history"][0]["duration_ms"] is None
 
 
 def test_admin_task_trace_timeline_includes_category_and_duration(monkeypatch, tmp_path) -> None:

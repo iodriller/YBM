@@ -472,6 +472,7 @@ class TaskWorker:
             "status": result.status.value,
             "output_summary": output_text[:2000] if output_text else None,
             "error": result.error_message,
+            "request_id": result.request_id,
         })
         return self.repositories.tasks.update_metadata(recorded.id, {**recorded.metadata, "operator_history": history})
 
@@ -555,6 +556,7 @@ class TaskWorker:
                 "output_summary": output_text[:2000] if output_text else None,
                 "error": result.error_message,
                 "parallel": True, "origin": batch_origin,
+                "request_id": result.request_id,
             }
 
         return list(await asyncio.gather(*[_one(call) for call in calls]))
@@ -718,6 +720,7 @@ class TaskWorker:
             history.append({
                 "tool_name": decision.tool_name, "input": decision.tool_input,
                 "status": result.status.value, "output_summary": None, "error": result.error_message,
+                "request_id": result.request_id,
             })
             latest = self.repositories.tasks.update_metadata(task.id, {**task.metadata, "operator_history": history})
             return self._operator_ask_user(
@@ -730,6 +733,7 @@ class TaskWorker:
         history.append({
             "tool_name": decision.tool_name, "input": decision.tool_input,
             "status": result.status.value, "output_summary": None, "error": result.error_message,
+            "request_id": result.request_id,
         })
         metadata = {
             **task.metadata,
@@ -907,6 +911,7 @@ class TaskWorker:
             "status": result.status.value,
             "output_summary": output_text[:2000] if output_text else None,
             "error": result.error_message,
+            "request_id": result.request_id,
         })
         final_metadata = {**metadata, **recorded.metadata, "operator_history": history}
         final_metadata.pop("operator_pending_call", None)

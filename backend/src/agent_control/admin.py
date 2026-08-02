@@ -1493,7 +1493,7 @@ def build_task_trace(repositories: Repositories, task_id: str) -> dict[str, Any]
     return {
         "task": task.model_dump(mode="json"),
         "context": trace_context,
-        "operator_history": task.metadata.get("operator_history") or [],
+        "operator_history": _enrich_operator_history(task.metadata.get("operator_history") or [], tool_invocations),
         "timeline": _trace_timeline(formatted_audit, tool_invocations),
         "tool_invocations": tool_invocations,
         "evidence": _extract_evidence(tool_invocations),
@@ -1754,6 +1754,25 @@ def _trace_timeline(audit_events: list[dict[str, Any]], tool_invocations: list[d
             }
         )
     return sorted(items, key=lambda item: str(item.get("at") or ""))
+
+
+def _enrich_operator_history(
+    history: list[dict[str, Any]], tool_invocations: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Attaches duration_ms to each Steps entry that names a real tool call
+    (docs/UI_UX_AUDIT.md Phase 14), joining on request_id - the same
+    ToolCallRequest.id / ToolCallResult.request_id correlation the executor
+    already uses (worker.py stamps it onto each history entry at the point
+    where it has the real ToolCallResult in hand), not a new key. Entries
+    with no request_id - pseudo-checks (audit/fulfillment gap), delegate
+    summaries (span many tool calls, not one), unregistered-tool refusals -
+    get duration_ms=None rather than a fabricated number.
+    """
+    duration_by_request_id = {
+        invocation["id"]: _elapsed_ms(invocation.get("created_at"), invocation.get("completed_at"))
+        for invocation in tool_invocations
+    }
+    return [{**entry, "duration_ms": duration_by_request_id.get(entry.get("request_id"))} for entry in history]
 
 
 def _path_within_roots(path: Path, roots: list[Path]) -> bool:
