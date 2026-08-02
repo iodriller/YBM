@@ -113,7 +113,7 @@ export function TaskTracePage() {
           {advanced && <ViewTab label="Graph" active={view === "graph"} onClick={() => setView("graph")} />}
         </div>
         {view === "graph" && advanced ? (
-          <TraceGraph invocations={trace.tool_invocations} />
+          <TraceGraph trace={trace} />
         ) : view === "timeline" ? (
           <TraceTimeline items={trace.timeline} />
         ) : view === "duration" ? (

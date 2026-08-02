@@ -1,4 +1,4 @@
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 import {
   ReactFlow,
   Background,
@@ -7,132 +7,184 @@ import {
   type Edge,
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
-import type { ToolInvocation } from "@/lib/api"
-import { elapsedMs, formatDurationMs } from "@/lib/time"
+import { CheckCircle2, MessageSquare, ShieldAlert, Wrench } from "lucide-react"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
+import { Badge } from "@/components/ui/badge"
+import type { TaskTrace } from "@/lib/api"
+import { buildGraph, type GraphNode, type GraphNodeStatus, type StepDetail } from "@/lib/graph"
+import { formatDurationMs } from "@/lib/time"
+import { cn } from "@/lib/utils"
 
 /**
- * Level 2/Advanced trace view (docs/UI_REWRITE_PLAN.md §7/§12.2) - the
- * actual reason a node UI belongs in this app: `call_tools_parallel` and
- * `delegate` made execution non-linear, and a flat timeline cannot show
- * "these ran at once" or "this spawned a sub-agent." Grounded in the
- * origin/parent_step_id correlation added in Phase 0.6 specifically so
- * this graph would be a faithful reconstruction, not an inferred guess.
- *
- * Deliberately a *lane* layout, not a full precision tree: each distinct
- * origin gets its own vertical lane, ordered left-to-right by when that
- * group first started, with nodes chained chronologically within a lane.
- * What it does NOT do (disclosed, not silently missing): draw an edge from
- * a parallel/subagent lane back to the exact parent step that spawned it -
- * that step lives in operator_history, not tool_invocations, and wiring
- * the two together is left for a future pass rather than guessed at here.
+ * Graph v2 (docs/UI_UX_AUDIT.md Phase 14f) - rooted at the actual query
+ * (not just tool calls), one node per real step (docs/UI_UX_AUDIT.md
+ * Phase 14e's step_id), with duration/token badges, a status ring, and a
+ * click-to-inspect panel showing the exact prompt sent, the raw response,
+ * tool input/output, and the approval gate, if any. lib/graph.ts owns the
+ * lane/grouping logic; this component is display + the inspect dialog only.
  */
 const LANE_WIDTH = 260
-const ROW_HEIGHT = 90
+const ROW_HEIGHT = 96
 
-interface GroupInfo {
-  key: string
-  label: string
-  invocations: ToolInvocation[]
+const STATUS_BORDER: Record<GraphNodeStatus, string> = {
+  success: "var(--success)",
+  failure: "var(--destructive)",
+  pending: "var(--warning)",
+  neutral: "var(--border)",
 }
 
-function classifyOrigin(origin: string | undefined): { key: string; label: string } {
-  if (!origin || origin === "operator") return { key: "operator", label: "Main sequence" }
-  if (origin.startsWith("subagent:")) {
-    return {
-      key: origin,
-      label: origin.includes("/parallel_batch:") ? "Sub-task — parallel batch" : "Delegated sub-task",
-    }
-  }
-  if (origin.startsWith("parallel_batch:")) return { key: origin, label: "Parallel batch" }
-  return { key: origin, label: origin }
-}
+// Hoisted to module scope - React Flow re-registers custom node types
+// whenever this object's reference changes, so an inline literal on every
+// render would defeat its own memoization.
+const NODE_TYPES = { default: GraphNodeCard }
 
-function buildGraph(invocations: ToolInvocation[]): { nodes: Node[]; edges: Edge[] } {
-  const groups = new Map<string, GroupInfo>()
-  for (const invocation of invocations) {
-    const origin = (invocation.request?.origin as string | undefined) ?? undefined
-    const { key, label } = classifyOrigin(origin)
-    const group = groups.get(key) ?? { key, label, invocations: [] }
-    group.invocations.push(invocation)
-    groups.set(key, group)
+export function TraceGraph({ trace }: { trace: TaskTrace }) {
+  const { nodes: graphNodes, edges: graphEdges } = useMemo(() => buildGraph(trace), [trace])
+  const [selected, setSelected] = useState<GraphNode | null>(null)
+
+  if (graphNodes.length <= 1) {
+    // Only the root Query node built - either nothing ran yet, or this task
+    // predates step_id linking (docs/UI_UX_AUDIT.md Phase 14e) and its real
+    // tool calls exist but aren't linkable here; either way, Steps/Timeline
+    // still show what happened.
+    const message = trace.tool_invocations.length > 0
+      ? "This task's steps predate the graph's step linking - see Steps or Timeline instead."
+      : "No steps recorded for this task."
+    return <p className="text-sm text-muted-foreground">{message}</p>
   }
 
-  const orderedGroups = [...groups.values()].sort((a, b) => {
-    const aFirst = a.invocations[0]?.created_at ?? ""
-    const bFirst = b.invocations[0]?.created_at ?? ""
-    // "operator" always leads even if timestamps tie, since it's the spine
-    // every other lane branches from.
-    if (a.key === "operator") return -1
-    if (b.key === "operator") return 1
-    return aFirst.localeCompare(bFirst)
-  })
-
-  const nodes: Node[] = []
-  const edges: Edge[] = []
-
-  orderedGroups.forEach((group, laneIndex) => {
-    const sorted = [...group.invocations].sort((a, b) => a.created_at.localeCompare(b.created_at))
-    sorted.forEach((invocation, rowIndex) => {
-      const status = invocation.status
-      const failed = status === "failed" || status === "denied" || status === "timeout"
-      const duration = elapsedMs(invocation.created_at, invocation.completed_at)
-      nodes.push({
-        id: invocation.id,
-        position: { x: laneIndex * LANE_WIDTH, y: rowIndex * ROW_HEIGHT + (laneIndex === 0 ? 0 : 40) },
-        data: {
-          label: (
-            <div className="flex flex-col gap-0.5 text-left">
-              {rowIndex === 0 && (
-                <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                  {group.label}
-                </span>
-              )}
-              <span className="font-mono text-xs">{invocation.tool_name}</span>
-              <div className="flex items-center gap-1.5">
-                <span className={failed ? "text-[10px] text-destructive" : "text-[10px] text-muted-foreground"}>
-                  {status}
-                </span>
-                {duration != null && (
-                  <span className="text-[10px] text-muted-foreground">· {formatDurationMs(duration)}</span>
-                )}
-              </div>
-            </div>
-          ),
-        },
-        style: {
-          border: failed ? "1px solid var(--destructive)" : "1px solid var(--border)",
-          background: "var(--card)",
-          borderRadius: 8,
-          padding: 8,
-          width: LANE_WIDTH - 40,
-        },
-      })
-      if (rowIndex > 0) {
-        edges.push({
-          id: `${sorted[rowIndex - 1].id}->${invocation.id}`,
-          source: sorted[rowIndex - 1].id,
-          target: invocation.id,
-        })
-      }
-    })
-  })
-
-  return { nodes, edges }
-}
-
-export function TraceGraph({ invocations }: { invocations: ToolInvocation[] }) {
-  const { nodes, edges } = useMemo(() => buildGraph(invocations), [invocations])
-
-  if (invocations.length === 0) {
-    return <p className="text-sm text-muted-foreground">No tool calls recorded for this task.</p>
-  }
+  const nodes: Node[] = graphNodes.map((node) => ({
+    id: node.id,
+    position: { x: node.lane * LANE_WIDTH, y: node.row * ROW_HEIGHT },
+    data: { graphNode: node },
+    style: {
+      border: `1px solid ${STATUS_BORDER[node.status]}`,
+      background: "var(--card)",
+      borderRadius: 8,
+      padding: 8,
+      width: LANE_WIDTH - 40,
+    },
+  }))
+  const edges: Edge[] = graphEdges.map((edge) => ({ id: edge.id, source: edge.source, target: edge.target }))
 
   return (
     <div className="h-96 w-full overflow-hidden rounded-md border border-border">
-      <ReactFlow nodes={nodes} edges={edges} fitView proOptions={{ hideAttribution: true }}>
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        fitView
+        proOptions={{ hideAttribution: true }}
+        onNodeClick={(_event, node) => setSelected(node.data.graphNode as GraphNode)}
+        nodeTypes={NODE_TYPES}
+      >
         <Background />
         <Controls showInteractive={false} />
       </ReactFlow>
+      <NodeInspectDialog node={selected} onOpenChange={(open) => !open && setSelected(null)} />
+    </div>
+  )
+}
+
+function GraphNodeCard({ data }: { data: { graphNode: GraphNode } }) {
+  const node = data.graphNode
+  const Icon = node.kind === "query" ? MessageSquare : node.kind === "final_answer" ? CheckCircle2 : Wrench
+  const failed = node.status === "failure"
+  return (
+    <div className="flex cursor-pointer flex-col gap-0.5 text-left">
+      <div className="flex items-center gap-1.5">
+        <Icon className={cn("size-3 shrink-0", failed ? "text-destructive" : "text-muted-foreground")} />
+        <span className="truncate font-mono text-xs">{node.label}</span>
+        {node.detail && "approval" in node.detail && node.detail.approval && (
+          <ShieldAlert className="size-3 shrink-0 text-warning" />
+        )}
+      </div>
+      {node.subtitle && <span className="truncate text-[10px] text-muted-foreground">{node.subtitle}</span>}
+      <div className="flex items-center gap-1.5">
+        {node.durationMs != null && (
+          <span className="text-[10px] text-muted-foreground">{formatDurationMs(node.durationMs)}</span>
+        )}
+        {node.totalTokens != null && (
+          <span className="text-[10px] text-muted-foreground">· {node.totalTokens} tok</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function NodeInspectDialog({ node, onOpenChange }: { node: GraphNode | null; onOpenChange: (open: boolean) => void }) {
+  return (
+    <Dialog open={node != null} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-xl">
+        <DialogHeader>
+          <DialogTitle>{node?.label}</DialogTitle>
+          <DialogDescription>{node?.kind === "step" ? "What happened at this step" : node?.subtitle}</DialogDescription>
+        </DialogHeader>
+        {node && <NodeInspectBody node={node} />}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function NodeInspectBody({ node }: { node: GraphNode }) {
+  if (!node.detail) return null
+  if ("text" in node.detail) {
+    return <p className="max-h-96 overflow-auto whitespace-pre-wrap text-sm [overflow-wrap:anywhere]">{node.detail.text}</p>
+  }
+  const detail = node.detail as StepDetail
+  return (
+    <div className="flex max-h-[70vh] flex-col gap-4 overflow-auto text-sm">
+      {detail.decision && (
+        <section className="flex flex-col gap-1.5">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            LLM call · {detail.decision.source}
+            {detail.decision.model && ` · ${detail.decision.model}`}
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {detail.decision.latency_ms != null && <Badge variant="outline">{formatDurationMs(detail.decision.latency_ms)}</Badge>}
+            {detail.decision.total_tokens != null && <Badge variant="outline">{detail.decision.total_tokens} tokens</Badge>}
+          </div>
+          <pre className="max-h-40 overflow-auto rounded-md bg-muted p-2.5 font-mono text-[11px]">
+            {JSON.stringify(detail.decision.messages, null, 2)}
+          </pre>
+          {detail.decision.response_text && (
+            <p className="whitespace-pre-wrap rounded-md bg-muted p-2.5 font-mono text-[11px] [overflow-wrap:anywhere]">
+              {detail.decision.response_text}
+            </p>
+          )}
+        </section>
+      )}
+      {detail.toolInvocations.map((invocation) => (
+        <section key={invocation.id} className="flex flex-col gap-1.5">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Tool · {invocation.tool_name} · {invocation.status}
+          </p>
+          <pre className="max-h-40 overflow-auto rounded-md bg-muted p-2.5 font-mono text-[11px]">
+            {JSON.stringify(invocation.request?.input ?? {}, null, 2)}
+          </pre>
+          {invocation.result && (
+            <pre className="max-h-40 overflow-auto rounded-md bg-muted p-2.5 font-mono text-[11px]">
+              {JSON.stringify(invocation.result, null, 2)}
+            </pre>
+          )}
+        </section>
+      ))}
+      {detail.approval && (
+        <section className="flex flex-col gap-1.5">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Approval gate</p>
+          <p className="text-xs [overflow-wrap:anywhere]">{detail.approval.summary}</p>
+          <div className="flex flex-wrap gap-1.5">
+            <Badge variant="outline">{detail.approval.capability}</Badge>
+            <Badge variant="outline">{detail.approval.risk_level}</Badge>
+            <Badge variant={detail.approval.status === "approved" ? "secondary" : "outline"}>{detail.approval.status}</Badge>
+          </div>
+        </section>
+      )}
+      {detail.historyEntry?.error && (
+        <section className="flex flex-col gap-1.5">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Error</p>
+          <p className="text-xs text-destructive [overflow-wrap:anywhere]">{detail.historyEntry.error}</p>
+        </section>
+      )}
     </div>
   )
 }

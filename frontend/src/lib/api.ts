@@ -348,6 +348,7 @@ const ApprovalRequestSchema = z.object({
   expires_at: z.string(),
   created_at: z.string(),
 })
+export type ApprovalRequest = z.infer<typeof ApprovalRequestSchema>
 
 const BlastRadiusSchema = z.object({
   files: z.array(z.string()),
