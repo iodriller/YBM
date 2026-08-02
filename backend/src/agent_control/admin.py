@@ -1269,6 +1269,53 @@ def create_admin_router(
         )
         return {"artifact_id": artifact.id, "file_name": file.filename, "size_bytes": len(data)}
 
+    @router.get("/api/folders")
+    def admin_list_folders(request: Request, path: str | None = None) -> dict[str, Any]:
+        """Server-side folder browsing for the Chat composer's folder picker
+        (docs/UI_UX_AUDIT.md Phase 13) - a browser directory picker cannot
+        yield a usable absolute path, and hand-typing one is the exact gap
+        Phase 1 deferred. Scoped to the same `computer_use.allowed_roots`
+        filesystem.manage itself is scoped to, on purpose: a folder this
+        picker can reach is a folder the agent can actually act on, and
+        vice versa - the same boundary, not a second one to keep in sync.
+        No `path` returns the configured roots; a `path` inside one of them
+        returns its immediate subdirectories. Selecting one only inserts
+        its absolute path into the chat draft - there is no new "folder
+        reference" concept, just the same plain path-in-the-objective-text
+        filesystem.manage's own alias resolution already understands.
+        """
+        loaded = require_admin(request)
+        roots = [Path(r).expanduser().resolve() for r in loaded.adapters.computer_use.allowed_roots]
+        if not roots:
+            return {"current_path": None, "parent_path": None, "roots": [], "entries": []}
+
+        if path is None:
+            entries = [{"name": root.name or str(root), "path": str(root)} for root in roots if root.is_dir()]
+            return {"current_path": None, "parent_path": None, "roots": [str(r) for r in roots], "entries": entries}
+
+        target = Path(path).expanduser().resolve()
+        if not _path_within_roots(target, roots):
+            raise HTTPException(status_code=400, detail="path is outside the configured allowed roots")
+        if not target.is_dir():
+            raise HTTPException(status_code=404, detail="folder not found")
+
+        try:
+            subdirs = sorted(
+                (p for p in target.iterdir() if p.is_dir() and not p.name.startswith(".")),
+                key=lambda p: p.name.casefold(),
+            )
+        except OSError as exc:
+            raise HTTPException(status_code=400, detail=f"could not list folder: {exc}") from None
+
+        parent = target.parent
+        parent_path = str(parent) if parent != target and _path_within_roots(parent, roots) else None
+        return {
+            "current_path": str(target),
+            "parent_path": parent_path,
+            "roots": [str(r) for r in roots],
+            "entries": [{"name": p.name, "path": str(p)} for p in subdirs],
+        }
+
     @router.post("/api/llm/test")
     async def admin_test_llm(request: Request) -> dict[str, Any]:
         loaded = require_admin(request)
@@ -1675,6 +1722,10 @@ def _trace_timeline(audit_events: list[dict[str, Any]], tool_invocations: list[d
             }
         )
     return sorted(items, key=lambda item: str(item.get("at") or ""))
+
+
+def _path_within_roots(path: Path, roots: list[Path]) -> bool:
+    return any(root == path or root in path.parents for root in roots)
 
 
 def _config_warnings(settings: AppSettings) -> list[str]:

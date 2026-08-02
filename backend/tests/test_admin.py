@@ -1640,6 +1640,103 @@ def test_admin_chat_send_folds_an_attached_artifact_into_the_objective(monkeypat
     assert task["artifacts"][0]["id"] == uploaded["artifact_id"]
 
 
+def test_admin_list_folders_with_no_path_returns_configured_roots(monkeypatch, tmp_path) -> None:
+    """docs/UI_UX_AUDIT.md Phase 13: the folder picker's starting point is
+    the same computer_use.allowed_roots filesystem.manage itself is scoped
+    to - a folder this picker can reach is a folder the agent can actually
+    act on, not a second boundary to keep in sync."""
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "Downloads"
+    root.mkdir()
+    repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
+    settings = AppSettings(_env_file=None, adapters={"computer_use": {"allowed_roots": [str(root)]}})
+    client = _admin_client(repositories, settings=settings)
+
+    response = client.get("/admin/api/folders")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["current_path"] is None
+    assert body["parent_path"] is None
+    assert body["roots"] == [str(root)]
+    assert body["entries"] == [{"name": "Downloads", "path": str(root)}]
+
+
+def test_admin_list_folders_lists_subdirectories_sorted_and_skips_hidden(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "Downloads"
+    (root / "Zebra").mkdir(parents=True)
+    (root / "apple").mkdir()
+    (root / ".git").mkdir()
+    (root / "not_a_dir.txt").write_text("x", encoding="utf-8")
+    repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
+    settings = AppSettings(_env_file=None, adapters={"computer_use": {"allowed_roots": [str(root)]}})
+    client = _admin_client(repositories, settings=settings)
+
+    response = client.get("/admin/api/folders", params={"path": str(root)})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["current_path"] == str(root)
+    assert [e["name"] for e in body["entries"]] == ["apple", "Zebra"]
+
+
+def test_admin_list_folders_parent_path_is_none_at_a_root_boundary(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "Downloads"
+    child = root / "Invoices"
+    child.mkdir(parents=True)
+    repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
+    settings = AppSettings(_env_file=None, adapters={"computer_use": {"allowed_roots": [str(root)]}})
+    client = _admin_client(repositories, settings=settings)
+
+    at_root = client.get("/admin/api/folders", params={"path": str(root)}).json()
+    at_child = client.get("/admin/api/folders", params={"path": str(child)}).json()
+
+    assert at_root["parent_path"] is None
+    assert at_child["parent_path"] == str(root)
+
+
+def test_admin_list_folders_rejects_a_path_outside_allowed_roots(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "Downloads"
+    root.mkdir()
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
+    settings = AppSettings(_env_file=None, adapters={"computer_use": {"allowed_roots": [str(root)]}})
+    client = _admin_client(repositories, settings=settings)
+
+    response = client.get("/admin/api/folders", params={"path": str(outside)})
+
+    assert response.status_code == 400
+
+
+def test_admin_list_folders_404s_for_a_path_that_does_not_exist(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "Downloads"
+    root.mkdir()
+    repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
+    settings = AppSettings(_env_file=None, adapters={"computer_use": {"allowed_roots": [str(root)]}})
+    client = _admin_client(repositories, settings=settings)
+
+    response = client.get("/admin/api/folders", params={"path": str(root / "does_not_exist")})
+
+    assert response.status_code == 404
+
+
+def test_admin_list_folders_returns_empty_when_no_roots_configured(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
+    settings = AppSettings(_env_file=None, adapters={"computer_use": {"allowed_roots": []}})
+    client = _admin_client(repositories, settings=settings)
+
+    response = client.get("/admin/api/folders")
+
+    assert response.status_code == 200
+    assert response.json() == {"current_path": None, "parent_path": None, "roots": [], "entries": []}
+
+
 def test_admin_chat_send_creates_a_task_and_list_returns_it_oldest_first(monkeypatch, tmp_path) -> None:
     """docs/HISTORY.md Part 4 T2.8: the local web chat channel - a message
     becomes a normal task, going through the exact same worker/policy
