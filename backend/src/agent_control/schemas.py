@@ -611,6 +611,11 @@ class LLMCallRecord(StrictBaseModel):
     deliberately out of scope, same boundary that tracking already draws.
     `messages`/`response_text` are redacted and size-capped by the caller
     before construction, not here - this model just carries the result.
+
+    `step_id` (docs/UI_UX_AUDIT.md Phase 14e) is the same id stamped onto the
+    operator_history entry for this step and any ToolCallRequest.parent_step_id
+    it led to - the real parent-child link Graph v2 is built on, not another
+    inferred correlation.
     """
 
     id: str = Field(default_factory=lambda: new_id("llmcall"))
@@ -618,6 +623,7 @@ class LLMCallRecord(StrictBaseModel):
     source: str
     model: str | None = None
     step_index: int | None = None
+    step_id: str | None = None
     messages: list[dict[str, Any]] = Field(default_factory=list)
     response_text: str | None = None
     prompt_tokens: int | None = None

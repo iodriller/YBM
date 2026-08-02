@@ -789,10 +789,10 @@ class LLMCallRepository:
             connection.execute(
                 """
                 INSERT INTO llm_calls (
-                    id, task_id, source, model, step_index, messages_json, response_text,
+                    id, task_id, source, model, step_index, step_id, messages_json, response_text,
                     prompt_tokens, completion_tokens, total_tokens, latency_ms, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.id,
@@ -800,6 +800,7 @@ class LLMCallRepository:
                     record.source,
                     record.model,
                     record.step_index,
+                    record.step_id,
                     _dump(record.messages),
                     record.response_text,
                     record.prompt_tokens,
@@ -823,6 +824,7 @@ class LLMCallRepository:
                 "source": row["source"],
                 "model": row["model"],
                 "step_index": row["step_index"],
+                "step_id": row["step_id"],
                 "messages": _load(row["messages_json"], []),
                 "response_text": row["response_text"],
                 "prompt_tokens": row["prompt_tokens"],

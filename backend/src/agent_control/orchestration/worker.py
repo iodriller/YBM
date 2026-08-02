@@ -29,6 +29,7 @@ from agent_control.schemas import (
     ToolCallRequest,
     ToolCallResult,
     ToolResultStatus,
+    new_id,
     utc_now,
 )
 from agent_control.storage.audit import AuditLogger
@@ -334,13 +335,22 @@ class TaskWorker:
         # configured, same reasoning as the existing parse-failure escalation
         # in operator.py, just reacting to an earlier signal.
         prefer_major = any(entry.get("tool_name") in CHECK_ENTRY_NAMES for entry in history)
+        # A stable id for this one observe/decide/act tick (docs/UI_UX_AUDIT.md
+        # Phase 14e) - stamped onto the operator's own LLM call, the resulting
+        # operator_history entry, and any ToolCallRequest.parent_step_id it
+        # leads to, so the graph can be built from a real parent-child link
+        # instead of inferring structure from `origin` tags alone. Survives an
+        # approval or background-external wait via operator_pending_call/
+        # awaiting_external, which stash it the same way they already stash
+        # tool_name/tool_input.
+        step_id = new_id("step")
         try:
             decision = await self.operator.decide(
                 latest.objective, self._planner_context(), history,
                 memory_context=memory_context, prefer_major=prefer_major,
             )
             latest = self._record_llm_usage(latest, "operator", getattr(self.operator, "last_usage", None))
-            self._record_llm_call(latest.id, "operator", len(history), self.operator)
+            self._record_llm_call(latest.id, "operator", len(history), self.operator, step_id=step_id)
         except Exception as exc:
             self.audit.append(
                 AuditEventType.ERROR, actor="operator", task_id=latest.id,
@@ -353,7 +363,10 @@ class TaskWorker:
 
         self.audit.append(
             AuditEventType.TASK_STATE_CHANGED, actor="operator", task_id=latest.id,
-            payload={"action": "operator_decision", "decision": decision.model_dump(mode="json"), "step_index": len(history)},
+            payload={
+                "action": "operator_decision", "decision": decision.model_dump(mode="json"),
+                "step_index": len(history), "step_id": step_id,
+            },
         )
 
         if decision.action == OperatorAction.DONE:
@@ -379,7 +392,7 @@ class TaskWorker:
                         original_message=str(latest.metadata.get("original_message_text") or "") or None,
                     )
                     latest = self._record_llm_usage(latest, "auditor", getattr(self.auditor, "last_usage", None))
-                    self._record_llm_call(latest.id, "auditor", len(history), self.auditor)
+                    self._record_llm_call(latest.id, "auditor", len(history), self.auditor, step_id=step_id)
                     if not audit_result.sufficient:
                         history.append({
                             "tool_name": CHECK_ENTRY_AUDIT,
@@ -391,6 +404,7 @@ class TaskWorker:
                                 "another tool, or explain to the user why it can't be met - before "
                                 "declaring done again."
                             ),
+                            "step_id": step_id,
                         })
                         metadata = {
                             **latest.metadata,
@@ -415,6 +429,7 @@ class TaskWorker:
                             "toward the objective - call another tool, or explain to the user why "
                             "it can't be met - before declaring done again."
                         ),
+                        "step_id": step_id,
                     })
                     metadata = {
                         **latest.metadata,
@@ -434,12 +449,12 @@ class TaskWorker:
             return self._transition_operator(latest, metadata, TaskStatus.BLOCKED, decision.reason or "operator_blocked")
 
         if decision.action == OperatorAction.CALL_TOOLS_PARALLEL:
-            entries = await self._run_parallel_calls(latest.id, decision.parallel_calls)
+            entries = await self._run_parallel_calls(latest.id, decision.parallel_calls, step_id=step_id)
             history.extend(entries)
             return self.repositories.tasks.update_metadata(latest.id, {**latest.metadata, "operator_history": history})
 
         if decision.action == OperatorAction.DELEGATE:
-            latest, entry = await self._run_delegate(latest, decision)
+            latest, entry = await self._run_delegate(latest, decision, step_id=step_id)
             history.append(entry)
             return self.repositories.tasks.update_metadata(latest.id, {**latest.metadata, "operator_history": history})
 
@@ -449,6 +464,7 @@ class TaskWorker:
             history.append({
                 "tool_name": decision.tool_name, "input": decision.tool_input,
                 "status": "failed", "error": f"unregistered tool: {decision.tool_name}",
+                "step_id": step_id,
             })
             return self.repositories.tasks.update_metadata(latest.id, {**latest.metadata, "operator_history": history})
 
@@ -458,6 +474,7 @@ class TaskWorker:
             capability=tool_def.capability,
             risk_level=_effective_operator_risk(tool_def, decision.tool_input, decision.risk_level),
             input=decision.tool_input,
+            parent_step_id=step_id,
         )
         if request.risk_level != decision.risk_level:
             decision = decision.model_copy(update={"risk_level": request.risk_level})
@@ -469,13 +486,14 @@ class TaskWorker:
                 decision,
                 history,
                 approval_id=str(result.output.get("approval_id") or ""),
+                step_id=step_id,
             )
 
         recorded = self._record_tool_result(latest.id, decision.tool_name, result)
         if _is_background_external_tool_result(decision.tool_name, result):
-            return self._await_operator_external(recorded, decision, result, history)
+            return self._await_operator_external(recorded, decision, result, history, step_id=step_id)
         if result.status != ToolResultStatus.SUCCEEDED:
-            retry_outcome = self._operator_retry_or_ask(recorded, decision, result, history)
+            retry_outcome = self._operator_retry_or_ask(recorded, decision, result, history, step_id=step_id)
             if retry_outcome is not None:
                 return retry_outcome
         output_text = _tool_output_text(result) if result.status == ToolResultStatus.SUCCEEDED else None
@@ -486,11 +504,12 @@ class TaskWorker:
             "output_summary": output_text[:2000] if output_text else None,
             "error": result.error_message,
             "request_id": result.request_id,
+            "step_id": step_id,
         })
         return self.repositories.tasks.update_metadata(recorded.id, {**recorded.metadata, "operator_history": history})
 
     async def _run_parallel_calls(
-        self, task_id: str, calls: list[ParallelToolCall], *, origin_prefix: str = ""
+        self, task_id: str, calls: list[ParallelToolCall], *, origin_prefix: str = "", step_id: str
     ) -> list[dict[str, Any]]:
         """Execute independent tool calls concurrently (docs/HISTORY.md Part 3
         T1.1) and return one history-entry dict per call, same shape as a
@@ -533,12 +552,12 @@ class TaskWorker:
                 return {
                     "tool_name": call.tool_name, "input": call.tool_input,
                     "status": "failed", "error": f"unregistered tool: {call.tool_name}",
-                    "parallel": True, "origin": batch_origin,
+                    "parallel": True, "origin": batch_origin, "step_id": step_id,
                 }
             request = ToolCallRequest(
                 task_id=task_id, tool_name=call.tool_name, capability=tool_def.capability,
                 risk_level=_effective_operator_risk(tool_def, call.tool_input, call.risk_level),
-                input=call.tool_input, origin=batch_origin,
+                input=call.tool_input, origin=batch_origin, parent_step_id=step_id,
             )
             result = await self.executor.execute(request)
             if result.status == ToolResultStatus.NEEDS_APPROVAL:
@@ -549,7 +568,7 @@ class TaskWorker:
                         "this call needs approval, which call_tools_parallel does not support - "
                         "reissue it alone via call_tool if it actually needs to run"
                     ),
-                    "parallel": True, "origin": batch_origin,
+                    "parallel": True, "origin": batch_origin, "step_id": step_id,
                 }
             if _is_background_external_tool_result(call.tool_name, result):
                 return {
@@ -559,7 +578,7 @@ class TaskWorker:
                         "this call started a background session, which call_tools_parallel does not "
                         "support - reissue it alone via call_tool"
                     ),
-                    "parallel": True, "origin": batch_origin,
+                    "parallel": True, "origin": batch_origin, "step_id": step_id,
                 }
             self._record_tool_result(task_id, call.tool_name, result)
             output_text = _tool_output_text(result) if result.status == ToolResultStatus.SUCCEEDED else None
@@ -570,12 +589,13 @@ class TaskWorker:
                 "error": result.error_message,
                 "parallel": True, "origin": batch_origin,
                 "request_id": result.request_id,
+                "step_id": step_id,
             }
 
         return list(await asyncio.gather(*[_one(call) for call in calls]))
 
     async def _run_delegate(
-        self, task: TaskRecord, decision: OperatorDecision
+        self, task: TaskRecord, decision: OperatorDecision, *, step_id: str
     ) -> tuple[TaskRecord, dict[str, Any]]:
         """Run a delegated sub-task in an isolated context (docs/HISTORY.md
         Part 3 T1.2): its own operator loop, its own history starting from
@@ -600,6 +620,12 @@ class TaskWorker:
         fails the sub-task with a clear reason instead of hanging; the
         parent sees the reason in its own history and can handle that step
         directly with a normal call_tool instead of delegating it.
+
+        `step_id` is the parent tick's step - stamped onto the single
+        "delegate" summary entry returned to the parent's history. Each
+        sub-decision inside the loop below is its own step, with its own
+        freshly generated step_id, the same way the parent's own tick loop
+        works (docs/UI_UX_AUDIT.md Phase 14e).
         """
         delegate_origin = f"subagent:{uuid4().hex[:12]}"
         objective = decision.delegate_objective or ""
@@ -614,6 +640,7 @@ class TaskWorker:
         sub_history: list[dict[str, Any]] = []
 
         for _step in range(self.DELEGATE_MAX_STEPS):
+            sub_step_id = new_id("step")
             try:
                 sub_decision = await self.operator.decide(
                     objective, self._planner_context(extra_context), sub_history, memory_context=""
@@ -622,23 +649,23 @@ class TaskWorker:
                 return task, {
                     "tool_name": "delegate", "input": summary_input, "status": "failed",
                     "output_summary": None, "error": f"sub-task decide() failed: {exc}",
-                    "origin": delegate_origin,
+                    "origin": delegate_origin, "step_id": step_id,
                 }
             task = self._record_llm_usage(task, "subagent", getattr(self.operator, "last_usage", None))
-            self._record_llm_call(task.id, "subagent", len(sub_history), self.operator)
+            self._record_llm_call(task.id, "subagent", len(sub_history), self.operator, step_id=sub_step_id)
 
             if sub_decision.action == OperatorAction.DONE:
                 return task, {
                     "tool_name": "delegate", "input": summary_input, "status": "succeeded",
                     "output_summary": (sub_decision.final_answer or "")[:2000], "error": None,
-                    "origin": delegate_origin,
+                    "origin": delegate_origin, "step_id": step_id,
                 }
             if sub_decision.action == OperatorAction.BLOCKED:
                 return task, {
                     "tool_name": "delegate", "input": summary_input, "status": "failed",
                     "output_summary": None,
                     "error": f"sub-task blocked: {sub_decision.reason or 'no reason given'}",
-                    "origin": delegate_origin,
+                    "origin": delegate_origin, "step_id": step_id,
                 }
             if sub_decision.action == OperatorAction.ASK_USER:
                 return task, {
@@ -648,12 +675,13 @@ class TaskWorker:
                         "sub-task needs user input, which delegation does not support: "
                         f"{sub_decision.question or ''}"
                     ),
-                    "origin": delegate_origin,
+                    "origin": delegate_origin, "step_id": step_id,
                 }
             if sub_decision.action == OperatorAction.DELEGATE:
                 sub_history.append({
                     "tool_name": "delegate", "input": None, "status": "failed",
                     "error": "delegation is not available inside a delegated sub-task",
+                    "step_id": sub_step_id,
                 })
                 continue
             if sub_decision.action == OperatorAction.CALL_TOOLS_PARALLEL:
@@ -662,10 +690,13 @@ class TaskWorker:
                     sub_history.append({
                         "tool_name": "call_tools_parallel", "input": None, "status": "failed",
                         "error": f"one or more tools are not in this sub-task's allowed set: {sorted(allowed_tools)}",
+                        "step_id": sub_step_id,
                     })
                     continue
                 sub_history.extend(
-                    await self._run_parallel_calls(task.id, calls, origin_prefix=f"{delegate_origin}/")
+                    await self._run_parallel_calls(
+                        task.id, calls, origin_prefix=f"{delegate_origin}/", step_id=sub_step_id
+                    )
                 )
                 continue
 
@@ -674,6 +705,7 @@ class TaskWorker:
                 sub_history.append({
                     "tool_name": sub_decision.tool_name, "input": sub_decision.tool_input, "status": "failed",
                     "error": f"tool not in this sub-task's allowed set: {sorted(allowed_tools)}",
+                    "step_id": sub_step_id,
                 })
                 continue
             tool_def = self.executor.tool_definitions.get(sub_decision.tool_name)
@@ -681,24 +713,27 @@ class TaskWorker:
                 sub_history.append({
                     "tool_name": sub_decision.tool_name, "input": sub_decision.tool_input, "status": "failed",
                     "error": f"unregistered tool: {sub_decision.tool_name}",
+                    "step_id": sub_step_id,
                 })
                 continue
             request = ToolCallRequest(
                 task_id=task.id, tool_name=sub_decision.tool_name, capability=tool_def.capability,
                 risk_level=_effective_operator_risk(tool_def, sub_decision.tool_input, sub_decision.risk_level),
-                input=sub_decision.tool_input, origin=delegate_origin,
+                input=sub_decision.tool_input, origin=delegate_origin, parent_step_id=sub_step_id,
             )
             result = await self.executor.execute(request)
             if result.status == ToolResultStatus.NEEDS_APPROVAL:
                 sub_history.append({
                     "tool_name": sub_decision.tool_name, "input": sub_decision.tool_input, "status": "failed",
                     "error": "this call needs approval, which delegation does not support",
+                    "step_id": sub_step_id,
                 })
                 continue
             if _is_background_external_tool_result(sub_decision.tool_name, result):
                 sub_history.append({
                     "tool_name": sub_decision.tool_name, "input": sub_decision.tool_input, "status": "failed",
                     "error": "this call started a background session, which delegation does not support",
+                    "step_id": sub_step_id,
                 })
                 continue
             task = self._record_tool_result(task.id, sub_decision.tool_name, result)
@@ -708,17 +743,24 @@ class TaskWorker:
                 "status": result.status.value,
                 "output_summary": output_text[:2000] if output_text else None,
                 "error": result.error_message,
+                "step_id": sub_step_id,
             })
 
         return task, {
             "tool_name": "delegate", "input": summary_input, "status": "failed",
             "output_summary": None,
             "error": f"sub-task step budget ({self.DELEGATE_MAX_STEPS}) exhausted without finishing",
-            "origin": delegate_origin,
+            "origin": delegate_origin, "step_id": step_id,
         }
 
     def _operator_retry_or_ask(
-        self, task: TaskRecord, decision: OperatorDecision, result: ToolCallResult, history: list[dict[str, Any]]
+        self,
+        task: TaskRecord,
+        decision: OperatorDecision,
+        result: ToolCallResult,
+        history: list[dict[str, Any]],
+        *,
+        step_id: str,
     ) -> TaskRecord | None:
         """Rate-limit/usage-limit backoff, ported from the plan-based path's
         _retry_decision so the loop doesn't hot-loop a rate-limited API on
@@ -734,7 +776,7 @@ class TaskWorker:
             history.append({
                 "tool_name": decision.tool_name, "input": decision.tool_input,
                 "status": result.status.value, "output_summary": None, "error": result.error_message,
-                "request_id": result.request_id,
+                "request_id": result.request_id, "step_id": step_id,
             })
             latest = self.repositories.tasks.update_metadata(task.id, {**task.metadata, "operator_history": history})
             return self._operator_ask_user(
@@ -747,7 +789,7 @@ class TaskWorker:
         history.append({
             "tool_name": decision.tool_name, "input": decision.tool_input,
             "status": result.status.value, "output_summary": None, "error": result.error_message,
-            "request_id": result.request_id,
+            "request_id": result.request_id, "step_id": step_id,
         })
         metadata = {
             **task.metadata,
@@ -758,7 +800,13 @@ class TaskWorker:
         return self._transition_operator(task, metadata, TaskStatus.RETRYING, retry_decision.reason)
 
     def _await_operator_external(
-        self, task: TaskRecord, decision: OperatorDecision, result: ToolCallResult, history: list[dict[str, Any]]
+        self,
+        task: TaskRecord,
+        decision: OperatorDecision,
+        result: ToolCallResult,
+        history: list[dict[str, Any]],
+        *,
+        step_id: str,
     ) -> TaskRecord:
         """A tool (coding.agent today) reported a session still running in the
         background rather than a finished result. cli.py's
@@ -775,11 +823,16 @@ class TaskWorker:
             "status": "running",
             "output_summary": f"session {output.get('session_id')} started, running in background",
             "error": None,
+            "step_id": step_id,
         })
         metadata = {
             **task.metadata,
             "operator_history": history,
-            "operator_pending_call": {"tool_name": decision.tool_name, "tool_input": decision.tool_input},
+            # step_id survives the background wait here, read back by
+            # _resume_operator_pending_external below so the eventual
+            # completion entry links to the same step as the "running" one
+            # above (docs/UI_UX_AUDIT.md Phase 14e).
+            "operator_pending_call": {"tool_name": decision.tool_name, "tool_input": decision.tool_input, "step_id": step_id},
             "awaiting_external": {
                 "tool_name": decision.tool_name,
                 "session_id": str(output.get("session_id") or ""),
@@ -805,6 +858,7 @@ class TaskWorker:
         pending_call = task.metadata.get("operator_pending_call")
         tool_input = pending_call.get("tool_input") if isinstance(pending_call, dict) else None
         tool_name = str(pending.get("tool_name") or (pending_call or {}).get("tool_name") or "coding.agent")
+        step_id = (pending_call or {}).get("step_id") if isinstance(pending_call, dict) else None
         metadata = {**task.metadata}
         for key in ("pending_tool_result", "awaiting_external", "operator_pending_call"):
             metadata.pop(key, None)
@@ -814,6 +868,7 @@ class TaskWorker:
             history.append({
                 "tool_name": tool_name, "input": tool_input,
                 "status": "failed", "error": "malformed pending_tool_result from external session callback",
+                "step_id": step_id,
             })
             return self.repositories.tasks.update_metadata(
                 task.id, {**metadata, "operator_history": history}, TaskStatus.RUNNING
@@ -826,6 +881,7 @@ class TaskWorker:
             "status": result.status.value,
             "output_summary": output_text[:2000] if output_text else None,
             "error": result.error_message,
+            "step_id": step_id,
         })
         final_metadata = {**metadata, **recorded.metadata, "operator_history": history}
         for key in ("pending_tool_result", "awaiting_external", "operator_pending_call"):
@@ -845,6 +901,7 @@ class TaskWorker:
         history: list[dict[str, Any]],
         *,
         approval_id: str,
+        step_id: str,
     ) -> TaskRecord:
         """self.executor.execute() above already created the ApprovalRequest
         (and its audit event) via the policy engine, same as the plan-based
@@ -861,6 +918,12 @@ class TaskWorker:
                 "tool_input": decision.tool_input,
                 "risk_level": decision.risk_level.value,
                 "approval_id": approval_id,
+                # Survives the approval wait, read back by
+                # _process_operator_awaiting_approval below so the resumed
+                # call's ToolCallRequest.parent_step_id and history entry
+                # link to the same step that requested it (docs/UI_UX_AUDIT.md
+                # Phase 14e).
+                "step_id": step_id,
             },
             "pending_approval_preview": preview,
         }
@@ -896,6 +959,7 @@ class TaskWorker:
             )
         tool_name = str(pending_call["tool_name"])
         tool_input = pending_call.get("tool_input") or {}
+        step_id = pending_call.get("step_id")
         assert self.executor is not None
         tool_def = self.executor.tool_definitions.get(tool_name)
         metadata = {**task.metadata}
@@ -905,6 +969,7 @@ class TaskWorker:
             history.append({
                 "tool_name": tool_name, "input": tool_input,
                 "status": "failed", "error": f"unregistered tool: {tool_name}",
+                "step_id": step_id,
             })
             return self.repositories.tasks.update_metadata(
                 task.id, {**metadata, "operator_history": history}, TaskStatus.RUNNING
@@ -915,6 +980,7 @@ class TaskWorker:
             capability=tool_def.capability,
             risk_level=RiskLevel(pending_call["risk_level"]) if pending_call.get("risk_level") else RiskLevel.LOW,
             input=tool_input,
+            parent_step_id=step_id,
         )
         result = await self.executor.execute(request, approval_id=approval.id)
         recorded = self._record_tool_result(task.id, tool_name, result)
@@ -926,6 +992,7 @@ class TaskWorker:
             "output_summary": output_text[:2000] if output_text else None,
             "error": result.error_message,
             "request_id": result.request_id,
+            "step_id": step_id,
         })
         final_metadata = {**metadata, **recorded.metadata, "operator_history": history}
         final_metadata.pop("operator_pending_call", None)
@@ -1070,7 +1137,9 @@ class TaskWorker:
             current["last_model"] = usage["model"]
         return self.repositories.tasks.update_metadata(task.id, {**task.metadata, "token_usage": current})
 
-    def _record_llm_call(self, task_id: str, source: str, step_index: int, service: Any) -> None:
+    def _record_llm_call(
+        self, task_id: str, source: str, step_index: int, service: Any, *, step_id: str
+    ) -> None:
         """Persist one LLM call's request/response/timing (docs/UI_UX_AUDIT.md
         Phase 14d) - a sibling to _record_llm_usage's running token totals
         above, not a replacement: that stays the cheap, always-on counter;
@@ -1085,6 +1154,10 @@ class TaskWorker:
         didn't actually complete (no last_request/last_started_at means the
         provider raised before setting them). Best-effort: a persistence
         failure is logged, not raised - it must never block the task itself.
+
+        `step_id` (docs/UI_UX_AUDIT.md Phase 14e) is the same id stamped onto
+        this step's operator_history entry and any ToolCallRequest.parent_step_id
+        it leads to - the real parent-child link Graph v2 is built on.
         """
         if not self.persist_llm_calls:
             return
@@ -1102,6 +1175,7 @@ class TaskWorker:
                 source=source,
                 model=getattr(service, "last_model", None),
                 step_index=step_index,
+                step_id=step_id,
                 messages=_cap_messages(redact_payload(messages, self.redact_patterns), self.llm_call_max_chars),
                 response_text=response_text,
                 prompt_tokens=usage.get("prompt_tokens"),

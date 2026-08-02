@@ -464,6 +464,11 @@ const OperatorHistoryEntrySchema = z.object({
   // (unlike the fields above), but null for entries that don't correspond
   // to exactly one tool call: pseudo-checks, delegate summaries, refusals.
   duration_ms: z.number().nullable(),
+  // The real parent-child link (docs/UI_UX_AUDIT.md Phase 14e) - the same id
+  // on this step's ToolCallRequest.parent_step_id and LLMCall.step_id.
+  // .optional() because entries recorded before this shipped have no such
+  // key at all, not a present-but-null one.
+  step_id: z.string().nullable().optional(),
 })
 export type OperatorHistoryEntry = z.infer<typeof OperatorHistoryEntrySchema>
 
@@ -534,6 +539,9 @@ export const LLMCallSchema = z.object({
   source: z.string(),
   model: z.string().nullable(),
   step_index: z.number().nullable(),
+  // The real parent-child link (docs/UI_UX_AUDIT.md Phase 14e) - matches
+  // the same step's operator_history entry and ToolCallRequest.parent_step_id.
+  step_id: z.string().nullable(),
   messages: z.array(z.record(z.string(), z.unknown())),
   response_text: z.string().nullable(),
   prompt_tokens: z.number().nullable(),
