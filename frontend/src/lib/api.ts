@@ -1050,16 +1050,18 @@ export function updateComputerUseConfig(input: ComputerUseConfigInput) {
 
 const AuditEventTypeSchema = z.enum([
   "message_received", "message_sent", "config_updated", "telegram_access_decision",
-  "message_classified", "task_spawn_failed", "task_created", "task_state_changed",
-  "plan_created", "policy_decision", "approval_requested", "approval_decided",
-  "tool_requested", "tool_completed", "artifact_created", "egress_contacted",
-  "error", "task_cancelled",
+  "channel_access_decision", "message_classified", "task_spawn_failed", "task_created",
+  "task_state_changed", "plan_created", "policy_decision", "approval_requested",
+  "approval_decided", "tool_requested", "tool_completed", "artifact_created",
+  "egress_contacted", "error", "task_cancelled",
 ])
 
 // Mirrors storage/audit_view.py's CATEGORY_BY_TYPE value set - a small,
 // derived grouping (event type -> coarser category), not a schema of its own.
+// "raw_message"/"channel_access" (not "raw_telegram"/only "telegram_access")
+// since docs/UI_UX_AUDIT.md Phase 16 - WhatsApp emits the same event types.
 export const AUDIT_CATEGORIES = [
-  "raw_telegram", "telegram_access", "classification", "failed_classification",
+  "raw_message", "telegram_access", "channel_access", "classification", "failed_classification",
   "spawned_task", "policy", "config", "tool", "approval", "task_state", "artifact",
   "egress", "error", "system",
 ] as const

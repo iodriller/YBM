@@ -1786,6 +1786,9 @@ def _config_warnings(settings: AppSettings) -> list[str]:
     telegram = settings.channels.telegram
     if telegram.enabled and not telegram.allowed_user_ids and not telegram.allowed_chat_ids:
         warnings.append("Telegram is enabled but no allowed user IDs or chat IDs are configured; all messages will be denied.")
+    whatsapp = settings.channels.whatsapp
+    if whatsapp.enabled and not whatsapp.allowed_numbers:
+        warnings.append("WhatsApp is enabled but no allowed numbers are configured; all messages will be denied.")
     if settings.llm.default_profile not in settings.llm.profiles:
         warnings.append("Default orchestrator LLM profile is not configured; Telegram task classification will fail.")
     if read_env_value("AGENT_CAPABILITIES"):

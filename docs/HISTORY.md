@@ -1285,3 +1285,141 @@ Access, Settings (both Advanced and Level 1), and the Trace graph. **Not verifie
 install.sh extras fix was not tested with a real fresh clone/install run (would mean installing a
 second copy of the whole toolchain); reviewed by direct comparison against `ybm.ps1`'s
 already-proven-working extras list instead.
+
+# Part 6 — WhatsApp as a second real channel (2026-08-02)
+
+Context: `docs/UI_UX_AUDIT.md` Phase 16 shipped its "channel-adapter interface" half
+(2026-08-01) — `channels/base.py`'s `classify_and_spawn_task`/`resume_clarifying_reply`/
+`status_summary` extracted out of `TelegramIntakeService` behind a `ChannelAdapter` Protocol —
+but deliberately deferred an actual second channel, since there was nothing real yet to validate
+the extraction against. The user asked for WhatsApp specifically. WhatsApp has no free official
+bot API shaped like Telegram's; the official Business Cloud API needs a public HTTPS webhook this
+local-only product has no infrastructure for. Checked how OpenClaw (the reference self-hosted
+project already named in the roadmap, 150k+ GitHub stars) actually does it before assuming:
+[Baileys](https://github.com/WhiskeySockets/Baileys), an unofficial WhatsApp Web client,
+QR-code device linking, no Meta account or webhook — the same architecture OpenClaw ships as
+production-ready, including their own documented practice of linking a secondary number rather
+than a primary one to limit account-flagging risk. **Hard constraint for this work, set by the
+user:** no real phone number, primary or secondary, was available or would be provided this
+session — build the feature generically so anyone running this repo supplies their own number
+later, never commit a real number anywhere, and perform no live QR-pairing, account-linking, or
+send/receive test.
+
+**What shipped.** A Node.js sidecar, `whatsapp-bridge/` (plain JS, no build step — it's a
+standalone process, not bundled into anything), wrapping Baileys behind three loopback-only,
+shared-secret-gated HTTP routes (`/health`, `/updates?offset=N`, `/send`) and printing the
+link QR straight to its own stdout on first run, which is exactly what `ybm logs whatsapp
+-Follow` already tails. `channels/whatsapp_bridge_process.py`'s `WhatsAppBridgeProcess` spawns
+and owns that child for the whole lifetime of `cli.py`'s new `poll-whatsapp` entry point — the
+secret is generated fresh per run, handed to the child by env var, and also written to
+`.agent_control/run/whatsapp_bridge.json` (gitignored, removed on stop) so a separate process
+(`run-worker`) can reach the same bridge to send notifications — so `ybm.ps1`'s service list
+never had to learn a new, non-Python process type: Node stayed an
+internal implementation detail of one more Python service, the condition the user accepted the
+new Node.js runtime dependency on. A separate process (`run-worker`) needs that same bridge's
+base_url/secret to send completion notifications; solved by writing them to
+`.agent_control/run/whatsapp_bridge.json` and re-reading it fresh on every notify call (never
+cached), the same convention `run_supervised.ps1`'s own per-service status files already
+established.
+
+`channels/whatsapp.py` (`WhatsAppBridgeClient`, `WhatsAppAdapter`, `WhatsAppIntakeService`,
+`WhatsAppPollingRunner`) is a real second consumer of `channels/base.py`, and being one
+justified three more extractions the first half of Phase 16 had deliberately deferred rather than
+guessed at: `schemas.py`'s `task_chat_id(task)` generalized to `channel_chat_id(task, channel)`;
+`approve_latest_pending` moved out of a `TelegramIntakeService` private method into
+`channels/base.py`; and `format_task_message` — the pure `TaskRecord.metadata` → text formatting,
+confirmed to have no Telegram API calls in it — extracted from `telegram_notifications.py` into
+`channels/task_notify.py`, now shared by `TelegramTaskNotifier` and the new
+`WhatsAppTaskNotifier`. `cli.py`'s `run_worker()` gained a `RoutingNotificationSink` that picks
+the right notifier by `task.metadata["source_channel"]`, replacing the single hardcoded Telegram
+notifier every task used to get regardless of source.
+
+**A real, pre-existing bug found and fixed along the way, not asked for:**
+`AuditEventType.MESSAGE_RECEIVED`/`MESSAGE_SENT` were already channel-generic by their own enum
+semantics, but `storage/audit_view.py` displayed them as Telegram-only everywhere (category
+`"raw_telegram"`, "Telegram message received/sent" titles, `_source()` only recognizing a
+`"telegram:"` actor prefix) — meaning WhatsApp's own message events would have shown up
+mislabeled as Telegram's in the audit trail. Generalized to a channel-neutral `"raw_message"`
+category/title and an actor-prefix-agnostic `_source()`, with `frontend/src/lib/api.ts` and
+`timeline.ts` updated to match. A new `AuditEventType.CHANNEL_ACCESS_DECISION` was added
+alongside (not reusing) Telegram's own `TELEGRAM_ACCESS_DECISION` for the same reason — reusing
+it would have mislabeled every WhatsApp allow/deny decision as a Telegram one.
+
+**Safe-by-default, deliberately not matching Telegram's own pattern.** Telegram's service entry
+in both `ybm.ps1` and `supervisor.py` is `required=True`; `poll_telegram()` has no `enabled`
+check at all and simply raises if no token is configured, which is fine because Telegram is this
+product's original, expected-to-be-configured channel. WhatsApp is new and off by default
+(`channels.whatsapp.enabled: false`) in this same change — mirroring `required=True` would have
+meant every existing user's `ybm start`/`ybm run` starts hard-failing the moment this ships,
+purely because they haven't touched a feature they never asked for. Deliberately diverged:
+WhatsApp's entry is `required=False` in both `ybm.ps1`'s `Invoke-YbmStart` and
+`supervisor.py`'s `build_service_specs()`, so an unconfigured install shows one clearly-worded,
+non-blocking `[FAIL]` line instead. `bootstrap.py` gained a non-fatal Node.js presence check and
+a `_check_whatsapp()` doctor check (ok when disabled, fail when enabled without `node`, warn when
+enabled but not yet linked, ok once `.agent_control/whatsapp_auth/` has session files) plus a
+best-effort `npm install` in `whatsapp-bridge/` during `ybm setup`, mirroring the admin console's
+own non-fatal-if-npm-missing handling.
+
+**Deliberately v1/plain-text-only**, matching Telegram's own plain-text command subset
+(`approve`/`status`/"remember that ..."): no `/command` slash syntax, inline buttons, voice
+transcription, or artifact/screenshot delivery over WhatsApp — all stay Telegram-only for now,
+the same reasoning Phase 16's first half already applied to `tools/artifact_delivery.py`. No
+admin-console Settings form for WhatsApp exists yet; it is `config.yaml`-only.
+
+**Verified:** full backend suite green, `ruff check .` clean. `whatsapp-bridge`: `npm install`
+succeeded (92 packages, 0 vulnerabilities) and `npm run check` (parses AND loads the module
+graph) clean, against this machine's real Node.js v22.11.0/npm 9.8.0. New test coverage:
+`test_whatsapp.py` (adapter allowlist deny/allow across
+disabled/empty-allowlist/not-listed/allowed, task creation, clarification resume, plain
+approve/status commands, polling-runner offset/error handling), `test_whatsapp_notifications.py`
+(`WhatsAppTaskNotifier` routing and no-ops for other channels/missing chat id),
+`test_whatsapp_bridge_process.py` (node-binary resolution, start/stop and shared-state
+read/write against a fake spawner and a faked health check, the not-found and
+never-becomes-healthy error paths), `test_supervisor.py` (the `whatsapp` spec is present and
+`required=False` by default, `telegram_polling` stays `required=True`, `no_whatsapp=True`
+excludes it), and new `test_bootstrap.py` cases for `_check_node`/`_check_whatsapp`/
+`_install_whatsapp_bridge_deps`. Live, read-only: `.\scripts\ybm.ps1 doctor` run against this
+machine's actual, already-configured `config/config.yaml` (which predates this change and has no
+`channels.whatsapp` key at all) came back 27 ok / 0 warn / 0 fail, with `WhatsApp   disabled in
+config` and `Node.js   C:\nodejs\node.EXE` both reporting correctly — confirming both that the
+new config defaults handle an old config file missing the new key, and that the feature is
+genuinely inert for an existing user who hasn't touched it.
+
+**Not verified, disclosed rather than silently skipped:** no live QR-pairing, no linking of a
+real WhatsApp account, and no live send/receive — no phone number was available or provided this
+session, and none was added to the repo, `config.example.yaml`, or any commit. `ybm start`/`ybm
+run` was not run live against this machine's already-running instance (it has real services on
+ports 8000/8765 already up) to avoid disrupting whatever the user currently has live; `doctor`
+(read-only) was used instead to confirm safe-by-default behavior. Whoever runs this repo links
+their own number by following `docs/LOCAL_SETUP.md`'s new "Link WhatsApp" section.
+
+### Review pass: the sidecar could not start at all *(same day)*
+
+A follow-up review found the shipped bridge was **completely non-functional**, and found it only
+by probing the module loader directly rather than re-reading the code.
+`@whiskeysockets/baileys@6.7.24` is `"type": "module"` (ESM-only); the sidecar was
+`"type": "commonjs"` and `require()`d it, which throws `ERR_REQUIRE_ESM` on Node < 22.12, where
+`require(esm)` is still flag-gated. On this machine (v22.11.0) the bridge would have died on its
+first line, every time.
+
+The reason this shipped "verified" is the lesson worth keeping: **`node --check` parses syntax
+and never resolves imports**, so it passes happily on a file whose very first `require` cannot
+work. The check was real, it just did not test the thing that was broken — a
+verification-theatre failure, not a missed step. Fixed by converting the package to ESM
+(`import` throughout, verified against the real installed package's actual export shape rather
+than assumed), and by replacing the syntax check with `npm run check`, which parses *and* loads
+the whole import graph. To make that loadable without side effects, the listen/connect calls
+moved behind a `main()` guard that only fires when the file is the process entry point — both
+directions verified (importing it opens no socket and exits 0; running it refuses to start
+without a secret and exits 1).
+
+Four further defects fixed in the same pass, all of which the ESM failure had been masking:
+`extractText` didn't unwrap `ephemeralMessage`/`viewOnceMessage`, so any chat with disappearing
+messages enabled (a per-chat default on many accounts) would have had every message silently
+extract to `""` and vanish with no error; a superseded socket could still emit `close` and
+schedule its own reconnect, fanning one dropped connection out into several parallel reconnect
+chains; hand-rolled `@g.us` string matching replaced with Baileys' own `isJidGroup`/
+`isJidBroadcast`/`isJidNewsletter` predicates; and both `WhatsAppBridgeProcess.start()` and the
+`doctor` check now fail fast and specifically on a missing `whatsapp-bridge/node_modules`
+instead of a 60-second health-check timeout, with `_wait_until_healthy` additionally noticing a
+child that has already exited rather than waiting out the full deadline.

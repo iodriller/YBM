@@ -1,0 +1,17 @@
+{
+  "name": "ybm-whatsapp-bridge",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Local WhatsApp sidecar for YBM Control (docs/UI_UX_AUDIT.md Phase 16) - a thin Baileys wrapper exposing health/updates/send over localhost HTTP. Owned and spawned by the Python backend (agent_control.channels.whatsapp_bridge_process); not a standalone service.",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "check": "node --check src/index.js && node -e \"import('./src/index.js')\""
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.9",
+    "pino": "^9.5.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}

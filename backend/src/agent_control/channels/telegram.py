@@ -6,7 +6,13 @@ from typing import Any
 
 import httpx
 
-from agent_control.channels.base import ChannelUpdateResult, classify_and_spawn_task, resume_clarifying_reply, status_summary
+from agent_control.channels.base import (
+    ChannelUpdateResult,
+    approve_latest_pending,
+    classify_and_spawn_task,
+    resume_clarifying_reply,
+    status_summary,
+)
 from agent_control.config import AppSettings, TelegramConfig
 from agent_control.config_sync import read_env_value
 from agent_control.channels.responder import ChatResponder
@@ -669,7 +675,7 @@ class TelegramIntakeService:
             return remember_response
         text = (inbound.text or "").strip().lower()
         if text in {"approve", "approved", "approve it", "yes approve", "yes, approve"}:
-            return self._approve_latest_pending(inbound)
+            return approve_latest_pending(self.repositories, self.audit, inbound)
         if text in {"status", "task status", "tasks status", "what is the status"}:
             return self._out(inbound.chat_id, status_summary(self.repositories))
         if text in {"tasks", "list tasks", "show tasks"}:
@@ -729,35 +735,6 @@ class TelegramIntakeService:
                 f"{str(session.get('prompt') or '')[:60]}"
             )
         return "\n".join(lines)
-
-    def _approve_latest_pending(self, inbound: InboundMessage) -> OutboundMessage:
-        chat_id = str(inbound.chat_id)
-        for task in self.repositories.tasks.list_recent(50):
-            if task.conversation_id != f"conv_telegram_{chat_id}" and str(task.metadata.get("source_chat_id")) != chat_id:
-                continue
-            pending = [
-                approval
-                for approval in self.repositories.approvals.list_for_task(task.id)
-                if approval.status == ApprovalStatus.PENDING
-            ]
-            if not pending:
-                continue
-            approved_count = 0
-            for approval in pending:
-                if not self.repositories.approvals.decide_pending(approval.id, ApprovalStatus.APPROVED):
-                    continue
-                approved_count += 1
-                self.audit.append(
-                    AuditEventType.APPROVAL_DECIDED,
-                    actor=f"telegram:user:{inbound.sender_id}",
-                    task_id=task.id,
-                    correlation_id=inbound.correlation_id,
-                    payload={"approval_id": approval.id, "decision": "approve", "source": "plain_text"},
-                )
-            if approved_count:
-                requeue_after_approval_decision(self.repositories, task.id)
-                return self._out(chat_id, f"Approved {approved_count} pending approval(s) for {task.id}.")
-        return self._out(chat_id, "No live pending approval found.")
 
     @staticmethod
     def _out(chat_id: str, text: str) -> OutboundMessage:

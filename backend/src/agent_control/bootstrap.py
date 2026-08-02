@@ -210,6 +210,45 @@ def _check_telegram(settings: AppSettings) -> Check:
     return Check("Telegram", "fail", f"enabled but {settings.channels.telegram.token_env} is not set")
 
 
+def _check_node() -> Check:
+    node = shutil.which("node")
+    if node:
+        return Check("Node.js", "ok", node)
+    return Check(
+        "Node.js", "warn",
+        "not found on PATH - only needed for the WhatsApp channel and building the admin "
+        "console; install Node.js 20+ (https://nodejs.org) if you need either",
+    )
+
+
+def _check_whatsapp(settings: AppSettings) -> Check:
+    if not settings.channels.whatsapp.enabled:
+        return Check("WhatsApp", "ok", "disabled in config")
+    from agent_control.channels.whatsapp_bridge_process import AUTH_DIR, BRIDGE_DIR, find_node_binary
+
+    node = find_node_binary(settings.channels.whatsapp.node_path)
+    if node is None:
+        return Check(
+            "WhatsApp", "fail",
+            "enabled but node was not found on PATH (or channels.whatsapp.node_path) - "
+            "install Node.js 20+ (https://nodejs.org)",
+        )
+    if not (BRIDGE_DIR / "node_modules").is_dir():
+        return Check(
+            "WhatsApp", "fail",
+            f"enabled but {BRIDGE_DIR}/node_modules is missing - run `npm install` in "
+            f"{BRIDGE_DIR}/, or re-run `ybm setup`",
+        )
+    linked = AUTH_DIR.exists() and any(AUTH_DIR.iterdir())
+    if not linked:
+        return Check(
+            "WhatsApp", "warn",
+            "node found, not yet linked - start the whatsapp service and scan the QR it "
+            "prints (`ybm logs whatsapp -Follow`)",
+        )
+    return Check("WhatsApp", "ok", f"node found ({node}), linked")
+
+
 def _check_admin_token(settings: AppSettings) -> Check:
     if read_env_value(settings.server.admin_token_env):
         return Check("Admin token", "ok", "set")
@@ -230,7 +269,7 @@ def _check_vault(settings: AppSettings) -> Check:
 
 
 def collect_checks() -> list[Check]:
-    checks: list[Check] = [_check_python(), _check_venv(), *_check_modules()]
+    checks: list[Check] = [_check_python(), _check_venv(), *_check_modules(), _check_node()]
     config_check, settings = _load_settings_checked()
     checks.append(config_check)
     if settings is not None:
@@ -238,6 +277,7 @@ def collect_checks() -> list[Check]:
         checks.append(_check_db(settings))
         checks.append(check_localdeploy(settings))
         checks.append(_check_telegram(settings))
+        checks.append(_check_whatsapp(settings))
         checks.append(_check_admin_token(settings))
         checks.append(_check_vault(settings))
     checks.extend(_check_ports())
@@ -314,10 +354,33 @@ def run_setup(*, telegram_token: str | None = None) -> int:
     print(f"database ready at {load_settings().storage.database_url}")
 
     _build_admin_console()
+    _install_whatsapp_bridge_deps()
 
     print()
     print("Next: `ybm doctor` to verify the environment, then `ybm start`.")
     return 0
+
+
+def _install_whatsapp_bridge_deps() -> None:
+    """`npm install` only (no build step - whatsapp-bridge/ is a standalone
+    sidecar process, not bundled into anything) so `poll-whatsapp` has its
+    dependencies the first time someone enables channels.whatsapp.
+    Best-effort: mirrors _build_admin_console's non-fatal handling of a
+    missing npm, since the rest of YBM works without the WhatsApp channel."""
+    bridge_dir = Path("whatsapp-bridge")
+    if not bridge_dir.exists() or (bridge_dir / "node_modules").exists():
+        return
+    npm = shutil.which("npm")
+    if npm is None:
+        print("\nNOTE: npm not found - skipping whatsapp-bridge dependency install. Install "
+              "Node.js 20+ (https://nodejs.org), then run `npm install` in whatsapp-bridge/ "
+              "if you plan to use the WhatsApp channel.")
+        return
+    print("\n-- Installing whatsapp-bridge dependencies --")
+    use_shell = sys.platform == "win32"
+    install_result = subprocess.run(["npm", "install"], cwd=bridge_dir, shell=use_shell, check=False)
+    if install_result.returncode != 0:
+        print("WARN: `npm install` failed in whatsapp-bridge/ - run it manually if you plan to use WhatsApp.")
 
 
 _ADMIN_CONSOLE_SOURCE_GLOBS = ("src/**/*", "public/**/*", "index.html", "package.json", "package-lock.json", "vite.config.ts", "tsconfig*.json")

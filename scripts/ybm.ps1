@@ -39,7 +39,7 @@ YBM - local agentic control stack
   ybm setup                    create venv, install deps, bootstrap config/.env
   ybm doctor                   preflight: env, config, connectivity, ports
   ybm start [flags]            start the stack (runs doctor first)
-    -NoTelegram -NoWorker -NoScheduler -NoLocalDeploy -SkipDoctor -Open
+    -NoTelegram -NoWhatsApp -NoWorker -NoScheduler -NoLocalDeploy -SkipDoctor -Open
   ybm stop                     stop all YBM background processes
   ybm restart [flags]          stop then start
   ybm status                   show per-service status and health
@@ -300,6 +300,7 @@ function Stop-YbmOrphansForName {
     "coding_session_watcher" { @("run_coding_session_watcher.ps1", "agent_control.cli run-coding-session-watcher") }
     "scheduler" { @("run_scheduler.ps1", "agent_control.cli run-scheduler") }
     "telegram_polling" { @("run_telegram_polling.ps1", "agent_control.cli poll-telegram") }
+    "whatsapp" { @("run_whatsapp.ps1", "agent_control.cli poll-whatsapp") }
     default { @() }
   }
   if (-not $patterns) {
@@ -389,6 +390,7 @@ function Invoke-YbmStart {
   param([string[]]$Argv)
 
   $noTelegram = $Argv -contains "-NoTelegram"
+  $noWhatsApp = $Argv -contains "-NoWhatsApp"
   $noWorker = $Argv -contains "-NoWorker"
   $noScheduler = $Argv -contains "-NoScheduler"
   $noLocalDeploy = $Argv -contains "-NoLocalDeploy"
@@ -426,6 +428,23 @@ function Invoke-YbmStart {
 
   if (-not $noTelegram) {
     $results["telegram_polling"] = Start-YbmService -Name "telegram_polling" -ScriptPath (Join-Path $Script:YbmRoot "scripts\services\run_telegram_polling.ps1") -Required $true
+  }
+  if (-not $noWhatsApp) {
+    # Gated on the config flag itself, unlike telegram_polling (always
+    # attempted) - most installs never touch WhatsApp, and poll-whatsapp
+    # refuses to start at all when disabled (cli.py's poll_whatsapp), so
+    # attempting it anyway would crash-loop 4 times (~20s wasted) on every
+    # single `ybm start`/`ybm run`, for every user, and leave a permanently
+    # alarming "failed" status line for a feature nobody asked to run.
+    # `channel-enabled` fails closed (exit 1 = treat as disabled) on a
+    # broken config, matching build_service_specs()'s Python-path behavior.
+    & (Get-YbmPython) -m agent_control.cli channel-enabled whatsapp | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+      # Required $false even when enabled: a bridge hiccup (crash, not yet
+      # linked) must not block the rest of the stack the way a required
+      # service would.
+      $results["whatsapp"] = Start-YbmService -Name "whatsapp" -ScriptPath (Join-Path $Script:YbmRoot "scripts\services\run_whatsapp.ps1") -Required $false
+    }
   }
   if (-not $noWorker) {
     $results["worker"] = Start-YbmService -Name "worker" -ScriptPath (Join-Path $Script:YbmRoot "scripts\services\run_worker.ps1") -Required $true

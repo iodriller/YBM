@@ -25,16 +25,20 @@ from agent_control.channels.telegram import (
 from agent_control.channels.memory import ConversationMemoryService
 from agent_control.channels.responder import LLMChatResponder
 from agent_control.channels.telegram_notifications import TelegramTaskNotifier
+from agent_control.channels.whatsapp import WhatsAppAdapter, WhatsAppBridgeClient, WhatsAppIntakeService, WhatsAppPollingRunner
+from agent_control.channels.whatsapp_bridge_process import WhatsAppBridgeProcess, load_whatsapp_bridge_client
+from agent_control.channels.whatsapp_notifications import WhatsAppTaskNotifier
 from agent_control.config import AppSettings, backend_base_url, load_settings
 from agent_control.llm import LLMMessageClassifier, build_default_llm_provider
 from agent_control.llm.providers import build_major_llm_provider
 from agent_control.observation import ArtifactService, ScreenshotService
 from agent_control.persona import persona_prompt_section
 from agent_control.orchestration import AuditorService, OperatorLoopService, TaskWorker, ToolExecutor, reconcile_orphaned_tasks
+from agent_control.orchestration.worker import TaskNotificationSink
 from agent_control.policy import PolicyEngine
 from agent_control.recovery import RetryPolicy
 from agent_control.scheduler import run_scheduler_forever
-from agent_control.schemas import AuditEventType, TaskStatus
+from agent_control.schemas import AuditEventType, ChannelType, TaskRecord, TaskStatus
 from agent_control.storage import ApprovalRepository, AuditLogger, Database, Repositories
 from agent_control.tools.registry import build_tool_registry
 from agent_control.tools.stt import build_stt_adapter
@@ -207,6 +211,75 @@ async def poll_telegram() -> None:
             await asyncio.sleep(5)
 
 
+async def poll_whatsapp() -> None:
+    """Mirrors poll_telegram() (docs/UI_UX_AUDIT.md Phase 16), with one extra
+    step: it also owns the whatsapp-bridge Node sidecar for its whole
+    lifetime (start it before polling, stop it on exit) - see
+    channels/whatsapp_bridge_process.py for why that lives here rather than
+    as a separate service. Raises immediately, the same way
+    load_telegram_token() already does for an unconfigured Telegram, if the
+    channel isn't enabled - `run_supervised.ps1`'s crash-loop breaker turns
+    that into a clean "failed" status rather than a busy-loop, matching how
+    an unconfigured Telegram already behaves.
+    """
+    settings = load_settings()
+    if not settings.channels.whatsapp.enabled:
+        raise RuntimeError("WhatsApp channel is not enabled (channels.whatsapp.enabled: false in config.yaml)")
+    repositories, audit = build_repositories()
+    bridge = WhatsAppBridgeProcess(settings.channels.whatsapp)
+    try:
+        await bridge.start()
+    except Exception as exc:
+        audit.append(AuditEventType.ERROR, actor="whatsapp_polling", payload={"error": "bridge_start_failed", "reason": str(exc)})
+        # A health-check timeout still leaves a spawned node child running -
+        # without this it survives this process's exit as an orphan holding
+        # the bridge port, so every subsequent start fails the same way.
+        bridge.stop()
+        raise
+
+    adapter = WhatsAppAdapter(settings.channels.whatsapp, audit)
+    provider = build_default_llm_provider(settings)
+    classifier = LLMMessageClassifier(provider) if provider else None
+    responder = LLMChatResponder(provider, settings, repositories) if provider else None
+    memory_service = ConversationMemoryService(repositories, provider=provider)
+    client = WhatsAppBridgeClient(bridge.base_url, bridge.secret)
+    service = WhatsAppIntakeService(
+        adapter, repositories, audit,
+        settings=settings, bridge_client=client,
+        classifier=classifier, responder=responder, memory_service=memory_service,
+    )
+    runner = WhatsAppPollingRunner(client, service)
+    offset = 0
+    try:
+        while True:
+            if not bridge.is_alive():
+                # The node child exited on its own (crash, killed
+                # externally, port taken by something else) - without this
+                # check, poll_once below would just fail against a closed
+                # port every 2s forever with a "running" service status.
+                # Raising instead lets run_supervised.ps1's existing
+                # restart-with-backoff / crash-loop breaker handle recovery,
+                # the same machinery every other supervised service already
+                # relies on.
+                audit.append(
+                    AuditEventType.ERROR,
+                    actor="whatsapp_polling",
+                    payload={"error": "bridge_process_exited", "reason": f"whatsapp-bridge child exited (code {bridge.returncode})"},
+                )
+                raise RuntimeError(f"whatsapp-bridge child process exited unexpectedly (code {bridge.returncode})")
+            try:
+                offset, _ = await runner.poll_once(offset=offset)
+            except Exception as exc:
+                audit.append(
+                    AuditEventType.ERROR,
+                    actor="whatsapp_polling",
+                    payload={"error": "poll_once_failed", "reason": str(exc)},
+                )
+            await asyncio.sleep(2)
+    finally:
+        bridge.stop()
+
+
 async def run_worker() -> None:
     settings = load_settings()
     repositories, audit = build_repositories()
@@ -236,7 +309,7 @@ async def run_worker() -> None:
         adapters=registry.adapters,
         tool_definitions=registry.definition_index,
     )
-    notifier = _telegram_notifier(settings, audit, approvals=repositories.approvals)
+    notifier = RoutingNotificationSink(settings, audit, approvals=repositories.approvals)
     # Run max_parallel_tasks worker loops in one process. claim_next() claims
     # atomically per worker_id, so quick tasks (status, delivery) are not
     # starved behind a long-running coding or browser task.
@@ -356,6 +429,54 @@ def _telegram_client(settings, audit: AuditLogger | None = None) -> TelegramBotA
         return None
 
 
+def _whatsapp_notifier() -> WhatsAppTaskNotifier | None:
+    """No settings check here (unlike _telegram_notifier) - if the bridge's
+    state file exists at all, WhatsApp must be enabled, since only
+    poll_whatsapp() (which refuses to start otherwise) ever writes it."""
+    client = load_whatsapp_bridge_client()
+    return WhatsAppTaskNotifier(client) if client else None
+
+
+class RoutingNotificationSink:
+    """Implements `TaskNotificationSink` (orchestration/worker.py) - routes
+    a task-completion notification to whichever channel it came from
+    (docs/UI_UX_AUDIT.md Phase 16), replacing the single hardcoded
+    `notifier` `run_worker()` used to build once at startup for every task
+    regardless of source. Rebuilds the per-channel notifier fresh on every
+    call rather than caching one at construction time: WhatsApp's bridge
+    lives in a different process (poll-whatsapp) that can start, restart,
+    or reconfigure independently of run-worker's own lifetime, and this
+    keeps Telegram consistent with that rather than special-cased.
+    An unconfigured channel (e.g. a web-chat task, or WhatsApp with no
+    bridge running) is a silent no-op, not a hard failure - notifying is
+    best-effort and must never block the task itself finishing. Only a
+    failure while actually attempting to notify a configured channel is
+    audited (below), not the "nothing to notify" case itself.
+    """
+
+    def __init__(self, settings: AppSettings, audit: AuditLogger, approvals: ApprovalRepository | None = None) -> None:
+        self.settings = settings
+        self.audit = audit
+        self.approvals = approvals
+
+    async def notify(self, task: TaskRecord) -> None:
+        source_channel = task.metadata.get("source_channel") or ChannelType.TELEGRAM.value
+        sink: TaskNotificationSink | None = None
+        if source_channel == ChannelType.TELEGRAM.value:
+            sink = _telegram_notifier(self.settings, self.audit, approvals=self.approvals)
+        elif source_channel == ChannelType.WHATSAPP.value:
+            sink = _whatsapp_notifier()
+        if sink is None:
+            return
+        try:
+            await sink.notify(task)
+        except Exception as exc:
+            self.audit.append(
+                AuditEventType.ERROR, actor="notifier", task_id=task.id,
+                payload={"error": "notify_failed", "channel": source_channel, "reason": str(exc)},
+            )
+
+
 def _task_allows_tool_continue(repositories: Repositories, task_id: str) -> bool:
     task = repositories.tasks.get(task_id)
     if task is None:
@@ -392,6 +513,7 @@ _COMMAND_SERVICE_NAMES = {
     "run-worker": "worker",
     "run-scheduler": "scheduler",
     "poll-telegram": "telegram_polling",
+    "poll-whatsapp": "whatsapp",
     "run-coding-session-watcher": "coding_session_watcher",
     "run-coding-agent-session": "coding_agent_session",
 }
@@ -428,11 +550,13 @@ def main() -> None:
             "init-db",
             "config-summary",
             "config-set",
+            "channel-enabled",
             "db-inspect",
             "db-clean",
             "db-reset",
             "trace-task",
             "poll-telegram",
+            "poll-whatsapp",
             "run-worker",
             "run-scheduler",
             "run-coding-agent-session",
@@ -454,6 +578,7 @@ def main() -> None:
     parser.add_argument("--follow", "-f", action="store_true", help="follow log output, for `logs`")
     parser.add_argument("--lines", type=int, default=60, help="tail line count, for `logs`")
     parser.add_argument("--no-telegram", action="store_true", help="for `start`: skip the Telegram polling service")
+    parser.add_argument("--no-whatsapp", action="store_true", help="for `start`: skip the WhatsApp polling service")
     parser.add_argument("--no-worker", action="store_true", help="for `start`: skip the worker + coding session watcher")
     parser.add_argument("--no-scheduler", action="store_true", help="for `start`: skip the scheduler")
     parser.add_argument("--no-localdeploy", action="store_true", help="for `start`: skip launching LocalDeploy")
@@ -472,7 +597,7 @@ def main() -> None:
     elif args.command == "start":
         from agent_control.supervisor import start_all
         raise SystemExit(start_all(
-            no_telegram=args.no_telegram, no_worker=args.no_worker,
+            no_telegram=args.no_telegram, no_whatsapp=args.no_whatsapp, no_worker=args.no_worker,
             no_scheduler=args.no_scheduler,
             no_localdeploy=args.no_localdeploy,
             open_browser=args.open,
@@ -502,6 +627,20 @@ def main() -> None:
         ok, message = set_config_path(args.path, args.value)
         print(message)
         raise SystemExit(0 if ok else 1)
+    elif args.command == "channel-enabled":
+        # Exit-code contract (0 enabled, 1 disabled/unknown) rather than
+        # stdout - lets scripts/ybm.ps1 gate a service start on it with a
+        # plain $LASTEXITCODE check, no JSON parsing needed. Used to decide
+        # whether to even attempt the whatsapp service, so a broken config
+        # here must not itself crash `ybm start` - fail closed (treat as
+        # disabled) and let `ybm doctor` be where a bad config surfaces.
+        if not args.path:
+            raise SystemExit("usage: ybm channel-enabled <telegram|whatsapp>")
+        try:
+            channel_config = getattr(load_settings().channels, args.path)
+        except Exception:
+            raise SystemExit(1) from None
+        raise SystemExit(0 if getattr(channel_config, "enabled", False) else 1)
     elif args.command == "db-inspect":
         raise SystemExit(db_inspect())
     elif args.command == "db-clean":
@@ -514,6 +653,8 @@ def main() -> None:
         raise SystemExit(trace_task(args.path, as_json=args.json))
     elif args.command == "poll-telegram":
         asyncio.run(poll_telegram())
+    elif args.command == "poll-whatsapp":
+        asyncio.run(poll_whatsapp())
     elif args.command == "run-worker":
         asyncio.run(run_worker())
     elif args.command == "run-scheduler":

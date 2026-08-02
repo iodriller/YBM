@@ -6,7 +6,8 @@ import pytest
 
 from datetime import datetime, timedelta, timezone
 
-from agent_control.channels.telegram_notifications import TelegramTaskNotifier, _task_message_without_screenshot, _user_facing_task_message
+from agent_control.channels.task_notify import format_task_message
+from agent_control.channels.telegram_notifications import TelegramTaskNotifier
 from agent_control.schemas import ApprovalRequest, ApprovalStatus, Capability, ChannelType, RiskLevel, TaskRecord, TaskStatus
 
 
@@ -85,7 +86,7 @@ def test_task_message_prioritizes_result_links() -> None:
         },
     )
 
-    message = _user_facing_task_message(task)
+    message = format_task_message(task)
 
     # Regression guard: this used to reply "The local workspace is ready." and
     # nothing else - the address the user asked for lives in
@@ -109,7 +110,7 @@ def test_task_message_reports_gap_and_retry_on_blocked_task() -> None:
         },
     )
 
-    message = _user_facing_task_message(task)
+    message = format_task_message(task)
 
     assert "I could not complete this request." in message
     assert "Gap: expected_preview_url_missing" in message
@@ -117,7 +118,7 @@ def test_task_message_reports_gap_and_retry_on_blocked_task() -> None:
     assert "Error: assistant output did not include materializable static app files" in message
 
 
-def test_task_message_without_screenshot_keeps_photo_path_out_of_text(tmp_path) -> None:
+def test_task_message_keeps_photo_path_out_of_text(tmp_path) -> None:
     screenshot = tmp_path / "screen.png"
     screenshot.write_bytes(b"png")
     task = TaskRecord(
@@ -130,7 +131,7 @@ def test_task_message_without_screenshot_keeps_photo_path_out_of_text(tmp_path) 
         },
     )
 
-    message = _task_message_without_screenshot(task)
+    message = format_task_message(task)
 
     assert "Screenshot:" not in message
     assert str(screenshot) not in message
@@ -160,7 +161,7 @@ def test_completed_filesystem_search_message_includes_file_contents() -> None:
         },
     )
 
-    message = _task_message_without_screenshot(task)
+    message = format_task_message(task)
 
     assert "oney-resume-notes.txt" in message
     assert "Python automation" in message
@@ -185,7 +186,7 @@ async def test_notifier_sends_screenshot_as_photo(tmp_path) -> None:
 
     await TelegramTaskNotifier(client).notify(task)  # type: ignore[arg-type]
 
-    assert client.messages == [("100", _task_message_without_screenshot(task))]
+    assert client.messages == [("100", format_task_message(task))]
     assert client.photos == [("100", str(screenshot), "Screenshot - Take a screenshot of my desktop and send it to me now")]
 
 
@@ -291,7 +292,7 @@ def test_code_interpreter_response_shows_stdout_as_primary_content() -> None:
         },
     )
 
-    message = _task_message_without_screenshot(task)
+    message = format_task_message(task)
 
     assert "Total: 190" in message
     assert "expense-summary.json" in message
@@ -320,7 +321,7 @@ def test_mcp_response_shows_tool_result_content() -> None:
         },
     )
 
-    message = _task_message_without_screenshot(task)
+    message = format_task_message(task)
 
     assert "hello from E2E" in message
     assert "Task:" not in message
@@ -337,21 +338,21 @@ def test_completed_task_messages_do_not_leak_internal_ids() -> None:
             status=TaskStatus.COMPLETED,
             metadata={"last_tool_name": tool_name, "last_tool_result": {"output": output}},
         )
-        message = _task_message_without_screenshot(task)
+        message = format_task_message(task)
         assert "Task:" not in message, f"Task ID leaked for {tool_name}"
         assert "Command:" not in message, f"Command ID leaked for {tool_name}"
 
 
 def test_user_facing_message_received_status_is_friendly() -> None:
     task = TaskRecord(objective="Find my resume", status=TaskStatus.RECEIVED)
-    message = _user_facing_task_message(task)
+    message = format_task_message(task)
     lower = message.lower()
     assert "working on it" in lower or "got your message" in lower or "on it" in lower
 
 
 def test_user_facing_message_retrying_status_explains_retry() -> None:
     task = TaskRecord(objective="Do something", status=TaskStatus.RETRYING)
-    message = _user_facing_task_message(task)
+    message = format_task_message(task)
     lower = message.lower()
     assert "different" in lower or "trying" in lower or "approach" in lower or "retry" in lower
 
@@ -368,7 +369,7 @@ def test_user_facing_message_awaiting_approval_shows_preview_and_real_resume_pat
         metadata={"pending_approval_preview": "- Run cleanup script (risk: high) via terminal: {'command': 'rm -rf build'}"},
     )
 
-    message = _user_facing_task_message(task)
+    message = format_task_message(task)
 
     assert "Run cleanup script" in message
     assert "rm -rf build" in message
@@ -380,7 +381,7 @@ def test_user_facing_message_awaiting_approval_shows_preview_and_real_resume_pat
 def test_user_facing_message_awaiting_approval_without_preview_still_names_resume_path() -> None:
     task = TaskRecord(objective="Run a risky terminal command", status=TaskStatus.AWAITING_APPROVAL)
 
-    message = _user_facing_task_message(task)
+    message = format_task_message(task)
 
     assert "approve" in message.lower()
     assert "admin UI" not in message
@@ -402,7 +403,7 @@ def test_running_progress_message_names_the_last_real_step() -> None:
         },
     )
 
-    message = _user_facing_task_message(task)
+    message = format_task_message(task)
 
     assert "document.manage" in message
     assert "PDF is password protected" in message
@@ -423,7 +424,7 @@ def test_progress_message_skips_check_pseudo_entries() -> None:
         },
     )
 
-    message = _user_facing_task_message(task)
+    message = format_task_message(task)
 
     assert "code.interpreter" in message
     assert "_fulfillment_check" not in message
@@ -440,7 +441,7 @@ def test_failed_task_message_includes_the_last_real_step() -> None:
         },
     )
 
-    message = _user_facing_task_message(task)
+    message = format_task_message(task)
 
     assert "document.manage" in message
     assert "PDF is password protected" in message

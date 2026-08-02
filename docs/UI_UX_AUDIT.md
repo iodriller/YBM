@@ -20,11 +20,11 @@ The redesign establishes a clearer control-plane hierarchy:
 
 ## Where We Are
 
-Phases 0-15 are done. Phase 16 is partially shipped (the channel-adapter interface; an actual
-second channel remains open), and Phases 3 and 7 are blocked on the repository
-owner. Full write-ups of shipped phases were removed on 2026-08-01 to keep this document about
-what is *left*; the detail lives in git history (`git log --grep "Phase N"`) and in the code
-comments each change left behind.
+Phases 0-16 are done - Phase 16 shipped in two halves: the channel-adapter interface, then a
+real second channel (WhatsApp). Phases 3 and 7 are blocked on the repository owner, and nothing
+is currently open. Full write-ups of shipped phases were removed on 2026-08-01 to keep this
+document about what is *left*; the detail lives in git history (`git log --grep "Phase N"`) and
+in the code comments each change left behind.
 
 ### Shipped
 
@@ -44,7 +44,7 @@ comments each change left behind.
 | 13 | Server-side folder picker: `GET /admin/api/folders`, scoped to the same `computer_use.allowed_roots` `filesystem.manage` uses, with a `FolderPicker` dialog in the Chat composer | — |
 | 14 | Timeline gained real categories, colors, and durations; Steps and the Graph gained real per-step/per-node durations; a new Duration/Gantt tab showing tool calls, approval waits (rendered as an outline), and LLM-call latency on one time axis, with any uncovered gap honestly labeled "inferred"; real per-item effect classification for receipts and evidence; `llm_calls` persistence (`task_id`, `source`, `model`, `step_index`, messages, response, tokens, latency), redacted and size-capped, wired into `ybm db clean`/`db reset`; a stable `step_id` stamped through operator history, `ToolCallRequest.parent_step_id`, approvals, and LLM calls, surviving an approval or background-external wait; and Graph v2 - rooted at the task's query, one node per real step (LLM decision + tool call(s) + approval gate grouped together), with duration/token badges and a click-to-inspect dialog showing the exact prompt, response, and tool input/output | Connecting a parallel/subagent lane in the graph back to the exact step that spawned it - step_id doesn't nest, only `origin` does |
 | 15 | Deterministic relevance selection (`score_facts`: keyword/entity overlap with the objective, category relevance, recency; facts with no `task_id` always included as durable global preferences) replacing "inject every fact into every task, uncapped"; a real `user_stated` route via `detect_remember_request` ("remember that ..." / "don't forget that ..."), detected at the runtime level before any LLM sees the message, wired into Telegram's plain-text command layer; `memory.manage`'s `forget` operation gated behind approval (medium risk floor) while `list`/`remember` stay free, via the same `operation_risks`/`approval_required_operations` mechanism `schedule.manage` uses | The fifth scoring signal (current folder/service context) - no caller has that signal available today; the same "remember that ..." interception for the web-chat intake path, which has no equivalent pre-classifier hook yet |
-| 16 | Channel-adapter interface, first half: the "classify -> task" stage extracted from `TelegramIntakeService` into channel-agnostic functions (`channels/base.py`'s `classify_and_spawn_task`, `resume_clarifying_reply`, `status_summary`) behind a `ChannelAdapter` Protocol and shared `ChannelUpdateResult` type; `ChatResponder`/`LLMChatResponder`/`StaticChatResponder` lost their misleading Telegram-only names (implementations were already channel-agnostic) | The intake/notify/command stages (Telegram JSON parsing, `/command` syntax, inline-keyboard callbacks, voice transcription, `TelegramTaskNotifier`) and an actual second channel - deliberately deferred until a real second channel exists to validate the seam against, see the Phase 16 write-up below |
+| 16 | Channel-adapter interface (first half): the "classify -> task" stage extracted from `TelegramIntakeService` into channel-agnostic functions (`channels/base.py`'s `classify_and_spawn_task`, `resume_clarifying_reply`, `status_summary`, later joined by `approve_latest_pending`) behind a `ChannelAdapter` Protocol and shared `ChannelUpdateResult` type. Second half: WhatsApp as a real second channel, via a Node.js Baileys sidecar (`whatsapp-bridge/`) the backend spawns and polls over loopback HTTP - `WhatsAppAdapter`/`WhatsAppIntakeService`/`WhatsAppTaskNotifier`, `task_chat_id` generalized to `channel_chat_id(task, channel)`, and `format_task_message` extracted to `channels/task_notify.py` and shared with Telegram. Disabled by default, no real phone number ships in the repo | Plain-text only in v1 - no `/command` syntax, inline buttons, voice transcription, or artifact/screenshot delivery over WhatsApp (all Telegram-only for now); live QR-pairing and live send/receive were not performed in this session - no phone number was available, see the Phase 16 write-up below |
 
 ### Blocked on the repository owner
 
@@ -55,23 +55,22 @@ comments each change left behind.
 
 ### Open
 
-| # | Phase | Why it's next |
-|---|---|---|
-| 16 | A second channel, built on the adapter interface's first half (see Shipped above) | Telegram is still the only real channel |
+Nothing open. Phases 3 and 7 are blocked on the repository owner (see above); everything else is
+shipped.
 
 ## Current Feature Coverage
 
 | Area | Implemented today | Console coverage | Important gap |
 |---|---|---|---|
 | Agent runtime | Concierge, bounded Operator loop, Auditor, fulfillment checks, parallel calls, delegation | Task status, step list, timeline, advanced lane graph | The graph cannot connect a delegated/parallel lane to the exact spawning decision (Phase 14) |
-| Channels | Telegram text/voice and one local web conversation | Web chat plus Telegram settings | Web chat has no voice, multiple threads, edit/regenerate, or message queue |
+| Channels | Telegram text/voice, WhatsApp text (Baileys, disabled by default), and one local web conversation | Web chat plus Telegram settings; WhatsApp is config-only, no admin UI settings page yet | Web chat has no voice, multiple threads, edit/regenerate, or message queue; WhatsApp has no buttons, voice, or artifact delivery |
 | Safety | Capability policies, risk ceilings, allowlists, one-shot approvals, task-scoped grants, disabled-by-default tools | Persistent approval banner, Evidence Pack, Access posture and modes | Fine-grained scopes/patterns are read-only; no grant revocation list |
 | Tooling | Filesystem, terminal, browser, computer use, workspace, coding agents, documents, schedules, MCP, HTTP, knowledge, persona, skills, memory | Tools page, Agent hub, Access groups, diagnostics | Tool availability and permission live on separate pages; no combined capability-health matrix |
 | Observability | Structured audit, task trace, timeline, receipts, evidence, token usage, cost data, CLI trace | Tasks with outcomes, trace list/graph/timeline, audit viewer | No per-step duration, latency trend, failure-rate view, evaluation signal, or cross-task cost dashboard |
-| Configuration | LLM profiles/presets, Telegram, VS Code, workspace, computer use, MCP summary | Settings forms and advanced mode | No per-role model, prompt overrides, delegate presets, or editable advanced policies; MCP is read-only |
+| Configuration | LLM profiles/presets, Telegram, WhatsApp, VS Code, workspace, computer use, MCP summary | Settings forms and advanced mode | No per-role model, prompt overrides, delegate presets, or editable advanced policies; MCP is read-only; WhatsApp is `config.yaml`-only, no admin UI form yet |
 | Secrets | Encrypted local vault and reference-based injection | List/add/delete/init without returning values | Rotation/last-used state and integration validation are absent |
 | Operations | Setup, doctor, `ybm run`, tray, autostart, backup, update check, logs, scheduler, supervised services | Health indicator, Diagnostics with service cards and a doctor runner | Two supervisor implementations remain; no compiled installer |
-| Developer quality | Backend unit/scenario suite (685 tests), Zod API parsing, frontend typecheck/build | Query devtools in development | No committed frontend unit, contract, accessibility, or Playwright regression suite |
+| Developer quality | Backend unit/scenario suite (761 tests), Zod API parsing, frontend typecheck/build | Query devtools in development | No committed frontend unit, contract, accessibility, or Playwright regression suite |
 
 ## Competitive Review
 
@@ -217,24 +216,48 @@ moved code, it didn't rewrite behavior) and by new tests calling `classify_and_s
 directly with `ChannelType.DISCORD`/`SLACK` inbound messages, confirming the audit trail, task
 metadata, and outbound replies are genuinely channel-derived, not secretly still Telegram-shaped.
 
-**Deliberately not done, and why:** the intake stage itself (`TelegramAdapter`'s Telegram-JSON
-parsing) and the notify/command stage (`/command` slash syntax, inline-keyboard callback
-queries, voice transcription via Telegram's file API, `TelegramTaskNotifier`) were not extracted
-- there is no second implementation yet to validate an extracted shape against, and guessing that
-boundary now risks getting it wrong in a way that would need reworking once a real second channel
-exists. `task_chat_id()` (schemas.py) and `tools/artifact_delivery.py`'s Telegram-only sending are
-correctly Telegram-only today for the same reason: their only two callers only know how to reach
-Telegram, so generalizing them without a caller that needs it would be speculative. `ChannelsConfig`
-still has a single `telegram` field, not a list of channel configs.
+**WhatsApp channel (shipped, second half).** A real second consumer of `channels/base.py`,
+validating the seam the first half only guessed at. Uses
+[Baileys](https://github.com/WhiskeySockets/Baileys) - an unofficial WhatsApp Web client,
+QR-code device linking, no Meta developer account or public webhook - the same architecture
+OpenClaw (MIT, self-hosted, ~25 chat platforms through one local gateway) ships as
+production-ready; confirmed by checking their actual implementation rather than assuming the
+official Business Cloud API was viable (it needs a public HTTPS webhook this local-only product
+has no infrastructure for). Runs as a Node.js sidecar (`whatsapp-bridge/`, plain JS, no build
+step) that `cli.py poll-whatsapp` spawns and owns as a child process
+(`channels/whatsapp_bridge_process.py`) for its whole lifetime, so `ybm.ps1`'s service list never
+had to learn a new, non-Python process type - Node stayed an internal implementation detail of
+one more Python entry point. Python and Node talk over loopback HTTP with a secret generated
+fresh per run, never persisted.
 
-**What's left for a real second channel:**
-- Pick one (candidate order by reach-per-effort: WhatsApp (Baileys), Discord, Email/IMAP, Slack,
-  Signal; iMessage needs a macOS host and is out of scope on this machine) and build its
-  `ChannelAdapter` + notify transport, validating (and likely revising) the seam this phase started.
-- Comparable prior art: OpenClaw (MIT, self-hosted) routes ~25 chat platforms through one local
-  gateway into a single agent - the same architecture this points at.
-- Every new channel is new untrusted input; the taint-tracking idea in the research notes should
-  land before the channel count grows.
+Being a genuine second consumer justified three more extractions the first half deliberately
+deferred: `task_chat_id()` generalized to `channel_chat_id(task, channel)` (schemas.py, both
+callers updated), `approve_latest_pending` moved from a `TelegramIntakeService` private method
+into `channels/base.py`, and `format_task_message` (the pure `TaskRecord.metadata` -> text
+formatting, no Telegram API calls in it) extracted from `telegram_notifications.py` into
+`channels/task_notify.py`, now shared by `TelegramTaskNotifier` and the new
+`WhatsAppTaskNotifier`. Also surfaced and fixed a real, pre-existing bug this work would otherwise
+have made worse: `MESSAGE_RECEIVED`/`MESSAGE_SENT` audit events were already channel-generic by
+their own enum semantics but displayed as Telegram-only everywhere (`storage/audit_view.py`);
+now genuinely channel-generic, with a new `AuditEventType.CHANNEL_ACCESS_DECISION` added
+alongside (not reusing) Telegram's own `TELEGRAM_ACCESS_DECISION`.
+
+Deliberately v1/plain-text-only, matching Telegram's own plain-text command layer subset
+(`approve`/`status`/"remember that ..."): no `/command` slash syntax, inline buttons, voice
+transcription, or artifact/screenshot delivery over WhatsApp - all Telegram-only for now, the
+same reasoning the first half already applied to `tools/artifact_delivery.py`. Disabled by
+default (`channels.whatsapp.enabled: false`); the WhatsApp service entry is `Required $false` in
+both `ybm.ps1` and `supervisor.py` (unlike Telegram's `$true`), specifically so a fresh,
+unconfigured checkout doesn't hard-fail `ybm start`/`ybm run`. No real phone number was available
+this session and none ships in the repo or config.example.yaml - live QR-pairing, linking an
+account, and live send/receive were explicitly not performed; whoever runs this repo links their
+own number (see `docs/LOCAL_SETUP.md`).
+
+**What's left, disclosed not silent:** rich WhatsApp features (buttons, lists, media, read
+receipts) and artifact/screenshot delivery over WhatsApp; a JS test runner for the sidecar (no JS
+test tooling exists in this repo outside `frontend`/`vscode-extension`'s own toolchains); every
+new channel is new untrusted input, and the taint-tracking idea in the research notes should land
+before the channel count grows further.
 
 ## Explicit Non-goals
 

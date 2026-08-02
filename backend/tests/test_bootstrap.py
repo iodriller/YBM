@@ -119,6 +119,83 @@ def test_check_telegram_fails_when_enabled_without_token(monkeypatch, tmp_path) 
     assert check.status == "fail"
 
 
+def test_check_node_ok_when_present(monkeypatch, tmp_path) -> None:
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda name: "/usr/bin/node" if name == "node" else None)
+    check = bootstrap._check_node()
+    assert check.status == "ok"
+
+
+def test_check_node_warns_not_fails_when_missing(monkeypatch, tmp_path) -> None:
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda name: None)
+    check = bootstrap._check_node()
+    assert check.status == "warn"
+
+
+def test_check_whatsapp_ok_when_disabled(monkeypatch, tmp_path) -> None:
+    _isolate(monkeypatch, tmp_path)
+    settings = AppSettings(_env_file=None)
+    check = bootstrap._check_whatsapp(settings)
+    assert check.status == "ok"
+
+
+def test_check_whatsapp_fails_when_enabled_without_node(monkeypatch, tmp_path) -> None:
+    _isolate(monkeypatch, tmp_path)
+    settings = AppSettings(
+        _env_file=None,
+        channels={"whatsapp": {"enabled": True, "node_path": str(tmp_path / "no-such-node.exe")}},
+    )
+    check = bootstrap._check_whatsapp(settings)
+    assert check.status == "fail"
+
+
+def _whatsapp_node(tmp_path, *, install_deps: bool = True) -> str:
+    node = tmp_path / "node.exe"
+    node.write_text("", encoding="utf-8")
+    if install_deps:
+        (tmp_path / "whatsapp-bridge" / "node_modules").mkdir(parents=True)
+    return str(node)
+
+
+def test_check_whatsapp_fails_when_bridge_dependencies_are_not_installed(monkeypatch, tmp_path) -> None:
+    _isolate(monkeypatch, tmp_path)
+    node = _whatsapp_node(tmp_path, install_deps=False)
+    settings = AppSettings(
+        _env_file=None,
+        channels={"whatsapp": {"enabled": True, "node_path": node}},
+    )
+    check = bootstrap._check_whatsapp(settings)
+    assert check.status == "fail"
+    assert "npm install" in check.detail
+
+
+def test_check_whatsapp_warns_when_node_present_but_not_yet_linked(monkeypatch, tmp_path) -> None:
+    _isolate(monkeypatch, tmp_path)
+    node = _whatsapp_node(tmp_path)
+    settings = AppSettings(
+        _env_file=None,
+        channels={"whatsapp": {"enabled": True, "node_path": node}},
+    )
+    check = bootstrap._check_whatsapp(settings)
+    assert check.status == "warn"
+    assert "not yet linked" in check.detail
+
+
+def test_check_whatsapp_ok_when_node_present_and_auth_dir_populated(monkeypatch, tmp_path) -> None:
+    _isolate(monkeypatch, tmp_path)
+    node = _whatsapp_node(tmp_path)
+    auth_dir = tmp_path / ".agent_control" / "whatsapp_auth"
+    auth_dir.mkdir(parents=True)
+    (auth_dir / "creds.json").write_text("{}", encoding="utf-8")
+    settings = AppSettings(
+        _env_file=None,
+        channels={"whatsapp": {"enabled": True, "node_path": node}},
+    )
+    check = bootstrap._check_whatsapp(settings)
+    assert check.status == "ok"
+
+
 def test_desktop_capability_not_requested_by_default(monkeypatch, tmp_path) -> None:
     _isolate(monkeypatch, tmp_path)
     settings = AppSettings(_env_file=None)
@@ -252,3 +329,55 @@ def test_build_admin_console_writes_fingerprint_to_backend_not_repo_root(monkeyp
 
     assert not (tmp_path / "src").exists()
     assert (tmp_path / "backend" / "src" / "agent_control" / "static" / "admin" / ".ybm_build_fingerprint").exists()
+
+
+# ---- whatsapp-bridge dependency install (run_setup) ----
+
+
+def test_install_whatsapp_bridge_deps_skips_when_directory_missing(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(bootstrap.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+
+    bootstrap._install_whatsapp_bridge_deps()
+
+    assert calls == []
+
+
+def test_install_whatsapp_bridge_deps_skips_when_node_modules_already_present(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "whatsapp-bridge" / "node_modules").mkdir(parents=True)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(bootstrap.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+
+    bootstrap._install_whatsapp_bridge_deps()
+
+    assert calls == []
+
+
+def test_install_whatsapp_bridge_deps_warns_without_failing_when_npm_missing(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "whatsapp-bridge").mkdir()
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda name: None)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(bootstrap.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+
+    bootstrap._install_whatsapp_bridge_deps()
+
+    assert calls == []
+
+
+def test_install_whatsapp_bridge_deps_runs_npm_install_when_available(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "whatsapp-bridge").mkdir()
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda name: "/usr/bin/npm")
+    calls: list[list[str]] = []
+
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setattr(bootstrap.subprocess, "run", lambda cmd, **kw: calls.append(cmd) or _Result())
+
+    bootstrap._install_whatsapp_bridge_deps()
+
+    assert calls == [["npm", "install"]]

@@ -13,9 +13,9 @@ npm run dev      # Vite dev server with hot reload, proxying /admin/api/* to the
 
 Or from the repo root: `ybm ui-dev`.
 
-Requires the backend running separately (`ybm start` or `ybm start --no-telegram --no-worker
---no-scheduler --no-localdeploy` for a minimal footprint) - the dev server proxies API calls to
-`http://127.0.0.1:8765`, it does not serve them itself.
+Requires the backend running separately (`ybm start` or `ybm start --no-telegram --no-whatsapp
+--no-worker --no-scheduler --no-localdeploy` for a minimal footprint) - the dev server proxies API
+calls to `http://127.0.0.1:8765`, it does not serve them itself.
 
 ## Build
 

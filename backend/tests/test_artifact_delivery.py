@@ -7,7 +7,7 @@ import pytest
 from agent_control.config import AppSettings, CapabilityPolicy
 from agent_control.orchestration import ToolExecutor
 from agent_control.policy import PolicyEngine
-from agent_control.schemas import Artifact, ArtifactType, Capability, RiskLevel, ToolCallRequest, ToolResultStatus
+from agent_control.schemas import Artifact, ArtifactType, Capability, ChannelType, RiskLevel, ToolCallRequest, ToolResultStatus
 from agent_control.tools.artifact_delivery import ArtifactDeliveryAdapter
 from agent_control.tools.registry import build_tool_registry
 from helpers import make_repos
@@ -86,6 +86,45 @@ async def test_artifact_delivery_sends_screenshot_from_task_metadata(tmp_path) -
     assert client.photos == [("100", str(screenshot.resolve()), "desktop")]
     assert artifacts[0].type == ArtifactType.SCREENSHOT
     assert artifacts[0].uri == str(screenshot.resolve())
+
+@pytest.mark.asyncio
+async def test_artifact_delivery_on_a_whatsapp_task_fails_with_a_channel_aware_message(tmp_path) -> None:
+    """artifact.deliver is Telegram-only in this version (docs/UI_UX_AUDIT.md
+    Phase 16's disclosed scope) - a WhatsApp-sourced task must fail with a
+    message naming its actual channel, not a generic Telegram-flavored one
+    that would read like a bug to whoever hits it."""
+    repos, _audit = make_repos(tmp_path)
+    screenshot = tmp_path / "screen.png"
+    screenshot.write_bytes(b"png")
+    task = repos.tasks.create(
+        "take a screenshot and send it to me",
+        metadata={
+            "source_channel": ChannelType.WHATSAPP.value,
+            "source_chat_id": "15551234567@s.whatsapp.net",
+            "screenshot_path": str(screenshot),
+        },
+    )
+    adapter = ArtifactDeliveryAdapter(
+        repos.artifacts,
+        repos.tasks,
+        telegram_client=FakeTelegramClient(),
+        allowed_roots=[str(tmp_path)],
+    )
+
+    result = await adapter.execute(
+        ToolCallRequest(
+            task_id=task.id,
+            tool_name="artifact.deliver",
+            capability=Capability.TELEGRAM_SEND,
+            risk_level=RiskLevel.LOW,
+            input={"operation": "send_screenshot"},
+        )
+    )
+
+    assert result.status == ToolResultStatus.FAILED
+    assert "only supports Telegram" in result.error_message
+    assert "whatsapp" in result.error_message
+
 
 @pytest.mark.asyncio
 async def test_artifact_delivery_does_not_send_recent_artifact_by_default(tmp_path) -> None:

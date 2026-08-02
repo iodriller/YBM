@@ -16,6 +16,14 @@ channels:
     allowed_user_ids: []
     allowed_chat_ids: []
     polling: true
+  whatsapp:
+    enabled: false
+    # E.164-style numbers without the leading "+", e.g. "15551234567" -
+    # empty means deny all. Put your own number here after linking; never
+    # commit a real number to this file.
+    allowed_numbers: []
+    bridge_port: 8091
+    node_path: null
 
 llm:
   default_profile: "localdeploy_qwen3vl_8b"

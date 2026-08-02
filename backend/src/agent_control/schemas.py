@@ -27,6 +27,7 @@ class StrictBaseModel(BaseModel):
 
 class ChannelType(StrEnum):
     TELEGRAM = "telegram"
+    WHATSAPP = "whatsapp"
     SLACK = "slack"
     DISCORD = "discord"
     WEB = "web"
@@ -189,6 +190,11 @@ class AuditEventType(StrEnum):
     MESSAGE_SENT = "message_sent"
     CONFIG_UPDATED = "config_updated"
     TELEGRAM_ACCESS_DECISION = "telegram_access_decision"
+    # Generic form of the above (docs/UI_UX_AUDIT.md Phase 16) - Telegram
+    # keeps its own named event (existing historical rows, existing code),
+    # WhatsApp and any future channel use this one rather than borrowing
+    # Telegram's name for an event that isn't about Telegram.
+    CHANNEL_ACCESS_DECISION = "channel_access_decision"
     MESSAGE_CLASSIFIED = "message_classified"
     TASK_SPAWN_FAILED = "task_spawn_failed"
     TASK_CREATED = "task_created"
@@ -515,26 +521,30 @@ class TaskRecord(StrictBaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-def task_chat_id(task: TaskRecord) -> str | None:
-    """Which Telegram chat a task's output belongs to.
+def channel_chat_id(task: TaskRecord, channel: ChannelType) -> str | None:
+    """Which `channel` chat a task's output belongs to (docs/UI_UX_AUDIT.md
+    Phase 16 - generalized from the original Telegram-only `task_chat_id`
+    once a second channel, WhatsApp, existed to validate the seam against).
 
-    Lives here, next to TaskRecord, because it is pure logic over the record's
-    own fields and both the notifier (`channels/`) and the delivery tool
-    (`tools/`) need it - previously as two byte-identical private copies, with
-    no import direction between those packages that would let one reuse the
-    other's.
+    Lives here, next to TaskRecord, because it is pure logic over the
+    record's own fields and every channel's notifier + the artifact delivery
+    tool need it - previously as two byte-identical Telegram-only private
+    copies, with no import direction between those packages that would let
+    one reuse the other's.
     """
     # A source_chat_id is meaningful only within its channel. Web chat uses
-    # its own fixed local id, which must never be handed to the Telegram Bot
-    # API. Keep accepting channel-less legacy records created before
-    # source_channel was added.
+    # its own fixed local id, which must never be handed to a real channel's
+    # send API.
     source_channel = task.metadata.get("source_channel")
-    if source_channel and source_channel != ChannelType.TELEGRAM.value:
+    if source_channel and source_channel != channel.value:
         return None
     value = task.metadata.get("source_chat_id")
     if value:
         return str(value)
-    if task.conversation_id and task.conversation_id.startswith("conv_telegram_"):
+    # Channel-less legacy records predate source_channel entirely - they can
+    # only be Telegram, the one channel that existed before the field was
+    # added, so this fallback applies only when checking for Telegram.
+    if channel == ChannelType.TELEGRAM and task.conversation_id and task.conversation_id.startswith("conv_telegram_"):
         return task.conversation_id.removeprefix("conv_telegram_")
     return None
 

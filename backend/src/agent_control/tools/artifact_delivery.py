@@ -10,11 +10,12 @@ from agent_control.schemas import (
     Artifact,
     ArtifactType,
     Capability,
+    ChannelType,
     TaskRecord,
     ToolCallRequest,
     ToolCallResult,
     ToolResultStatus,
-    task_chat_id,
+    channel_chat_id,
 )
 from agent_control.storage.repositories import ArtifactRepository, TaskRepository
 from agent_control.tools.contracts import ArtifactDeliverInput, ArtifactDeliveryOutput
@@ -110,8 +111,14 @@ class ArtifactDeliveryAdapter:
                 )
             )
 
-        chat_id = str(request.input.get("chat_id") or task_chat_id(task) or "")
+        chat_id = str(request.input.get("chat_id") or channel_chat_id(task, ChannelType.TELEGRAM) or "")
         if not chat_id:
+            source_channel = task.metadata.get("source_channel") or ChannelType.TELEGRAM.value
+            if source_channel != ChannelType.TELEGRAM.value:
+                raise ValueError(
+                    f"artifact.deliver only supports Telegram in this version; this task's "
+                    f"channel is '{source_channel}', which has no Telegram chat_id to deliver to"
+                )
             raise ValueError("telegram chat_id is required and could not be inferred from the task")
         if self.telegram_client is None:
             raise ValueError("Telegram delivery client is not configured")

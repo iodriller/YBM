@@ -3,13 +3,19 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from agent_control.schemas import AuditEvent, AuditEventType, FormattedAuditEvent
+from agent_control.schemas import AuditEvent, AuditEventType, ChannelType, FormattedAuditEvent
 
 
 CATEGORY_BY_TYPE = {
-    AuditEventType.MESSAGE_RECEIVED: "raw_telegram",
-    AuditEventType.MESSAGE_SENT: "raw_telegram",
+    # "raw_message", not "raw_telegram" (docs/UI_UX_AUDIT.md Phase 16) -
+    # MESSAGE_RECEIVED/MESSAGE_SENT were always channel-generic in the enum
+    # itself, but displayed as if only Telegram could emit them; WhatsApp
+    # emits the exact same event types now. Which channel it was is the
+    # `source` field (see _source() below), not the category.
+    AuditEventType.MESSAGE_RECEIVED: "raw_message",
+    AuditEventType.MESSAGE_SENT: "raw_message",
     AuditEventType.TELEGRAM_ACCESS_DECISION: "telegram_access",
+    AuditEventType.CHANNEL_ACCESS_DECISION: "channel_access",
     AuditEventType.MESSAGE_CLASSIFIED: "classification",
     AuditEventType.TASK_SPAWN_FAILED: "failed_classification",
     AuditEventType.TASK_CREATED: "spawned_task",
@@ -61,9 +67,10 @@ def format_audit_event(event: AuditEvent) -> FormattedAuditEvent:
 
 def _title(event_type: AuditEventType) -> str:
     return {
-        AuditEventType.MESSAGE_RECEIVED: "Telegram message received",
-        AuditEventType.MESSAGE_SENT: "Telegram message sent",
+        AuditEventType.MESSAGE_RECEIVED: "Message received",
+        AuditEventType.MESSAGE_SENT: "Message sent",
         AuditEventType.TELEGRAM_ACCESS_DECISION: "Telegram access decision",
+        AuditEventType.CHANNEL_ACCESS_DECISION: "Channel access decision",
         AuditEventType.MESSAGE_CLASSIFIED: "Message classified",
         AuditEventType.TASK_SPAWN_FAILED: "Task not spawned",
         AuditEventType.TASK_CREATED: "Task spawned",
@@ -84,6 +91,14 @@ def _summary(event_type: AuditEventType, payload: dict[str, Any]) -> str:
         return _preview(payload.get("text") or payload.get("caption") or payload.get("kind") or "Message sent")
     if event_type == AuditEventType.TELEGRAM_ACCESS_DECISION:
         return f"{'Allowed' if payload.get('allowed') else 'Denied'} Telegram message"
+    if event_type == AuditEventType.CHANNEL_ACCESS_DECISION:
+        # Generic counterpart to TELEGRAM_ACCESS_DECISION above (docs/UI_UX_AUDIT.md
+        # Phase 16) - the channel name comes from the payload each adapter's
+        # own _audit_access() already stamps, not hardcoded to WhatsApp,
+        # so a future channel using this same event type gets a correct
+        # summary for free.
+        channel_name = str(payload.get("channel") or "channel").capitalize()
+        return f"{'Allowed' if payload.get('allowed') else 'Denied'} {channel_name} message"
     if event_type == AuditEventType.MESSAGE_CLASSIFIED:
         return _preview(payload.get("normalized_objective") or payload.get("text") or payload.get("reason") or "Classified message")
     if event_type == AuditEventType.TASK_SPAWN_FAILED:
@@ -125,9 +140,22 @@ def _task_type(payload: dict[str, Any]) -> str | None:
     return str(value) if value is not None else None
 
 
+_CHANNEL_ACTOR_PREFIXES = frozenset(channel.value for channel in ChannelType)
+
+
 def _source(event: AuditEvent, payload: dict[str, Any]) -> str | None:
-    if event.actor.startswith("telegram"):
-        return "telegram"
+    # Every channel's own code stamps its actor strings "<channel>:..."
+    # (docs/UI_UX_AUDIT.md Phase 16 - see channels/base.py's
+    # classify_and_spawn_task and each adapter's _audit_access/
+    # _normalize_message) - reading the prefix generalizes this for free
+    # instead of hardcoding channel names. Checked against ChannelType's
+    # own values (not a hand-maintained set that drifts as channels are
+    # added) so this isn't just an actor prefix but *some other* actor
+    # ("worker", "policy_engine", "scheduler", ...) that happens to also
+    # use a ":"-delimited actor string.
+    prefix = event.actor.split(":", 1)[0]
+    if prefix in _CHANNEL_ACTOR_PREFIXES:
+        return prefix
     value = payload.get("source") or payload.get("channel")
     return str(value) if value is not None else None
 

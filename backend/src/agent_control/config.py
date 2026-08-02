@@ -44,8 +44,27 @@ class TelegramConfig(StrictBaseModel):
     polling: bool = True
 
 
+class WhatsAppConfig(StrictBaseModel):
+    """docs/UI_UX_AUDIT.md Phase 16 - a second channel, via Baileys (an
+    unofficial WhatsApp Web client, QR-code linked, no Meta account or
+    public webhook needed - see channels/whatsapp_bridge_process.py). No
+    bot-token equivalent: there is nothing to put in `.env` here, since
+    Baileys' auth state is a local session directory, not a secret string.
+    """
+
+    enabled: bool = False
+    # E.164-style numbers without the leading "+" (WhatsApp JIDs are
+    # "<number>@s.whatsapp.net") - empty means deny all, same
+    # deny-by-default posture Telegram's own empty allowlists already have.
+    allowed_numbers: list[str] = Field(default_factory=list)
+    bridge_port: int = 8091
+    # Override if `node` isn't on PATH.
+    node_path: str | None = None
+
+
 class ChannelsConfig(StrictBaseModel):
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
+    whatsapp: WhatsAppConfig = Field(default_factory=WhatsAppConfig)
 
 
 class LLMProfileConfig(StrictBaseModel):
@@ -546,7 +565,16 @@ class AppSettings(BaseSettings):
                     "allowed_user_count": len(self.channels.telegram.allowed_user_ids),
                     "allowed_chat_count": len(self.channels.telegram.allowed_chat_ids),
                     "polling": self.channels.telegram.polling,
-                }
+                },
+                "whatsapp": {
+                    "enabled": self.channels.whatsapp.enabled,
+                    # Phone numbers are PII, unlike Telegram's numeric chat/user
+                    # ids above - count only, never the numbers themselves, in
+                    # a response an admin API caller could log or screenshot.
+                    "allowed_number_count": len(self.channels.whatsapp.allowed_numbers),
+                    "bridge_port": self.channels.whatsapp.bridge_port,
+                    "node_path": self.channels.whatsapp.node_path,
+                },
             },
             "llm": {
                 "default_profile": self.llm.default_profile,

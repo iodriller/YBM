@@ -47,6 +47,9 @@ positioning and quickstart, and [docs/ARCHITECTURE.md](ARCHITECTURE.md) for how 
 - Per-task LLM token/cost tracking, surfaced in `ybm trace` and the admin trace view
 - User-droppable skills (`skills.use`), a global persona/preferences document (`persona.manage`), and local keyword-search over a personal document folder (`knowledge.search`)
 - Local web chat channel in the admin console — no Telegram required for basic use
+- WhatsApp channel via a Node.js Baileys sidecar (`whatsapp-bridge/`) that the backend spawns and
+  polls over loopback HTTP - QR-linked, no Meta developer account or public webhook; disabled by
+  default, plain-text only (no buttons/voice/file delivery yet)
 
 ## Not implemented yet
 
@@ -76,4 +79,4 @@ positioning and quickstart, and [docs/ARCHITECTURE.md](ARCHITECTURE.md) for how 
 - `code.interpreter` supports `run_python`, `generate_and_run`, `solve_once`, `inspect_state`, helper-building/repair operations, and `health`. By default it uses local Python for trusted runs; Docker can be enabled as `docker_python` for untrusted/generated code with network off, memory/CPU/pids limits, and artifact extraction from the managed workspace.
 - External MCP servers are configured under `mcp.servers`; MCP is disabled by default in the example config, while local runtime configs can enable specific stdio servers.
 - Scheduled-job requests like `set up a scheduled job every day to check this site` create a `schedule.manage` record. The supervised scheduler creates normal tasks from due schedules.
-- Worker results are sent back to the source Telegram chat or the web chat, whichever the task came from.
+- Worker results are sent back to the source Telegram chat, WhatsApp chat, or the web chat, whichever the task came from.

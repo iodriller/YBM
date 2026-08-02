@@ -33,6 +33,7 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
 
+from agent_control.config import load_settings
 from agent_control.config_sync import read_env_value
 
 
@@ -92,9 +93,19 @@ def _localdeploy_spec() -> ServiceSpec | None:
     )
 
 
+def _whatsapp_enabled() -> bool:
+    # Fail closed on a broken/unreadable config - `ybm doctor` (which runs
+    # before `ybm start` unless -SkipDoctor) is where a config problem
+    # should surface, not a silently-skipped WhatsApp service.
+    try:
+        return load_settings().channels.whatsapp.enabled
+    except Exception:
+        return False
+
+
 def build_service_specs(
-    *, no_telegram: bool = False, no_worker: bool = False, no_scheduler: bool = False,
-    no_localdeploy: bool = False,
+    *, no_telegram: bool = False, no_whatsapp: bool = False, no_worker: bool = False,
+    no_scheduler: bool = False, no_localdeploy: bool = False,
 ) -> list[ServiceSpec]:
     env = _backend_env()
     specs: list[ServiceSpec] = []
@@ -115,6 +126,23 @@ def build_service_specs(
             name="telegram_polling",
             args=[sys.executable, "-m", "agent_control.cli", "poll-telegram"],
             cwd=_repo_root(), env=env, required=True,
+        ))
+    if not no_whatsapp and _whatsapp_enabled():
+        # required=False (unlike telegram_polling): even when enabled, a
+        # WhatsApp hiccup (bridge crash, not yet linked) must not block the
+        # rest of the stack the way a required service would.
+        #
+        # Gated on the config flag itself, unlike telegram_polling - most
+        # installs never touch WhatsApp, and poll-whatsapp refuses to start
+        # at all when disabled (cli.py's poll_whatsapp), so attempting it
+        # anyway would just crash-loop 4 times (~20s wasted) every single
+        # `ybm start`/`ybm run`, for every user, forever, and leave a
+        # permanently alarming "failed" status line for a feature nobody
+        # asked to run.
+        specs.append(ServiceSpec(
+            name="whatsapp",
+            args=[sys.executable, "-m", "agent_control.cli", "poll-whatsapp"],
+            cwd=_repo_root(), env=env, required=False,
         ))
     if not no_worker:
         specs.append(ServiceSpec(

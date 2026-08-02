@@ -12,6 +12,12 @@ or test referencing those, it's stale; file it as a bug.
 
 ## High-Level Flow
 
+Telegram is the example channel below; the same path from step 1's classification onward
+(`channels/base.py`: `classify_and_spawn_task`, `resume_clarifying_reply`, `status_summary`) is
+shared by WhatsApp (`channels/whatsapp.py`, see [Channel Adapters](#channel-adapters)) and the
+local web chat. Only intake (polling/allowlist) and notification (reply formatting/delivery) are
+per-channel.
+
 ```
 Telegram Message
     │
@@ -123,11 +129,37 @@ flowchart TD
 | Tool Executor | `orchestration/executor.py` | Dispatches `ToolCallRequest` to the adapter; enforces policy; validates input/output contracts |
 | Auditor | `orchestration/auditor.py` | Grounds a `done` decision against raw tool output, one call merging the old validator+synthesizer; uses `base/auditor_system.md` |
 | Fulfillment check | `orchestration/fulfillment.py` | Deterministic, objective-text-inferred postconditions (no LLM, no PlanModel - that path was deleted, see HISTORY.md §1.1) |
-| Notifications | `channels/telegram_notifications.py` | Formats and sends the Telegram reply; per-step progress dedup keys off `operator_history` length |
+| Notifications | `channels/telegram_notifications.py` + `channels/task_notify.py` | Formats and sends the Telegram reply; per-step progress dedup keys off `operator_history` length. `task_notify.py`'s `format_task_message()` is the channel-agnostic text formatting, shared with WhatsApp |
 | Structured logging | `logging_setup.py` | structlog → JSON file + console per service, `task_id` bound as a contextvar for the duration of each `process_task()` call (HISTORY.md §2.1) |
 | Local web chat | `admin.py`'s `/api/chat/messages` routes + `frontend/`'s Chat page | Second channel (HISTORY.md Part 4 T2.8): one fixed local conversation, same `repositories.tasks.create()` path as Telegram, no classifier/voice/approval-keyboard parity - text answers only, `artifact.deliver` (Telegram-specific) is out of scope |
+| WhatsApp intake + notify | `channels/whatsapp.py`, `channels/whatsapp_bridge_process.py`, `channels/whatsapp_notifications.py` | Third channel: a Node.js sidecar (`whatsapp-bridge/`, Baileys - unofficial WhatsApp Web client, QR-linked, no Meta account/webhook) that the backend spawns and polls over loopback HTTP; same `channels/base.py` core as Telegram. Disabled by default, plain-text only (no buttons/voice/file delivery) - see [Channel Adapters](#channel-adapters) |
 | Persona | `persona.py` + `tools/persona.py` | One global preference document injected into every Operator prompt via `cli.py`'s `_worker_config_context()`; distinct from per-conversation `channels/memory.py` |
 | Knowledge base | `knowledge_base.py` + `tools/knowledge_base.py` | Local keyword-overlap search over a folder of the user's own documents; reuses `filesystem_manage.py`'s text extraction, not embeddings |
+
+## Channel Adapters
+
+`channels/base.py` is the channel-agnostic core: `classify_and_spawn_task`,
+`resume_clarifying_reply`, `status_summary`, and `approve_latest_pending` take an
+`InboundMessage` and repositories/audit, and know nothing about Telegram, WhatsApp, or the local
+web chat specifically. A channel is an adapter around that core:
+
+- **Intake**: poll/receive raw updates, apply the channel's allowlist (deny-and-audit on no
+  match), normalize into `InboundMessage`, call the shared core. `TelegramAdapter` +
+  `TelegramIntakeService` / `WhatsAppAdapter` + `WhatsAppIntakeService`.
+- **Notify**: `TaskNotificationSink` implementations turn a completed/blocked/clarifying
+  `TaskRecord` into a channel message. `TelegramTaskNotifier` and `WhatsAppTaskNotifier` both
+  build their text from the shared `task_notify.py::format_task_message()`; Telegram layers
+  on top of it (inline approve/reject keyboard, screenshot attachment) since WhatsApp v1 is
+  plain-text only. `cli.py`'s `RoutingNotificationSink` picks the right notifier per task by
+  `task.metadata["source_channel"]`.
+
+WhatsApp specifically talks to a Node.js sidecar (`whatsapp-bridge/`, using
+[Baileys](https://github.com/WhiskeySockets/Baileys) - an unofficial WhatsApp Web client,
+QR-code linked, no Meta developer account or public webhook) that `cli.py poll-whatsapp` spawns
+and owns as a child process (`channels/whatsapp_bridge_process.py`); the two talk over loopback
+HTTP with a shared secret generated fresh per run. Disabled by default
+(`channels.whatsapp.enabled: false`); see [docs/LOCAL_SETUP.md](LOCAL_SETUP.md#5-link-whatsapp-optional)
+for linking a number.
 
 ## Prompt Files
 

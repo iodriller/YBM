@@ -97,6 +97,9 @@ Choose checks in proportion to the change:
 - Python quality: from `backend`, run `uv run --frozen ruff check .`.
 - Admin console: from `frontend`, run `npx tsc -b --noEmit` and `npm run build`.
 - VS Code extension: from `vscode-extension`, run `npm run compile`.
+- WhatsApp sidecar: from `whatsapp-bridge`, run `npm run check`. Use this, not
+  `node --check` - the latter only parses syntax and will pass a file whose imports
+  cannot resolve at all (see docs/HISTORY.md Part 6's review pass).
 - Full runtime or integration changes: run `doctor`, then the narrowest relevant
   live or E2E flow only when its prerequisites and external effects are understood.
 

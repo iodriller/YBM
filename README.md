@@ -8,7 +8,7 @@ YBM:  Sorted 41 files into 6 folders (Images, Documents, Archives, Installers,
 ```
 
 That's the shape of it: real access to your machine — filesystem, terminal, browser, VS Code, a
-scheduler, MCP tools, even desktop control — through Telegram or a built-in web chat, with every
+scheduler, MCP tools, even desktop control — through Telegram, WhatsApp, or a built-in web chat, with every
 capability **disabled by default**. Dangerous operations require an explicit, one-shot, expiring
 approval that the runtime enforces — not the model, not a config flag, and not bypassable by an
 "allow everything" mode. Every request, approval, and result is logged, and every task has a full
@@ -61,13 +61,19 @@ Code/Copilot CLI or a bounded local/Docker Python interpreter, Chrome browser au
 bridge, desktop screenshot/control (Windows), scheduled recurring tasks, MCP client/server, PDF
 and document generation, per-task LLM cost tracking, parallel tool calls and sub-agent
 delegation, a persona/preferences layer, and local keyword search over your own documents — all
-through Telegram or the local web chat, all policy-gated.
+through Telegram, WhatsApp, or the local web chat, all policy-gated.
 
 Structured memory (facts with a category, confidence, and provenance — did the agent save it
 itself mid-task, or did you type it into the console — remember/edit/forget from a dedicated
 Memory page) and a skill catalog (install/uninstall from the console, with an informational tag
 showing which tools a skill's instructions reference — not an enforced permission) round out the
 admin console alongside Access, Tasks, and Chat.
+
+WhatsApp is a second channel alongside Telegram (via [Baileys](https://github.com/WhiskeySockets/Baileys),
+an unofficial client — no Meta developer account or public webhook required). It's disabled by
+default and requires linking your own number by scanning a QR code; see
+[docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md#5-link-whatsapp-optional). v1 is plain text only — no
+buttons, voice, or file delivery yet, unlike Telegram.
 
 See [docs/CAPABILITIES.md](docs/CAPABILITIES.md) for the full, detailed list and
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the pieces fit together.

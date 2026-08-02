@@ -1,23 +1,27 @@
 """The channel-agnostic half of "intake -> classify -> task -> notify"
 (docs/UI_UX_AUDIT.md Phase 16).
 
-Telegram (`channels/telegram.py`) is the only channel that exists today, and
-its intake service used to inline all four stages as private methods on one
+Telegram (`channels/telegram.py`) was the only channel for a while, and its
+intake service used to inline all four stages as private methods on one
 Telegram-specific class. The classify/task stages never actually depended on
 anything Telegram-specific - they operate on `InboundMessage`, `Repositories`,
 and the already-channel-agnostic `MessageClassifier`/`ChatResponder`
 protocols - so they're extracted here as plain functions a second channel's
-intake service can call directly instead of forking.
+intake service can call directly instead of forking. WhatsApp
+(`channels/whatsapp.py`) is that second channel, and its own plain-text
+"approve"/"status" handling reuses `approve_latest_pending`/`status_summary`
+below unchanged - the validation this module's docstring used to say was
+still pending.
 
-What is deliberately NOT extracted yet, and why: the intake stage itself
+What is deliberately NOT extracted, and why: the intake stage itself
 (`ChannelAdapter.normalize_update`, e.g. `TelegramAdapter`'s Telegram-JSON
-parsing) and the notify/command stage (Telegram's `/command` slash syntax,
-inline-keyboard callback queries, voice transcription via Telegram's file
-API) have no second implementation to validate an extracted shape against
-yet - guessing that boundary now risks getting it wrong in a way that would
-need reworking anyway once a real second channel exists. `TaskNotificationSink`
-(orchestration/worker.py) is already the equivalent, working seam on the
-notify side.
+parsing vs. `WhatsAppAdapter`'s already-clean bridge JSON) and Telegram's own
+`/command` slash syntax and inline-keyboard callback queries have no shared
+shape between the two real channels - WhatsApp has neither concept, so
+generalizing them would be guessing at a boundary with only one real data
+point. `TaskNotificationSink` (orchestration/worker.py) is the working seam
+on the notify side; `channels/task_notify.py` holds the shared notification
+text both channels' notifiers render into their own transport.
 """
 
 from __future__ import annotations
@@ -31,7 +35,9 @@ from agent_control.channels.responder import ChatResponder, gateway_context
 from agent_control.clarification import find_clarifying_task, resume_clarifying_task
 from agent_control.config import AppSettings
 from agent_control.llm.classifier import MessageClassifier, classification_trace
+from agent_control.orchestration.signals import requeue_after_approval_decision
 from agent_control.schemas import (
+    ApprovalStatus,
     AuditEventType,
     ChannelType,
     CommandEnvelope,
@@ -81,6 +87,17 @@ def _reply(inbound: InboundMessage, text: str) -> OutboundMessage:
     return OutboundMessage(channel=inbound.channel, chat_id=inbound.chat_id, text=text)
 
 
+# Named (not inlined) so a channel's own `send_progress` implementation can
+# recognize and selectively skip the pre-classification acknowledgment -
+# WhatsAppIntakeService._send_progress does exactly this: it's pure filler
+# with no lasting information (the real reply, or ACKNOWLEDGMENT_TEXT's own
+# task-started counterpart below, follows regardless), and every unofficial-
+# client message is extra exposure to the account-flagging risk Baileys
+# already carries. Telegram's own _send_progress sends both unchanged.
+ACKNOWLEDGMENT_TEXT = "Got your message, figuring out what to do…"
+TASK_STARTED_TEXT = "On it — I'll send the result here when it's done."
+
+
 def status_summary(repositories: Repositories) -> str:
     """Shared "what's going on" text - the same summary every channel's
     plain-text /status-equivalent command can show."""
@@ -94,6 +111,37 @@ def status_summary(repositories: Repositories) -> str:
     for task in recent[:5]:
         lines.append(f"- {task.status.value}: {task.objective[:120]}")
     return "\n".join(lines)
+
+
+def approve_latest_pending(repositories: Repositories, audit: AuditLogger, inbound: InboundMessage) -> OutboundMessage:
+    """Plain-text "approve" - approves every pending approval on the most
+    recent task belonging to this chat, on whichever channel sent it (the
+    conversation-id prefix is `conv_<channel>_<chat_id>`, see
+    ConversationRepository.get_or_create)."""
+    chat_id = str(inbound.chat_id)
+    conversation_prefix = f"conv_{inbound.channel.value}_{chat_id}"
+    for task in repositories.tasks.list_recent(50):
+        if task.conversation_id != conversation_prefix and str(task.metadata.get("source_chat_id")) != chat_id:
+            continue
+        pending = [a for a in repositories.approvals.list_for_task(task.id) if a.status == ApprovalStatus.PENDING]
+        if not pending:
+            continue
+        approved_count = 0
+        for approval in pending:
+            if not repositories.approvals.decide_pending(approval.id, ApprovalStatus.APPROVED):
+                continue
+            approved_count += 1
+            audit.append(
+                AuditEventType.APPROVAL_DECIDED,
+                actor=f"{inbound.channel.value}:user:{inbound.sender_id}",
+                task_id=task.id,
+                correlation_id=inbound.correlation_id,
+                payload={"approval_id": approval.id, "decision": "approve", "source": "plain_text"},
+            )
+        if approved_count:
+            requeue_after_approval_decision(repositories, task.id)
+            return _reply(inbound, f"Approved {approved_count} pending approval(s) for {task.id}.")
+    return _reply(inbound, "No live pending approval found.")
 
 
 def resume_clarifying_reply(
@@ -197,7 +245,7 @@ async def classify_and_spawn_task(
     if classifier is None:
         return _spawn_failed(audit, inbound, "message classifier is not configured", actor)
 
-    await send_progress(inbound.chat_id, "Got your message, figuring out what to do…")
+    await send_progress(inbound.chat_id, ACKNOWLEDGMENT_TEXT)
     try:
         # The Concierge prompt does double duty (classify + compose a chat
         # reply in one call, see prompts/base/concierge_system.md) - a chat
@@ -313,7 +361,7 @@ async def classify_and_spawn_task(
             "orchestration_intent": classification.intent.model_dump(mode="json") if classification.intent else None,
         },
     )
-    await send_progress(inbound.chat_id, "On it — I'll send the result here when it's done.")
+    await send_progress(inbound.chat_id, TASK_STARTED_TEXT)
     return ChannelUpdateResult(
         authorized=True, inbound_message=inbound, classification=classification, task=task, outbound_message=None,
     )

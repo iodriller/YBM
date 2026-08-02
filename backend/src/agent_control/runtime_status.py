@@ -20,7 +20,7 @@ SERVICE_STALE_SECONDS = 30
 # name into a file path, since a log for a now-disabled service (e.g.
 # telegram_polling) should still be viewable from a past run.
 KNOWN_SERVICE_NAMES = frozenset(
-    {"localdeploy", "backend", "worker", "coding_session_watcher", "scheduler", "telegram_polling"}
+    {"localdeploy", "backend", "worker", "coding_session_watcher", "scheduler", "telegram_polling", "whatsapp"}
 )
 
 
@@ -49,6 +49,7 @@ def _expected_services(settings: AppSettings) -> dict[str, bool]:
         "coding_session_watcher": True,
         "scheduler": bool(settings.scheduler.enabled),
         "telegram_polling": bool(settings.channels.telegram.enabled and settings.channels.telegram.polling),
+        "whatsapp": bool(settings.channels.whatsapp.enabled),
     }
 
 

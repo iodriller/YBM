@@ -71,8 +71,9 @@ workspaces and generated files. Toggle capabilities from the admin UI's Access p
 ```
 
 Reports one line per check - Python version, dependencies, config validity, database, LocalDeploy
-reachability, Telegram token, admin token, secret vault key, and port availability - so a missing
-piece surfaces before you try to start the stack, not as a silent crash loop after.
+reachability, Telegram token, Node.js availability, WhatsApp link status, admin token, secret
+vault key, and port availability - so a missing piece surfaces before you try to start the stack,
+not as a silent crash loop after.
 
 ## 4. Start The Stack
 
@@ -81,10 +82,12 @@ piece surfaces before you try to start the stack, not as a silent crash loop aft
 ```
 
 This runs `doctor` first (skip with `-SkipDoctor`), then initializes the database and starts
-LocalDeploy, backend, Telegram polling, worker, scheduler, and the coding-session watcher. The
-admin console is served by the backend itself, not a separate service. Skip individual services
-with `-NoTelegram`, `-NoWorker`, `-NoScheduler`, or `-NoLocalDeploy`. Generated task workspaces
-default to `.agent_control/workspaces/task_<id>`.
+LocalDeploy, backend, Telegram polling, WhatsApp polling, worker, scheduler, and the
+coding-session watcher. The admin console is served by the backend itself, not a separate
+service. Skip individual services with `-NoTelegram`, `-NoWhatsApp`, `-NoWorker`, `-NoScheduler`,
+or `-NoLocalDeploy`. Unlike Telegram, WhatsApp is off by default (`channels.whatsapp.enabled:
+false`) and only shows a non-blocking `[FAIL]` line here until you configure and link it - see
+below. Generated task workspaces default to `.agent_control/workspaces/task_<id>`.
 
 Browser tasks use Chrome through the DevTools remote debugging port configured at `adapters.browser.remote_debugging_port` (default `9222`). If Chrome is not already available there, the adapter launches a separate Chrome profile under `.agent_control/browser/chrome-profile`. Screenshots are saved under `.agent_control/browser/screenshots`.
 
@@ -109,7 +112,34 @@ External MCP tools are configured under `mcp.servers` in `config/config.yaml`. M
 
 `code.interpreter` is local-first and writes under `.agent_control/code_interpreter`. The default backend is `local_subprocess`; enable `adapters.code_interpreter.docker.enabled` and add `docker_python` to `adapters.code_interpreter.backends` to run untrusted/generated Python in a short-lived Docker container. Docker runs with network off unless requested and allowed by policy, plus configured memory/CPU/pids limits. Use `code.interpreter` operation `health` to inspect Docker availability, configured remote backends, and recent backend failures.
 
-## 5. Check Status, Logs, And Stop The Stack
+## 5. Link WhatsApp (optional)
+
+WhatsApp uses [Baileys](https://github.com/WhiskeySockets/Baileys), an unofficial WhatsApp Web
+client - no Meta developer account or public webhook needed, just a phone with WhatsApp installed
+that you link as a linked device (the same mechanism as WhatsApp Web/Desktop). It runs as a small
+Node.js sidecar (`whatsapp-bridge/`) that the backend spawns and owns; `ybm setup` installs its
+dependencies automatically if Node.js 20+ is on `PATH` (`node_path` in config to point at a
+specific binary otherwise).
+
+1. In `config/config.yaml`, set `channels.whatsapp.enabled: true`.
+2. Start (or restart) the stack: `.\scripts\ybm.ps1 start`.
+3. Watch the `whatsapp` service's log for the QR code: `.\scripts\ybm.ps1 logs whatsapp -Follow`.
+4. Scan it from WhatsApp on your phone (Settings -> Linked Devices -> Link a Device). The linked
+   session is saved under `.agent_control/whatsapp_auth/` and persists across restarts.
+5. Add the linked number to `channels.whatsapp.allowed_numbers` in `config/config.yaml`, E.164
+   digits only, no leading `+` (e.g. `"15551234567"`) - like Telegram's allowlists, an empty list
+   denies every message. Restart the stack for the change to take effect.
+
+Consider linking a secondary number rather than your primary one - Baileys is unofficial, and
+while it mirrors how popular self-hosted WhatsApp gateways already run in production, there is a
+small account-flagging risk inherent to any unofficial client. Never commit a real phone number to
+`config/config.yaml` if you intend to share this checkout.
+
+v1 is plain text only: no slash commands, inline buttons, voice transcription, or screenshot/file
+delivery over WhatsApp (all of those already work over Telegram). Plain-text `approve` / `status`
+/ `remember that ...` work the same way they do on Telegram.
+
+## 6. Check Status, Logs, And Stop The Stack
 
 ```powershell
 .\scripts\ybm.ps1 status
@@ -123,21 +153,21 @@ Backend health check:
 Invoke-RestMethod http://127.0.0.1:8765/health
 ```
 
-## 6. Lower-Level Commands
+## 7. Lower-Level Commands
 
 The per-service launchers under `scripts/services/` are what `ybm start` actually runs; use
 them directly only when debugging a single process in isolation (they read `YBM_LOCALDEPLOY_ROOT`
 and other `.env` values the same way `ybm start` does): `run_backend.ps1`,
-`run_telegram_polling.ps1`, `run_worker.ps1`, `run_coding_session_watcher.ps1`,
+`run_telegram_polling.ps1`, `run_whatsapp.ps1`, `run_worker.ps1`, `run_coding_session_watcher.ps1`,
 `run_localdeploy.ps1`.
 
-## 7. Run Tests
+## 8. Run Tests
 
 ```powershell
 .\scripts\ybm.ps1 test
 ```
 
-## 8. Package VS Code Extension
+## 9. Package VS Code Extension
 
 ```powershell
 .\scripts\package_vscode_extension.ps1
@@ -145,7 +175,7 @@ and other `.env` values the same way `ybm start` does): `run_backend.ps1`,
 
 The extension sends workspace state to the local backend and polls for queued terminal commands.
 
-## 9. Current Limits
+## 10. Current Limits
 
 - **Desktop screenshot/control (`computer.use`) is Windows-only.** Every other capability -
   filesystem, browser, code interpreter, MCP, scheduling, coding-agent sessions, the web chat -
@@ -155,6 +185,14 @@ The extension sends workspace state to the local backend and polls for queued te
   equivalent but not (yet) a single unified implementation - see docs/HISTORY.md for the current
   state of that consolidation.
 - Desktop screenshot/control and computer use are disabled by default and should be enabled per task/access mode from the admin UI.
+- WhatsApp uses Baileys, an unofficial client, not Meta's Business API - it is disabled by
+  default, requires linking a number via QR (see step 5), and is plain-text only for now: no
+  slash commands, inline buttons, voice transcription, or screenshot/file delivery.
+- WhatsApp's privacy-preserving "LID" addressing sends an opaque id instead of the sender's real
+  phone number for some contacts - there is no way to resolve that id back to a number, so those
+  senders can never match `channels.whatsapp.allowed_numbers` no matter how it's configured. The
+  audit trail labels this denial reason distinctly (`lid_jid_no_resolvable_number`) from an
+  ordinary not-on-the-allowlist denial so it doesn't read as a config mistake.
 - `computer.use run_goal` needs the configured local model endpoint to accept OpenAI-compatible image payloads. If LocalDeploy/Gemma vision is unavailable, observation still returns screenshot/UI metadata but action planning fails clearly.
 - `filesystem.manage` only operates inside configured allowed roots and rejects path escapes.
 - Browser inspection/control can see only Chrome tabs exposed through the configured remote debugging port. Normal Chrome windows launched without remote debugging are not visible to this adapter.

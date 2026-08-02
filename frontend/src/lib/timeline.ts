@@ -28,8 +28,9 @@ const CATEGORY_DISPLAY: Record<string, { icon: LucideIcon; className: string }> 
   policy: { icon: ShieldCheck, className: "text-muted-foreground" },
   config: { icon: Settings, className: "text-muted-foreground" },
   tool: { icon: Wrench, className: "text-info" },
-  raw_telegram: { icon: MessageSquare, className: "text-muted-foreground" },
+  raw_message: { icon: MessageSquare, className: "text-muted-foreground" },
   telegram_access: { icon: ShieldQuestion, className: "text-muted-foreground" },
+  channel_access: { icon: ShieldQuestion, className: "text-muted-foreground" },
   error: { icon: AlertTriangle, className: "text-destructive" },
   system: { icon: Info, className: "text-muted-foreground" },
 }

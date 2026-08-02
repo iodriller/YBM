@@ -66,6 +66,21 @@ def test_safe_summary_redacts_secret_values() -> None:
     assert summary["llm"]["profiles"]["default"]["api_key"] == "***"
 
 
+def test_safe_summary_reports_whatsapp_count_not_raw_numbers() -> None:
+    settings = AppSettings(
+        _env_file=None,
+        channels={"whatsapp": {"enabled": True, "allowed_numbers": ["15551234567", "19998887777"]}},
+    )
+
+    summary = settings.safe_summary()
+
+    whatsapp = summary["channels"]["whatsapp"]
+    assert whatsapp["enabled"] is True
+    assert whatsapp["allowed_number_count"] == 2
+    assert "allowed_numbers" not in whatsapp
+    assert "15551234567" not in str(whatsapp)
+
+
 def test_safe_summary_strips_mcp_server_env_values() -> None:
     settings = AppSettings(
         _env_file=None,

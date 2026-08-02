@@ -96,6 +96,6 @@ function Read-YbmServiceStatus {
 
 # All service names started by `ybm start`, in dependency order.
 $Script:YbmServiceOrder = @(
-  "localdeploy", "backend", "telegram_polling", "worker",
+  "localdeploy", "backend", "telegram_polling", "whatsapp", "worker",
   "coding_session_watcher", "scheduler"
 )
