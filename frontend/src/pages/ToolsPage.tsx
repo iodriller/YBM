@@ -1,11 +1,12 @@
 import { useMemo, useState } from "react"
 import { Link } from "react-router-dom"
-import { Search, Wrench } from "lucide-react"
+import { ArrowRight, Lock, Search, Wrench } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { PageBreadcrumb } from "@/components/layout/PageBreadcrumb"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { useSettingsSummary } from "@/lib/queries"
 import type { RiskLevel, ToolItem } from "@/lib/api"
@@ -65,10 +66,11 @@ export function ToolsPage() {
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto flex max-w-4xl flex-col gap-6 p-4 sm:p-6 lg:p-8 [&>*]:shrink-0">
+        <PageBreadcrumb items={[{ label: "Agent", to: "/agent" }, { label: "Tools" }]} />
         <PageHeader
-          eyebrow="Agentic setup"
+          eyebrow="Agentic setup · read-only inventory"
           title="Tools"
-          description="Every capability YBM's registry knows about, grouped by domain - what it can do, and whether it's currently allowed to. Enable or disable a capability from Access."
+          description="Every capability YBM's registry knows about, grouped by domain, and whether it's currently allowed to run. This page is the inventory, not the switchboard - enabling or disabling a capability always happens on Access."
           actions={
             data && (
               <div className="flex items-center gap-2 rounded-xl bg-card px-3 py-2 text-sm shadow-sm ring-1 ring-border">
@@ -129,11 +131,12 @@ export function ToolsPage() {
 
 function ToolRow({ tool }: { tool: ToolItem }) {
   return (
-    <Card className={tool.enabled ? "py-0" : "py-0 opacity-60"}>
+    <Card className={tool.enabled ? "py-0" : "py-0 opacity-75"}>
       <CardContent className="flex flex-col gap-1.5 p-3">
         <div className="flex items-start justify-between gap-2">
           <span className="truncate font-mono text-sm font-medium">{tool.name}</span>
-          <Badge variant={tool.enabled ? "secondary" : "outline"} className="shrink-0">
+          <Badge variant={tool.enabled ? "secondary" : "outline"} className="shrink-0 gap-1">
+            {!tool.enabled && <Lock className="size-2.5" />}
             {tool.enabled ? "enabled" : "disabled"}
           </Badge>
         </div>
@@ -146,9 +149,19 @@ function ToolRow({ tool }: { tool: ToolItem }) {
         <p className="truncate text-[11px] text-muted-foreground" title={tool.operations.join(", ")}>
           {tool.operations.join(", ")}
         </p>
-        <Link to="/access" className="text-[11px] text-primary hover:underline">
-          {tool.capability} in Access
-        </Link>
+        {tool.enabled ? (
+          <Link to="/access" className="text-[11px] text-muted-foreground hover:text-primary hover:underline">
+            {tool.capability} · manage in Access
+          </Link>
+        ) : (
+          <Link
+            to="/access"
+            className="flex items-center gap-1 text-[11px] font-medium text-warning hover:underline"
+          >
+            Disabled - enable {tool.capability} in Access
+            <ArrowRight className="size-3" />
+          </Link>
+        )}
       </CardContent>
     </Card>
   )

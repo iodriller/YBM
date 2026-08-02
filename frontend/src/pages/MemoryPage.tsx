@@ -7,6 +7,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Card, CardContent } from "@/components/ui/card"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Skeleton } from "@/components/ui/skeleton"
+import { PageBreadcrumb } from "@/components/layout/PageBreadcrumb"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { MemoryFactCard } from "@/components/memory/MemoryFactCard"
 import { ApiError } from "@/lib/api"
@@ -50,6 +51,7 @@ export function MemoryPage() {
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto flex max-w-4xl flex-col gap-6 p-4 sm:p-6 lg:p-8 [&>*]:shrink-0">
+        <PageBreadcrumb items={[{ label: "Agent", to: "/agent" }, { label: "Memory" }]} />
         <PageHeader
           eyebrow="Structured memory"
           title="Memory"

@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { NavLink, Outlet } from "react-router-dom"
+import { NavLink, Outlet, useLocation } from "react-router-dom"
 import { Bot, ListTree, MessageSquare, Settings, ShieldCheck } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { HealthIndicator } from "@/components/layout/HealthIndicator"
@@ -17,16 +17,29 @@ import { ThemeToggle } from "@/components/layout/ThemeToggle"
 // ("these are basically agentic setup... should live at one place").
 // Chat is the landing page/first route on purpose (plan: "a first-time
 // user must get an answer without visiting any other screen").
+// matchPaths: sibling routes that should also highlight this item even
+// though they don't share its URL prefix (docs/UI_UX_AUDIT.md Phase 12) -
+// Memory/Skills/Tools are reachable from the Agent hub but live at their
+// own top-level paths (kept that way in Phase 11 so bookmarks and deep
+// links didn't break), so NavLink's own prefix-based isActive never
+// matched them. Fixed here instead of by nesting the routes.
 const NAV_ITEMS = [
-  { to: "/", label: "Chat", icon: MessageSquare, end: true },
-  { to: "/tasks", label: "Tasks", icon: ListTree, end: false },
-  { to: "/access", label: "Access", icon: ShieldCheck, end: false },
-  { to: "/agent", label: "Agent", icon: Bot, end: false },
-  { to: "/settings", label: "Settings", icon: Settings, end: false },
+  { to: "/", label: "Chat", icon: MessageSquare, end: true, matchPaths: [] as string[] },
+  { to: "/tasks", label: "Tasks", icon: ListTree, end: false, matchPaths: [] as string[] },
+  { to: "/access", label: "Access", icon: ShieldCheck, end: false, matchPaths: [] as string[] },
+  { to: "/agent", label: "Agent", icon: Bot, end: false, matchPaths: ["/memory", "/skills", "/tools"] },
+  { to: "/settings", label: "Settings", icon: Settings, end: false, matchPaths: [] as string[] },
 ] as const
+
+function isNavItemActive(item: (typeof NAV_ITEMS)[number], pathname: string): boolean {
+  if (item.end) return pathname === item.to
+  if (pathname === item.to || pathname.startsWith(`${item.to}/`)) return true
+  return item.matchPaths.some((path) => pathname === path || pathname.startsWith(`${path}/`))
+}
 
 export function AppShell() {
   const [advanced, setAdvancedState] = useState(readAdvancedMode)
+  const location = useLocation()
   const setAdvanced = (value: boolean) => {
     setAdvancedState(value)
     writeAdvancedMode(value)
@@ -51,25 +64,28 @@ export function AppShell() {
                 <Brand />
               </div>
               <ul className="space-y-1.5">
-                {NAV_ITEMS.map(({ to, label, icon: Icon, end }) => (
-                  <li key={to}>
-                    <NavLink
-                      to={to}
-                      end={end}
-                      className={({ isActive }) =>
-                        cn(
+                {NAV_ITEMS.map((item) => {
+                  const { to, label, icon: Icon, end } = item
+                  const active = isNavItemActive(item, location.pathname)
+                  return (
+                    <li key={to}>
+                      <NavLink
+                        to={to}
+                        end={end}
+                        aria-current={active ? "page" : undefined}
+                        className={cn(
                           "group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors",
-                          isActive
+                          active
                             ? "bg-sidebar-accent text-sidebar-accent-foreground shadow-sm"
                             : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
-                        )
-                      }
-                    >
-                      <Icon className="size-4.5 transition-transform group-hover:scale-105" />
-                      {label}
-                    </NavLink>
-                  </li>
-                ))}
+                        )}
+                      >
+                        <Icon className="size-4.5 transition-transform group-hover:scale-105" />
+                        {label}
+                      </NavLink>
+                    </li>
+                  )
+                })}
               </ul>
             </div>
             <div className="flex flex-col gap-3">
@@ -93,22 +109,25 @@ export function AppShell() {
           </main>
         </div>
         <nav className="fixed inset-x-0 bottom-0 z-40 grid h-17 grid-cols-5 border-t border-sidebar-border bg-sidebar/95 px-2 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
-          {NAV_ITEMS.map(({ to, label, icon: Icon, end }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={end}
-              className={({ isActive }) =>
-                cn(
+          {NAV_ITEMS.map((item) => {
+            const { to, label, icon: Icon, end } = item
+            const active = isNavItemActive(item, location.pathname)
+            return (
+              <NavLink
+                key={to}
+                to={to}
+                end={end}
+                aria-current={active ? "page" : undefined}
+                className={cn(
                   "flex min-w-0 flex-col items-center justify-center gap-1 rounded-lg text-[11px] font-medium transition-colors",
-                  isActive ? "text-primary" : "text-muted-foreground hover:text-foreground",
-                )
-              }
-            >
-              <Icon className="size-5" />
-              <span className="truncate">{label}</span>
-            </NavLink>
-          ))}
+                  active ? "text-primary" : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <Icon className="size-5" />
+                <span className="truncate">{label}</span>
+              </NavLink>
+            )
+          })}
         </nav>
       </div>
     </AdvancedModeContext.Provider>

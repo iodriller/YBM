@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
-import { Bot, LoaderCircle, Paperclip, Send, ShieldCheck, Sparkles, Square, User, X } from "lucide-react"
+import { Bot, LoaderCircle, Maximize2, Minimize2, Paperclip, Send, ShieldCheck, Sparkles, Square, Columns3, User, X } from "lucide-react"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -10,6 +10,7 @@ import { ChatMarkdown } from "@/components/chat/ChatMarkdown"
 import { InlineApproval } from "@/components/chat/InlineApproval"
 import { TaskReceiptCard } from "@/components/chat/TaskReceiptCard"
 import { chatAnswerText, displayedObjective, isTerminal } from "@/lib/chat"
+import { chatWidthClass, readChatWidth, writeChatWidth, type ChatWidth } from "@/lib/chat-width"
 import {
   useChatMessages,
   usePendingApprovals,
@@ -19,6 +20,12 @@ import {
 } from "@/lib/queries"
 import { cn } from "@/lib/utils"
 import { ApiError, type TaskRecord } from "@/lib/api"
+
+const WIDTH_OPTIONS: { value: ChatWidth; label: string; icon: typeof Minimize2 }[] = [
+  { value: "comfortable", label: "Comfortable", icon: Minimize2 },
+  { value: "wide", label: "Wide", icon: Columns3 },
+  { value: "full", label: "Full width", icon: Maximize2 },
+]
 
 interface PendingAttachment {
   key: string
@@ -42,8 +49,15 @@ export function ChatPage() {
   const uploadAttachment = useUploadChatAttachment()
   const [draft, setDraft] = useState("")
   const [attachments, setAttachments] = useState<PendingAttachment[]>([])
+  const [width, setWidth] = useState<ChatWidth>(readChatWidth)
   const scrollAnchorRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const widthClass = chatWidthClass(width)
+
+  function handleWidthChange(next: ChatWidth) {
+    setWidth(next)
+    writeChatWidth(next)
+  }
 
   const tasks = data?.tasks ?? []
   const attachmentsUploading = attachments.some((a) => a.uploading)
@@ -85,20 +99,39 @@ export function ChatPage() {
   return (
     <div className="flex h-full min-w-0 flex-col">
       <header className="shrink-0 border-b border-border/70 bg-card/60 px-4 py-3 backdrop-blur sm:px-6">
-        <div className="mx-auto flex max-w-3xl items-center justify-between gap-4">
+        <div className={cn("mx-auto flex items-center justify-between gap-4", widthClass)}>
           <div>
             <h1 className="text-sm font-semibold">Local chat</h1>
             <p className="text-xs text-muted-foreground">Ask, approve, and inspect from one conversation.</p>
           </div>
-          <div className="flex items-center gap-1.5 rounded-full bg-success/10 px-2.5 py-1 text-xs font-medium text-success">
-            <ShieldCheck className="size-3.5" />
-            Policy protected
+          <div className="flex items-center gap-2">
+            <div className="hidden items-center gap-0.5 rounded-full border border-border bg-muted/40 p-0.5 sm:flex">
+              {WIDTH_OPTIONS.map(({ value, label, icon: Icon }) => (
+                <Button
+                  key={value}
+                  type="button"
+                  variant={width === value ? "secondary" : "ghost"}
+                  size="icon-sm"
+                  className="rounded-full"
+                  aria-label={`${label} chat width`}
+                  aria-pressed={width === value}
+                  title={label}
+                  onClick={() => handleWidthChange(value)}
+                >
+                  <Icon className="size-3.5" />
+                </Button>
+              ))}
+            </div>
+            <div className="flex items-center gap-1.5 rounded-full bg-success/10 px-2.5 py-1 text-xs font-medium text-success">
+              <ShieldCheck className="size-3.5" />
+              Policy protected
+            </div>
           </div>
         </div>
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6 sm:py-7">
-        <div className="mx-auto flex min-w-0 max-w-3xl flex-col gap-5">
+        <div className={cn("mx-auto flex min-w-0 flex-col gap-5", widthClass)}>
           {isError && (
             <Alert variant="destructive">
               <AlertTitle>Couldn't load chat</AlertTitle>
@@ -151,7 +184,7 @@ export function ChatPage() {
           handleSend(draft)
         }}
       >
-        <div className="mx-auto flex max-w-3xl flex-col gap-2">
+        <div className={cn("mx-auto flex flex-col gap-2", widthClass)}>
           {attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
               {attachments.map((attachment) => (
@@ -225,11 +258,11 @@ export function ChatPage() {
             </Button>
           </div>
         </div>
-        <p className="mx-auto mt-1.5 hidden max-w-3xl px-2 text-[11px] text-muted-foreground sm:block">
+        <p className={cn("mx-auto mt-1.5 hidden px-2 text-[11px] text-muted-foreground sm:block", widthClass)}>
           Enter to send · Shift + Enter for a new line
         </p>
         {sendMessage.isError && (
-          <p className="mx-auto mt-2 max-w-3xl text-xs text-destructive">
+          <p className={cn("mx-auto mt-2 text-xs text-destructive", widthClass)}>
             {sendMessage.error.message}
           </p>
         )}
