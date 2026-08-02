@@ -754,6 +754,43 @@ def test_admin_task_trace_evidence_aggregates_files_urls_and_commands(monkeypatc
     assert evidence["files"][0]["tool_name"] == "filesystem.manage"
 
 
+def test_admin_task_trace_evidence_includes_a_real_effect_label_per_item(monkeypatch, tmp_path) -> None:
+    """docs/UI_UX_AUDIT.md Phase 14: evidence items say what actually
+    happened (read/modified/moved/...), not just that something was
+    touched - Phase 8's "Touched during this task" wording fix was
+    explicitly a stopgap for this."""
+    monkeypatch.chdir(tmp_path)
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    task = repositories.tasks.create("read one file and write another")
+
+    read_request = ToolCallRequest(
+        task_id=task.id, tool_name="filesystem.manage", capability=Capability.FILESYSTEM_READ,
+        input={"operation": "read_file", "path": "C:/tmp/notes.txt"},
+    )
+    repositories.tool_invocations.create(read_request)
+    repositories.tool_invocations.complete(
+        ToolCallResult(request_id=read_request.id, status=ToolResultStatus.SUCCEEDED, output={})
+    )
+
+    write_request = ToolCallRequest(
+        task_id=task.id, tool_name="filesystem.manage", capability=Capability.FILESYSTEM_WRITE,
+        input={"operation": "write_text_file", "path": "C:/tmp/report.txt"},
+    )
+    repositories.tool_invocations.create(write_request)
+    repositories.tool_invocations.complete(
+        ToolCallResult(request_id=write_request.id, status=ToolResultStatus.SUCCEEDED, output={})
+    )
+
+    client = _admin_client(repositories)
+
+    response = client.get(f"/admin/api/tasks/{task.id}/trace")
+    files = {item["value"]: item["effect"] for item in response.json()["evidence"]["files"]}
+
+    assert files["C:/tmp/notes.txt"] == "read"
+    assert files["C:/tmp/report.txt"] == "modified"
+
+
 def test_admin_skills_catalog_lists_the_real_bundled_starters(monkeypatch, tmp_path) -> None:
     """docs/UI_UX_AUDIT.md Phase 11: skills/starter/ is committed (unlike
     adapters.skills.root_dir, which is generated), so there's something to

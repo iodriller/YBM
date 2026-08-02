@@ -47,6 +47,7 @@ from agent_control.storage.redaction import redact_payload
 from agent_control.storage.secrets import SecretVault, SecretVaultError
 from agent_control.tools.registry import build_tool_registry
 from agent_control.tools.artifact_delivery import artifact_delivery_roots, path_from_uri
+from agent_control.tools.effects import classify_effect
 from agent_control.tools.skills import delete_skill_file, detect_referenced_tools, list_skills_detailed, write_skill_file
 from agent_control.tools.vscode_bridge import VSCodeBridgeStore, VSCodeTerminalCommand
 
@@ -1635,6 +1636,9 @@ def _extract_evidence(tool_invocations: list[dict[str, Any]]) -> dict[str, list[
         request_input = request.get("input") if isinstance(request, dict) else None
         result_output = result.get("output") if isinstance(result, dict) else None
         sources = [source for source in (request_input, result_output) if isinstance(source, dict)]
+        tool_name = str(invocation.get("tool_name") or "")
+        operation = request_input.get("operation") if isinstance(request_input, dict) else None
+        effect = classify_effect(tool_name, operation)
         for bucket, keys in (
             ("files", _EVIDENCE_FILE_KEYS),
             ("urls", _EVIDENCE_URL_KEYS),
@@ -1650,6 +1654,7 @@ def _extract_evidence(tool_invocations: list[dict[str, Any]]) -> dict[str, list[
                             "value": value,
                             "tool_name": invocation.get("tool_name"),
                             "at": invocation.get("created_at"),
+                            "effect": effect,
                         }
                     )
     return evidence
