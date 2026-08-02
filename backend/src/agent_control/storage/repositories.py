@@ -17,6 +17,7 @@ from agent_control.schemas import (
     Capability,
     ChannelType,
     InboundMessage,
+    LLMCallRecord,
     MemoryFact,
     ScheduleRecord,
     ScheduleStatus,
@@ -779,6 +780,61 @@ class ToolInvocationRepository:
         return cursor.rowcount
 
 
+class LLMCallRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def create(self, record: LLMCallRecord) -> None:
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO llm_calls (
+                    id, task_id, source, model, step_index, messages_json, response_text,
+                    prompt_tokens, completion_tokens, total_tokens, latency_ms, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.id,
+                    record.task_id,
+                    record.source,
+                    record.model,
+                    record.step_index,
+                    _dump(record.messages),
+                    record.response_text,
+                    record.prompt_tokens,
+                    record.completion_tokens,
+                    record.total_tokens,
+                    record.latency_ms,
+                    _dt(record.created_at),
+                ),
+            )
+
+    def list_for_task(self, task_id: str) -> list[dict[str, Any]]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM llm_calls WHERE task_id = ? ORDER BY created_at ASC",
+                (task_id,),
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "task_id": row["task_id"],
+                "source": row["source"],
+                "model": row["model"],
+                "step_index": row["step_index"],
+                "messages": _load(row["messages_json"], []),
+                "response_text": row["response_text"],
+                "prompt_tokens": row["prompt_tokens"],
+                "completion_tokens": row["completion_tokens"],
+                "total_tokens": row["total_tokens"],
+                "latency_ms": row["latency_ms"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+
 class ArtifactRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
@@ -1175,6 +1231,7 @@ class Repositories:
     memory_facts: MemoryFactRepository
     schedules: ScheduleRepository
     audit: AuditRepository
+    llm_calls: LLMCallRepository
 
     @classmethod
     def for_database(cls, database: Database) -> "Repositories":
@@ -1191,4 +1248,5 @@ class Repositories:
             memory_facts=MemoryFactRepository(database),
             schedules=ScheduleRepository(database),
             audit=AuditRepository(database),
+            llm_calls=LLMCallRepository(database),
         )

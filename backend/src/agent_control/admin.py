@@ -1497,6 +1497,7 @@ def build_task_trace(repositories: Repositories, task_id: str) -> dict[str, Any]
         "timeline": _trace_timeline(formatted_audit, tool_invocations),
         "tool_invocations": tool_invocations,
         "evidence": _extract_evidence(tool_invocations),
+        "llm_calls": repositories.llm_calls.list_for_task(task_id),
         "approvals": [approval.model_dump(mode="json") for approval in repositories.approvals.list_for_task(task_id)],
         "artifacts": [artifact.model_dump(mode="json") for artifact in repositories.artifacts.list_for_task(task_id)],
         "signals": [signal.model_dump(mode="json") for signal in repositories.task_signals.list_for_task(task_id)],

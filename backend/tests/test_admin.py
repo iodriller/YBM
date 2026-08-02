@@ -21,6 +21,7 @@ from agent_control.schemas import (
     AuditEventType,
     Capability,
     CapabilityAccessMode,
+    LLMCallRecord,
     MemoryFact,
     RiskLevel,
     ScheduleRecord,
@@ -853,6 +854,40 @@ def test_admin_task_trace_evidence_includes_a_real_effect_label_per_item(monkeyp
 
     assert files["C:/tmp/notes.txt"] == "read"
     assert files["C:/tmp/report.txt"] == "modified"
+
+
+def test_admin_task_trace_includes_llm_calls(monkeypatch, tmp_path) -> None:
+    """docs/UI_UX_AUDIT.md Phase 14d: the trace endpoint surfaces the
+    persisted LLM-call receipts (worker.py's _record_llm_call), not just
+    tool_invocations - this is what the Duration view uses for its real,
+    measured (non-inferred) segments."""
+    monkeypatch.chdir(tmp_path)
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    task = repositories.tasks.create("do something")
+    repositories.llm_calls.create(
+        LLMCallRecord(
+            task_id=task.id,
+            source="operator",
+            model="test-model",
+            step_index=0,
+            messages=[{"role": "user", "content": "hello"}],
+            response_text="hi",
+            prompt_tokens=10,
+            completion_tokens=5,
+            total_tokens=15,
+            latency_ms=42.0,
+        )
+    )
+    client = _admin_client(repositories)
+
+    response = client.get(f"/admin/api/tasks/{task.id}/trace")
+    calls = response.json()["llm_calls"]
+
+    assert len(calls) == 1
+    assert calls[0]["source"] == "operator"
+    assert calls[0]["model"] == "test-model"
+    assert calls[0]["latency_ms"] == 42.0
 
 
 def test_admin_skills_catalog_lists_the_real_bundled_starters(monkeypatch, tmp_path) -> None:

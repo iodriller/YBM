@@ -4,6 +4,8 @@ import json
 import logging
 import base64
 import mimetypes
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 from typing import Protocol, TypeVar
@@ -71,6 +73,13 @@ class OpenAICompatibleProvider:
         # docs/HISTORY.md Part 4 T1.4. None until a call completes, or if the
         # server never reported usage; never a fabricated zero.
         self.last_usage: dict | None = None
+        # Siblings to last_usage, for LLM-call persistence (docs/UI_UX_AUDIT.md
+        # Phase 14d) - same "None until a call completes" contract.
+        self.last_request: list[dict] | None = None
+        self.last_response_text: str | None = None
+        self.last_model: str | None = None
+        self.last_started_at: datetime | None = None
+        self.last_latency_ms: float | None = None
 
     async def generate_text(self, system_prompt: str, user_prompt: str) -> str:
         data = await self._chat(system_prompt, user_prompt, response_format=None)
@@ -149,6 +158,8 @@ class OpenAICompatibleProvider:
         if response_format:
             payload["response_format"] = response_format
 
+        started_at = datetime.now(timezone.utc)
+        start = time.monotonic()
         async with httpx.AsyncClient(timeout=self.profile.timeout_seconds) as client:
             url = f"{self.profile.base_url.rstrip('/')}/chat/completions"
             response = await client.post(url, headers=headers, json=payload)
@@ -158,6 +169,14 @@ class OpenAICompatibleProvider:
                 raise ValueError(_http_error_detail(exc.response)) from exc
             data = dict(response.json())
             self.last_usage = _normalize_usage(data.get("usage"), model=self.profile.model)
+            self.last_request = payload["messages"]
+            try:
+                self.last_response_text = str(data["choices"][0]["message"]["content"])
+            except (KeyError, IndexError, TypeError):
+                self.last_response_text = None
+            self.last_model = self.profile.model
+            self.last_started_at = started_at
+            self.last_latency_ms = (time.monotonic() - start) * 1000
             return data
 
     def _api_key(self) -> str | None:
@@ -184,6 +203,11 @@ class FailoverLLMProvider:
         # Proxies whichever inner provider actually served the last call -
         # the fallback's usage after a failover, the primary's otherwise.
         self.last_usage: dict | None = None
+        self.last_request: list[dict] | None = None
+        self.last_response_text: str | None = None
+        self.last_model: str | None = None
+        self.last_started_at: datetime | None = None
+        self.last_latency_ms: float | None = None
 
     async def generate_text(self, system_prompt: str, user_prompt: str) -> str:
         return await self._call("generate_text", system_prompt, user_prompt)
@@ -206,15 +230,23 @@ class FailoverLLMProvider:
     async def _call(self, method: str, *args, **kwargs):
         try:
             result = await getattr(self.primary, method)(*args, **kwargs)
-            self.last_usage = getattr(self.primary, "last_usage", None)
+            self._copy_last_call_state(self.primary)
             return result
         except Exception as exc:
             if not _is_unavailability(exc):
                 raise
             logger.warning("primary LLM unavailable (%s); using fallback profile", exc)
             result = await getattr(self.fallback, method)(*args, **kwargs)
-            self.last_usage = getattr(self.fallback, "last_usage", None)
+            self._copy_last_call_state(self.fallback)
             return result
+
+    def _copy_last_call_state(self, provider: LLMProvider) -> None:
+        self.last_usage = getattr(provider, "last_usage", None)
+        self.last_request = getattr(provider, "last_request", None)
+        self.last_response_text = getattr(provider, "last_response_text", None)
+        self.last_model = getattr(provider, "last_model", None)
+        self.last_started_at = getattr(provider, "last_started_at", None)
+        self.last_latency_ms = getattr(provider, "last_latency_ms", None)
 
 
 def _is_unavailability(exc: Exception) -> bool:

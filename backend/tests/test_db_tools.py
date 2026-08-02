@@ -11,6 +11,7 @@ from agent_control.schemas import (
     AuditEventType,
     Capability,
     ChannelType,
+    LLMCallRecord,
     RiskLevel,
     TaskRecord,
     utc_now,
@@ -141,6 +142,7 @@ def _full_schema_fixture(repositories: Repositories) -> TaskRecord:
         summary="test approval",
         expires_at=utc_now() + timedelta(hours=1),
     ))
+    repositories.llm_calls.create(LLMCallRecord(task_id=task.id, source="operator", messages=[]))
     return task
 
 

@@ -253,6 +253,9 @@ async def run_worker() -> None:
             operator=operator,
             operator_max_steps=settings.operator.max_steps,
             auditor=auditor,
+            persist_llm_calls=settings.storage.persist_llm_calls,
+            llm_call_max_chars=settings.storage.llm_call_max_chars,
+            redact_patterns=settings.logging.redact_patterns,
         )
         for _ in range(max(settings.limits.max_parallel_tasks, 1))
     ]

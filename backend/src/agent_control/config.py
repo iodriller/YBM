@@ -102,6 +102,15 @@ class StorageConfig(StrictBaseModel):
     # (docs/HISTORY.md P6); it never touches a path a caller customized.
     database_url: str = "sqlite:///.agent_control/agent_control.db"
     artifact_dir: str = ".agent_control/artifacts"
+    # The receipts (docs/UI_UX_AUDIT.md Phase 14d): one row per LLM call the
+    # operator/auditor/subagent make, with the redacted prompt, the raw
+    # response text, tokens, and real latency - what turns the trace's
+    # inferred "operator thinking" gaps into measured time. On by default,
+    # since receipts are the product's whole claim; llm_call_max_chars caps
+    # both the response text and each message's content, independently, so
+    # one verbose call can't bloat the database unbounded.
+    persist_llm_calls: bool = True
+    llm_call_max_chars: int = Field(default=8000, ge=100)
 
 
 class SecretVaultConfig(StrictBaseModel):

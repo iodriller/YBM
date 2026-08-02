@@ -19,6 +19,7 @@ from agent_control.schemas import (
     ApprovalStatus,
     AuditEventType,
     ErrorClass,
+    LLMCallRecord,
     OperatorAction,
     OperatorDecision,
     ParallelToolCall,
@@ -31,6 +32,7 @@ from agent_control.schemas import (
     utc_now,
 )
 from agent_control.storage.audit import AuditLogger
+from agent_control.storage.redaction import redact_payload
 from agent_control.storage.repositories import Repositories
 from agent_control.tools.mcp_client import mcp_output_text
 
@@ -131,6 +133,9 @@ class TaskWorker:
         operator: OperatorLoopService | None = None,
         operator_max_steps: int = 8,
         auditor: AuditorService | None = None,
+        persist_llm_calls: bool = True,
+        llm_call_max_chars: int = 8000,
+        redact_patterns: list[str] | tuple[str, ...] | None = None,
     ) -> None:
         self.repositories = repositories
         self.audit = audit
@@ -153,6 +158,12 @@ class TaskWorker:
         # worker with no auditor configured skips straight to the
         # fulfillment-gap check, same as before this existed.
         self.auditor = auditor
+        # LLM-call persistence (docs/UI_UX_AUDIT.md Phase 14d) - the receipts
+        # behind the Duration view's real (non-inferred) segments. See
+        # _record_llm_call below.
+        self.persist_llm_calls = persist_llm_calls
+        self.llm_call_max_chars = llm_call_max_chars
+        self.redact_patterns = redact_patterns
         # Stable id per worker process; written into tasks.claimed_by so
         # concurrent workers can't race on the same task.
         self.worker_id = f"worker-{uuid4().hex[:12]}"
@@ -329,6 +340,7 @@ class TaskWorker:
                 memory_context=memory_context, prefer_major=prefer_major,
             )
             latest = self._record_llm_usage(latest, "operator", getattr(self.operator, "last_usage", None))
+            self._record_llm_call(latest.id, "operator", len(history), self.operator)
         except Exception as exc:
             self.audit.append(
                 AuditEventType.ERROR, actor="operator", task_id=latest.id,
@@ -367,6 +379,7 @@ class TaskWorker:
                         original_message=str(latest.metadata.get("original_message_text") or "") or None,
                     )
                     latest = self._record_llm_usage(latest, "auditor", getattr(self.auditor, "last_usage", None))
+                    self._record_llm_call(latest.id, "auditor", len(history), self.auditor)
                     if not audit_result.sufficient:
                         history.append({
                             "tool_name": CHECK_ENTRY_AUDIT,
@@ -612,6 +625,7 @@ class TaskWorker:
                     "origin": delegate_origin,
                 }
             task = self._record_llm_usage(task, "subagent", getattr(self.operator, "last_usage", None))
+            self._record_llm_call(task.id, "subagent", len(sub_history), self.operator)
 
             if sub_decision.action == OperatorAction.DONE:
                 return task, {
@@ -1056,6 +1070,53 @@ class TaskWorker:
             current["last_model"] = usage["model"]
         return self.repositories.tasks.update_metadata(task.id, {**task.metadata, "token_usage": current})
 
+    def _record_llm_call(self, task_id: str, source: str, step_index: int, service: Any) -> None:
+        """Persist one LLM call's request/response/timing (docs/UI_UX_AUDIT.md
+        Phase 14d) - a sibling to _record_llm_usage's running token totals
+        above, not a replacement: that stays the cheap, always-on counter;
+        this is the full per-call record that turns the Duration view's
+        inferred "operator thinking" gaps into measured latency.
+
+        Reads last_request/last_response_text/last_model/last_started_at/
+        last_latency_ms off `service` (the OperatorLoopService or
+        AuditorService instance that just made the call) - the same
+        provider-to-service proxying _record_llm_usage already reads
+        last_usage from. A no-op if persistence is disabled, or if the call
+        didn't actually complete (no last_request/last_started_at means the
+        provider raised before setting them). Best-effort: a persistence
+        failure is logged, not raised - it must never block the task itself.
+        """
+        if not self.persist_llm_calls:
+            return
+        messages = getattr(service, "last_request", None)
+        started_at = getattr(service, "last_started_at", None)
+        if not isinstance(messages, list) or not messages or started_at is None:
+            return
+        usage = getattr(service, "last_usage", None) or {}
+        response_text = getattr(service, "last_response_text", None)
+        if isinstance(response_text, str) and len(response_text) > self.llm_call_max_chars:
+            response_text = f"{response_text[: self.llm_call_max_chars]}...[truncated]"
+        try:
+            record = LLMCallRecord(
+                task_id=task_id,
+                source=source,
+                model=getattr(service, "last_model", None),
+                step_index=step_index,
+                messages=_cap_messages(redact_payload(messages, self.redact_patterns), self.llm_call_max_chars),
+                response_text=response_text,
+                prompt_tokens=usage.get("prompt_tokens"),
+                completion_tokens=usage.get("completion_tokens"),
+                total_tokens=usage.get("total_tokens"),
+                latency_ms=getattr(service, "last_latency_ms", None),
+                created_at=started_at,
+            )
+            self.repositories.llm_calls.create(record)
+        except Exception as exc:
+            self.audit.append(
+                AuditEventType.ERROR, actor="worker", task_id=task_id,
+                payload={"error": "llm_call_persist_failed", "reason": str(exc)},
+            )
+
     def _record_tool_result(self, task_id: str, tool_name: str, result: ToolCallResult) -> TaskRecord:
         latest = self.repositories.tasks.get(task_id)
         if latest is None:
@@ -1211,6 +1272,37 @@ def _looks_like_http_output(output: dict[str, Any]) -> bool:
     return output.get("operation") == "request" and "status_code" in output and (
         "json" in output or "text" in output
     )
+
+def _cap_messages(messages: list[dict[str, Any]], max_chars: int) -> list[dict[str, Any]]:
+    """Bounds one LLM call's persisted messages (docs/UI_UX_AUDIT.md Phase
+    14d) - applied after redaction, per-message, so the cap can't truncate
+    mid-redaction-pattern. A multimodal message's image_url parts are a
+    base64 data URI, not prompt text; they're replaced with a placeholder
+    rather than capped like text, since a screenshot belongs in the task's
+    artifacts, not duplicated (and truncated into garbage) in a text field.
+    """
+    return [
+        {**message, "content": _cap_message_content(message.get("content"), max_chars)}
+        for message in messages
+        if isinstance(message, dict)
+    ]
+
+
+def _cap_message_content(content: Any, max_chars: int) -> Any:
+    if isinstance(content, str):
+        return content if len(content) <= max_chars else f"{content[:max_chars]}...[truncated]"
+    if isinstance(content, list):
+        capped = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "image_url":
+                capped.append({"type": "image_url", "image_url": {"url": "[image omitted from trace]"}})
+            elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                capped.append({**part, "text": _cap_message_content(part["text"], max_chars)})
+            else:
+                capped.append(part)
+        return capped
+    return content
+
 
 def _trim_result(result: ToolCallResult) -> dict:
     payload = result.model_dump(mode="json")

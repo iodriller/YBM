@@ -255,6 +255,35 @@ async def test_openai_compatible_provider_usage_is_none_when_server_omits_it(mon
 
 
 @pytest.mark.asyncio
+async def test_openai_compatible_provider_captures_request_response_and_latency(monkeypatch) -> None:
+    """docs/UI_UX_AUDIT.md Phase 14d: LLM-call persistence needs the actual
+    messages sent, the response text, the model, and real timing - last_usage
+    alone (token counts only) isn't enough. These are siblings to last_usage,
+    same "set on success" contract."""
+    profile = LLMProfileConfig(model="gpt-4.1", base_url="https://api.openai.com/v1", max_tokens=128)
+    provider = OpenAICompatibleProvider(profile)
+    monkeypatch.setattr(
+        "agent_control.llm.providers.httpx.AsyncClient",
+        _fake_client_returning({"choices": [{"message": {"content": "hi there"}}]}),
+    )
+
+    assert provider.last_request is None
+    assert provider.last_started_at is None
+    result = await provider.generate_text("system prompt", "user prompt")
+
+    assert result == "hi there"
+    assert provider.last_request == [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "user prompt"},
+    ]
+    assert provider.last_response_text == "hi there"
+    assert provider.last_model == "gpt-4.1"
+    assert provider.last_started_at is not None
+    assert provider.last_latency_ms is not None
+    assert provider.last_latency_ms >= 0
+
+
+@pytest.mark.asyncio
 async def test_failover_provider_proxies_usage_from_whichever_provider_served_the_call() -> None:
     class FakeProvider:
         def __init__(self, text: str, usage: dict, *, fails: bool = False) -> None:
@@ -287,3 +316,42 @@ async def test_failover_provider_proxies_usage_from_whichever_provider_served_th
     result = await provider.generate_text("s", "u")
     assert result == "from fallback"
     assert provider.last_usage == fallback.last_usage
+
+
+@pytest.mark.asyncio
+async def test_failover_provider_proxies_llm_call_persistence_fields_too() -> None:
+    """docs/UI_UX_AUDIT.md Phase 14d: the failover wrapper must proxy the new
+    last_request/last_response_text/last_model/last_started_at/last_latency_ms
+    fields the same way it already proxies last_usage, or a call served by
+    the fallback profile would silently have nothing to persist."""
+
+    class FakeProvider:
+        def __init__(self, tag: str) -> None:
+            self.last_usage = {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2, "model": tag}
+            self.last_request = [{"role": "user", "content": tag}]
+            self.last_response_text = f"response from {tag}"
+            self.last_model = tag
+            self.last_started_at = "2026-01-01T00:00:00+00:00"
+            self.last_latency_ms = 42.0
+
+        async def generate_text(self, system_prompt: str, user_prompt: str) -> str:
+            return self.last_response_text
+
+        async def generate_multimodal_text(self, *a, **k):  # pragma: no cover - unused here
+            raise NotImplementedError
+
+        async def generate_structured(self, *a, **k):  # pragma: no cover - unused here
+            raise NotImplementedError
+
+    from agent_control.llm.providers import FailoverLLMProvider
+
+    fallback = FakeProvider("fallback")
+    provider = FailoverLLMProvider(FakeProvider("primary"), fallback)
+
+    await provider.generate_text("s", "u")
+
+    assert provider.last_request == [{"role": "user", "content": "primary"}]
+    assert provider.last_response_text == "response from primary"
+    assert provider.last_model == "primary"
+    assert provider.last_started_at == "2026-01-01T00:00:00+00:00"
+    assert provider.last_latency_ms == 42.0

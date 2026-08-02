@@ -13,6 +13,7 @@ has nothing to audit and skips this entirely, same as the old
 
 from __future__ import annotations
 
+from datetime import datetime
 import logging
 
 from agent_control.llm.providers import LLMProvider
@@ -55,6 +56,13 @@ class AuditorService:
         # Usage from the most recent audit() call - see
         # docs/HISTORY.md Part 4 T1.4.
         self.last_usage: dict | None = None
+        # Siblings to last_usage, read by worker.py to persist the full call
+        # record (docs/UI_UX_AUDIT.md Phase 14d).
+        self.last_request: list[dict] | None = None
+        self.last_response_text: str | None = None
+        self.last_model: str | None = None
+        self.last_started_at: datetime | None = None
+        self.last_latency_ms: float | None = None
 
     @staticmethod
     def is_content_tool(tool_name: str | None) -> bool:
@@ -83,6 +91,11 @@ class AuditorService:
         try:
             result = await self.provider.generate_text(AUDITOR_SYSTEM_PROMPT, user_prompt)
             self.last_usage = getattr(self.provider, "last_usage", None)
+            self.last_request = getattr(self.provider, "last_request", None)
+            self.last_response_text = getattr(self.provider, "last_response_text", None)
+            self.last_model = getattr(self.provider, "last_model", None)
+            self.last_started_at = getattr(self.provider, "last_started_at", None)
+            self.last_latency_ms = getattr(self.provider, "last_latency_ms", None)
         except Exception:
             logger.warning("auditor provider call failed; not blocking completion on it", exc_info=True)
             return AuditResult(sufficient=True, answer=None, reason="auditor_error")

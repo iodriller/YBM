@@ -13,14 +13,14 @@ from agent_control.storage.database import Database
 
 
 # Deletion order matters: children before parents, respecting FOREIGN KEY = ON.
-# task_signals/tool_invocations/artifacts/approvals reference tasks;
+# task_signals/tool_invocations/artifacts/approvals/llm_calls reference tasks;
 # tasks/messages/conversation_memory reference conversations. audit_events and
 # schedules carry no FK. See backend/src/agent_control/storage/migrations.py.
 # "plans"/"subtasks" are kept in the lists below only so a pre-existing
 # database that still has those (now-schema-dropped, unused since P3) tables
 # gets them swept by `ybm db reset`/`db clean` too, not left behind forever.
 TABLES_CHILD_FIRST = (
-    "task_signals", "subtasks", "tool_invocations", "plans", "artifacts", "approvals",
+    "task_signals", "subtasks", "tool_invocations", "plans", "artifacts", "approvals", "llm_calls",
     "tasks",
     "messages", "conversation_memory",
     "conversations",
@@ -90,7 +90,7 @@ def db_clean(days: int) -> int:
             ]
             if old_task_ids:
                 placeholders = ",".join("?" for _ in old_task_ids)
-                for table in ("task_signals", "subtasks", "tool_invocations", "plans", "artifacts", "approvals", "audit_events"):
+                for table in ("task_signals", "subtasks", "tool_invocations", "plans", "artifacts", "approvals", "llm_calls", "audit_events"):
                     if table in tables:
                         connection.execute(f'DELETE FROM "{table}" WHERE task_id IN ({placeholders})', old_task_ids)
                 connection.execute(f"DELETE FROM tasks WHERE id IN ({placeholders})", old_task_ids)

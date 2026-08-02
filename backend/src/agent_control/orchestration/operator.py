@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import ValidationError
 
 from agent_control.llm.providers import LLMProvider
@@ -24,6 +26,13 @@ class OperatorLoopService:
         # after each call to accumulate per-task token/cost totals. See
         # docs/HISTORY.md Part 4 T1.4.
         self.last_usage: dict | None = None
+        # Siblings to last_usage, read by worker.py to persist the full call
+        # record (docs/UI_UX_AUDIT.md Phase 14d).
+        self.last_request: list[dict] | None = None
+        self.last_response_text: str | None = None
+        self.last_model: str | None = None
+        self.last_started_at: datetime | None = None
+        self.last_latency_ms: float | None = None
 
     async def decide(
         self,
@@ -62,6 +71,11 @@ class OperatorLoopService:
                     OPERATOR_SYSTEM_PROMPT, current_prompt, OperatorDecision, temperature=0.1
                 )
                 self.last_usage = getattr(provider, "last_usage", None)
+                self.last_request = getattr(provider, "last_request", None)
+                self.last_response_text = getattr(provider, "last_response_text", None)
+                self.last_model = getattr(provider, "last_model", None)
+                self.last_started_at = getattr(provider, "last_started_at", None)
+                self.last_latency_ms = getattr(provider, "last_latency_ms", None)
                 return candidate
             except (ValueError, ValidationError) as exc:
                 last_error = exc

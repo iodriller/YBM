@@ -138,6 +138,23 @@ SCHEMA_STATEMENTS = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS llm_calls (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        source TEXT NOT NULL,
+        model TEXT,
+        step_index INTEGER,
+        messages_json TEXT NOT NULL,
+        response_text TEXT,
+        prompt_tokens INTEGER,
+        completion_tokens INTEGER,
+        total_tokens INTEGER,
+        latency_ms REAL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(task_id) REFERENCES tasks(id)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS memory_facts (
         id TEXT PRIMARY KEY,
         category TEXT NOT NULL,

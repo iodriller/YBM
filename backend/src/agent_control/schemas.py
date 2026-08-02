@@ -601,6 +601,32 @@ class ToolCallResult(StrictBaseModel):
     completed_at: datetime = Field(default_factory=utc_now)
 
 
+class LLMCallRecord(StrictBaseModel):
+    """One LLM API call, persisted for the trace (docs/UI_UX_AUDIT.md Phase
+    14d) - the receipts that turn the Duration view's inferred "operator
+    thinking" gaps into measured latency. `source` is "operator", "auditor",
+    or "subagent" today - the same three the worker's own token-usage
+    tracking already distinguishes (see TaskWorker._record_llm_usage);
+    Concierge/classifier/memory calls made before a task exists are
+    deliberately out of scope, same boundary that tracking already draws.
+    `messages`/`response_text` are redacted and size-capped by the caller
+    before construction, not here - this model just carries the result.
+    """
+
+    id: str = Field(default_factory=lambda: new_id("llmcall"))
+    task_id: str
+    source: str
+    model: str | None = None
+    step_index: int | None = None
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+    response_text: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    latency_ms: float | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class ApprovalRequest(StrictBaseModel):
     id: str = Field(default_factory=lambda: new_id("approval"))
     task_id: str
