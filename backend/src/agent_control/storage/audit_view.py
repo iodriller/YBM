@@ -20,6 +20,16 @@ CATEGORY_BY_TYPE = {
     AuditEventType.APPROVAL_REQUESTED: "approval",
     AuditEventType.APPROVAL_DECIDED: "approval",
     AuditEventType.ERROR: "error",
+    # Added docs/UI_UX_AUDIT.md Phase 14 - these four previously fell back
+    # to the generic "system" category, which was a real gap for
+    # TASK_STATE_CHANGED specifically: it's the single most common event
+    # type in any task's timeline (fires on every status transition), so
+    # lumping it under "system" left almost every timeline row looking
+    # like miscellaneous noise instead of the actual state machine.
+    AuditEventType.TASK_STATE_CHANGED: "task_state",
+    AuditEventType.TASK_CANCELLED: "task_state",
+    AuditEventType.ARTIFACT_CREATED: "artifact",
+    AuditEventType.EGRESS_CONTACTED: "egress",
 }
 
 

@@ -1702,17 +1702,42 @@ def _trace_context(task: dict[str, Any], raw_audit: list[dict[str, Any]]) -> dic
     }
 
 
+def _elapsed_ms(start: Any, end: Any) -> float | None:
+    """Milliseconds between two ISO timestamps, or None if either is
+    missing/unparseable - a tool invocation still awaiting completion has
+    no completed_at yet, and that must render as "unknown", not zero."""
+    if not start or not end:
+        return None
+    try:
+        started = datetime.fromisoformat(str(start))
+        finished = datetime.fromisoformat(str(end))
+    except ValueError:
+        return None
+    return max(0.0, (finished - started).total_seconds() * 1000)
+
+
 def _trace_timeline(audit_events: list[dict[str, Any]], tool_invocations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The full chronological record (docs/HISTORY.md N5, categories and
+    durations added in docs/UI_UX_AUDIT.md Phase 14). `category` reuses
+    format_audit_event's own CATEGORY_BY_TYPE for audit rows - it was
+    already computed, just not included here - and "tool" for every tool
+    row, matching the category tool-originated audit events already use.
+    `duration_ms` is exact for tool calls (real created_at/completed_at);
+    audit events are effectively instantaneous log points, not spans, so
+    theirs is always None rather than a fabricated zero.
+    """
     items: list[dict[str, Any]] = []
     for event in audit_events:
         items.append(
             {
                 "at": event.get("formatted_time") or event.get("created_at"),
                 "kind": "audit",
+                "category": event.get("category") or "system",
                 "title": event.get("title") or event.get("type"),
                 "summary": event.get("summary"),
                 "actor": event.get("actor"),
                 "details": event.get("details"),
+                "duration_ms": None,
             }
         )
     for tool in tool_invocations:
@@ -1720,10 +1745,12 @@ def _trace_timeline(audit_events: list[dict[str, Any]], tool_invocations: list[d
             {
                 "at": tool.get("completed_at") or tool.get("created_at"),
                 "kind": "tool",
+                "category": "tool",
                 "title": tool.get("tool_name"),
                 "summary": tool.get("status"),
                 "actor": "orchestrator",
                 "details": {"request": tool.get("request"), "result": tool.get("result")},
+                "duration_ms": _elapsed_ms(tool.get("created_at"), tool.get("completed_at")),
             }
         )
     return sorted(items, key=lambda item: str(item.get("at") or ""))

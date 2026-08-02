@@ -701,6 +701,43 @@ def test_admin_task_trace_includes_operator_history_tool_calls_and_audit(monkeyp
     assert body["audit"][0]["details"]["action"] == "operator_decision"
 
 
+def test_admin_task_trace_timeline_includes_category_and_duration(monkeypatch, tmp_path) -> None:
+    """docs/UI_UX_AUDIT.md Phase 14: the timeline used to render every row
+    as either "tool" or "audit" with no further distinction. category
+    reuses format_audit_event's own CATEGORY_BY_TYPE (already computed,
+    just not included here before); duration_ms is exact for a completed
+    tool call and None for an audit event, which is an instantaneous log
+    point, not a span."""
+    monkeypatch.chdir(tmp_path)
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    audit = AuditLogger(repositories.audit)
+    task = repositories.tasks.create("do something")
+
+    request = ToolCallRequest(
+        task_id=task.id, tool_name="filesystem.manage", capability=Capability.FILESYSTEM_READ,
+        input={"operation": "read_file", "path": "C:/tmp/notes.txt"},
+    )
+    repositories.tool_invocations.create(request)
+    repositories.tool_invocations.complete(
+        ToolCallResult(request_id=request.id, status=ToolResultStatus.SUCCEEDED, output={})
+    )
+    audit.append(AuditEventType.APPROVAL_REQUESTED, actor="worker", task_id=task.id, payload={})
+
+    client = _admin_client(repositories)
+
+    response = client.get(f"/admin/api/tasks/{task.id}/trace")
+    timeline = response.json()["timeline"]
+
+    tool_item = next(item for item in timeline if item["kind"] == "tool")
+    audit_item = next(item for item in timeline if item["kind"] == "audit")
+    assert tool_item["category"] == "tool"
+    assert tool_item["duration_ms"] is not None
+    assert tool_item["duration_ms"] >= 0
+    assert audit_item["category"] == "approval"
+    assert audit_item["duration_ms"] is None
+
+
 def test_admin_task_trace_evidence_aggregates_files_urls_and_commands(monkeypatch, tmp_path) -> None:
     """The evidence view (docs/HISTORY.md N5): what a completed task actually
     touched, pulled from real tool_invocations rather than a new repository -
