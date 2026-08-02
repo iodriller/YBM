@@ -20,7 +20,7 @@ The redesign establishes a clearer control-plane hierarchy:
 
 ## Where We Are
 
-Phases 0-12 are done. Phases 13-16 are open, and Phases 3 and 7 are blocked on the repository
+Phases 0-13 are done. Phases 14-16 are open, and Phases 3 and 7 are blocked on the repository
 owner. Full write-ups of shipped phases were removed on 2026-08-01 to keep this document about
 what is *left*; the detail lives in git history (`git log --grep "Phase N"`) and in the code
 comments each change left behind.
@@ -30,7 +30,7 @@ comments each change left behind.
 | # | What landed | Deliberately not done |
 |---|---|---|
 | 0 | Stabilized the baseline: fixed a mislabeled Evidence Pack field and an absolute README secrets claim, re-recorded broken fixtures, web chat resumes a clarifying task instead of spawning a new one | — |
-| 1 | Chat: sanitized Markdown, Stop button, inline clarifications, artifact cards, inline approvals backed by real task-scoped grants, file attachments | Folder selection (needs a server-side picker — now Phase 13) |
+| 1 | Chat: sanitized Markdown, Stop button, inline clarifications, artifact cards, inline approvals backed by real task-scoped grants, file attachments | Folder selection (shipped separately as Phase 13) |
 | 2 | Task Receipts: a "Done" card in Chat plus a full receipt (result, what was touched, services contacted, approvals, duration/cost), with export | — |
 | 4 | Structured memory: `MemoryFact` schema with provenance/confidence/category, a `memory_facts` table, admin CRUD, a Memory page, and a `memory.manage` tool stamped `task_derived` | Retrieval, contradiction handling (now Phase 15) |
 | 5 | Skills lifecycle: `version`/`tools` manifest fields, install/uninstall endpoints, a Skills page, inferred tool references | Version pinning and integrity verification — no registry exists to pin against |
@@ -40,6 +40,7 @@ comments each change left behind.
 | 10 | One command to run it: `ybm run` + double-clickable `YBM.bat`, consistent logo across console/tray/favicon. Second pass: fingerprinted dependency sync and console build — a fully-warm launch went from ~60-90s to ~9s | Consolidating the CLI's several per-command Python process launches (the remaining gap to "a few seconds") |
 | 11 | Console regrouped: a Tools page, an Agent hub over Tools/Skills/Memory, and a bundled starter skill catalog | MCP server add/edit/test, an `adapter.factory` review UI, skill edit-in-place |
 | 12 | Console UX pass: a chat width control, expired approvals swept out of the list instead of leading it, breadcrumbs + fixed nav active-state on every sub-page, one entry point for adding a skill, an explicit disabled-tool affordance on Tools | — |
+| 13 | Server-side folder picker: `GET /admin/api/folders`, scoped to the same `computer_use.allowed_roots` `filesystem.manage` uses, with a `FolderPicker` dialog in the Chat composer | — |
 
 ### Blocked on the repository owner
 
@@ -52,7 +53,6 @@ comments each change left behind.
 
 | # | Phase | Why it's next |
 |---|---|---|
-| 13 | Server-side folder picker | The README's own first example is "organize my Downloads folder", but that still requires typing a path |
 | 14 | Task timeline and graph overhaul | The trace can't answer "what took so long" or "why did it do that" |
 | 15 | Memory: retrieval, provenance, gated forgetting | Every fact is injected into every task, uncapped |
 | 16 | A second channel | Telegram is the only real channel |
@@ -69,7 +69,7 @@ comments each change left behind.
 | Configuration | LLM profiles/presets, Telegram, VS Code, workspace, computer use, MCP summary | Settings forms and advanced mode | No per-role model, prompt overrides, delegate presets, or editable advanced policies; MCP is read-only |
 | Secrets | Encrypted local vault and reference-based injection | List/add/delete/init without returning values | Rotation/last-used state and integration validation are absent |
 | Operations | Setup, doctor, `ybm run`, tray, autostart, backup, update check, logs, scheduler, supervised services | Health indicator, Diagnostics with service cards and a doctor runner | Two supervisor implementations remain; no compiled installer |
-| Developer quality | Backend unit/scenario suite (678 tests), Zod API parsing, frontend typecheck/build | Query devtools in development | No committed frontend unit, contract, accessibility, or Playwright regression suite |
+| Developer quality | Backend unit/scenario suite (685 tests), Zod API parsing, frontend typecheck/build | Query devtools in development | No committed frontend unit, contract, accessibility, or Playwright regression suite |
 
 ## Competitive Review
 
@@ -185,13 +185,19 @@ verified in the code before being written down.
   can actually be decided; every sub-page can be left without the browser back button; and there is
   exactly one obvious way to add a skill.
 
-### Phase 13 — Server-side folder picker
+### Phase 13 — Server-side folder picker (**shipped**)
 
-- Browser directory pickers cannot yield a usable absolute path, which is why Phase 1 deferred
-  this. The correct implementation is server-side: list the configured allowed roots, browse
-  subdirectories through the backend, select one, and insert a server-recognized folder reference
-  into the task. Path resolution is validated against the allowed roots on every request - no
-  traversal outside them, and no reliance on the browser's directory-upload as a stand-in.
+- `GET /admin/api/folders[?path=...]`: no `path` returns the configured
+  `computer_use.allowed_roots` (the exact same boundary `filesystem.manage` itself is scoped to,
+  not a second one to keep in sync); a `path` inside one of them returns its immediate
+  subdirectories, validated against the roots on every call - never a traversal outside them, and
+  never dependent on the browser's own directory-upload as a stand-in. A `FolderPicker` dialog in
+  the Chat composer browses this and inserts the selected absolute path into the draft text -
+  there is no new "folder reference" concept, it's the same plain path-in-the-objective
+  `filesystem.manage`'s alias resolution already understands.
+- Verified live against this machine's real configured roots (`C:\for fun`, `C:\Users\oneye`):
+  listing roots, browsing into one, and rejecting a path outside them (`C:\Windows`, 400) all
+  behaved correctly against the running backend, not just in tests.
 - Acceptance: "organize this folder" is expressible from the console without typing a path.
 
 ### Phase 14 — Task timeline and graph overhaul
