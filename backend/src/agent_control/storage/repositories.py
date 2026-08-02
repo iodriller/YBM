@@ -556,12 +556,35 @@ class ApprovalRepository:
         return [self._row_to_approval(row) for row in rows]
 
     def list_pending(self, limit: int = 100) -> list[ApprovalRequest]:
+        """Sweeps stale rows before listing, and orders by soonest expiry
+        (docs/UI_UX_AUDIT.md Phase 12) - previously ordered by created_at
+        ASC with no expiry filter at all, so an approval that had already
+        expired stayed PENDING (only decide_pending's own expiry check
+        ever caught it) and, being the oldest, permanently led the list -
+        a dead, unclickable first card in the review dialog that nothing
+        behind it could ever displace.
+        """
+        self.expire_stale()
         with self.database.connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM approvals WHERE status = ? ORDER BY created_at ASC LIMIT ?",
+                "SELECT * FROM approvals WHERE status = ? ORDER BY expires_at ASC LIMIT ?",
                 (ApprovalStatus.PENDING.value, limit),
             ).fetchall()
         return [self._row_to_approval(row) for row in rows]
+
+    def expire_stale(self) -> int:
+        """Moves every PENDING approval whose expiry has passed into
+        EXPIRED. Idempotent and cheap (a single indexed UPDATE) - safe to
+        call on every list_pending rather than needing a separate periodic
+        job.
+        """
+        now = _dt(utc_now())
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE approvals SET status = ? WHERE status = ? AND expires_at <= ?",
+                (ApprovalStatus.EXPIRED.value, ApprovalStatus.PENDING.value, now),
+            )
+        return cursor.rowcount
 
     def cancel_pending_for_task(self, task_id: str) -> int:
         """Called when a task is cancelled (docs/UI_UX_AUDIT.md Phase 8) - a

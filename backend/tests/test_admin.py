@@ -500,6 +500,38 @@ def test_admin_pending_approvals_blast_radius_is_empty_for_unrelated_input(monke
     assert item["blast_radius"] == {"files": [], "urls": [], "commands": []}
 
 
+def test_admin_pending_approvals_excludes_expired_and_orders_by_soonest_expiry(monkeypatch, tmp_path) -> None:
+    """docs/UI_UX_AUDIT.md Phase 12: an approval whose expiry already
+    passed must not appear in the list at all (it used to stay PENDING
+    forever and, being the oldest by created_at, permanently led the
+    list) - and among what remains, the most urgent (soonest to expire)
+    should lead, not the oldest."""
+    monkeypatch.chdir(tmp_path)
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    task = repositories.tasks.create("write a report", metadata={"source_chat_id": "1"})
+
+    def _approval(minutes: int) -> ApprovalRequest:
+        return repositories.approvals.create(
+            ApprovalRequest(
+                task_id=task.id, capability=Capability.FILESYSTEM_WRITE, risk_level=RiskLevel.HIGH,
+                summary="write a file", expires_at=utc_now() + timedelta(minutes=minutes),
+            )
+        )
+
+    already_expired = _approval(-5)
+    expires_soon = _approval(5)
+    expires_later = _approval(30)
+    client = _admin_client(repositories)
+
+    response = client.get("/admin/api/approvals")
+
+    ids = [item["approval"]["id"] for item in response.json()["approvals"]]
+    assert already_expired.id not in ids
+    assert ids == [expires_soon.id, expires_later.id]
+    assert repositories.approvals.get(already_expired.id).status == ApprovalStatus.EXPIRED
+
+
 def test_admin_decide_approval_approve_for_task_creates_a_grant(monkeypatch, tmp_path) -> None:
     """docs/UI_UX_AUDIT.md Phase 1's "Allow for this task" - approves the
     current call exactly like "approve" and additionally creates an
