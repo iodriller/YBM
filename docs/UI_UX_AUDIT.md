@@ -18,35 +18,58 @@ The redesign establishes a clearer control-plane hierarchy:
 4. **Access** communicates safety posture before individual configuration.
 5. **Settings** holds integrations and advanced operator controls.
 
-## What Shipped in This Pass
+## Where We Are
 
-- A semantic color system with a single blue interaction accent and distinct success, warning,
-  information, and danger roles in both light and dark themes.
-- A user-selectable light/dark/system theme that also applies to token entry and onboarding.
-- A responsive shell: desktop navigation rail, mobile header, and mobile bottom navigation.
-- A rebuilt chat surface with a multiline composer, useful empty state, clearer execution status,
-  readable error state, and hard wrapping for URLs and long unbroken output.
-- A redesigned Access page with an at-a-glance posture summary, explicit preset choices, and
-  directly visible per-group modes instead of internal enum text.
-- Consistent page hierarchy, width, spacing, cards, and semantic task-status badges across Tasks,
-  Trace, Settings, Access, and Chat.
-- Web-chat notification routing fixed: local chat IDs are no longer sent to Telegram.
-- Credential-safe Telegram transport errors plus response-boundary secret redaction for current
-  and historical admin data.
+Phases 0-11 are done. Phases 12-16 are open, and Phases 3 and 7 are blocked on the repository
+owner. Full write-ups of shipped phases were removed on 2026-08-01 to keep this document about
+what is *left*; the detail lives in git history (`git log --grep "Phase N"`) and in the code
+comments each change left behind.
+
+### Shipped
+
+| # | What landed | Deliberately not done |
+|---|---|---|
+| 0 | Stabilized the baseline: fixed a mislabeled Evidence Pack field and an absolute README secrets claim, re-recorded broken fixtures, web chat resumes a clarifying task instead of spawning a new one | — |
+| 1 | Chat: sanitized Markdown, Stop button, inline clarifications, artifact cards, inline approvals backed by real task-scoped grants, file attachments | Folder selection (needs a server-side picker — now Phase 13) |
+| 2 | Task Receipts: a "Done" card in Chat plus a full receipt (result, what was touched, services contacted, approvals, duration/cost), with export | — |
+| 4 | Structured memory: `MemoryFact` schema with provenance/confidence/category, a `memory_facts` table, admin CRUD, a Memory page, and a `memory.manage` tool stamped `task_derived` | Retrieval, contradiction handling (now Phase 15) |
+| 5 | Skills lifecycle: `version`/`tools` manifest fields, install/uninstall endpoints, a Skills page, inferred tool references | Version pinning and integrity verification — no registry exists to pin against |
+| 6 | Packaging: tray icon, `ybm autostart`, `ybm backup`, `ybm check-updates` | A compiled `.msi`/`.exe` — no build toolchain present |
+| 8 | P0 correctness and honesty: cancellation cleanup, receipt wording that stops over-claiming, receipts for every terminal state, artifact download, skill-label wording. Second pass: a pending approval no longer blocks the single worker from later tasks | Per-item effect classification (now Phase 14) |
+| 9 | Console surfaces over data that already existed: approval window rebuilt (pager, sticky actions, keyboard), Tasks outcome column, clear-history, a Timeline tab, Diagnostics rebuilt with service cards and a doctor runner | Per-task delete (bulk clear only) |
+| 10 | One command to run it: `ybm run` + double-clickable `YBM.bat`, consistent logo across console/tray/favicon. Second pass: fingerprinted dependency sync and console build — a fully-warm launch went from ~60-90s to ~9s | Consolidating the CLI's several per-command Python process launches (the remaining gap to "a few seconds") |
+| 11 | Console regrouped: a Tools page, an Agent hub over Tools/Skills/Memory, and a bundled starter skill catalog | MCP server add/edit/test, an `adapter.factory` review UI, skill edit-in-place |
+
+### Blocked on the repository owner
+
+| # | What it needs |
+|---|---|
+| 3 | Connections (GitHub, Google). Registering an OAuth App and a Google Cloud OAuth client requires the owner's own accounts. |
+| 7 | Public launch: website, hosting, public security docs, first version tag. Public content and hosting are the owner's decisions. |
+
+### Open
+
+| # | Phase | Why it's next |
+|---|---|---|
+| 12 | Console UX pass | Daily irritations: cramped chat, dead expired approvals at the top of the list, no way back from a sub-page, confusing "add a skill" flow |
+| 13 | Server-side folder picker | The README's own first example is "organize my Downloads folder", but that still requires typing a path |
+| 14 | Task timeline and graph overhaul | The trace can't answer "what took so long" or "why did it do that" |
+| 15 | Memory: retrieval, provenance, gated forgetting | Every fact is injected into every task, uncapped |
+| 16 | A second channel | Telegram is the only real channel |
 
 ## Current Feature Coverage
 
 | Area | Implemented today | Console coverage | Important gap |
 |---|---|---|---|
-| Agent runtime | Concierge, bounded Operator loop, Auditor, fulfillment checks, parallel calls, delegation | Task status, step list, advanced lane graph | The graph cannot connect a delegated/parallel lane to the exact spawning decision |
-| Channels | Telegram text/voice and one local web conversation | Web chat plus Telegram settings | Web chat has no attachments, voice, multiple threads, edit/regenerate, or message queue |
-| Safety | Capability policies, risk ceilings, allowlists, one-shot approvals, disabled-by-default tools | Persistent approval banner, Evidence Pack, Access posture and modes | Fine-grained scopes/patterns are read-only; no time-boxed grants or grant revocation list |
-| Tooling | Filesystem, terminal, browser, computer use, workspace, coding agents, documents, schedules, MCP, HTTP, knowledge, persona, skills | Access groups, diagnostics, trace outputs | Tool health and availability are scattered; no consolidated capability-health matrix |
-| Observability | Structured audit, task trace, evidence, token usage, cost data, CLI trace | Tasks, trace list/graph, audit viewer | No latency trend, failure-rate view, evaluation signal, or cross-task cost dashboard |
-| Configuration | LLM profiles/presets, Telegram, VS Code, workspace, computer use, MCP summary | Settings forms and advanced mode | No per-role model, prompt overrides, delegate presets, or editable advanced policies |
+| Agent runtime | Concierge, bounded Operator loop, Auditor, fulfillment checks, parallel calls, delegation | Task status, step list, timeline, advanced lane graph | The graph cannot connect a delegated/parallel lane to the exact spawning decision (Phase 14) |
+| Channels | Telegram text/voice and one local web conversation | Web chat plus Telegram settings | Web chat has no voice, multiple threads, edit/regenerate, or message queue |
+| Safety | Capability policies, risk ceilings, allowlists, one-shot approvals, task-scoped grants, disabled-by-default tools | Persistent approval banner, Evidence Pack, Access posture and modes | Fine-grained scopes/patterns are read-only; no grant revocation list |
+| Tooling | Filesystem, terminal, browser, computer use, workspace, coding agents, documents, schedules, MCP, HTTP, knowledge, persona, skills, memory | Tools page, Agent hub, Access groups, diagnostics | Tool availability and permission live on separate pages; no combined capability-health matrix |
+| Observability | Structured audit, task trace, timeline, receipts, evidence, token usage, cost data, CLI trace | Tasks with outcomes, trace list/graph/timeline, audit viewer | No per-step duration, latency trend, failure-rate view, evaluation signal, or cross-task cost dashboard |
+| Configuration | LLM profiles/presets, Telegram, VS Code, workspace, computer use, MCP summary | Settings forms and advanced mode | No per-role model, prompt overrides, delegate presets, or editable advanced policies; MCP is read-only |
 | Secrets | Encrypted local vault and reference-based injection | List/add/delete/init without returning values | Rotation/last-used state and integration validation are absent |
-| Operations | Setup, doctor, lifecycle scripts, logs, scheduler, supervised services | Health indicator and diagnostics | Two supervisor implementations remain; UI health is compact but not incident-oriented |
-| Developer quality | Backend unit/scenario suite, Zod API parsing, frontend typecheck/build | Query devtools in development | No committed frontend unit, contract, accessibility, or Playwright regression suite |
+| Operations | Setup, doctor, `ybm run`, tray, autostart, backup, update check, logs, scheduler, supervised services | Health indicator, Diagnostics with service cards and a doctor runner | Two supervisor implementations remain; no compiled installer |
+| Developer quality | Backend unit/scenario suite (678 tests), Zod API parsing, frontend typecheck/build | Query devtools in development | No committed frontend unit, contract, accessibility, or Playwright regression suite |
 
 ## Competitive Review
 
@@ -72,31 +95,32 @@ The goal is not to imitate a general chat product. The useful patterns are:
 
 ## Gap Analysis by Priority
 
+Shipped entries were removed on 2026-08-01; what remains is still open. Items now scheduled as a
+numbered phase say so.
+
 ### P0 — Trust and regression safety
 
 1. Add a committed Playwright suite for token entry, chat wrapping, theme persistence, mobile
    navigation, approval review, access-mode changes, and a failed-task trace.
 2. Add frontend unit/contract tests for status mapping, API schemas, access preset computation,
    and secret masking. Today TypeScript and production build are the only automated UI gates.
+   **Still the single largest quality gap** - every UI bug this pass was caught by hand.
 3. Add a React error boundary. A render-time component failure can still blank the current route.
 4. Audit every external adapter's exception path for credential-bearing URLs or command text.
    Telegram is fixed and admin responses redact configured values, but prevention should happen
-   at every adapter boundary.
+   at every adapter boundary. Related: only `http.request` calls `record_egress`, so browser, MCP,
+   coding-agent, and Telegram traffic is invisible to receipts.
 
 ### P1 — Daily-use product quality
 
-1. Render assistant answers as safe Markdown with code blocks, tables, copy actions, and link
-   treatment. Preserve plain text as the fallback and sanitize HTML.
-2. Add web-chat attachments backed by artifacts and scoped filesystem ingestion; do not bypass
-   existing policy checks.
-3. Add real task pagination and server-side search/filtering. The API exposes offsets, but the UI
+1. Add real task pagination and server-side search/filtering. The API exposes offsets, but the UI
    currently fetches and filters only the first 100 tasks.
-4. Add a trace tree beside the graph: collapsed by default, failure opened automatically, exact
-   parent/child edges, and duration per step.
-5. Add a capability-health matrix combining configured access, adapter readiness, policy ceiling,
+2. Add a trace tree beside the graph: collapsed by default, failure opened automatically, exact
+   parent/child edges, and duration per step. **Phase 14.**
+3. Add a capability-health matrix combining configured access, adapter readiness, policy ceiling,
    and last failure. Access answers permission; Diagnostics answers availability; operators need
    both in one view.
-6. Make advanced capability scopes and allow/deny patterns editable through validated backend
+4. Make advanced capability scopes and allow/deny patterns editable through validated backend
    endpoints with before/after confirmation.
 
 ### P2 — Differentiating control-plane features
@@ -105,6 +129,7 @@ The goal is not to imitate a general chat product. The useful patterns are:
 2. Versioned prompt overrides with diff, reset, and an explicit scenario-fixture warning.
 3. Named delegate presets such as Researcher or Coder, restricted to selected tools.
 4. Time-boxed grants with exact tool/operation scope, capped TTL, visible expiry, and revocation.
+   Task-scoped grants exist; there is still no way to see or revoke a live one.
 5. Cross-task reliability and cost dashboards: failure reason, tool latency, retry count, token
    spend, model, and time window.
 6. SSE for task and approval events after measuring current polling load; keep polling fallback.
@@ -118,328 +143,65 @@ The goal is not to imitate a general chat product. The useful patterns are:
 
 ## Delivery Plan and Acceptance Criteria
 
-Revised 2026-08-01: Chat quality, Task Receipts, and Connections outrank the control-plane and
-operational-insight items the Gap Analysis above lists as P1-P2 - most users spend nearly all
-their time in Chat, and receipts are the trust story that matters most once Connections lets data
-leave the machine for the first time. The gap analysis above still holds as reference; the phase
-numbers below are the actual build order.
+Phases 0-11 shipped; the ledger under "Where We Are" above summarizes them. Their full write-ups
+were removed on 2026-08-01 to keep this section about what is left - the detail is in git history
+(`git log --grep "Phase N"`) and in the code comments each change left behind.
 
-### Phase 0 — Stabilize the baseline (**shipped**)
+Two findings from earlier reviews are repeated here because open phases depend on them:
 
-- Fixed the Evidence Pack's mislabeled "Reversibility" field (renamed to "Capability" - it never
-  computed reversibility) and README's absolute "secrets never reach logs" claim.
-- Re-recorded the 6 scenario fixtures the runtime risk-floor change invalidated.
-- Wired the web chat channel to resume a CLARIFYING task on reply instead of spawning an unrelated
-  new one, matching Telegram's existing behavior (shared via clarification.py).
-- Acceptance: ruff, full pytest suite, tsc, and vite build all green with no known-red tests.
-
-### Phase 1 — Complete Chat (**shipped**)
-
-- Sanitized Markdown rendering, a Stop button wired to the existing cancel signal, inline
-  clarifications (reusing Phase 0's resume path), artifact cards, inline approvals
-  (Deny / Approve once / Allow for this task, backed by a real task-scoped grant), and file
-  attachments. **Folder selection was deferred, not shipped** - a browser directory picker exposes
-  no usable absolute path, so it needs the server-side browser planned in Phase 14. This bullet
-  previously read "attachments + folder selection", which overstated what landed.
-- Acceptance: a user can read code/tables in an answer, stop a runaway task in one click, answer a
-  clarifying question without leaving the conversation, and approve or deny a pending action
-  without opening a separate page.
-
-### Phase 2 — Task Receipts (**shipped**)
-
-- A human-readable "Done" card in Chat and a full receipt view: result summary, changes made,
-  services contacted, whether data left the machine (needs per-task egress tracking), approvals,
-  evidence, duration/cost, uncertainty, export.
-- Acceptance: a completed task's outcome is understandable without opening the technical trace;
-  every receipt states plainly whether anything left the machine.
-
-### Phase 3 — Connections (**blocked on the repository owner**)
-
-- A Connections page; GitHub first (OAuth app already has capability plumbing via
-  `github.read`/`github.push`), then Google (Calendar, then Gmail/Drive sharing one consent flow).
-  Per-connection scopes, vault-backed tokens, connection testing and error states.
-- Hard external dependency: registering the OAuth App (GitHub) and the OAuth consent screen +
-  client credentials (Google) requires the repository owner's own account - not something this
-  agent can do unattended.
-- Acceptance: a connection can be added, scoped, tested, and revoked entirely from the console; no
-  token is ever displayed after entry.
-
-### Phase 4 — Structured memory (**shipped, reduced scope**)
-
-- Shipped: a real schema (provenance via `MemorySource`, confidence, category), a `memory_facts`
-  table, remember/edit/forget controls on the admin API, a Memory page, keyword search, and a
-  `memory.manage` tool so the agent can save a fact mid-task (always stamped `task_derived` -
-  the model cannot claim a different source).
-- Not built: contradiction handling and full-text/entity retrieval. `supersedes_id` exists on the
-  schema as a reserved field but nothing sets it yet - two facts that conflict just both exist;
-  there is no auto-detection or merge step. Search is a plain `LIKE` query, not an index.
-- Acceptance (as shipped): a user can see why the agent believes something (category + source +
-  confidence), correct it, and have the correction stick. The stronger "contradiction handling"
-  half of the original acceptance criterion is not met.
-
-### Phase 5 — Skills lifecycle (**shipped, reduced scope**)
-
-- Shipped: an extended manifest (optional `version` and `tools` frontmatter fields), a Skills page
-  (catalog, install, uninstall), and an inferred "tools referenced in these instructions" tag
-  (which registered tools a skill's body references, scanned against the real tool registry when
-  not explicitly declared). **Corrected in Phase 8:** this was originally labeled a "permission
-  label" in three places, which overstated what a literal substring scan can guarantee - it is
-  informational only, and every real action still goes through YBM's normal capability gates
-  regardless of what a skill's instructions say.
-- Not built as originally scoped: there is no skill registry or distribution channel for this
-  product, so "version pinning, updates, integrity verification" would mean inventing trust
-  infrastructure with nothing real behind it. What shipped instead is honest about that: a
-  `version` string an author can bump, and a content hash shown per skill so a person can notice
-  "this changed since I last looked" - not a signature or a source to pin against.
-- Acceptance (as shipped): a skill can be installed, the tools its instructions reference
-  inspected before installing (or immediately after, live from the same install call), and
-  removed, entirely from
-  the console.
-
-### Phase 6 — Packaging (**shipped, reduced scope**)
-
-- Shipped: a tray icon (`scripts/tray_app.py`, `ybm tray`) that opens the admin console and shells
-  out to `ybm.ps1` for start/stop/restart/status - no process-supervision logic of its own.
-  `ybm autostart enable|disable|status` registers/removes a per-user Startup-folder shortcut, no
-  admin rights needed. `ybm backup [--out <dir>]` zips the database, config.yaml, .env, and the
-  secret vault. `ybm check-updates` compares the installed version against GitHub's latest release
-  (read-only, no auto-apply).
-- Not built: a compiled one-click Windows installer (`.msi`/`.exe`). This would need a real build
-  toolchain (Inno Setup or NSIS) that isn't present in this environment, and installing one
-  unprompted is a bigger, less reversible step than adding a Python dependency -
-  `install.ps1`/`install.sh` remain the actual installer (`iwr ... | iex`, one command, no terminal
-  *after* that one command - not literally the "no terminal required" acceptance criterion below).
-  There is also no published release yet - `check-updates` currently and correctly reports that,
-  since cutting and pushing the first tag/release is a public, external action for the repository
-  owner to trigger, not one this agent originates unprompted (same reasoning as Phase 7).
-- Acceptance (as shipped): starting from a checkout, one command (`ybm autostart enable`) gets a
-  running tray icon at every future login; "install-to-running-tray-app" from *zero* still requires
-  running `install.ps1`/`install.sh` first, which itself needs a terminal.
-
-### Phase 7 — Public launch
-
-- README/screenshots/demo polish, a website, public security documentation, an initial connection
-  and skill catalog, first stable version tag.
-- Needs the repository owner's direct decisions on public content and hosting - not something this
-  agent originates unprompted.
-
-## Phases 8-15 (**planned, not shipped**)
-
-Added 2026-08-01 after an operator review of the shipped console, then extended the same day with
-a second, sharper review. Two themes: the runtime records far more than the UI shows, and several
-shipped surfaces claim more precision than the code actually delivers.
-
-### Findings from the second review — all verified against the code before planning
-
-Each was checked rather than accepted, because three of them are defects in work shipped earlier
-in this same pass and the wording of the fix depends on what is actually true:
-
-| Finding | Verified | Evidence |
-|---|---|---|
-| Cancelling a task leaves its pending approvals pending | **Confirmed** | `apply_task_signal`'s cancel branch only calls `update_metadata(..., CANCELLED)` — no approval rejection, no grant revocation, no invocation cleanup (`orchestration/signals.py:38`) |
-| Receipts label reads *and* writes as "Changed" | **Confirmed** | `TaskReceiptCard.tsx:34,105` render "Changed" over `_extract_evidence`, which merges paths from tool **inputs and outputs** without distinguishing effect |
-| Receipts only exist for `completed` tasks | **Confirmed** | `ChatPage.tsx:275` gates on `task.status === "completed"`; a task that modified files then failed produces no receipt |
-| "Nothing left this computer" is overconfident | **Confirmed** | `record_egress` has exactly **one** caller, `tools/http_request.py:82`. Browser, MCP, coding agents, and Telegram send record nothing, yet `TaskReceiptCard.tsx:132` still prints the absolute claim |
-| Local artifacts can't be opened or downloaded | **Confirmed** | No artifact download route exists; `FileResponse` in `admin.py` only serves the admin SPA |
-| "Folder selection" is documented as shipped but was deferred | **Confirmed** | Phase 1's bullet (line 141) says "attachments + folder selection"; the implementation deferred it because browser directory pickers expose no usable absolute path |
-| Every remembered fact is injected into every task, uncapped | **Confirmed** | `channels/memory.py:93` renders all facts and is *deliberately* exempt from `max_chars` |
-| `user_stated` provenance is effectively unreachable | **Confirmed** | Only `task_derived` (the tool) and `operator_admin` (the admin API) are ever written; the Memory page's "You told it" label has no producer |
-| `memory.manage` can forget facts with no approval | **Confirmed** | One capability covers list/remember/forget at `requires_approval: false`, `max_risk_level: low` (`config.example.yaml:137`) |
-| Skill "permission labels" don't constrain anything | **Confirmed** | `detect_referenced_tools` is a literal substring scan of the body; a skill saying "use the shell" registers nothing, and the label is called a *permission* in three places |
-
-The first item is an operational reliability bug and outranks every feature below it.
-
-### Grounding facts from the first review
-
-- `build_task_trace()` already returns `timeline` (audit + tool calls, merged and time-sorted) and
-  `context` (inbound message, classification, classifier LLM). **The frontend reads neither.**
-- `DELETE /api/tasks` (with `include_active`, audit-logged) already exists and **no UI calls it**.
-- `_tool_registry_summary()` already returns every tool's name, group, capability, enabled state,
-  lifecycle, operations, and schemas; `DiagnosticsCard` deliberately dropped that table.
-- `build_task_trace()` already returns `timeline` (audit + tool calls, merged and time-sorted) and
-  `context` (inbound message, classification, classifier LLM). **The frontend reads neither.**
-- `DELETE /api/tasks` (with `include_active`, audit-logged) already exists and **no UI calls it**.
-- `_tool_registry_summary()` already returns every tool's name, group, capability, enabled state,
-  lifecycle, operations, and schemas; `DiagnosticsCard` deliberately dropped that table.
 - `ToolCallRequest.parent_step_id` exists but is always `null` - the exact field needed to close
-  the gap `TraceGraph`'s own docstring discloses (a subagent lane can't be linked to the step that
-  spawned it).
+  the gap `TraceGraph`'s own docstring discloses (a delegated or parallel lane cannot be linked to
+  the step that spawned it). Phase 14.
 - LLM prompts are **not persisted anywhere**; `render_prompt()` builds them per call. This is the
-  only genuinely new backend capability in this group.
+  only genuinely new backend capability any open phase needs. Phase 14.
 
-### Phase 8 — P0: correctness and honesty (**shipped** - was blocking everything below)
+### Phase 12 — Console UX pass
 
-Every item here is a defect, not a feature. Three are defects in work shipped earlier in this pass.
+Four unrelated daily irritations, grouped because they are all small, all in the console, and all
+verified in the code before being written down. Nothing here needs new backend domain logic.
 
-- **Cancellation cleanup.** Cancelling a task must reject its pending approvals, revoke its
-  task-scoped grants, mark in-flight invocations cancelled where the adapter allows it, stop
-  waiting on external sessions, and release the worker to claim the next queued task. Today a
-  cancelled task can leave a stale approval that blocks the single worker. This is the highest
-  priority item in the entire roadmap.
-- **Receipt honesty.** Rename "Changed" to **"Touched during this task"** - `_extract_evidence`
-  merges tool inputs and outputs, so the list genuinely mixes reads, searches, writes, and
-  merely-requested commands. Replace the absolute "Nothing left this computer" with
-  **"No external transfer was recorded"** until every network-capable adapter calls
-  `record_egress` (today only `http.request` does). Both are wording fixes to stop over-claiming;
-  real per-item effect classification (read/created/modified/moved/deleted/command executed/
-  website visited/message sent) is real work, not a rename, and belongs with Phase 12's other
-  trace-fidelity work - many tools already carry the needed signal in their `operation` name
-  (`read_file` vs `write_text_file` vs `open_file`), so it's a mapping table, not a redesign.
-- **Receipts for every terminal state**, not just `completed`. A task that modified files and then
-  failed is exactly when a receipt matters most. Cover completed, failed, cancelled, and blocked.
-- **Artifact download.** Add `GET /admin/api/artifacts/{artifact_id}/download`, serving only
-  artifacts registered in the database whose resolved path stays inside approved artifact or
-  workspace roots. Wire Open / Download / Copy path into the artifact card. A generated file the
-  user cannot open is not delivered.
-- **Skill label wording.** Rename to **"Tools referenced in these instructions"** with an
-  explicit "Informational only - actual actions remain governed by YBM's normal permissions" note.
-  A literal substring scan cannot see "use the shell", and calling it a *permission* implies a
-  constraint the manifest cannot yet enforce. Update the three places that say "permission label".
-- **Fix the Phase 1 folder-selection claim** in this document; it says shipped, the implementation
-  deferred it. Real folder selection is Phase 14.
-- Acceptance: no shipped label claims more than the code can support, and cancelling a task always
-  frees the worker.
+- **Chat is locked to a narrow column.** `ChatPage` hardcodes `max-w-3xl` (768px) in three places,
+  so a wide monitor shows a thin ribbon of text with a code block scrolling inside it. Add a width
+  control (comfortable / wide / full) persisted in `localStorage`, reusing the exact pattern
+  `lib/advanced-mode.ts` already established for a global user preference - not a new mechanism.
+- **Expired approvals sort to the top and cannot be acted on.** `list_pending` orders by
+  `created_at ASC` and does not filter on expiry, so the oldest approval leads the list even once
+  it is dead - and `decide_pending` fails closed on an expired row, so every button on it is
+  disabled. The result is a permanently stuck first card in the review dialog. Fix at both ends:
+  sweep genuinely expired rows to `EXPIRED` instead of leaving them `PENDING`, and order what
+  remains by soonest expiry (most urgent first) rather than oldest created. An expired item should
+  leave the actionable list, not head it.
+- **There is no way back from a sub-page.** A `Breadcrumb` component exists in `components/ui/`
+  and is used by **nothing**; `TaskTracePage`'s hardcoded "Back to tasks" link is the only back
+  affordance in the entire app. Reaching Memory, Skills, or Tools from the Agent hub leaves no
+  route back, and the sidebar does not even mark "Agent" active on those routes (a known gap
+  recorded in Phase 11). Fix the whole navigation model: breadcrumbs on every sub-page, active-state
+  matching that covers a section's child routes, and a consistent back affordance. Walk every route
+  rather than patching the two that were complained about.
+- **"Add a skill" is two competing entry points.** The Skills page header offers both "Browse
+  catalog" and "Install a skill", which open two separate stacked panels, and the empty state then
+  describes a third route (drop a file in the directory). Collapse to one primary action opening
+  one surface with two tabs - *Catalog* and *Write your own* - so there is a single answer to "how
+  do I add a skill":
 
-**Second pass, same day (shipped):** cancellation cleanup fixed the *cancelled* case; a normally
-*decided* approval had the identical blocking bug for a different reason. `AWAITING_APPROVAL`
-stayed in `WORKABLE_STATUSES` so the worker could notice a decision landing, but `claim_next`'s
-`ORDER BY created_at ASC` meant it always re-picked that same older task ahead of any newer one -
-with the default `max_parallel_tasks=1`, a task submitted *after* an approval-gated one couldn't
-run until the gated one resolved, even though the gated task itself wasn't stuck (a human just
-hadn't answered yet). Fixed by removing `AWAITING_APPROVAL` from `WORKABLE_STATUSES` entirely -
-`claim_next` never re-selects it, the same way it already never re-selected `AWAITING_EXTERNAL` -
-and releasing the claim the moment a task lands there. The other half:
-`orchestration/signals.py`'s new `requeue_after_approval_decision()` flips the task back to
-`RUNNING` the instant a decision is made (called from all three decision paths - the admin API,
-Telegram inline buttons, Telegram plain-text "approve"), so it becomes claimable again without
-needing that same task re-polled. Regression-tested at the worker level (a second task really does
-get claimed while the first awaits approval) and through all three decision call sites.
+  ```
+  before                              after
+  [Browse catalog] [Install a skill]  [+ Add a skill]
+   -> panel A (grid of starters)         -> one dialog
+   -> panel B (blank form)                  ( Catalog | Write your own )
+   -> empty state mentions a 3rd way        installed items marked in the catalog
+  ```
 
-### Phase 9 — Console surfaces over data that already exists (**shipped, reduced scope**)
+  The Tools page has the mirror-image problem: it is read-only by design because Access owns
+  enabling/disabling, but it never says so on the page, so a tool that cannot run reads as broken
+  rather than un-permitted. Give each disabled tool an explicit "Disabled - manage in Access"
+  affordance linking to the group that controls it, and say once at the top that this page is the
+  inventory, not the switchboard.
+- Acceptance: chat uses the width the operator chose; the approvals list contains only items that
+  can actually be decided; every sub-page can be left without the browser back button; and there is
+  exactly one obvious way to add a skill.
 
-- Shipped: the pending-approval window rebuilt (one approval at a time, pager, two-column layout,
-  sticky action bar pinned to the dialog bottom, risk-colored header, collapsed-by-default
-  parameter JSON, A/T/D keyboard shortcuts - layout only, no change to Evidence Pack semantics or
-  approval policy). Tasks list outcome column (reuses `chatAnswerText`, the same summarization
-  Chat already does, plus duration/step count/tokens from data already in the list response - no
-  per-row trace fetch) with the failure reason shown inline in destructive color on failed/blocked
-  rows, and clear-history UI wired to the `DELETE /api/tasks` endpoint that already existed with
-  no caller. A Timeline tab in the trace rendering `build_task_trace`'s own already-computed
-  `timeline`. Diagnostics rebuilt: service cards now show restart count, last exit code, pid, and
-  last-updated (all already in `ServiceItemSchema`, none of it rendered before), a bar-style
-  database size view, a `GET /api/doctor` action that calls `collect_checks()` directly, a
-  per-service log viewer (`GET /api/logs/{service}`, validated against a literal-string whitelist),
-  and a one-click copy of the whole diagnostics bundle as JSON.
-- Not built: per-task delete (only bulk clear-history, in two tiers) - a single-row delete endpoint
-  would be a small, real addition, just not done this pass.
-- Acceptance (as shipped): an operator can decide an approval without scrolling, tell success from
-  failure in the task list without opening anything, and clear history from the console.
-
-### Phase 10 — One command to run it, and a real identity (**shipped, reduced scope**)
-
-The starting story was an *install* script plus a lifecycle CLI with ~20 subcommands - a
-developer's interface. The target user should never see a terminal after the first double-click.
-
-- Shipped: **`ybm run`**, wrapped by a double-clickable **`YBM.bat`** at the repo root. It's an
-  orchestration wrapper around what already existed, not new install/start logic - calls the
-  already-idempotent setup step (skips venv creation once `.venv` exists, leaves an existing
-  `config.yaml` alone), syncs dependencies (see the fingerprinting note below), checks for an
-  update and prints a note if one exists, then starts the stack and opens the browser - the same
-  `start -Open` path that already ran doctor preflight. Running it with nothing to do just opens
-  the console. `install.ps1` now delegates its setup+start half to `ybm run` directly. Caught and
-  fixed a real bug via live testing (not just static checks): redirecting `uv sync`'s output turned
-  its routine stderr progress into a fatal error under this script's strict error mode.
-- **Update is checked, never auto-applied.** Pulling and restarting onto new, unreviewed code
-  without being asked is an external-write action this script doesn't take on its own - same
-  reasoning as `check-updates` itself (Phase 6). This is a deliberate, permanent scope boundary,
-  not a gap to fill later.
-- **A real logo - except one wasn't needed.** The plan assumed the mark was a stock Lucide `Bot`
-  glyph everywhere, including the favicon. Checking before designing anything found that was only
-  half true: `frontend/public/favicon.svg` already had a real, distinctive mark (a purple-to-blue
-  bolt) from the React console rewrite - it just wasn't reused anywhere else. Fixed the actual gap
-  instead of duplicating design work: the sidebar `Brand` component now renders the same
-  `favicon.svg`, and the tray icon loads a rasterized copy of it
-  (`scripts/assets/logo_256.png`, generated once via headless-browser rendering) instead of a
-  hand-drawn placeholder badge. Verified with a real screenshot of the running console, not just a
-  build check.
-- Acceptance (as shipped): a non-developer can go from a downloaded folder to a working console by
-  double-clicking one file, and running it again when nothing changed just opens the console.
-
-**Second pass, same day (shipped):** "fast no-op when nothing changed" turned out to be false for
-both of `ybm run`'s two potentially-slow steps - `uv sync` ran unconditionally every single launch
-(genuinely fast once resolved, but still real wall-clock time on every double-click, not the "opens
-in a few seconds" the acceptance line above claims), and the admin console (`tsc` + `vite build`)
-rebuilt unconditionally too, which timing proved was the *larger* of the two costs. Both now skip
-via a fingerprint written after a successful run and compared on the next one: `backend/uv.lock` +
-`pyproject.toml`'s combined hash for the dependency sync (`backend/.venv/.ybm_sync_fingerprint`),
-and an (mtime, size) fingerprint over `frontend/`'s source files for the console build
-(`backend/src/agent_control/static/admin/.ybm_build_fingerprint`, content hashing would cost more
-than the build it exists to skip). `uv sync` failures now check `$LASTEXITCODE` and stop with a
-clear message immediately, instead of silently continuing into the update check and start.
-Consumer syncs also install a narrower extras set (voice/tray/desktop, not test/e2e/dev - a
-developer typing `ybm setup` themselves still gets the full set) via a new `-RuntimeOnly` flag on
-`Invoke-YbmSetup`.
-
-Caught two real bugs via live testing that static checks alone would have missed:
-- The narrower consumer extras set was a plain `uv sync`, which is *exact* - it removes anything
-  not covered by the given extras, not just installs what's missing. Run against this repo's own
-  shared dev venv, it silently uninstalled `ruff` and `pytest`. Fixed with `--inexact` ("do not
-  remove extraneous packages"), confirmed by re-running against the same venv and checking `ruff`
-  and `pytest` both still imported afterward.
-- The admin-console fingerprint path was written relative to the wrong directory (missing the
-  `backend/` prefix - `run_setup()`'s CWD is the repo root, not `backend/`), which silently created
-  a bogus `src/agent_control/static/admin/` at the repo root instead of writing next to the real
-  build output. Caught by checking the filesystem after a live run, not by reading the code back.
-  A regression test for this exact mistake is in `test_bootstrap.py`.
-
-Measured, not assumed: a fully-warm `ybm run` (nothing changed since the last one) went from
-~60-90s to ~9s. Genuinely "a few seconds" would mean consolidating the several separate Python
-process launches this still makes (setup, check-updates, doctor, start each pay their own
-interpreter and import startup cost) - a larger refactor of the CLI's own structure, not attempted
-this pass.
-- Not built: a Start-menu/desktop shortcut beyond `YBM.bat` itself, `scripts/` folder
-  reorganization (still lower-value than planned - `YBM.bat` at the repo root already *is* the
-  obvious entry point), and consolidating the CLI's multiple per-command Python process launches
-  into one (the remaining gap between "~9s" and "a few seconds" above).
-
-### Phase 11 — Console redesign: one place to configure the agent (**shipped, reduced scope**)
-
-Tools, Skills, and Memory were separate top-level destinations, but conceptually they are one
-thing: **what the agent is made of**. Access is a different thing: **what it is allowed to do**.
-Chat and Tasks are a third: **what it is doing**. The flat nav didn't express that - direct
-feedback named it: "these are basically agentic setup... should live at one place."
-
-- Shipped: a **Tools page** - every registered tool grouped by domain, with capability, effective
-  risk (`ToolDefinition.required_risk()` for its default operation, reused, not re-derived), the
-  operations list, and enabled state. All of it was already computed by `_tool_registry_summary`
-  for internal use; none of it was previously rendered. Read-only by design - enabling/disabling a
-  tool means changing its capability, which Access already owns as the one place that does it, so
-  this isn't a second control surface for the same toggle. An **Agent hub page** replacing three
-  separate top-level nav entries (Memory, Skills, the new Tools) with one "Agent" entry landing on
-  three live-stat cards - nav is back to five items. The starter skill catalog moved from Phase 5's
-  aspiration to actually shipped: six skills under `skills/starter/` (committed, unlike the
-  generated `adapters.skills.root_dir`), a `GET /api/skills/catalog` endpoint, and a browse/install
-  panel on the Skills page reusing the exact same install call the manual form uses.
-- Not built: MCP server add/edit/test (still config-file-only - a real write endpoint, genuinely
-  new backend surface, not done this pass), an `adapter.factory` review/sandbox/promote UI (the
-  engine supports it headlessly; no console surface for it), and skill edit-in-place/duplicate on
-  the Skills page (install/uninstall only). The three-area *Work/Agent/Control* full regroup this
-  bullet originally described was narrowed to the one grouping that had a concrete, named
-  complaint behind it (Tools/Skills/Memory) - Access and Settings staying separate top-level items
-  is a smaller, lower-risk change than moving them too on no specific complaint about them.
-- Known gap: visiting `/memory` or `/skills` directly (a bookmark, or a hub card click) doesn't
-  highlight "Agent" in the sidebar - `NavLink`'s active-match only covers `/agent` itself, not its
-  sibling routes. Making those true nested routes would fix it properly but changes their URLs;
-  not done without a stronger reason than a nav-highlight cosmetic.
-- Acceptance (as shipped): what the agent is made of (tools, skills, memory) is visible from one
-  place, and installing a skill from a bundled starter takes one click.
-
-### Phase 12 — Server-side folder picker
-
-Reordered ahead of the trace and memory work below (moved from its original Phase 14 slot) on
-direct feedback: the README's own first example is "organize my Downloads folder", but a web-chat
-user still has to type or already know a filesystem path to ask for that - a real, everyday gap
-that outranks trace depth for a "regular person" using this day to day.
+### Phase 13 — Server-side folder picker
 
 - Browser directory pickers cannot yield a usable absolute path, which is why Phase 1 deferred
   this. The correct implementation is server-side: list the configured allowed roots, browse
@@ -448,29 +210,87 @@ that outranks trace depth for a "regular person" using this day to day.
   traversal outside them, and no reliance on the browser's directory-upload as a stand-in.
 - Acceptance: "organize this folder" is expressible from the console without typing a path.
 
-### Phase 13 — The rich, clickable trace
+### Phase 14 — Task timeline and graph overhaul
 
-- Persist LLM calls (`task_id`, `step_index`, `source`, `model`, messages, raw response, tokens,
-  latency), written through the existing `redact_payload` with a per-call size cap. Enabled by
-  default - the product's whole claim is that it shows the receipts - with a config flag to
-  disable and pruning through `ybm db clean`.
-- Give each operator step a stable `step_id` and stamp it into `ToolCallRequest.parent_step_id`,
-  linking operator history, tool invocations, approvals, and LLM calls into one real tree. This
-  is the root-cause fix for the graph gap above, not a display workaround.
-- Graph v2 rooted at the actual user query: query -> classification -> operator step (with its
-  reasoning) -> tool calls / approval gates / artifacts -> final answer, typed and colored by node
-  kind, with duration and token badges.
-- Click any node for a side panel: the exact prompt sent, the raw model response, tool input and
-  output, tokens, latency, and the audit events scoped to that step.
-- Real per-item effect classification for receipts and evidence, replacing Phase 8's "Touched
-  during this task" wording fix with actual read/created/modified/moved/deleted/command-executed/
-  website-visited/message-sent labels. A mapping table from each tool's `operation` name to an
-  effect kind (`filesystem.manage`'s `read_file` vs `write_text_file` vs `open_file` already
-  distinguishes this at the source), not a redesign of evidence extraction.
-- Acceptance: "why did it do that" is answerable from the console alone, for any past task, and a
-  receipt's evidence list says what actually happened to each item, not just that it was touched.
+Today the trace answers *what* ran but neither *how long* anything took nor *why* it was chosen.
+The timeline renders two event kinds in two colors with two icons; the graph is a lane layout of
+tool calls with no duration, no root, and no click target.
 
-### Phase 14 — Memory: real retrieval, real provenance, gated forgetting
+**What the data already supports, with no backend change:** `tool_invocations` carries both
+`created_at` and `completed_at`, so exact per-call duration is derivable client-side right now.
+Task total duration is `task.created_at` to `updated_at`. That is enough for the whole duration
+story below except per-LLM-call latency.
+
+The three views should become one system rather than three unrelated tabs, each answering a
+different question about the same run:
+
+```
+Steps     "what did it do, in order"        - exists, gains durations
+Timeline  "everything that happened, when"  - exists, gains categories + colors + durations
+Duration  "where did the time go"           - NEW, the horizontal bar/Gantt view
+Graph     "how did the pieces relate"       - exists, gains a root, node types, and click-through
+```
+
+Sketch of the duration view (x-axis is wall-clock elapsed from task start):
+
+```
+                0s        5s       10s       15s       20s
+task received   |
+concierge       |▓▓|                                          0.9s  classify
+operator think     |▓▓▓▓▓|                                    2.4s  (inferred)
+filesystem.search        |▓▓▓▓▓▓▓▓▓▓|                         4.8s  ok
+operator think                      |▓▓▓|                     1.6s  (inferred)
+APPROVAL WAIT                          |░░░░░░░░░░░░░|        6.1s  you decided
+artifact.deliver                                    |▓▓|      1.1s  ok
+auditor                                                |▓|    0.7s  sufficient
+                                                       └ completed 17.6s total
+```
+
+Approval waits are the case that matters most and is invisible today: a task that looks slow is
+often a task that spent most of its life waiting on a human, which is not a performance problem
+at all. That distinction should be obvious at a glance, so human-wait segments render in a
+different treatment (outline, not fill) from machine time.
+
+- **A duration bar chart (the requested Gantt / project-planning view).** One horizontal row per
+  step, x-axis = elapsed time from task start, bar length = that step's real duration, colored by
+  outcome. It answers "what took so long" at a glance, which no current view does. The gaps
+  *between* tool calls are the Operator deciding what to do next - render them as distinct
+  inferred-thinking segments and label them as inferred, because until this phase's LLM-call
+  persistence lands they are computed from the gap, not measured. Not a new charting dependency:
+  positioned divs on a time axis, the same approach the existing Diagnostics database bars use.
+- **Per-step duration everywhere else too** - in the timeline rows, on the graph nodes, and in the
+  step list, not only in the new chart.
+- **A real event vocabulary for the timeline.** Currently every row is either "tool" (blue wrench)
+  or "audit" (grey shield). The backend's `format_audit_event` already computes a `category`
+  (`approval`, `policy`, `classification`, `tool`, `error`, `spawned_task`, `config`, `system`,
+  ...) - it just is not included in the timeline payload. Add `category` and `duration_ms` to each
+  timeline item, then give each category its own icon and semantic color: approvals in warning,
+  failures in danger, successful tool calls in success, external contact with a globe, artifacts
+  with a file mark. Reuses the existing semantic color roles rather than inventing a palette.
+- **Graph v2, rooted at the actual query.** Node types for query, classification, operator decision
+  (with its reasoning), tool call, approval gate, artifact, and final answer - not just tool calls.
+  Duration and token badges per node, status ring, and colors matching the timeline's vocabulary so
+  the two views read as one system.
+- **Click any node or row to inspect it**: the exact prompt sent, the raw model response, tool input
+  and output, tokens, latency, and the audit events scoped to that step.
+- **Persist LLM calls** (`task_id`, `step_index`, `source`, `model`, messages, raw response, tokens,
+  latency) through the existing `redact_payload` with a per-call size cap. Enabled by default - the
+  product's whole claim is that it shows the receipts - with a config flag to disable and pruning
+  through `ybm db clean`. This is what turns inferred thinking-time into measured latency and makes
+  "why did it do that" answerable.
+- **Give each operator step a stable `step_id`** and stamp it into `ToolCallRequest.parent_step_id`,
+  linking operator history, tool invocations, approvals, and LLM calls into one real tree. Root-cause
+  fix for the graph's disclosed gap, not a display workaround.
+- **Real per-item effect classification** for receipts and evidence, replacing Phase 8's "Touched
+  during this task" wording fix with actual read / created / modified / moved / deleted /
+  command-executed / website-visited / message-sent labels. A mapping table from each tool's
+  `operation` name to an effect kind (`filesystem.manage` already distinguishes `read_file` from
+  `write_text_file` from `open_file` at the source), not a redesign of evidence extraction.
+- Acceptance: an operator can see where a task spent its time without reading JSON, tell an approval
+  apart from a failure apart from a tool call at a glance, and answer "why did it do that" from the
+  console alone for any past task.
+
+### Phase 15 — Memory: real retrieval, real provenance, gated forgetting
 
 Structured memory shipped, but retrieval did not. All three sub-items are correctness, not polish.
 
@@ -492,7 +312,7 @@ Structured memory shipped, but retrieval did not. All three sub-items are correc
 - Acceptance: memory stays useful at 1,000 facts, "You told it" is reachable, and the agent cannot
   silently erase something the user asked it to remember.
 
-### Phase 15 — A second channel
+### Phase 16 — A second channel
 
 - Refactor `channels/` into a channel-adapter interface (Telegram already provides the shape:
   intake -> classify -> task -> notify) so a new channel is an adapter, not a fork.
@@ -500,6 +320,8 @@ Structured memory shipped, but retrieval did not. All three sub-items are correc
   iMessage needs a macOS host and is out of scope on this machine.
 - Comparable prior art: OpenClaw (MIT, self-hosted) routes ~25 chat platforms through one local
   gateway into a single agent - the same architecture this refactor points at.
+- Every new channel is new untrusted input; the taint-tracking idea in the research notes should
+  land before the channel count grows.
 
 ## Explicit Non-goals
 
