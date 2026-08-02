@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react"
 import { AlertCircle, CheckCircle2, Layers } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
+import { formatDurationMs } from "@/lib/time"
 import { cn } from "@/lib/utils"
 import type { OperatorHistoryEntry } from "@/lib/api"
 
@@ -45,6 +46,9 @@ export function OperatorHistoryList({ entries }: { entries: OperatorHistoryEntry
               <Badge variant={failed ? "destructive" : "outline"} className="text-[10px]">
                 {entry.status}
               </Badge>
+              {entry.duration_ms != null && (
+                <span className="text-[11px] text-muted-foreground">{formatDurationMs(entry.duration_ms)}</span>
+              )}
               {entry.parallel && (
                 <Badge variant="secondary" className="flex items-center gap-1 text-[10px]">
                   <Layers className="size-3" /> parallel

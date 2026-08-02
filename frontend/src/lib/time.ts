@@ -54,6 +54,16 @@ export function formatDurationMs(ms: number): string {
   return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`
 }
 
+/** Milliseconds between two ISO timestamps, or null if either is missing -
+ * the client-side twin of admin.py's `_elapsed_ms`, used where a raw
+ * ToolInvocation's created_at/completed_at is available directly (the
+ * Graph view) rather than a server-computed duration_ms. */
+export function elapsedMs(start: string | null | undefined, end: string | null | undefined): number | null {
+  if (!start || !end) return null
+  const elapsed = new Date(end).getTime() - new Date(start).getTime()
+  return Number.isNaN(elapsed) ? null : Math.max(0, elapsed)
+}
+
 /** "2m ago" / "just now" - not live-ticking (no per-second re-render), the
  * task/summary polls this reads from already refresh every few seconds. */
 export function formatRelativeTime(isoTimestamp: string): string {

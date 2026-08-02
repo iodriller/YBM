@@ -8,6 +8,7 @@ import {
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
 import type { ToolInvocation } from "@/lib/api"
+import { elapsedMs, formatDurationMs } from "@/lib/time"
 
 /**
  * Level 2/Advanced trace view (docs/UI_REWRITE_PLAN.md §7/§12.2) - the
@@ -74,6 +75,7 @@ function buildGraph(invocations: ToolInvocation[]): { nodes: Node[]; edges: Edge
     sorted.forEach((invocation, rowIndex) => {
       const status = invocation.status
       const failed = status === "failed" || status === "denied" || status === "timeout"
+      const duration = elapsedMs(invocation.created_at, invocation.completed_at)
       nodes.push({
         id: invocation.id,
         position: { x: laneIndex * LANE_WIDTH, y: rowIndex * ROW_HEIGHT + (laneIndex === 0 ? 0 : 40) },
@@ -86,9 +88,14 @@ function buildGraph(invocations: ToolInvocation[]): { nodes: Node[]; edges: Edge
                 </span>
               )}
               <span className="font-mono text-xs">{invocation.tool_name}</span>
-              <span className={failed ? "text-[10px] text-destructive" : "text-[10px] text-muted-foreground"}>
-                {status}
-              </span>
+              <div className="flex items-center gap-1.5">
+                <span className={failed ? "text-[10px] text-destructive" : "text-[10px] text-muted-foreground"}>
+                  {status}
+                </span>
+                {duration != null && (
+                  <span className="text-[10px] text-muted-foreground">· {formatDurationMs(duration)}</span>
+                )}
+              </div>
             </div>
           ),
         },

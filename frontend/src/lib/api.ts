@@ -459,6 +459,11 @@ const OperatorHistoryEntrySchema = z.object({
   error: z.string().nullable().optional(),
   origin: z.string().optional(),
   parallel: z.boolean().optional(),
+  // Set server-side (admin.py's _enrich_operator_history, docs/UI_UX_AUDIT.md
+  // Phase 14) by joining on request_id - always present in the response
+  // (unlike the fields above), but null for entries that don't correspond
+  // to exactly one tool call: pseudo-checks, delegate summaries, refusals.
+  duration_ms: z.number().nullable(),
 })
 export type OperatorHistoryEntry = z.infer<typeof OperatorHistoryEntrySchema>
 
