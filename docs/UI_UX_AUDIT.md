@@ -20,7 +20,7 @@ The redesign establishes a clearer control-plane hierarchy:
 
 ## Where We Are
 
-Phases 0-13 are done. Phases 14-16 are open, and Phases 3 and 7 are blocked on the repository
+Phases 0-14 are done. Phases 15-16 are open, and Phases 3 and 7 are blocked on the repository
 owner. Full write-ups of shipped phases were removed on 2026-08-01 to keep this document about
 what is *left*; the detail lives in git history (`git log --grep "Phase N"`) and in the code
 comments each change left behind.
@@ -41,7 +41,7 @@ comments each change left behind.
 | 11 | Console regrouped: a Tools page, an Agent hub over Tools/Skills/Memory, and a bundled starter skill catalog | MCP server add/edit/test, an `adapter.factory` review UI, skill edit-in-place |
 | 12 | Console UX pass: a chat width control, expired approvals swept out of the list instead of leading it, breadcrumbs + fixed nav active-state on every sub-page, one entry point for adding a skill, an explicit disabled-tool affordance on Tools | — |
 | 13 | Server-side folder picker: `GET /admin/api/folders`, scoped to the same `computer_use.allowed_roots` `filesystem.manage` uses, with a `FolderPicker` dialog in the Chat composer | — |
-| 14 | Timeline gained real categories, colors, and durations; Steps and the Graph gained real per-step/per-node durations; a new Duration/Gantt tab showing tool calls, approval waits (rendered as an outline), and LLM-call latency on one time axis, with any uncovered gap honestly labeled "inferred"; real per-item effect classification for receipts and evidence; and `llm_calls` persistence (`task_id`, `source`, `model`, `step_index`, messages, response, tokens, latency), redacted and size-capped, wired into `ybm db clean`/`db reset` | Graph v2 (rooted at the query, typed nodes, click-to-inspect) and stable `step_id` linking (the remaining half of Phase 14) |
+| 14 | Timeline gained real categories, colors, and durations; Steps and the Graph gained real per-step/per-node durations; a new Duration/Gantt tab showing tool calls, approval waits (rendered as an outline), and LLM-call latency on one time axis, with any uncovered gap honestly labeled "inferred"; real per-item effect classification for receipts and evidence; `llm_calls` persistence (`task_id`, `source`, `model`, `step_index`, messages, response, tokens, latency), redacted and size-capped, wired into `ybm db clean`/`db reset`; a stable `step_id` stamped through operator history, `ToolCallRequest.parent_step_id`, approvals, and LLM calls, surviving an approval or background-external wait; and Graph v2 - rooted at the task's query, one node per real step (LLM decision + tool call(s) + approval gate grouped together), with duration/token badges and a click-to-inspect dialog showing the exact prompt, response, and tool input/output | Connecting a parallel/subagent lane in the graph back to the exact step that spawned it - step_id doesn't nest, only `origin` does |
 
 ### Blocked on the repository owner
 
@@ -54,7 +54,6 @@ comments each change left behind.
 
 | # | Phase | Why it's next |
 |---|---|---|
-| 14 | Graph v2 and stable `step_id` linking | The graph still has no root, no node types, and no click target |
 | 15 | Memory: retrieval, provenance, gated forgetting | Every fact is injected into every task, uncapped |
 | 16 | A second channel | Telegram is the only real channel |
 
@@ -200,27 +199,6 @@ verified in the code before being written down.
   listing roots, browsing into one, and rejecting a path outside them (`C:\Windows`, 400) all
   behaved correctly against the running backend, not just in tests.
 - Acceptance: "organize this folder" is expressible from the console without typing a path.
-
-### Phase 14 — Graph v2 and stable step linking (remainder)
-
-Timeline categories/colors/durations, the Duration/Gantt view, per-step durations in Steps and the
-Graph, real per-item effect classification, and `llm_calls` persistence all shipped (`#14` in
-Shipped above; detail in git history). Two items remain:
-
-- **Graph v2, rooted at the actual query.** Node types for query, classification, operator decision
-  (with its reasoning), tool call, approval gate, artifact, and final answer - not just tool calls.
-  Duration and token badges per node, status ring, and colors matching the timeline's vocabulary so
-  the two views read as one system.
-- **Click any node or row to inspect it**: the exact prompt sent, the raw model response, tool input
-  and output, tokens, latency, and the audit events scoped to that step. Needs the `step_id` below
-  to know which LLM call/tool invocation/approval belong to which step in the first place.
-- **Give each operator step a stable `step_id`** and stamp it into `ToolCallRequest.parent_step_id`,
-  linking operator history, tool invocations, approvals, and LLM calls into one real tree. Root-cause
-  fix for the graph's disclosed gap (it currently infers structure from `origin` tags, not a real
-  parent-child link), not a display workaround.
-- Acceptance: the graph shows how a task actually branched (parallel calls, delegated sub-tasks)
-  rooted at the query that started it, and clicking any step answers "why did it do that" with the
-  real prompt and response, not an inference.
 
 ### Phase 15 — Memory: real retrieval, real provenance, gated forgetting
 
