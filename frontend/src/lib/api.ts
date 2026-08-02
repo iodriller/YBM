@@ -524,6 +524,26 @@ export const TimelineItemSchema = z.object({
 })
 export type TimelineItem = z.infer<typeof TimelineItemSchema>
 
+// One persisted LLM call (worker.py's _record_llm_call, docs/UI_UX_AUDIT.md
+// Phase 14d) - the receipts behind the Duration view's real, measured
+// segments. Only present for tasks run after this shipped; older tasks
+// simply have an empty array here, falling back to inferred gaps.
+export const LLMCallSchema = z.object({
+  id: z.string(),
+  task_id: z.string(),
+  source: z.string(),
+  model: z.string().nullable(),
+  step_index: z.number().nullable(),
+  messages: z.array(z.record(z.string(), z.unknown())),
+  response_text: z.string().nullable(),
+  prompt_tokens: z.number().nullable(),
+  completion_tokens: z.number().nullable(),
+  total_tokens: z.number().nullable(),
+  latency_ms: z.number().nullable(),
+  created_at: z.string(),
+})
+export type LLMCall = z.infer<typeof LLMCallSchema>
+
 const TaskTraceSchema = z.object({
   task: TaskRecordSchema,
   context: z.record(z.string(), z.unknown()),
@@ -535,6 +555,7 @@ const TaskTraceSchema = z.object({
     urls: z.array(EvidenceItemSchema),
     commands: z.array(EvidenceItemSchema),
   }),
+  llm_calls: z.array(LLMCallSchema),
   approvals: z.array(ApprovalRequestSchema),
   artifacts: z.array(z.record(z.string(), z.unknown())),
   signals: z.array(z.record(z.string(), z.unknown())),

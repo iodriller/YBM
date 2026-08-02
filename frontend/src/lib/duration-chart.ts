@@ -1,6 +1,6 @@
 import type { TaskTrace } from "@/lib/api"
 
-export type DurationSegmentKind = "tool" | "approval_wait" | "inferred_think"
+export type DurationSegmentKind = "tool" | "approval_wait" | "llm" | "inferred_think"
 export type DurationOutcome = "success" | "failure" | "pending"
 
 export interface DurationSegment {
@@ -20,7 +20,7 @@ const MIN_INFERRED_GAP_MS = 250
 
 interface RealSegment {
   key: string
-  kind: "tool" | "approval_wait"
+  kind: "tool" | "approval_wait" | "llm"
   label: string
   start: number
   end: number
@@ -28,16 +28,18 @@ interface RealSegment {
 }
 
 /**
- * The duration/Gantt view's data, built entirely from what the trace
- * response already carries - no backend change needed (docs/UI_UX_AUDIT.md
- * Phase 14 design note: tool_invocations already has created_at/completed_at,
- * and approval wait windows can be recovered by pairing the timeline's own
- * "approval requested"/"approval decided" audit events by approval_id).
+ * The duration/Gantt view's data, built from what the trace response
+ * carries: tool_invocations' own created_at/completed_at, approval wait
+ * windows recovered by pairing the timeline's "approval requested"/
+ * "approval decided" audit events by approval_id, and - since Phase 14d -
+ * llm_calls' real per-call latency.
  *
- * Real, measured work (tool calls, approval waits) is placed first; any gap
- * left between them - or before the first / after the last - is rendered as
- * an inferred "operator thinking" segment, since that time is real but not
- * directly measured until LLM-call persistence lands (Phase 14d).
+ * Real, measured work (tool calls, approval waits, LLM calls) is placed
+ * first; any gap left between them - or before the first / after the last -
+ * is rendered as an inferred "operator thinking" segment, since that time is
+ * real but not covered by any of the three measured sources (e.g. a source
+ * not yet instrumented for LLM-call persistence, network/queueing overhead
+ * around a call, or a task run before this shipped).
  */
 export function buildDurationSegments(trace: TaskTrace): { segments: DurationSegment[]; totalMs: number } {
   const taskStart = new Date(trace.task.created_at).getTime()
@@ -77,6 +79,19 @@ export function buildDurationSegments(trace: TaskTrace): { segments: DurationSeg
     } else {
       requestedAt.set(approvalId, at)
     }
+  }
+
+  for (const call of trace.llm_calls) {
+    const start = new Date(call.created_at).getTime()
+    const end = call.latency_ms != null ? start + call.latency_ms : start
+    real.push({
+      key: `llm:${call.id}`,
+      kind: "llm",
+      label: `LLM (${call.source})`,
+      start,
+      end: Math.max(end, start),
+      outcome: "pending",
+    })
   }
 
   real.sort((a, b) => a.start - b.start)
