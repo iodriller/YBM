@@ -12,8 +12,8 @@ from typing import Any
 import pytest
 
 from agent_control.channels.responder import (
-    LLMTelegramResponder,
-    StaticTelegramResponder,
+    LLMChatResponder,
+    StaticChatResponder,
 )
 from agent_control.config import AppSettings, CapabilityPolicy
 from agent_control.schemas import (
@@ -60,7 +60,7 @@ def _message(text: str = "hello") -> InboundMessage:
 
 @pytest.mark.asyncio
 async def test_static_responder_returns_fixed_reply_and_records_message() -> None:
-    responder = StaticTelegramResponder("static answer")
+    responder = StaticChatResponder("static answer")
     out = await responder.answer(_message("ping"))
     assert out == "static answer"
     assert len(responder.messages) == 1
@@ -70,7 +70,7 @@ async def test_static_responder_returns_fixed_reply_and_records_message() -> Non
 @pytest.mark.asyncio
 async def test_llm_responder_returns_provider_text(tmp_path) -> None:
     provider = _Provider(reply="hi from llm")
-    responder = LLMTelegramResponder(provider, AppSettings(), _repos(tmp_path))
+    responder = LLMChatResponder(provider, AppSettings(), _repos(tmp_path))
     out = await responder.answer(_message("hello"))
     assert out == "hi from llm"
     assert len(provider.calls) == 1
@@ -83,7 +83,7 @@ async def test_llm_responder_context_includes_recent_tasks(tmp_path) -> None:
     repos.tasks.create("Second task objective")
 
     provider = _Provider()
-    responder = LLMTelegramResponder(provider, AppSettings(), repos)
+    responder = LLMChatResponder(provider, AppSettings(), repos)
     await responder.answer(_message("status?"))
 
     user_prompt = provider.calls[0][1]
@@ -101,7 +101,7 @@ async def test_llm_responder_context_reflects_disabled_capability(tmp_path) -> N
     )
 
     provider = _Provider()
-    responder = LLMTelegramResponder(provider, settings, _repos(tmp_path))
+    responder = LLMChatResponder(provider, settings, _repos(tmp_path))
     await responder.answer(_message("can you run terminal?"))
 
     user_prompt = provider.calls[0][1]
@@ -111,6 +111,6 @@ async def test_llm_responder_context_reflects_disabled_capability(tmp_path) -> N
 @pytest.mark.asyncio
 async def test_llm_responder_passes_message_text_into_user_prompt(tmp_path) -> None:
     provider = _Provider()
-    responder = LLMTelegramResponder(provider, AppSettings(), _repos(tmp_path))
+    responder = LLMChatResponder(provider, AppSettings(), _repos(tmp_path))
     await responder.answer(_message("what's up doc"))
     assert "what's up doc" in provider.calls[0][1]

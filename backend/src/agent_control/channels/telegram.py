@@ -1,18 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 import logging
 from typing import Any
 
 import httpx
 
-from agent_control.clarification import find_clarifying_task, resume_clarifying_task
+from agent_control.channels.base import ChannelUpdateResult, classify_and_spawn_task, resume_clarifying_reply, status_summary
 from agent_control.config import AppSettings, TelegramConfig
 from agent_control.config_sync import read_env_value
-from agent_control.channels.responder import TelegramResponder, gateway_context
-from agent_control.channels.memory import ConversationMemoryService, detect_remember_request, memory_context
-from agent_control.llm.classifier import MessageClassifier, classification_trace
+from agent_control.channels.responder import ChatResponder
+from agent_control.channels.memory import ConversationMemoryService, detect_remember_request
+from agent_control.llm.classifier import MessageClassifier
 from agent_control.orchestration.signals import apply_task_signal, requeue_after_approval_decision
 from agent_control.schemas import (
     ApprovalStatus,
@@ -23,16 +22,11 @@ from agent_control.schemas import (
     ChannelType,
     CommandEnvelope,
     InboundMessage,
-    IntentRoute,
     MemoryFact,
     MemorySource,
-    MessageClassification,
     MessageKind,
     OutboundMessage,
-    TaskRecord,
     TaskSignal,
-    TaskStatus,
-    TaskType,
     VoiceAttachment,
 )
 from agent_control.storage.audit import AuditLogger
@@ -53,18 +47,6 @@ def _preview(value: str | None, limit: int = 240) -> str | None:
     if value is None:
         return None
     return value if len(value) <= limit else f"{value[: limit - 3]}..."
-
-
-@dataclass(frozen=True)
-class TelegramUpdateResult:
-    authorized: bool
-    inbound_message: InboundMessage | None = None
-    command: CommandEnvelope | None = None
-    classification: MessageClassification | None = None
-    signal: TaskSignal | None = None
-    task: TaskRecord | None = None
-    outbound_message: OutboundMessage | None = None
-    denial_reason: str | None = None
 
 
 def load_telegram_token(config: TelegramConfig) -> str:
@@ -226,9 +208,9 @@ class TelegramPollingRunner:
         self.client = client
         self.intake = intake
 
-    async def poll_once(self, offset: int | None = None, timeout: int = 30) -> tuple[int | None, list[TelegramUpdateResult]]:
+    async def poll_once(self, offset: int | None = None, timeout: int = 30) -> tuple[int | None, list[ChannelUpdateResult]]:
         updates = await self.client.get_updates(offset=offset, timeout=timeout)
-        results: list[TelegramUpdateResult] = []
+        results: list[ChannelUpdateResult] = []
         next_offset = offset
         for update in updates:
             update_id = update.get("update_id")
@@ -265,18 +247,25 @@ class TelegramPollingRunner:
 
 
 class TelegramAdapter:
+    """Implements the `ChannelAdapter` Protocol (channels/base.py,
+    docs/UI_UX_AUDIT.md Phase 16): the intake half of Telegram support -
+    raw webhook JSON in, `ChannelUpdateResult` out. A future channel's
+    adapter (WhatsApp/Discord/...) implements the same shape."""
+
+    channel: ChannelType = ChannelType.TELEGRAM
+
     def __init__(self, config: TelegramConfig, audit: AuditLogger | None = None) -> None:
         self.config = config
         self.audit = audit
 
-    def normalize_update(self, update: dict[str, Any]) -> TelegramUpdateResult:
+    def normalize_update(self, update: dict[str, Any]) -> ChannelUpdateResult:
         if "callback_query" in update:
             return self._normalize_callback(update["callback_query"], update)
         if "message" in update:
             return self._normalize_message(update["message"], update)
-        return TelegramUpdateResult(authorized=False, denial_reason="unsupported_update")
+        return ChannelUpdateResult(authorized=False, denial_reason="unsupported_update")
 
-    def _normalize_message(self, message: dict[str, Any], raw_update: dict[str, Any]) -> TelegramUpdateResult:
+    def _normalize_message(self, message: dict[str, Any], raw_update: dict[str, Any]) -> ChannelUpdateResult:
         sender = message.get("from") or {}
         chat = message.get("chat") or {}
         user_id = sender.get("id")
@@ -286,7 +275,7 @@ class TelegramAdapter:
         allowed, reason = self._authorization_decision(user_id, chat_id)
         if not allowed:
             self._audit_telegram_access(False, reason, user_id, chat_id, text, message)
-            return TelegramUpdateResult(authorized=False, denial_reason="unauthorized")
+            return ChannelUpdateResult(authorized=False, denial_reason="unauthorized")
 
         voice = message.get("voice")
         kind = MessageKind.VOICE if voice else MessageKind.TEXT
@@ -315,7 +304,7 @@ class TelegramAdapter:
 
         if text and text.startswith("/"):
             command = self._command_from_text(text, inbound)
-            return TelegramUpdateResult(authorized=True, inbound_message=inbound, command=command)
+            return ChannelUpdateResult(authorized=True, inbound_message=inbound, command=command)
 
         if self.audit:
             self.audit.append(
@@ -333,9 +322,9 @@ class TelegramAdapter:
                     "forward_origin": message.get("forward_origin") or message.get("forward_from"),
                 },
             )
-        return TelegramUpdateResult(authorized=True, inbound_message=inbound)
+        return ChannelUpdateResult(authorized=True, inbound_message=inbound)
 
-    def _normalize_callback(self, callback: dict[str, Any], raw_update: dict[str, Any]) -> TelegramUpdateResult:
+    def _normalize_callback(self, callback: dict[str, Any], raw_update: dict[str, Any]) -> ChannelUpdateResult:
         sender = callback.get("from") or {}
         message = callback.get("message") or {}
         chat = message.get("chat") or {}
@@ -345,7 +334,7 @@ class TelegramAdapter:
         allowed, reason = self._authorization_decision(user_id, chat_id)
         if not allowed:
             self._audit_telegram_access(False, reason, user_id, chat_id, None, callback)
-            return TelegramUpdateResult(authorized=False, denial_reason="unauthorized")
+            return ChannelUpdateResult(authorized=False, denial_reason="unauthorized")
 
         data = callback.get("data") or ""
         payload = self._parse_callback_data(data)
@@ -354,7 +343,7 @@ class TelegramAdapter:
             source=f"telegram:{user_id}",
             payload={**payload, "callback_query_id": callback.get("id"), "raw": raw_update},
         )
-        return TelegramUpdateResult(authorized=True, command=command)
+        return ChannelUpdateResult(authorized=True, command=command)
 
     @staticmethod
     def _message_text(message: dict[str, Any]) -> str | None:
@@ -436,7 +425,7 @@ class TelegramIntakeService:
         stt: STTAdapter | None = None,
         screenshot_service: ScreenshotService | None = None,
         classifier: MessageClassifier | None = None,
-        responder: TelegramResponder | None = None,
+        responder: ChatResponder | None = None,
         memory_service: ConversationMemoryService | None = None,
     ) -> None:
         self.adapter = adapter
@@ -450,14 +439,14 @@ class TelegramIntakeService:
         self.responder = responder
         self.memory_service = memory_service or ConversationMemoryService(repositories)
 
-    def handle_update(self, update: dict[str, Any]) -> TelegramUpdateResult:
+    def handle_update(self, update: dict[str, Any]) -> ChannelUpdateResult:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             return asyncio.run(self.handle_update_async(update))
         raise RuntimeError("handle_update cannot run inside an active event loop; use handle_update_async")
 
-    async def handle_update_async(self, update: dict[str, Any]) -> TelegramUpdateResult:
+    async def handle_update_async(self, update: dict[str, Any]) -> ChannelUpdateResult:
         result = self.adapter.normalize_update(update)
         if not result.authorized:
             return result
@@ -482,32 +471,37 @@ class TelegramIntakeService:
                             "reason": str(exc),
                         },
                     )
-                    return TelegramUpdateResult(
+                    return ChannelUpdateResult(
                         authorized=True,
                         inbound_message=inbound,
                         outbound_message=self._out(inbound.chat_id, f"Voice transcription failed: {exc}"),
                     )
             if not self.repositories.messages.try_create(inbound, conversation_id):
-                return TelegramUpdateResult(authorized=True, inbound_message=inbound)
+                return ChannelUpdateResult(authorized=True, inbound_message=inbound)
             if inbound.text:
                 await self._update_conversation_memory(conversation_id, inbound.text)
 
             if result.command is None:
                 plain_response = self._plain_text_command_response(inbound)
                 if plain_response is not None:
-                    return TelegramUpdateResult(
+                    return ChannelUpdateResult(
                         authorized=True,
                         inbound_message=inbound,
                         outbound_message=plain_response,
                     )
-                clarify_response = self._resume_clarifying_task(inbound, conversation_id)
+                clarify_response = resume_clarifying_reply(self.repositories, self.audit, inbound, conversation_id)
                 if clarify_response is not None:
-                    return TelegramUpdateResult(
+                    return ChannelUpdateResult(
                         authorized=True,
                         inbound_message=inbound,
                         outbound_message=clarify_response,
                     )
-                return await self._classify_and_spawn(inbound, conversation_id)
+                return await classify_and_spawn_task(
+                    inbound, conversation_id,
+                    repositories=self.repositories, audit=self.audit,
+                    classifier=self.classifier, responder=self.responder, settings=self.settings,
+                    send_progress=self._send_progress,
+                )
 
         if result.command:
             signal = self._apply_command(result.command)
@@ -522,7 +516,7 @@ class TelegramIntakeService:
                         # wrote it); this only stops the button's loading spinner,
                         # so a failure here shouldn't surface as a handling error.
                         logger.warning("failed to answer Telegram callback query", exc_info=True)
-            return TelegramUpdateResult(
+            return ChannelUpdateResult(
                 authorized=True,
                 inbound_message=result.inbound_message,
                 command=result.command,
@@ -531,205 +525,6 @@ class TelegramIntakeService:
             )
 
         return result
-
-    async def _classify_and_spawn(self, inbound: InboundMessage, conversation_id: str) -> TelegramUpdateResult:
-        actor = f"telegram:user:{inbound.sender_id}"
-        if not inbound.text:
-            return self._spawn_failed(inbound, "message has no text content", actor)
-        if self.classifier is None:
-            return self._spawn_failed(inbound, "message classifier is not configured", actor)
-
-        await self._send_progress(inbound.chat_id, "Got your message, figuring out what to do…")
-        try:
-            # The Concierge prompt does double duty (classify + compose a chat
-            # reply in one call, see prompts/base/concierge_system.md) - a chat
-            # reply needs the same runtime context the old separate responder
-            # call used (capabilities, recent tasks), not just conversation
-            # memory. Falls back to the narrower memory-only context when no
-            # settings are available (e.g. a caller that never wired them).
-            classification_context = (
-                gateway_context(self.settings, self.repositories, conversation_id, query_text=inbound.text or "")
-                if self.settings is not None
-                else memory_context(
-                    self.repositories.conversation_memory.get(conversation_id),
-                    recent_turns=3,
-                    max_chars=900,
-                    remembered_facts=self.repositories.memory_facts.list_all(),
-                    objective=inbound.text or "",
-                )
-            )
-            try:
-                classification = await self.classifier.classify(inbound, context=classification_context)
-            except TypeError:
-                classification = await self.classifier.classify(inbound)
-        except Exception as exc:
-            return self._spawn_failed(inbound, f"classification failed: {exc}", actor)
-
-        self.audit.append(
-            AuditEventType.MESSAGE_CLASSIFIED,
-            actor=actor,
-            correlation_id=inbound.correlation_id,
-            payload={
-                "message_id": inbound.id,
-                "chat_id": inbound.chat_id,
-                "sender_id": inbound.sender_id,
-                "text": inbound.text,
-                "is_task": classification.is_task,
-                "task_type": classification.task_type.value,
-                "normalized_objective": classification.normalized_objective,
-                "confidence": classification.confidence,
-                "reason": classification.reason,
-                "intent": classification.intent.model_dump(mode="json") if classification.intent else None,
-                "llm": classification_trace(inbound, context=classification_context),
-            },
-        )
-
-        # Decide chat-only vs spawn-task. Prefer the intent.route enum because
-        # the LLM picks it more consistently than the is_task bool. The bool
-        # was flipping wrong for observation/check requests in production
-        # (e.g. "tell me what is on my desktop" → is_task=False AND
-        # intent.route=desktop.observe; the bool was wrong, the route was right).
-        #
-        # Rules:
-        #  - intent.route is CONVERSATION  → chat-only (model explicitly said chat)
-        #  - intent.route is any other     → spawn task (override is_task=False
-        #                                    so observation tasks aren't dropped)
-        #  - intent missing entirely       → fall back to is_task (legacy behavior)
-        # STATUS_REQUEST task_type still bypasses the gate as before.
-        intent_route = (
-            classification.intent.route
-            if classification.intent is not None
-            else None
-        )
-        if intent_route is None:
-            is_chat_only = (
-                not classification.is_task
-                and classification.task_type != TaskType.STATUS_REQUEST
-            )
-        else:
-            is_chat_only = (
-                intent_route == IntentRoute.CONVERSATION
-                and classification.task_type != TaskType.STATUS_REQUEST
-            )
-        if is_chat_only:
-            outbound = await self._non_task_response(inbound, classification, conversation_id)
-            if outbound is not None:
-                return TelegramUpdateResult(
-                    authorized=True,
-                    inbound_message=inbound,
-                    classification=classification,
-                    outbound_message=outbound,
-                )
-            return self._spawn_failed(inbound, classification.reason, actor, classification)
-
-        objective = (classification.normalized_objective or inbound.text).strip()
-        voice_attachment = next((attachment for attachment in inbound.attachments if isinstance(attachment, VoiceAttachment)), None)
-        voice_metadata = (
-            {
-                "voice_file_id": voice_attachment.file_id,
-                "voice_transcript": voice_attachment.transcript,
-            }
-            if voice_attachment is not None
-            else {}
-        )
-        # Snapshot conversation memory so the planner has prior context available
-        _mem_ctx = memory_context(
-            self.repositories.conversation_memory.get(conversation_id),
-            recent_turns=5,
-            max_chars=1600,
-            remembered_facts=self.repositories.memory_facts.list_all(),
-            objective=objective,
-        )
-        task = self.repositories.tasks.create(
-            objective,
-            conversation_id=conversation_id,
-            metadata={
-                "source_message_id": inbound.id,
-                "source_channel": inbound.channel.value,
-                "source_chat_id": inbound.chat_id,
-                "source_sender_id": inbound.sender_id,
-                "task_type": classification.task_type.value,
-                "classification_confidence": classification.confidence,
-                "classification_reason": classification.reason,
-                "orchestration_intent": classification.intent.model_dump(mode="json") if classification.intent else None,
-                "original_message_text": inbound.text,
-                "memory_context": _mem_ctx,
-                **voice_metadata,
-            },
-        )
-        self.audit.append(
-            AuditEventType.TASK_CREATED,
-            actor=actor,
-            task_id=task.id,
-            correlation_id=inbound.correlation_id,
-            payload={
-                "objective": task.objective,
-                "conversation_id": conversation_id,
-                "task_type": classification.task_type.value,
-                "source_message_id": inbound.id,
-                "classification_confidence": classification.confidence,
-                "classification_reason": classification.reason,
-                "orchestration_intent": classification.intent.model_dump(mode="json") if classification.intent else None,
-            },
-        )
-        await self._send_progress(inbound.chat_id, "On it — I'll send the result here when it's done.")
-        return TelegramUpdateResult(
-            authorized=True,
-            inbound_message=inbound,
-            classification=classification,
-            task=task,
-            outbound_message=None,
-        )
-
-    def _resume_clarifying_task(self, inbound: InboundMessage, conversation_id: str) -> OutboundMessage | None:
-        """Route a reply to the task waiting on a question instead of spawning a new task.
-
-        Core logic lives in clarification.py so the web chat channel
-        (admin.py's admin_send_chat_message) shares the exact same behavior
-        instead of re-implementing it.
-        """
-        text = (inbound.text or "").strip()
-        if not text:
-            return None
-        task = find_clarifying_task(self.repositories, conversation_id=conversation_id, chat_id=inbound.chat_id)
-        if task is None:
-            return None
-        result = resume_clarifying_task(
-            self.repositories,
-            self.audit,
-            task,
-            text=text,
-            actor=f"telegram:user:{inbound.sender_id}",
-            message_id=inbound.id,
-            received_at=inbound.received_at,
-            correlation_id=inbound.correlation_id,
-        )
-        if result.cancelled:
-            return self._out(inbound.chat_id, f"Cancelled: {result.task.objective[:200]}")
-        return self._out(inbound.chat_id, "Got it — resuming the task with your answer.")
-
-    async def _non_task_response(
-        self,
-        inbound: InboundMessage,
-        classification: MessageClassification,
-        conversation_id: str,
-    ) -> OutboundMessage | None:
-        if classification.task_type == TaskType.STATUS_REQUEST:
-            return self._out(inbound.chat_id, self._status_summary())
-        # The Concierge composes the chat reply in the same call it
-        # classifies (see prompts/base/concierge_system.md) - no second LLM
-        # round trip needed. Falls back to the separate `responder` (if
-        # configured) for a classifier that doesn't populate `.reply`.
-        reply = (classification.reply or "").strip()
-        if reply:
-            return self._out(inbound.chat_id, reply[:3900])
-        if self.responder is None:
-            return None
-        try:
-            answer = await self.responder.answer(inbound, conversation_id)
-        except Exception as exc:
-            return self._spawn_failed(inbound, f"response generation failed: {exc}", f"telegram:user:{inbound.sender_id}", classification).outbound_message
-        return self._out(inbound.chat_id, answer[:3900])
 
     async def _update_conversation_memory(self, conversation_id: str, text: str) -> None:
         await self.memory_service.update_from_user_message(conversation_id, text)
@@ -778,33 +573,6 @@ class TelegramIntakeService:
         )
         return inbound.model_copy(update={"text": text, "attachments": updated_attachments})
 
-    def _spawn_failed(
-        self,
-        inbound: InboundMessage,
-        reason: str,
-        actor: str,
-        classification: MessageClassification | None = None,
-    ) -> TelegramUpdateResult:
-        self.audit.append(
-            AuditEventType.TASK_SPAWN_FAILED,
-            actor=actor,
-            correlation_id=inbound.correlation_id,
-            payload={
-                "message_id": inbound.id,
-                "chat_id": inbound.chat_id,
-                "sender_id": inbound.sender_id,
-                "text": inbound.text,
-                "reason": reason,
-                "classification": classification.model_dump(mode="json") if classification else None,
-            },
-        )
-        return TelegramUpdateResult(
-            authorized=True,
-            inbound_message=inbound,
-            classification=classification,
-            outbound_message=self._out(inbound.chat_id, f"I could not start this request: {reason}"),
-        )
-
     async def _send_progress(self, chat_id: str, text: str) -> None:
         if self.bot_api is None:
             return
@@ -837,7 +605,7 @@ class TelegramIntakeService:
         args = payload.get("args") or []
 
         if name == "status":
-            return self._out(chat_id, self._status_summary())
+            return self._out(chat_id, status_summary(self.repositories))
         if name == "agents":
             return self._out(chat_id, self._agents_summary())
         if name == "tasks":
@@ -903,7 +671,7 @@ class TelegramIntakeService:
         if text in {"approve", "approved", "approve it", "yes approve", "yes, approve"}:
             return self._approve_latest_pending(inbound)
         if text in {"status", "task status", "tasks status", "what is the status"}:
-            return self._out(inbound.chat_id, self._status_summary())
+            return self._out(inbound.chat_id, status_summary(self.repositories))
         if text in {"tasks", "list tasks", "show tasks"}:
             tasks = self.repositories.tasks.list_recent(10)
             if not tasks:
@@ -991,15 +759,6 @@ class TelegramIntakeService:
                 return self._out(chat_id, f"Approved {approved_count} pending approval(s) for {task.id}.")
         return self._out(chat_id, "No live pending approval found.")
 
-    def _status_summary(self) -> str:
-        recent = self.repositories.tasks.list_recent(20)
-        active_statuses = {TaskStatus.RECEIVED, TaskStatus.INTERPRETING, TaskStatus.PLANNED, TaskStatus.RUNNING, TaskStatus.AWAITING_APPROVAL, TaskStatus.RETRYING}
-        active = [task for task in recent if task.status in active_statuses]
-        lines = [f"{len(recent)} recent task(s), {len(active)} active."]
-        for task in recent[:5]:
-            lines.append(f"- {task.status.value}: {task.objective[:120]}")
-        return "\n".join(lines)
-
     @staticmethod
     def _out(chat_id: str, text: str) -> OutboundMessage:
         return OutboundMessage(channel=ChannelType.TELEGRAM, chat_id=chat_id, text=text)
@@ -1057,7 +816,7 @@ class TelegramVoiceIntakeService:
         self.repositories = repositories
         self.audit = audit
 
-    async def handle_update(self, update: dict[str, Any]) -> TelegramUpdateResult:
+    async def handle_update(self, update: dict[str, Any]) -> ChannelUpdateResult:
         result = self.adapter.normalize_update(update)
         if not result.authorized or not result.inbound_message:
             return result
@@ -1149,4 +908,4 @@ class TelegramVoiceIntakeService:
             },
         )
 
-        return TelegramUpdateResult(authorized=True, inbound_message=result.inbound_message, task=task)
+        return ChannelUpdateResult(authorized=True, inbound_message=result.inbound_message, task=task)

@@ -7,7 +7,7 @@ import pytest
 
 from agent_control.channels.telegram import TelegramAdapter, TelegramBotApi, TelegramIntakeService, TelegramPollingRunner
 from agent_control.channels.memory import ConversationMemoryService
-from agent_control.channels.responder import StaticTelegramResponder
+from agent_control.channels.responder import StaticChatResponder
 from agent_control.config import AppSettings, CapabilityPolicy, DesktopAdapterConfig, StorageConfig, TelegramConfig
 from agent_control.llm import LLMMessageClassifier, StaticMessageClassifier
 from agent_control.observation import ArtifactService, ScreenshotService
@@ -265,7 +265,7 @@ def test_telegram_classifier_can_reject_task_spawn(tmp_path) -> None:
 
 
 def test_telegram_non_task_question_gets_llm_response(tmp_path) -> None:
-    responder = StaticTelegramResponder("I can answer questions and route development tasks.")
+    responder = StaticChatResponder("I can answer questions and route development tasks.")
     service, repos = _service(
         tmp_path,
         TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
@@ -301,7 +301,7 @@ def test_telegram_non_task_uses_concierge_reply_without_calling_responder(tmp_pa
     """The Concierge composes the chat reply in the same call it classifies
     (prompts/base/concierge_system.md) - when `.reply` is populated, the
     separate `responder` round trip must not happen at all."""
-    responder = StaticTelegramResponder("responder should not be called")
+    responder = StaticChatResponder("responder should not be called")
     service, repos = _service(
         tmp_path,
         TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
@@ -342,7 +342,7 @@ def test_telegram_non_task_falls_back_to_responder_when_concierge_reply_is_empty
     responder path (docs/HISTORY.md Part 1 P3 item 4) genuinely load-bearing
     rather than dead code - confirmed by inspection, this test proves it by
     execution."""
-    responder = StaticTelegramResponder("Fallback answer from the separate responder call.")
+    responder = StaticChatResponder("Fallback answer from the separate responder call.")
     service, repos = _service(
         tmp_path,
         TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
@@ -799,7 +799,7 @@ def test_llm_classifier_fallback_allows_direct_greeting_response(tmp_path) -> No
         TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
         classifier=LLMMessageClassifier(FailingClassifierProvider()),
     )
-    service.responder = StaticTelegramResponder("Hello. I can answer questions or route tasks.")
+    service.responder = StaticChatResponder("Hello. I can answer questions or route tasks.")
 
     result = service.handle_update(
         {

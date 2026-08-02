@@ -10,12 +10,17 @@ from agent_control.schemas import Capability, InboundMessage, TaskStatus
 from agent_control.storage.repositories import Repositories
 
 
-class TelegramResponder(Protocol):
+class ChatResponder(Protocol):
+    """Channel-agnostic despite the pre-Phase-16 Telegram-flavored name this
+    replaced (docs/UI_UX_AUDIT.md Phase 16) - nothing in this Protocol or
+    its implementations below ever referenced Telegram; only the name did.
+    """
+
     async def answer(self, message: InboundMessage, conversation_id: str | None = None) -> str:
         ...
 
 
-class LLMTelegramResponder:
+class LLMChatResponder:
     def __init__(self, provider: LLMProvider, settings: AppSettings, repositories: Repositories) -> None:
         self.provider = provider
         self.settings = settings
@@ -28,7 +33,7 @@ class LLMTelegramResponder:
         )
 
 
-class StaticTelegramResponder:
+class StaticChatResponder:
     def __init__(self, response: str = "ok") -> None:
         self.response = response
         self.messages: list[InboundMessage] = []
@@ -72,7 +77,7 @@ def gateway_context(
     memory = memory_context(memory_record, remembered_facts=repositories.memory_facts.list_all(), objective=query_text)
 
     return f"""LLM profile: {settings.llm.default_profile}
-Telegram receive/send: enabled
+Chat receive/send: enabled
 VS Code/GitHub Copilot terminal route: {'enabled' if vscode_enabled else 'disabled'} ({vscode_approval})
 Local workspaces and localhost previews: {'enabled' if workspace_enabled else 'disabled'} ({workspace_approval}); root={settings.adapters.workspace.root_dir}
 Generated adapter proposal cache: {'enabled' if adapter_factory_enabled else 'disabled'}; root={settings.adapters.adapter_factory.root_dir}

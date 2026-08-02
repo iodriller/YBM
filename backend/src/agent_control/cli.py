@@ -23,7 +23,7 @@ from agent_control.channels.telegram import (
     load_telegram_token,
 )
 from agent_control.channels.memory import ConversationMemoryService
-from agent_control.channels.responder import LLMTelegramResponder
+from agent_control.channels.responder import LLMChatResponder
 from agent_control.channels.telegram_notifications import TelegramTaskNotifier
 from agent_control.config import AppSettings, backend_base_url, load_settings
 from agent_control.llm import LLMMessageClassifier, build_default_llm_provider
@@ -178,7 +178,7 @@ async def poll_telegram() -> None:
     adapter = TelegramAdapter(settings.channels.telegram, audit)
     provider = build_default_llm_provider(settings)
     classifier = LLMMessageClassifier(provider) if provider else None
-    responder = LLMTelegramResponder(provider, settings, repositories) if provider else None
+    responder = LLMChatResponder(provider, settings, repositories) if provider else None
     memory_service = ConversationMemoryService(repositories, provider=provider)
     client = TelegramBotApi(load_telegram_token(settings.channels.telegram), audit=audit)
     service = TelegramIntakeService(
