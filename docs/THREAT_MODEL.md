@@ -124,9 +124,8 @@ not hardened as a public multi-user API.
 ### Supply-chain compromise
 
 GitHub Actions are pinned to immutable commit SHAs, lockfiles are committed,
-dependency audit jobs run in CI, and Dependabot proposes updates. Major
-dependency updates are intentionally separated from minor/patch bundles so a
-breaking security-sensitive upgrade is reviewed and tested independently.
+and dependency audit jobs run in CI. Dependency updates are reviewed and tested
+manually, with breaking security-sensitive upgrades handled as focused changes.
 
 ## Public-release checklist
 
