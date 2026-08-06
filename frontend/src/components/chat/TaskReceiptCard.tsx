@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom"
+import { Link } from "react-router"
 import { Download, ExternalLink, Globe, HardDrive, LoaderCircle } from "lucide-react"
 import type { TaskReceipt, TaskStatus } from "@/lib/api"
 import { useTaskReceipt } from "@/lib/queries"

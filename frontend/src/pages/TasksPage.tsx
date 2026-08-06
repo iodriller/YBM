@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react"
-import { useNavigate } from "react-router-dom"
+import { useNavigate } from "react-router"
 import { ListTree, Search } from "lucide-react"
 import { flexRender, getCoreRowModel, useReactTable, createColumnHelper } from "@tanstack/react-table"
 import { Input } from "@/components/ui/input"

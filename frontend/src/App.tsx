@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState } from "react"
-import { Route, Routes } from "react-router-dom"
+import { Route, Routes } from "react-router"
 import { AppShell } from "@/components/layout/AppShell"
 import { ChatPage } from "@/pages/ChatPage"
 import { TokenEntryScreen } from "@/components/onboarding/TokenEntryScreen"

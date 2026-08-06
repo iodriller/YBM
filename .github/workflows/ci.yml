@@ -33,6 +33,7 @@ jobs:
         with:
           python-version: "3.12"
           working-directory: backend
+          cache-suffix: backend-tests-${{ matrix.os }}
       - run: uv sync --frozen --extra test --extra dev
       - run: uv run --frozen pytest
 
@@ -50,6 +51,7 @@ jobs:
         with:
           python-version: "3.12"
           working-directory: backend
+          cache-suffix: backend-quality
       - run: uv sync --frozen --extra test --extra dev
       - run: uv run --frozen ruff check .
       - run: uv run --frozen --with pip-audit pip-audit
@@ -82,7 +84,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Scan Git history for leaked secrets
-        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITLEAKS_CONFIG: .gitleaks.toml
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

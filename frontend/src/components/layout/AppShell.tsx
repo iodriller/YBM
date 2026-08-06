@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { NavLink, Outlet, useLocation } from "react-router-dom"
+import { NavLink, Outlet, useLocation } from "react-router"
 import { Bot, ListTree, MessageSquare, Settings, ShieldCheck } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { HealthIndicator } from "@/components/layout/HealthIndicator"

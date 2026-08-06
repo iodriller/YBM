@@ -44,5 +44,29 @@ export default defineConfig({
   build: {
     outDir: path.resolve(__dirname, "../backend/src/agent_control/static/admin"),
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          const moduleId = id.replaceAll("\\", "/")
+          if (!moduleId.includes("/node_modules/")) return undefined
+          if (moduleId.includes("/@xyflow/") || moduleId.includes("/d3-")) return "graph"
+          if (
+            moduleId.includes("/react-markdown/")
+            || moduleId.includes("/remark-")
+            || moduleId.includes("/rehype-")
+            || moduleId.includes("/unified/")
+          ) return "markdown"
+          if (moduleId.includes("/@base-ui/")) return "vendor"
+          if (moduleId.includes("/lucide-react/")) return "icons"
+          if (moduleId.includes("/@tanstack/")) return "tanstack"
+          if (
+            moduleId.includes("/react/")
+            || moduleId.includes("/react-dom/")
+            || moduleId.includes("/react-router")
+          ) return "vendor"
+          return undefined
+        },
+      },
+    },
   },
 })

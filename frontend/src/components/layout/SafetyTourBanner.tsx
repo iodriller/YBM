@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { X } from "lucide-react"
-import { Link } from "react-router-dom"
+import { Link } from "react-router"
 import { readSafetyTourDismissed, writeSafetyTourDismissed } from "@/lib/safety-tour"
 
 /**

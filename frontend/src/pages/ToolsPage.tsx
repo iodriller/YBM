@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react"
-import { Link } from "react-router-dom"
+import { Link } from "react-router"
 import { ArrowRight, Lock, Search, Wrench } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
@@ -44,7 +44,7 @@ export function ToolsPage() {
   const { data, isPending, isError, error } = useSettingsSummary()
   const [search, setSearch] = useState("")
 
-  const tools = data?.tool_registry.tools ?? []
+  const tools = useMemo(() => data?.tool_registry.tools ?? [], [data?.tool_registry.tools])
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
     if (!q) return tools
