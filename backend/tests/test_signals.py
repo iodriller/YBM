@@ -121,7 +121,7 @@ def test_cancelling_a_task_with_nothing_pending_is_a_clean_no_op(tmp_path) -> No
     assert signal.signal == "cancel"
 
 
-def test_cancelling_a_task_awaiting_a_coding_session_stops_the_process(tmp_path) -> None:
+def test_cancelling_a_task_awaiting_a_coding_session_stops_the_process(tmp_path, monkeypatch) -> None:
     """AWAITING_EXTERNAL is the one status the worker doesn't busy-poll - it
     only resumes via the session watcher noticing completion. A cancel while
     a session is genuinely running must stop that process itself, not just
@@ -131,6 +131,7 @@ def test_cancelling_a_task_awaiting_a_coding_session_stops_the_process(tmp_path)
     session_root = tmp_path / "coding_sessions"
     session_root.mkdir()
     (session_root / "sess_abc.json").write_text(json.dumps({"session_id": "sess_abc", "pid": 999999}), encoding="utf-8")
+    monkeypatch.setattr("agent_control.tools.coding_agent.stop_session_process", lambda _session: True)
     settings = AppSettings(_env_file=None, adapters={"coding_agent": {"session_root": str(session_root)}})
     task = repositories.tasks.create("run some coding session")
     repositories.tasks.update_metadata(

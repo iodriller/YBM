@@ -65,10 +65,19 @@ def test_admin_get_authenticates_with_configured_token(monkeypatch) -> None:
     assert captured["timeout"] == 7
 
 
-def test_preflight_uses_localdeploy_health_endpoint(monkeypatch) -> None:
+def test_preflight_uses_localdeploy_health_endpoint(monkeypatch, tmp_path) -> None:
     runner = _runner_module()
     urls: list[tuple[str, float]] = []
 
+    env_path = tmp_path / ".env"
+    db_path = tmp_path / "agent_control.db"
+    cases_path = tmp_path / "all_cases.json"
+    for path in (env_path, db_path, cases_path):
+        path.touch()
+
+    monkeypatch.setattr(runner, "ENV_PATH", env_path)
+    monkeypatch.setattr(runner, "DB_PATH", db_path)
+    monkeypatch.setattr(runner, "CASES_PATH", cases_path)
     monkeypatch.setattr(runner, "admin_get", lambda _path: {"tasks": []})
     monkeypatch.setattr(runner, "ping", lambda url, *, timeout: urls.append((url, timeout)) or True)
 

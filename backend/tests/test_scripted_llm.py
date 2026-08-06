@@ -19,6 +19,11 @@ class _Answer(BaseModel):
     confidence: float
 
 
+class _CodeAnswer(BaseModel):
+    code: str
+    summary: str
+
+
 def _write_fixture(path, entries: dict) -> None:
     import json
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -174,6 +179,39 @@ async def test_replay_rebases_recorded_scenario_response_path(tmp_path) -> None:
     result = await provider.generate_text("sys", f"search {current_root}")
 
     assert result == f"read {current_root / 'resume.txt'}"
+
+
+@pytest.mark.asyncio
+async def test_replay_does_not_rewrite_recorded_source_code(tmp_path) -> None:
+    fixture = tmp_path / "fixture.json"
+    recorded_root = (
+        r"C:\Users\recording-user\AppData\Local\Temp"
+        r"\ybm_scenario_scratch\code_interpreter"
+    )
+    current_root = Path(tempfile.gettempdir()) / "ybm_scenario_scratch" / "code_interpreter"
+    recorded_code = f"print({recorded_root!r})"
+    _write_fixture(
+        fixture,
+        {
+            "legacy-key": {
+                "method": "generate_structured",
+                "system_prompt": "sys",
+                "user_prompt": f"write under {recorded_root}",
+                "response": {
+                    "code": recorded_code,
+                    "summary": f"write under {recorded_root}",
+                },
+            }
+        },
+    )
+
+    provider = ScriptedLLMProvider(fixture)
+    result = await provider.generate_structured(
+        "sys", f"write under {current_root}", _CodeAnswer
+    )
+
+    assert result.code == recorded_code
+    assert result.summary == f"write under {current_root}"
 
 
 def test_fixture_key_still_distinguishes_genuinely_different_prompts() -> None:

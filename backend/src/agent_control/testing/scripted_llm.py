@@ -160,7 +160,13 @@ def _rebase_scenario_paths(value: Any) -> Any:
     if isinstance(value, list):
         return [_rebase_scenario_paths(item) for item in value]
     if isinstance(value, dict):
-        return {key: _rebase_scenario_paths(item) for key, item in value.items()}
+        # Source code is replay input, not a returned path. Rewriting it can
+        # change parse/runtime behavior and send different platforms down
+        # different recorded control-flow paths.
+        return {
+            key: item if key == "code" else _rebase_scenario_paths(item)
+            for key, item in value.items()
+        }
     return value
 
 
