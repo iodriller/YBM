@@ -177,18 +177,27 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                   <details className="text-sm">
                     <summary className="cursor-pointer text-muted-foreground">Or paste an API key</summary>
                     <div className="mt-2 flex flex-col gap-2">
-                      <Label className="text-xs text-muted-foreground">Model</Label>
+                      <Label htmlFor="wizard-custom-model" className="text-xs text-muted-foreground">
+                        Model
+                      </Label>
                       <Input
+                        id="wizard-custom-model"
                         value={customModel.model}
                         onChange={(e) => setCustomModel({ ...customModel, model: e.target.value })}
                       />
-                      <Label className="text-xs text-muted-foreground">API key env var name</Label>
+                      <Label htmlFor="wizard-custom-api-key-env" className="text-xs text-muted-foreground">
+                        API key env var name
+                      </Label>
                       <Input
+                        id="wizard-custom-api-key-env"
                         value={customModel.apiKeyEnv}
                         onChange={(e) => setCustomModel({ ...customModel, apiKeyEnv: e.target.value })}
                       />
-                      <Label className="text-xs text-muted-foreground">API key</Label>
+                      <Label htmlFor="wizard-custom-api-key" className="text-xs text-muted-foreground">
+                        API key
+                      </Label>
                       <Input
+                        id="wizard-custom-api-key"
                         type="password"
                         value={customModel.apiKeyValue}
                         onChange={(e) => setCustomModel({ ...customModel, apiKeyValue: e.target.value })}
@@ -268,8 +277,15 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                   </div>
                   {telegramEnabled && (
                     <div className="flex flex-col gap-1">
-                      <Label className="text-xs text-muted-foreground">Bot token</Label>
-                      <Input type="password" value={telegramToken} onChange={(e) => setTelegramToken(e.target.value)} />
+                      <Label htmlFor="wizard-telegram-token" className="text-xs text-muted-foreground">
+                        Bot token
+                      </Label>
+                      <Input
+                        id="wizard-telegram-token"
+                        type="password"
+                        value={telegramToken}
+                        onChange={(e) => setTelegramToken(e.target.value)}
+                      />
                     </div>
                   )}
                 </>

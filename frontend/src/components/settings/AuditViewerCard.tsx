@@ -50,7 +50,13 @@ export function AuditViewerCard() {
               ))}
             </SelectContent>
           </Select>
-          <Input placeholder="Search" value={q} onChange={(e) => setQ(e.target.value)} className="max-w-xs" />
+          <Input
+            aria-label="Search audit events"
+            placeholder="Search"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            className="max-w-xs"
+          />
           <span className="text-xs text-muted-foreground">Showing {events.length} events</span>
           <Button
             variant="destructive"

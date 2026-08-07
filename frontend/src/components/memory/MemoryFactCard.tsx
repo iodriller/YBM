@@ -63,6 +63,7 @@ export function MemoryFactCard({ fact }: { fact: MemoryFact }) {
     return (
       <div className="flex flex-col gap-2 rounded-xl border border-primary/40 bg-card p-3 shadow-sm ring-1 ring-primary/10">
         <Input
+          aria-label="Category"
           value={category}
           onChange={(e) => setCategory(e.target.value)}
           placeholder="Category"
@@ -70,6 +71,7 @@ export function MemoryFactCard({ fact }: { fact: MemoryFact }) {
           className="max-w-xs font-medium"
         />
         <Textarea
+          aria-label="Fact content"
           value={content}
           onChange={(e) => setContent(e.target.value)}
           placeholder="What should YBM remember?"

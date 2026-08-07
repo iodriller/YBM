@@ -1,3 +1,4 @@
+import { useId, cloneElement } from "react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -191,11 +192,17 @@ export function LLMSettingsCard() {
   )
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, children }: { label: string; children: React.ReactElement }) {
+  // Every call site passes exactly one form control as children - id/htmlFor
+  // pairing via useId() associates the visible label with it for screen
+  // readers, without changing the sibling Label-then-control DOM structure
+  // (cloneElement, not wrapping children inside <label>, so the existing
+  // flex-col layout is untouched).
+  const id = useId()
   return (
     <div className="flex flex-col gap-1">
-      <Label className="text-xs text-muted-foreground">{label}</Label>
-      {children}
+      <Label htmlFor={id} className="text-xs text-muted-foreground">{label}</Label>
+      {cloneElement(children, { id })}
     </div>
   )
 }

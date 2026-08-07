@@ -133,10 +133,16 @@ export function SecretVaultCard() {
             >
               <p className="text-xs font-medium text-muted-foreground">Add / replace a secret</p>
               <div className="grid gap-2 sm:grid-cols-2">
-                <Input placeholder="Service (e.g. openai)" value={service} onChange={(e) => setService(e.target.value)} />
-                <Input placeholder="Key (e.g. api_key)" value={key} onChange={(e) => setKey(e.target.value)} />
+                <Input
+                  aria-label="Service"
+                  placeholder="Service (e.g. openai)"
+                  value={service}
+                  onChange={(e) => setService(e.target.value)}
+                />
+                <Input aria-label="Key" placeholder="Key (e.g. api_key)" value={key} onChange={(e) => setKey(e.target.value)} />
               </div>
               <Input
+                aria-label="Value"
                 type="password"
                 placeholder="Value"
                 value={value}
