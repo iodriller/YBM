@@ -128,17 +128,27 @@ function ReviewDialogBody({
   const expired = remaining <= 0
   const risk = item.approval.risk_level
   const severe = risk === "critical" || risk === "high"
+  const toolName = (item.approval.action_payload.tool_name as string | undefined) ?? undefined
 
   // Single-key shortcuts, deliberately not modified with Ctrl/Cmd: this
   // dialog is modal and has no text input, so there is nothing to type into
   // and nothing to collide with. Guarded on an expired/in-flight approval so
   // a keystroke can't fire a decision the buttons themselves refuse.
+  //
+  // A and T are excluded here for `critical` risk - ApprovalActions gates
+  // those behind its own ConfirmDialog, and firing onDecide directly from
+  // this keydown handler would bypass that gate entirely (this handler
+  // calls onDecide, not the buttons, so it has no confirm step of its own).
+  // D (deny) is never gated: it's the safe direction.
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (event.ctrlKey || event.metaKey || event.altKey) return
       const key = event.key.toLowerCase()
+      const approveKeysBlocked = risk === "critical" && (key === "a" || key === "t")
       if (key === "arrowright" && index < items.length - 1) {
         onIndexChange(index + 1)
+      } else if (approveKeysBlocked) {
+        return
       } else if (key === "arrowleft" && index > 0) {
         onIndexChange(index - 1)
       } else if (!deciding && !expired && (key === "a" || key === "t" || key === "d")) {
@@ -151,7 +161,7 @@ function ReviewDialogBody({
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
-  }, [index, items.length, deciding, expired, item.approval.id, onIndexChange, onDecide])
+  }, [index, items.length, deciding, expired, risk, item.approval.id, onIndexChange, onDecide])
 
   return (
     <>
@@ -210,14 +220,22 @@ function ReviewDialogBody({
         </div>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <span className="hidden text-[11px] text-muted-foreground sm:inline">
-            <kbd className="rounded border border-border px-1 font-mono">A</kbd> approve ·{" "}
-            <kbd className="rounded border border-border px-1 font-mono">T</kbd> allow for task ·{" "}
+            {risk === "critical" ? (
+              <>critical risk requires confirming on the buttons - no keyboard shortcut</>
+            ) : (
+              <>
+                <kbd className="rounded border border-border px-1 font-mono">A</kbd> approve ·{" "}
+                <kbd className="rounded border border-border px-1 font-mono">T</kbd> allow for task ·{" "}
+              </>
+            )}
             <kbd className="rounded border border-border px-1 font-mono">D</kbd> deny
           </span>
           <div className="ml-auto">
             <ApprovalActions
               deciding={deciding}
               expired={expired}
+              riskLevel={risk}
+              toolName={toolName}
               onApprove={() => onDecide(item.approval.id, "approve")}
               onApproveForTask={() => onDecide(item.approval.id, "approve_for_task")}
               onDeny={() => onDecide(item.approval.id, "reject")}
