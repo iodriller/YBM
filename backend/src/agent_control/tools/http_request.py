@@ -156,6 +156,15 @@ def _require_allowed_url(url: str, config: HttpRequestAdapterConfig) -> None:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("http.request only supports absolute http:// or https:// URLs")
+    if "@" in parsed.netloc:
+        # Embedded userinfo (user:pass@host) makes the string before "@" look
+        # like a host without being one - urlparse correctly resolves
+        # .hostname past it, but a naive allowed_url_prefixes string-prefix
+        # check does not, so "https://api.example.com@attacker.com/x" reads
+        # as prefixed by "https://api.example.com" while actually connecting
+        # to attacker.com. No legitimate use needs this here (secret_refs
+        # already covers auth); reject outright.
+        raise ValueError("http.request does not support URLs with embedded userinfo (user:pass@host)")
     host = parsed.hostname.lower()
     netloc = parsed.netloc.lower()
     blocked = {item.lower() for item in config.blocked_hosts}
@@ -164,11 +173,27 @@ def _require_allowed_url(url: str, config: HttpRequestAdapterConfig) -> None:
     if not config.allowed_hosts and not config.allowed_url_prefixes:
         raise ValueError("no HTTP allowlist is configured")
     normalized_url = url.lower()
-    if any(normalized_url.startswith(prefix.lower()) for prefix in config.allowed_url_prefixes):
+    if any(_prefix_matches(normalized_url, host, prefix) for prefix in config.allowed_url_prefixes):
         return
     if any(_host_matches(host, netloc, allowed) for allowed in config.allowed_hosts):
         return
     raise ValueError(f"HTTP host is not allowlisted: {host}")
+
+
+def _prefix_matches(normalized_url: str, host: str, prefix: str) -> bool:
+    """A URL matches an allowed prefix only when the literal prefix matches
+    *and* the URL's own parsed host equals the prefix's parsed host.
+
+    A bare string-prefix check alone would let
+    "https://api.example.com.attacker.com/x" match the prefix
+    "https://api.example.com" - the character sequence lines up even though
+    the real host is an attacker-controlled subdomain of a different domain.
+    """
+    prefix = prefix.lower()
+    if not normalized_url.startswith(prefix):
+        return False
+    prefix_host = urlparse(prefix).hostname
+    return prefix_host is not None and prefix_host == host
 
 
 def _host_matches(host: str, netloc: str, allowed: str) -> bool:

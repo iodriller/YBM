@@ -6,7 +6,7 @@ import pytest
 from agent_control.config import HttpRequestAdapterConfig, SecretVaultConfig
 from agent_control.schemas import AuditEventType, Capability, ToolCallRequest, ToolResultStatus
 from agent_control.storage.secrets import SecretVault
-from agent_control.tools.http_request import HttpRequestAdapter
+from agent_control.tools.http_request import HttpRequestAdapter, _require_allowed_url
 
 
 class _FakeAudit:
@@ -107,3 +107,25 @@ async def test_http_request_rejects_non_allowlisted_host(tmp_path) -> None:
 
     assert result.status == ToolResultStatus.FAILED
     assert "not allowlisted" in (result.error_message or "")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # Look-alike subdomain: character sequence matches the prefix string
+        # but the real, attacker-controlled host is "api.example.com.attacker.com".
+        "https://api.example.com.attacker.com/steal",
+        # Userinfo trick: everything before "@" looks like the allowed host
+        # to a naive string-prefix check, but the real host is "attacker.com".
+        "https://api.example.com@attacker.com/steal",
+    ],
+)
+def test_require_allowed_url_rejects_prefix_lookalikes(url: str) -> None:
+    config = HttpRequestAdapterConfig(allowed_url_prefixes=["https://api.example.com"])
+    with pytest.raises(ValueError):
+        _require_allowed_url(url, config)
+
+
+def test_require_allowed_url_accepts_genuine_prefix_match() -> None:
+    config = HttpRequestAdapterConfig(allowed_url_prefixes=["https://api.example.com"])
+    _require_allowed_url("https://api.example.com/v1/users", config)  # must not raise

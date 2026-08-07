@@ -4,29 +4,56 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 import re
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from agent_control.schemas import AuditEventType, ScheduleRecord, ScheduleStatus, TaskRecord, TaskStatus, utc_now
 from agent_control.storage.audit import AuditLogger
 from agent_control.storage.repositories import Repositories
 
 
-def next_run_after(cadence: str, after: datetime | None = None) -> datetime:
+def _resolve_timezone(timezone_name: str | None) -> ZoneInfo | timezone:
+    if timezone_name:
+        try:
+            return ZoneInfo(timezone_name)
+        except (ZoneInfoNotFoundError, ValueError):
+            pass
+    return timezone.utc
+
+
+def next_run_after(cadence: str, after: datetime | None = None, timezone_name: str | None = None) -> datetime:
+    """Compute the next fire time for ``cadence`` after ``after``.
+
+    Minute/hour intervals are elapsed real-time arithmetic, timezone-
+    independent. Day/week intervals (including bare "daily"/"weekly") add the
+    interval in ``timezone_name``'s local calendar before converting back to
+    UTC, so a daily schedule keeps firing at the same local wall-clock time
+    across a DST transition instead of drifting by an hour.
+    """
     base = after or utc_now()
     if base.tzinfo is None:
         base = base.replace(tzinfo=timezone.utc)
     lowered = cadence.lower().strip()
+
     if match := re.search(r"every\s+(\d+)\s+minutes?", lowered):
         return base + timedelta(minutes=max(1, int(match.group(1))))
     if match := re.search(r"every\s+(\d+)\s+hours?", lowered):
         return base + timedelta(hours=max(1, int(match.group(1))))
+
+    tz = _resolve_timezone(timezone_name)
+    local = base.astimezone(tz)
+
+    if match := re.search(r"every\s+(\d+)\s+weeks?", lowered):
+        return (local + timedelta(weeks=max(1, int(match.group(1))))).astimezone(timezone.utc)
+    if match := re.search(r"every\s+(\d+)\s+days?", lowered):
+        return (local + timedelta(days=max(1, int(match.group(1))))).astimezone(timezone.utc)
     if "weekly" in lowered or "every week" in lowered:
-        return base + timedelta(days=7)
-    return base + timedelta(days=1)
+        return (local + timedelta(days=7)).astimezone(timezone.utc)
+    return (local + timedelta(days=1)).astimezone(timezone.utc)
 
 
 def cadence_from_text(text: str) -> str:
     lowered = text.lower()
-    if match := re.search(r"every\s+\d+\s+(?:minute|minutes|hour|hours|day|days|week|weeks)", lowered):
+    if match := re.search(r"every\s+\d+\s+(?:minutes?|hours?|days?|weeks?)\b", lowered):
         return match.group(0)
     if "daily" in lowered or "every day" in lowered:
         return "daily"
@@ -37,7 +64,7 @@ def cadence_from_text(text: str) -> str:
 
 def objective_from_schedule_text(text: str) -> str:
     cleaned = re.sub(r"\b(set up|create|add|schedule|scheduled job|job|that runs|every day|daily|weekly)\b", " ", text, flags=re.IGNORECASE)
-    cleaned = re.sub(r"every\s+\d+\s+(?:minute|minutes|hour|hours|day|days|week|weeks)", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"every\s+\d+\s+(?:minutes?|hours?|days?|weeks?)\b", " ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .,:")
     cleaned = re.sub(r"^(?:a\s+)?to\s+", "", cleaned, flags=re.IGNORECASE)
     return cleaned or text
@@ -60,7 +87,9 @@ def create_due_task(repositories: Repositories, audit: AuditLogger, schedule: Sc
         },
     )
     now = utc_now()
-    repositories.schedules.mark_run(schedule.id, task.id, now, next_run_after(schedule.cadence, now))
+    repositories.schedules.mark_run(
+        schedule.id, task.id, now, next_run_after(schedule.cadence, now, schedule.timezone)
+    )
     audit.append(
         AuditEventType.TASK_CREATED,
         actor="scheduler",

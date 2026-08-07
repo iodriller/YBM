@@ -61,14 +61,15 @@ class ScheduleManageAdapter:
             raise ValueError("objective is required")
         cadence = str(request.input.get("cadence") or cadence_from_text(raw_objective))
         objective = objective_from_schedule_text(raw_objective)
+        timezone_name = str(request.input.get("timezone") or self.default_timezone)
         schedule = self.repositories.schedules.create(
             ScheduleRecord(
                 source_channel=ChannelType.TELEGRAM,
                 source_chat_id=request.input.get("source_chat_id"),
                 objective=objective,
                 cadence=cadence,
-                timezone=str(request.input.get("timezone") or self.default_timezone),
-                next_run_at=next_run_after(cadence, utc_now()),
+                timezone=timezone_name,
+                next_run_at=next_run_after(cadence, utc_now(), timezone_name),
                 metadata=dict(request.input.get("metadata") or {}),
             )
         )

@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 from agent_control.config import SecretVaultConfig
 from agent_control.config_sync import read_env_value
+
+_SCRYPT_SALT_BYTES = 16
 
 
 class SecretVaultError(RuntimeError):
@@ -92,26 +95,56 @@ class SecretVault:
         path = self._path()
         path.parent.mkdir(parents=True, exist_ok=True)
         raw = json.dumps(data, ensure_ascii=False, sort_keys=True).encode("utf-8")
-        path.write_bytes(self._fernet().encrypt(raw))
+        encrypted = self._fernet().encrypt(raw)
+        # Write-then-rename: os.replace is atomic on both POSIX and Windows,
+        # so a crash or kill mid-write can never leave a half-written,
+        # permanently undecryptable vault.json behind.
+        tmp_path = path.with_name(path.name + ".tmp")
+        tmp_path.write_bytes(encrypted)
+        os.replace(tmp_path, path)
 
     def _path(self) -> Path:
         return Path(self.config.path).expanduser()
+
+    def _salt_path(self) -> Path:
+        return self._path().with_name(self._path().name + ".salt")
 
     def _fernet(self) -> Fernet:
         raw_key = read_env_value(self.config.key_env)
         if not raw_key:
             raise SecretVaultError(f"{self.config.key_env} is required to read or write the secret vault")
-        return Fernet(_normalize_fernet_key(raw_key))
+        return Fernet(_normalize_fernet_key(raw_key, self._salt_path()))
 
 
-def _normalize_fernet_key(raw_key: str) -> bytes:
+def _normalize_fernet_key(raw_key: str, salt_path: Path) -> bytes:
     encoded = raw_key.encode("utf-8")
     try:
         Fernet(encoded)
         return encoded
     except Exception:
-        digest = hashlib.sha256(encoded).digest()
-        return base64.urlsafe_b64encode(digest)
+        pass
+    # Not a valid Fernet key as-is (e.g. a hand-typed passphrase rather than
+    # SecretVault.generate_key() output) - derive one with a real KDF instead
+    # of a single unsalted SHA-256 round, which is cheap to brute-force
+    # against a weak passphrase if the vault file ever leaks. Salt is
+    # persisted next to the vault so the same passphrase always derives the
+    # same key across runs.
+    salt = _load_or_create_salt(salt_path)
+    kdf = Scrypt(salt=salt, length=32, n=2**14, r=8, p=1)
+    return base64.urlsafe_b64encode(kdf.derive(encoded))
+
+
+def _load_or_create_salt(salt_path: Path) -> bytes:
+    try:
+        existing = salt_path.read_bytes()
+        if len(existing) == _SCRYPT_SALT_BYTES:
+            return existing
+    except OSError:
+        pass
+    salt = os.urandom(_SCRYPT_SALT_BYTES)
+    salt_path.parent.mkdir(parents=True, exist_ok=True)
+    salt_path.write_bytes(salt)
+    return salt
 
 
 def _split_ref(ref: str) -> tuple[str, str]:

@@ -146,9 +146,16 @@ class ToolExecutor:
 
         try:
             dispatch_request = request
-            if (approval is not None or has_grant) and "approved" in request.input:
+            if "approved" in request.input:
+                # Set unconditionally, not just when authorized: a model
+                # supplying input.approved=true on its own must never reach
+                # the adapter as-is, even for an operation whose adapter-level
+                # gate isn't (or stops being) backed by an
+                # approval_required_operations entry. This is the actual
+                # bypass-proofing; the policy-level gate above is the primary
+                # control.
                 dispatch_request = request.model_copy(
-                    update={"input": {**request.input, "approved": True}}
+                    update={"input": {**request.input, "approved": bool(approval is not None or has_grant)}}
                 )
             result = await adapter.execute(dispatch_request)
             result, output_validation_error = self._validated_result(dispatch_request, result)

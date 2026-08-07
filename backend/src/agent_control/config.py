@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 from pathlib import Path
 from typing import Any, Literal
 
@@ -18,16 +19,23 @@ class ServerConfig(StrictBaseModel):
     admin_token_env: str = "AGENT_ADMIN_TOKEN"
 
 
-_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"}
-
-
 def is_loopback_host(host: str) -> bool:
     """True when ``host`` only accepts connections from the local machine.
 
     Used to gate fail-closed auth checks: an unset admin/bridge token is only
-    safe while nothing beyond loopback can reach the port.
+    safe while nothing beyond loopback can reach the port. Covers the full
+    127.0.0.0/8 range (not just 127.0.0.1) and IPv4-mapped IPv6 loopback
+    addresses (e.g. ::ffff:127.0.0.1) via ipaddress.IPv6Address.is_loopback,
+    which already resolves those to the underlying IPv4 address's
+    is_loopback - a server bound to any of those is still loopback-only.
     """
-    return (host or "").strip().lower() in _LOOPBACK_HOSTS
+    normalized = (host or "").strip().lower()
+    if normalized in {"localhost", "localhost."}:
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
 
 
 class IdentityConfig(StrictBaseModel):

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from agent_control.config import AppSettings
+from agent_control.config import AppSettings, is_loopback_host
 from agent_control.schemas import Capability
 
 
@@ -100,3 +100,24 @@ def test_safe_summary_strips_mcp_server_env_values() -> None:
     assert server["env_keys"] == ["GITHUB_TOKEN"]
     assert "env" not in server
     assert "ghp_super_secret" not in str(summary)
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "127.0.0.1",
+        "127.0.0.2",  # regression: only the exact 127.0.0.1 literal used to count
+        "127.255.255.255",  # full 127.0.0.0/8 range
+        "localhost",
+        "::1",
+        "0:0:0:0:0:0:0:1",
+        "::ffff:127.0.0.1",  # regression: IPv4-mapped IPv6 loopback used to count as non-loopback
+    ],
+)
+def test_is_loopback_host_covers_full_loopback_range(host: str) -> None:
+    assert is_loopback_host(host) is True
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "10.0.0.5", "192.168.1.1", "example.com", "", "not-an-ip"])
+def test_is_loopback_host_rejects_non_loopback(host: str) -> None:
+    assert is_loopback_host(host) is False

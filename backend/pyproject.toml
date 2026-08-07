@@ -68,6 +68,15 @@ packages = ["src/agent_control"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-q"
+filterwarnings = [
+  # Raised at import time by starlette.testclient pointing at an "httpx2"
+  # package that does not exist on PyPI yet - nothing actionable to do here
+  # until Starlette ships a real replacement. StarletteDeprecationWarning
+  # subclasses UserWarning, not DeprecationWarning - the category below must
+  # match that exactly or this filter silently matches nothing. Scoped to
+  # this exact message so other, real warnings still surface normally.
+  "ignore:Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.:starlette.exceptions.StarletteDeprecationWarning",
+]
 
 [tool.ruff]
 target-version = "py312"
