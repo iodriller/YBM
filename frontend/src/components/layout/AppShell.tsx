@@ -4,6 +4,7 @@ import { Bot, ListTree, MessageSquare, Settings, ShieldCheck } from "lucide-reac
 import { cn } from "@/lib/utils"
 import { HealthIndicator } from "@/components/layout/HealthIndicator"
 import { ApprovalBanner } from "@/components/approvals/ApprovalBanner"
+import { ErrorBoundary } from "@/components/layout/ErrorBoundary"
 import { SafetyTourBanner } from "@/components/layout/SafetyTourBanner"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
@@ -105,7 +106,13 @@ export function AppShell() {
             </div>
           </nav>
           <main className="min-w-0 flex-1 overflow-hidden pb-17 md:pb-0">
-            <Outlet />
+            {/* Keyed on pathname so navigating to a different page after a
+                crash clears the boundary's error state instead of the new
+                page inheriting the old page's fallback (a class component
+                doesn't reset state just because its children prop changes). */}
+            <ErrorBoundary key={location.pathname} variant="page">
+              <Outlet />
+            </ErrorBoundary>
           </main>
         </div>
         <nav className="fixed inset-x-0 bottom-0 z-40 grid h-17 grid-cols-5 border-t border-sidebar-border bg-sidebar/95 px-2 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
