@@ -146,6 +146,13 @@ class StorageConfig(StrictBaseModel):
     # one verbose call can't bloat the database unbounded.
     persist_llm_calls: bool = True
     llm_call_max_chars: int = Field(default=8000, ge=100)
+    # Task/audit history otherwise accumulates forever - `ybm db-clean` exists
+    # (db_tools.py) but is a manual, explicit action. None (the default) keeps
+    # that manual-only behavior unchanged rather than silently starting to
+    # delete a user's history on a fresh upgrade; set this to opt into the
+    # scheduler sweeping rows older than N days on its own, once a day
+    # (scheduler.py's retention_sweep, wired through run_scheduler_forever).
+    retention_days: int | None = Field(default=None, ge=1)
 
 
 class SecretVaultConfig(StrictBaseModel):

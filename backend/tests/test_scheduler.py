@@ -1,9 +1,25 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from agent_control.scheduler import cadence_from_text, next_run_after, objective_from_schedule_text
+import pytest
+
+from agent_control.scheduler import (
+    cadence_from_text,
+    next_run_after,
+    objective_from_schedule_text,
+    run_scheduler_forever,
+)
+from agent_control.schemas import utc_now
+from helpers import make_repos
+
+
+def _backdate_task(repositories, task_id: str, *, days_old: int) -> None:
+    created_at = (utc_now() - timedelta(days=days_old)).isoformat()
+    with repositories.tasks.database.connect() as connection:
+        connection.execute("UPDATE tasks SET created_at = ? WHERE id = ?", (created_at, task_id))
 
 
 def test_cadence_from_text_captures_full_plural_unit() -> None:
@@ -60,3 +76,38 @@ def test_next_run_after_falls_back_to_utc_for_unknown_timezone() -> None:
     base = datetime(2026, 1, 1, 9, 0, tzinfo=ZoneInfo("UTC"))
     next_run = next_run_after("daily", base, "Not/A_Real_Zone")
     assert next_run == base + timedelta(days=1)
+
+
+@pytest.mark.asyncio
+async def test_run_scheduler_forever_sweeps_retention_when_configured(tmp_path) -> None:
+    """retention_days is opt-in (config.py's storage.retention_days defaults
+    to None) - when set, the scheduler's own long-running loop is what
+    applies it, with no separate periodic job to remember to run. The loop
+    never returns on its own, so this bounds the run with wait_for and
+    expects the TimeoutError that produces."""
+    repositories, audit = make_repos(tmp_path)
+    old_task = repositories.tasks.create(objective="old task")
+    _backdate_task(repositories, old_task.id, days_old=60)
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(
+            run_scheduler_forever(repositories, audit, poll_interval_seconds=0.01, retention_days=30),
+            timeout=0.5,
+        )
+
+    assert repositories.tasks.get(old_task.id) is None
+
+
+@pytest.mark.asyncio
+async def test_run_scheduler_forever_leaves_history_alone_when_retention_is_unset(tmp_path) -> None:
+    repositories, audit = make_repos(tmp_path)
+    old_task = repositories.tasks.create(objective="old task")
+    _backdate_task(repositories, old_task.id, days_old=60)
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(
+            run_scheduler_forever(repositories, audit, poll_interval_seconds=0.01, retention_days=None),
+            timeout=0.3,
+        )
+
+    assert repositories.tasks.get(old_task.id) is not None

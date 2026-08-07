@@ -165,6 +165,10 @@ approval_policy:
 storage:
   database_url: "sqlite:///.agent_control/agent_control.db"
   artifact_dir: ".agent_control/artifacts"
+  # Task/audit history is kept forever by default - `ybm db-clean --days N`
+  # stays available as a manual, one-time action either way. Uncomment to
+  # have the scheduler delete rows older than N days on its own, once a day.
+  # retention_days: 90
 
 secrets:
   path: ".agent_control/secrets/vault.json"

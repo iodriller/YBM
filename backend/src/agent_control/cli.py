@@ -343,6 +343,7 @@ async def run_scheduler() -> None:
         audit,
         poll_interval_seconds=settings.scheduler.poll_interval_seconds,
         max_consecutive_failures=settings.scheduler.max_consecutive_failures,
+        retention_days=settings.storage.retention_days,
     )
 
 
