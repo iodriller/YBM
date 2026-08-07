@@ -1,105 +1,86 @@
 # Minimal End-To-End Test
 
-The smallest useful end-to-end test right now is:
+Proves the whole chain is connected: intake → classification → persistence → worker → tool
+execution → audit trail → result delivered.
+
+```mermaid
+flowchart LR
+    M["message"] --> C["Concierge classifies"]
+    C --> T["task persisted"]
+    T --> W["worker picks it up"]
+    W --> X["Operator calls a tool"]
+    X --> R["result back to the channel"]
+    R --> A["audit trail + trace"]
+```
+
+## A. Web chat only (fastest — no Telegram)
+
+Prerequisites: `ybm setup` has run once, and an LLM endpoint is reachable.
+
+1. **Start:** `.\scripts\ybm.ps1 start`
+2. **Open** http://127.0.0.1:8765/admin → **Chat**
+3. **Verify the LLM** — Settings → Orchestrator LLM → **Test**. This must pass; all text is
+   classified by it.
+4. **Ask a question:** `what can you do?` → answers directly, no task created.
+5. **Give it a task:** `what tasks are running right now?` → creates a task that calls
+   `task.status` and replies.
+6. **Confirm:**
+   - Tasks page shows the task reaching `completed`
+   - `ybm trace-task <task_id>` lists the tool call and its result
+   - Audit page shows the classification and task-created events
+
+That exercises every layer except channel-specific intake.
+
+## B. Telegram (adds real channel intake)
+
+Extra prerequisites: a BotFather token, plus your Telegram user ID and chat ID.
+
+1. **Add the token** to `.env`:
+   ```powershell
+   TELEGRAM_BOT_TOKEN=your_bot_token_here
+   ```
+2. **Configure** the Telegram panel in the admin console — Enabled ✅, Token Env
+   `TELEGRAM_BOT_TOKEN`, your user ID and chat ID, Polling ✅ — and **Save**.
+   > An empty allowlist denies every message.
+3. **Restart:** `.\scripts\ybm.ps1 start`
+4. **Send** `what tasks are running right now?` to your bot, then `/tasks`.
+5. **Confirm:** `/tasks` lists it, the reply comes back to the same chat, and the Tasks page shows
+   it completing.
+
+## C. File-producing task (optional, needs filesystem write)
+
+Requires **File system** access. With `filesystem.write` enabled, send:
 
 ```text
-Telegram web-app request -> backend polling -> local LLM classification -> conversation memory update -> persisted task -> worker pickup -> Copilot creator step when enabled -> generated workspace -> localhost preview URL -> Telegram result
+create a hello world web app and launch it
 ```
 
-This proves Telegram auth, polling, local LLM classification, persistence, audit logging, worker execution, admin monitoring, and visible local output are connected.
+Expect a localhost preview URL plus files under `.agent_control/workspaces/task_<id>`.
 
-## Prerequisites
+> The Operator decides its own tool sequence each run — there is no fixed plan template, so the
+> exact steps vary. Judge the result, not the route.
 
-- `.\scripts\ybm.ps1 setup` has been run once (installs dependencies, bootstraps config/.env).
-- A Telegram bot token from `BotFather`.
-- Your Telegram user ID and chat ID.
-- If you use a local LocalDeploy checkout, `YBM_LOCALDEPLOY_ROOT` is set in `.env`; otherwise
-  `llm.profiles` in `config/config.yaml` points at a reachable OpenAI-compatible endpoint.
-
-## 1. Add The Telegram Token
-
-Create or update `.env` in the repo root:
-
-```powershell
-TELEGRAM_BOT_TOKEN=your_bot_token_here
-```
-
-## 2. Start Backend And Admin UI
-
-```powershell
-.\scripts\ybm.ps1 start
-```
-
-Open:
-
-```text
-http://127.0.0.1:8765/admin
-```
-
-If the React console (`frontend/`) hasn't been built yet at this checkout, this serves a small
-pointer page explaining how to build it (`ybm ui-build`). The JSON API underneath it
-(`/admin/api/*`) is unchanged either way.
-
-## 3. Confirm The Local Orchestrator LLM
-
-Check `llm.default_profile` in `config/config.yaml` for the active profile and its `base_url`. In the Orchestrator LLM panel, click `Test`.
-
-The test must pass before Telegram text can spawn tasks, because text messages are classified by the local orchestrator LLM.
-
-## 4. Configure Telegram In Admin
-
-In the Telegram panel:
-
-```text
-Enabled: checked
-Token Env: TELEGRAM_BOT_TOKEN
-User IDs: your Telegram message.from.id
-Chat IDs: your Telegram message.chat.id
-Polling: checked
-```
-
-Click `Save`.
-
-## 5. Send A Task From Telegram
-
-Send this to your bot:
-
-```text
-create a modern web app about ferrets and launch it
-```
-
-Then send:
-
-```text
-/tasks
-```
-
-Expected result:
-
-- `/tasks` replies with the new task.
-- The first message receives `Task spawned: <task_id>`.
-- The admin UI Tasks section shows the task activity moving from queued to active or completed.
-- When the worker completes, Telegram receives a localhost URL and workspace path.
-- The generated files are under `.agent_control/workspaces/task_<id>`.
-- If VS Code/Copilot write access is enabled, the plan includes a Copilot creator step before workspace serving.
-- The admin UI Audit section shows raw message, classification, and spawned task events.
-
-## 6. Check From PowerShell
+## Check from the API
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8765/admin/api/summary | ConvertTo-Json -Depth 8
 ```
 
-Look for:
+Look for `tasks[0].objective`, `integrations.telegram.enabled`, and
+`integrations.telegram.token_present`.
 
-```text
-tasks[0].objective
-integrations.telegram.enabled
-integrations.telegram.token_present
-```
-
-## 7. Stop The Test
+## Stop
 
 ```powershell
 .\scripts\ybm.ps1 stop
 ```
+
+## If it stalls
+
+| Symptom | Check |
+|---|---|
+| Message ignored | Allowlist — an empty one denies everything |
+| Task stuck `received` | Is the worker running? `ybm status` |
+| Task `awaiting_approval` | Approve it in the console, or on Telegram |
+| Tool "denied" | Capability is off — see [CAPABILITIES.md](CAPABILITIES.md) |
+| Anything else | `ybm trace-task <task_id>` and `ybm logs worker -f` |

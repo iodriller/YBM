@@ -7,29 +7,43 @@ YBM:  Sorted 41 files into 6 folders (Images, Documents, Archives, Installers,
       are in this task's trace.
 ```
 
-That's the shape of it: real access to your machine — filesystem, terminal, browser, VS Code, a
-scheduler, MCP tools, even desktop control — through Telegram, WhatsApp, or a built-in web chat, with every
-capability **disabled by default**. Dangerous operations require an explicit, one-shot, expiring
-approval that the runtime enforces — not the model, not a config flag, and not bypassable by an
-"allow everything" mode. Every request, approval, and result is logged, and every task has a full
-trace you can open and check.
+Real access to your machine — filesystem, terminal, browser, VS Code, a scheduler, MCP tools,
+desktop control — through Telegram, WhatsApp, or a built-in web chat, with **every capability
+disabled by default**. Dangerous operations need an explicit, one-shot, expiring approval that the
+*runtime* enforces: not the model, not a config flag, and not bypassable by an "allow everything"
+mode.
 
-## Why YBM Control
+## Why
 
-Most self-hosted agent frameworks ask you to trust the model. YBM Control is built around the
-assumption that you shouldn't have to.
+Most self-hosted agent frameworks ask you to trust the model. YBM assumes you shouldn't have to.
 
 | | |
 |---|---|
-| **Approvals the model can't bypass** | High-impact operations (running generated code, creating a schedule, installing an MCP server, ...) are gated at the runtime level — `ToolDefinition.approval_required_operations` — independent of any access-mode preset, including "Full Access." The model setting `approved: true` in its own output has no effect. |
-| **Secure by default, not secure-if-configured** | Terminal execution, filesystem access, browser automation, desktop control, dependency installs, and git push all start **off**. A capability policy engine with per-capability risk ceilings and a global approval floor sits in front of every tool call. |
-| **A real audit trail** | Every tool request, policy decision, and approval is a structured, redacted audit event. Configured secrets are redacted at logging and response boundaries, and vault-backed tools inject them without intentionally exposing their values — redaction is a real safeguard, not a substitute for keeping secrets out of prompts and outputs (see [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)). |
-| **Tested against recorded reality, not mocks** | 30+ deterministic scenario tests replay real, previously-recorded LLM responses through the actual worker/policy/executor stack — no network calls, no flake, no API cost, and they catch real regressions (see [docs/HISTORY.md](docs/HISTORY.md) for examples). |
-| **A published threat model** | [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) states trust boundaries and known limitations up front, instead of implying there are none. |
+| **Approvals the model can't bypass** | High-impact operations are gated at the runtime level — `ToolDefinition.approval_required_operations` — independent of any access-mode preset, including "Full Access". A model setting `approved: true` in its own output has no effect. |
+| **Secure by default** | Terminal, filesystem, browser, desktop, dependency installs, and Git push all start **off**. A policy engine with per-capability risk ceilings and a global approval floor sits in front of every tool call. |
+| **A real audit trail** | Every tool request, policy decision, and approval is a structured, redacted audit event. Every task has a full trace you can open and check. |
+| **Tested against recorded reality** | 30+ deterministic scenario tests replay real recorded LLM responses through the actual worker/policy/executor stack — no network, no flake, no API cost. |
+| **A published threat model** | [Trust boundaries and known limitations](docs/THREAT_MODEL.md) stated up front. |
 
-This is a smaller, younger project than the large general-purpose agent frameworks in this space.
-What it's built to do well is the governance layer: give an agent real capability without giving
-up visibility or control over what it just did.
+This is a smaller, younger project than the big general-purpose agent frameworks. What it does
+well is the **governance layer**: real capability without losing visibility or control.
+
+## How it works
+
+Three agents, many tools. One LLM call each.
+
+```mermaid
+flowchart LR
+    M["Message<br/>Telegram · WhatsApp · web"] --> C{"Concierge<br/>chat or task?"}
+    C -->|chat| R["Reply"]
+    C -->|task| O["Operator loop<br/>observe → decide → act"]
+    O -->|every tool call| P{"Policy gate<br/>+ approvals"}
+    P --> O
+    O --> A["Auditor<br/>grounds the answer"]
+    A --> N["Result + full trace"]
+```
+
+Details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Quickstart
 
@@ -42,118 +56,81 @@ curl -fsSL https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.
 iwr https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.ps1 -UseBasicParsing | iex
 ```
 
-This clones the repo, installs dependencies, and runs an interactive wizard: it detects a local
-LLM (Ollama or an existing LocalDeploy checkout) or asks for a cloud API key, offers to set up
-Telegram (optional — the built-in web chat needs no setup), writes your config, checks the
-environment, and starts the stack. A couple of minutes on a machine with nothing installed but
-git and Python 3.12+.
+Clones, installs, then runs a wizard: detects a local LLM (Ollama or a LocalDeploy checkout) or
+asks for a cloud key, offers Telegram setup (optional — the web chat needs none), writes your
+config, checks the environment, and starts the stack.
 
-That's the only time a terminal command is needed. After that, double-click **`YBM.bat`** in
-the repo folder — installs anything new, checks for an update, and opens the console. Nothing to
-remember, and running it again when everything's already current just starts the console.
-
-Already have it running? Talk to it at `http://127.0.0.1:8765/admin`.
+That's the only terminal command needed. After that, double-click **`YBM.bat`**. Already running?
+**http://127.0.0.1:8765/admin**
 
 ## What it can do
 
-Filesystem search/organize inside allowed roots, terminal-run coding via Codex/Claude
-Code/Copilot CLI or a bounded local/Docker Python interpreter, Chrome browser automation, VS Code
-bridge, desktop screenshot/control (Windows), scheduled recurring tasks, MCP client/server, PDF
-and document generation, per-task LLM cost tracking, parallel tool calls and sub-agent
-delegation, a persona/preferences layer, and local keyword search over your own documents — all
-through Telegram, WhatsApp, or the local web chat, all policy-gated.
+Filesystem search/organize inside allowed roots · terminal-run coding via Codex/Claude Code/Copilot
+CLI or a bounded Python interpreter · Chrome automation · VS Code bridge · desktop
+screenshot/control (Windows) · recurring schedules · MCP client and server · PDF and document
+generation · per-task cost tracking · parallel tool calls and sub-agent delegation · a
+persona/preferences layer · local keyword search over your own documents.
 
-Structured memory (facts with a category, confidence, and provenance — did the agent save it
-itself mid-task, or did you type it into the console — remember/edit/forget from a dedicated
-Memory page) and a skill catalog (install/uninstall from the console, with an informational tag
-showing which tools a skill's instructions reference — not an enforced permission) round out the
-admin console alongside Access, Tasks, and Chat.
-
-WhatsApp is a second channel alongside Telegram (via [Baileys](https://github.com/WhiskeySockets/Baileys),
-an unofficial client — no Meta developer account or public webhook required). It's disabled by
-default and requires linking your own number by scanning a QR code; see
-[docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md#5-link-whatsapp-optional). v1 is plain text only — no
-buttons, voice, or file delivery yet, unlike Telegram.
-
-See [docs/CAPABILITIES.md](docs/CAPABILITIES.md) for the full, detailed list and
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the pieces fit together.
+Plus structured memory (facts with category, confidence, and provenance) and an installable skill
+catalog. Full list: [docs/CAPABILITIES.md](docs/CAPABILITIES.md).
 
 ## Development
-
-Cross-platform, once installed:
 
 ```bash
 ybm doctor            # check the environment
 ybm start             # start the stack
 ybm status            # what's running
-ybm logs worker -f    # follow one service's log
-ybm stop              # stop everything
+ybm logs worker -f    # follow one service
+ybm trace-task <id>   # post-mortem a task
+ybm stop
 ```
 
-Windows also has the original, equally-supported `scripts\ybm.ps1` interface (`run`, `setup`,
-`doctor`, `start`, `stop`, `status`, `logs`, `test`, `db`, `config`, `clean`, `trace`, `scenario`,
-`package-extension`, `tray`, `autostart`, `backup`, `check-updates`, and more — run
-`.\scripts\ybm.ps1 help` for the full list). `ybm autostart enable` puts a system tray icon
-(Open Admin Console / Start / Stop / Restart / Status) in your Startup folder so it launches at
-login — no terminal needed after that one command.
+Windows also has `scripts\ybm.ps1` (two-word subcommands: `ybm.ps1 trace <id>`), equally
+supported — run `.\scripts\ybm.ps1 help` for the full list. `ybm autostart enable` adds a tray
+icon that launches at login.
 
-The admin console is a React app (`frontend/`) served by the backend at `/admin` — see
-[docs/UI_REWRITE_PLAN.md](docs/UI_REWRITE_PLAN.md) for its design and phase-by-phase build record.
-`ybm ui-dev` runs it with hot reload against a running backend; `ybm ui-build` builds it into
-`backend/src/agent_control/static/admin/`, served directly at `/admin` once built.
+The admin console is a React app (`frontend/`) served at `/admin`. `ybm ui-dev` runs it with hot
+reload; `ybm ui-build` builds it into the backend's static directory.
 
-Run tests:
+Tests:
 
 ```bash
-cd backend && uv run --frozen pytest
+cd backend
+uv sync --frozen --extra test --extra dev   # first time only
+uv run --frozen pytest
 ```
 
-`backend/tests/scenario/` is a fast, deterministic tier: the real worker/registry/policy/executor
-stack against a temp filesystem, with recorded LLM responses replayed from
-`backend/tests/scenario/fixtures/` — no network, no GPU, no API spend, included in the run above.
-When a change alters a prompt, a tool's schema, or the workspace layout, affected fixtures fail
-loudly instead of silently replaying stale data; re-record just those with
-`.\scripts\ybm.ps1 scenario record <name>` (makes real LLM calls — free against a local profile,
-review the regenerated fixture before committing).
+`backend/tests/scenario/` is a fast deterministic tier — the real worker/registry/policy/executor
+stack against a temp filesystem, replaying recorded LLM responses. When a change alters a prompt,
+tool schema, or workspace layout, affected fixtures fail loudly rather than replaying stale data;
+re-record just those with `.\scripts\ybm.ps1 scenario record <name>`.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development workflow, and
-[docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md) for manual (non-wizard) setup and every configurable
-runtime detail.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow.
 
 ## Docs
 
-- [Architecture and message flow](docs/ARCHITECTURE.md) — how the system works now, plus known gaps
-- [Capabilities](docs/CAPABILITIES.md) — the full implemented/not-yet-implemented list
-- [UI rewrite plan](docs/UI_REWRITE_PLAN.md) — the React admin console's design and build record
-- [UI/UX audit and roadmap](docs/UI_UX_AUDIT.md) — current feature coverage, competitive review, gaps, and phased improvements
-- [Threat model](docs/THREAT_MODEL.md) — trust boundaries, enforced controls, limitations
-- [Security policy](SECURITY.md) — supported versions and private vulnerability reporting
-- [Contributing](CONTRIBUTING.md)
-- [History](docs/HISTORY.md) — why it's built this way, and the full phase-by-phase record
-- [Local setup](docs/LOCAL_SETUP.md)
-- [Minimal end-to-end test](docs/MINIMAL_END_TO_END_TEST.md)
-- [Database inspection](docs/DATABASE_INSPECTION.md)
+| | |
+|---|---|
+| [Architecture](docs/ARCHITECTURE.md) | How a message becomes an answer |
+| [Capabilities](docs/CAPABILITIES.md) | Every tool, what unlocks it, platform limits |
+| [Local setup](docs/LOCAL_SETUP.md) | Install, configure, run |
+| [Minimal E2E test](docs/MINIMAL_END_TO_END_TEST.md) | Prove the chain works in 5 minutes |
+| [Threat model](docs/THREAT_MODEL.md) | Trust boundaries and enforced controls |
+| [Database inspection](docs/DATABASE_INSPECTION.md) | Tables and how to read a run |
+| [History](docs/HISTORY.md) | *Archive* — why it's built this way |
+| [UI rewrite plan](docs/UI_REWRITE_PLAN.md) · [UI/UX audit](docs/UI_UX_AUDIT.md) | *Archive* — console design record |
 
-## Safety Defaults
+## Safety
 
-The example config disables terminal execution, filesystem access, VS Code access, desktop
-screenshots, desktop control, computer use, browser automation, dependency installation, and Git
-pushes.
+Intended for **one trusted operator on a local machine**. Keep the backend, admin UI, VS Code
+bridge, model endpoints, and preview servers on loopback. It is not an Internet-facing or
+multi-tenant control plane.
 
-YBM Control is intended for one trusted operator on a local machine. Keep the backend, admin UI, VS Code
-bridge, model endpoints, and generated preview servers bound to loopback. It is not designed as
-an Internet-facing or multi-tenant control plane.
+Tool and memory content is untrusted data — web pages, documents, HTTP bodies, MCP results,
+generated code, prior summaries. Review the exact tool parameters before approving. Keep `.env`,
+`config/config.yaml`, `agent_control.db`, logs, screenshots, and `.agent_control/` private.
 
-Tool and memory content is untrusted data, including web pages, documents, HTTP bodies, MCP
-results, generated code, and prior summaries. Runtime tool definitions enforce capability and
-minimum operation risk; the global approval floor remains active even when a capability does not
-otherwise require approval. Persistent and critical operations use exact, expiring, one-shot
-approvals. Access-mode presets, including Full Access, do not fabricate or bypass those
-approvals.
-
-Review the exact tool parameters before approving. Keep `.env`, `config/config.yaml`,
-`agent_control.db`, logs, screenshots, generated workspaces, and `.agent_control/` private. See
-the [threat model](docs/THREAT_MODEL.md) before enabling high-impact capabilities or changing
+Read the [threat model](docs/THREAT_MODEL.md) before enabling high-impact capabilities or changing
 repository visibility.
 
 ## License
