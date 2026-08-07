@@ -118,6 +118,19 @@ def test_is_loopback_host_covers_full_loopback_range(host: str) -> None:
     assert is_loopback_host(host) is True
 
 
-@pytest.mark.parametrize("host", ["0.0.0.0", "10.0.0.5", "192.168.1.1", "example.com", "", "not-an-ip"])
+@pytest.mark.parametrize(
+    "host",
+    [
+        "0.0.0.0",
+        "10.0.0.5",
+        "192.168.1.1",
+        # An IPv4-mapped *public* address must not inherit loopback just
+        # because it is unwrapped - the mapping is followed, not assumed safe.
+        "::ffff:8.8.8.8",
+        "example.com",
+        "",
+        "not-an-ip",
+    ],
+)
 def test_is_loopback_host_rejects_non_loopback(host: str) -> None:
     assert is_loopback_host(host) is False
