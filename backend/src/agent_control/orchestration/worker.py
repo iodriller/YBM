@@ -14,6 +14,7 @@ from agent_control.orchestration.auditor import AuditorService
 from agent_control.orchestration.executor import ToolExecutor
 from agent_control.orchestration.fulfillment import validate_fulfillment
 from agent_control.orchestration.operator import OperatorLoopService
+from agent_control.orchestration.signals import sweep_expired_approvals
 from agent_control.recovery import RetryPolicy
 from agent_control.schemas import (
     ApprovalStatus,
@@ -249,6 +250,15 @@ class TaskWorker:
             # is the other half - it flips the task back to RUNNING the
             # moment a decision lands, so it becomes claimable again without
             # needing this same task re-polled.
+            #
+            # That handles a human deciding in time. sweep_expired_approvals()
+            # is the timeout side of the same gap: nothing else calls it, so
+            # without this a task whose approval simply expires - nobody
+            # decided either way - sits in AWAITING_APPROVAL forever for an
+            # operator who never opens the admin console (Telegram/WhatsApp
+            # only). Every tick, not just when a task was actually claimed,
+            # since the tasks it sweeps are never claimable by process_next.
+            sweep_expired_approvals(self.repositories)
             if processed is None:
                 await asyncio.sleep(poll_interval_seconds)
 

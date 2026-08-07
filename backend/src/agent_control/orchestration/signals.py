@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 
 from agent_control.config import AppSettings
-from agent_control.schemas import AuditEventType, TaskSignal, TaskStatus
+from agent_control.schemas import ApprovalStatus, AuditEventType, TaskSignal, TaskStatus
 from agent_control.storage.audit import AuditLogger
 from agent_control.storage.repositories import Repositories
 
@@ -157,6 +157,46 @@ def requeue_after_approval_decision(repositories: Repositories, task_id: str) ->
     if task is None or task.status != TaskStatus.AWAITING_APPROVAL:
         return
     repositories.tasks.update_metadata(task_id, task.metadata, TaskStatus.RUNNING)
+
+
+def sweep_expired_approvals(repositories: Repositories, limit: int = 200) -> list[str]:
+    """Safety net for an approval nobody decided before it expired.
+
+    requeue_after_approval_decision() above only runs right after a human
+    approves or rejects. If nobody decides in time, nothing calls it - and
+    since AWAITING_APPROVAL was deliberately removed from
+    worker.WORKABLE_STATUSES (see that function's docstring), the worker
+    never revisits the task on its own either. Without this, a task whose
+    approval expires is stuck in AWAITING_APPROVAL forever unless something
+    happens to call ApprovalRepository.list_pending() (the admin console
+    polls it) - which never happens for an operator who only uses Telegram
+    or WhatsApp and never opens the console.
+
+    Calls expire_stale() first so a PENDING row past its own expires_at is
+    flipped to EXPIRED before this looks at it, then requeues every
+    AWAITING_APPROVAL task whose approval is no longer PENDING (expired,
+    or decided by a race this task missed) back to RUNNING via the same
+    one-line op decision callers use. The next worker poll's
+    _process_operator_awaiting_approval sees the non-approved status and
+    transitions the task to BLOCKED, which - unlike AWAITING_APPROVAL - is
+    in NOTIFIABLE_STATUSES, so the operator actually hears about it instead
+    of the task sitting in silent limbo.
+
+    Meant to run on every worker poll tick alongside process_next(); cheap
+    (one indexed UPDATE, one indexed SELECT) and idempotent, so calling it
+    from more than one periodic loop is harmless. Returns the ids requeued.
+    """
+    repositories.approvals.expire_stale()
+    requeued: list[str] = []
+    for task in repositories.tasks.list_by_statuses([TaskStatus.AWAITING_APPROVAL], limit=limit):
+        pending_call = task.metadata.get("operator_pending_call") or {}
+        approval_id = str(pending_call.get("approval_id") or "")
+        approval = repositories.approvals.get(approval_id) if approval_id else None
+        if approval is None or approval.status == ApprovalStatus.PENDING:
+            continue
+        requeue_after_approval_decision(repositories, task.id)
+        requeued.append(task.id)
+    return requeued
 
 
 def _resume_target(current_status: TaskStatus, paused_from_status: str | None) -> TaskStatus:

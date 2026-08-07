@@ -13,7 +13,11 @@ import json
 from datetime import timedelta
 
 from agent_control.config import AppSettings
-from agent_control.orchestration.signals import apply_task_signal, requeue_after_approval_decision
+from agent_control.orchestration.signals import (
+    apply_task_signal,
+    requeue_after_approval_decision,
+    sweep_expired_approvals,
+)
 from agent_control.schemas import (
     ApprovalGrant,
     ApprovalRequest,
@@ -218,3 +222,81 @@ def test_requeue_after_approval_decision_is_a_noop_for_an_unknown_task(tmp_path)
     repositories, audit = make_repos(tmp_path)
 
     requeue_after_approval_decision(repositories, "task_does_not_exist")  # must not raise
+
+
+def _awaiting_task_with_approval(repositories, *, expires_at) -> tuple[str, str]:
+    """A task parked in AWAITING_APPROVAL the way the real worker leaves one:
+    metadata carries operator_pending_call.approval_id pointing at a real,
+    still-PENDING ApprovalRequest row."""
+    task = repositories.tasks.create("write a report")
+    approval = repositories.approvals.create(
+        ApprovalRequest(
+            task_id=task.id,
+            capability=Capability.FILESYSTEM_WRITE,
+            risk_level=RiskLevel.HIGH,
+            summary="write a file",
+            expires_at=expires_at,
+        )
+    )
+    metadata = {
+        **task.metadata,
+        "operator_pending_call": {"tool_name": "filesystem.manage", "approval_id": approval.id, "tool_input": {}},
+    }
+    repositories.tasks.update_metadata(task.id, metadata, TaskStatus.AWAITING_APPROVAL)
+    return task.id, approval.id
+
+
+def test_sweep_expired_approvals_requeues_a_task_nobody_decided_on(tmp_path) -> None:
+    """The timeout side of requeue_after_approval_decision's gap: nothing
+    decided this approval before its deadline, and nothing else would ever
+    notice for an operator who only uses Telegram/WhatsApp and never opens
+    the admin console (whose list_pending() is the only other caller of
+    approvals.expire_stale())."""
+    repositories, audit = make_repos(tmp_path)
+    task_id, approval_id = _awaiting_task_with_approval(repositories, expires_at=utc_now() - timedelta(minutes=1))
+
+    requeued = sweep_expired_approvals(repositories)
+
+    assert requeued == [task_id]
+    assert repositories.tasks.get(task_id).status == TaskStatus.RUNNING
+    assert repositories.approvals.get(approval_id).status == ApprovalStatus.EXPIRED
+
+
+def test_sweep_expired_approvals_leaves_a_live_pending_approval_alone(tmp_path) -> None:
+    repositories, audit = make_repos(tmp_path)
+    task_id, approval_id = _awaiting_task_with_approval(repositories, expires_at=utc_now() + timedelta(minutes=30))
+
+    requeued = sweep_expired_approvals(repositories)
+
+    assert requeued == []
+    assert repositories.tasks.get(task_id).status == TaskStatus.AWAITING_APPROVAL
+    assert repositories.approvals.get(approval_id).status == ApprovalStatus.PENDING
+
+
+def test_sweep_expired_approvals_requeues_a_task_whose_approval_was_decided_by_a_missed_race(tmp_path) -> None:
+    """Belt-and-suspenders: if a decision path somehow updated the approval
+    row without also calling requeue_after_approval_decision, this sweep
+    still catches it on the very next tick instead of leaving the task
+    stranded in AWAITING_APPROVAL indefinitely."""
+    repositories, audit = make_repos(tmp_path)
+    task_id, approval_id = _awaiting_task_with_approval(repositories, expires_at=utc_now() + timedelta(minutes=30))
+    repositories.approvals.decide_pending(approval_id, ApprovalStatus.REJECTED)
+
+    requeued = sweep_expired_approvals(repositories)
+
+    assert requeued == [task_id]
+    assert repositories.tasks.get(task_id).status == TaskStatus.RUNNING
+
+
+def test_sweep_expired_approvals_ignores_a_task_with_no_pending_call_on_record(tmp_path) -> None:
+    """A task could reach AWAITING_APPROVAL through some other path without
+    operator_pending_call set - must skip it rather than raise or requeue
+    something with nothing to resume."""
+    repositories, audit = make_repos(tmp_path)
+    task = repositories.tasks.create("write a report")
+    repositories.tasks.update_metadata(task.id, task.metadata, TaskStatus.AWAITING_APPROVAL)
+
+    requeued = sweep_expired_approvals(repositories)
+
+    assert requeued == []
+    assert repositories.tasks.get(task.id).status == TaskStatus.AWAITING_APPROVAL
