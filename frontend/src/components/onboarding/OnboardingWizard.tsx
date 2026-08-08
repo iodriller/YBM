@@ -286,9 +286,28 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                         value={telegramToken}
                         onChange={(e) => setTelegramToken(e.target.value)}
                       />
+                      <p className="text-xs text-muted-foreground">
+                        From{" "}
+                        <a
+                          href="https://t.me/BotFather"
+                          target="_blank"
+                          rel="noreferrer"
+                          className="underline underline-offset-2"
+                        >
+                          @BotFather
+                        </a>{" "}
+                        — send it <code className="font-mono">/newbot</code>.
+                      </p>
                     </div>
                   )}
                 </>
+              )}
+
+              {telegramEnabled && (
+                <p className="text-xs text-muted-foreground">
+                  One more step after this: Settings → Telegram → <b>Find me</b>, to say who is
+                  allowed to message the bot. Until then it refuses everyone, including you.
+                </p>
               )}
 
               <div className="flex justify-between">
@@ -314,7 +333,12 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                       },
                       {
                         onSuccess: () => {
-                          toast.success("Telegram enabled.")
+                          // Deliberately not "Telegram enabled." - this step
+                          // writes no allowlist, and an empty allowlist denies
+                          // every message. Reporting plain success here is what
+                          // sent people off to message a bot that would never
+                          // answer, with nothing anywhere saying why.
+                          toast.success("Token saved — now pick who may use it.")
                           setStep("done")
                         },
                         onError: (err) => {
@@ -333,6 +357,15 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
           {step === "done" && (
             <>
               <p className="text-sm font-medium">You&apos;re set.</p>
+              {telegramEnabled && (
+                <div className="rounded-md border border-border bg-muted/30 p-3">
+                  <p className="text-sm font-medium">One thing left for Telegram</p>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Go to <b>Settings → Telegram</b>, message your bot, and press <b>Find me</b>.
+                    Nobody is on the allowlist yet, so the bot refuses every message until then.
+                  </p>
+                </div>
+              )}
               <p className="text-sm text-muted-foreground">
                 Everything dangerous is off by default. Enable capabilities in Access when you&apos;re ready.
               </p>

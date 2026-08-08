@@ -65,9 +65,15 @@ def test_admin_get_authenticates_with_configured_token(monkeypatch) -> None:
     assert captured["timeout"] == 7
 
 
-def test_preflight_uses_localdeploy_health_endpoint(monkeypatch, tmp_path) -> None:
+def test_preflight_checks_the_configured_llm_not_localdeploy(monkeypatch, tmp_path) -> None:
+    """Preflight must validate whichever LLM the stack is configured to use.
+
+    It used to ping LocalDeploy's :8000/health unconditionally, so an install
+    pointed at Ollama or a cloud endpoint failed every case before starting,
+    reporting "LocalDeploy not responding" for a service it was never meant to
+    run.
+    """
     runner = _runner_module()
-    urls: list[tuple[str, float]] = []
 
     env_path = tmp_path / ".env"
     db_path = tmp_path / "agent_control.db"
@@ -79,10 +85,17 @@ def test_preflight_uses_localdeploy_health_endpoint(monkeypatch, tmp_path) -> No
     monkeypatch.setattr(runner, "DB_PATH", db_path)
     monkeypatch.setattr(runner, "CASES_PATH", cases_path)
     monkeypatch.setattr(runner, "admin_get", lambda _path: {"tasks": []})
-    monkeypatch.setattr(runner, "ping", lambda url, *, timeout: urls.append((url, timeout)) or True)
 
+    from agent_control import bootstrap
+
+    monkeypatch.setattr(bootstrap, "check_llm_configured", lambda _settings: True)
     assert runner._preflight() == []
-    assert urls == [(f"{runner.LOCALDEPLOY_BASE}/health", 5.0)]
+
+    monkeypatch.setattr(bootstrap, "check_llm_configured", lambda _settings: False)
+    issues = runner._preflight()
+    assert len(issues) == 1
+    assert "not reachable" in issues[0]
+    assert "LocalDeploy" not in issues[0]
 
 
 def test_diagnose_turn_enforces_structured_assertions() -> None:

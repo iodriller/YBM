@@ -9,6 +9,7 @@ venv/
 .env.*
 !.env.example
 config/config.yaml
+config/config.yaml.bak-*
 agent_control.db
 .agent_control/
 *.session

@@ -568,9 +568,21 @@ def _walk_limited(root: Path, *, max_depth: int):
 
 def _entry(root: Path, path: Path) -> dict[str, Any]:
     stat = path.stat()
+    resolved = path.resolve()
+    try:
+        relative = str(resolved.relative_to(root.resolve()))
+    except ValueError:
+        # Searches span several allowed roots (see _alias_roots), so an entry
+        # found under one root can be paired with another here. relative_to
+        # then raises, and the raw "'C:\\...' is not in the subpath of
+        # 'C:\\...'" surfaced to the operator as if the tool had broken -
+        # unreachable while only one root was configured, which is why it
+        # went unnoticed. The absolute path is already in "path"; this field
+        # is a display convenience, so degrade instead of failing the call.
+        relative = resolved.name
     return {
-        "path": str(path.resolve()),
-        "relative_path": str(path.resolve().relative_to(root.resolve())),
+        "path": str(resolved),
+        "relative_path": relative,
         "is_dir": path.is_dir(),
         "size_bytes": stat.st_size if path.is_file() else None,
         "modified_at": stat.st_mtime,

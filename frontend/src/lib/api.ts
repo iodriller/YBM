@@ -849,6 +849,22 @@ const LLMPresetSchema = z.object({
   active: z.boolean(),
 }).passthrough()
 
+/** Messages the bot refused. Always recorded with the sender's id and an
+ * exact reason; surfacing it is what turns "the bot ignores me" into a
+ * fixable statement. */
+const TelegramDenialsSchema = z.object({
+  count: z.number().int(),
+  latest: z.object({
+    at: z.string(),
+    reason: z.string(),
+    explanation: z.string(),
+    user_id: z.number().int().nullable(),
+    chat_id: z.number().int().nullable(),
+  }).nullable(),
+  user_ids: z.array(z.number().int()),
+})
+export type TelegramDenials = z.infer<typeof TelegramDenialsSchema>
+
 const ToolItemSchema = z.object({
   name: z.string(),
   group: z.string(),
@@ -902,6 +918,7 @@ const SettingsSummarySchema = z.object({
       token_present: z.boolean(),
       allowed_user_count: z.number().int(),
       allowed_chat_count: z.number().int(),
+      recent_denials: TelegramDenialsSchema.optional(),
     }).passthrough(),
     llm: z.object({
       default_profile: z.string(),
@@ -995,6 +1012,47 @@ export function updateTelegramConfig(input: TelegramConfigInput) {
   return apiFetch("/api/config/telegram", ConfigUpdateResponseSchema, {
     method: "POST",
     body: JSON.stringify(input),
+  })
+}
+
+const TelegramTestResponseSchema = z.object({
+  ok: z.boolean(),
+  bot_id: z.number().int().nullable(),
+  bot_username: z.string().nullable(),
+  bot_name: z.string().nullable(),
+})
+export type TelegramTestResult = z.infer<typeof TelegramTestResponseSchema>
+
+/** Verifies a token with Telegram before it is saved anywhere, and reports
+ * the handle it belongs to. Pass null to test the already-saved token. */
+export function testTelegram(botToken: string | null) {
+  return apiFetch("/api/config/telegram/test", TelegramTestResponseSchema, {
+    method: "POST",
+    body: JSON.stringify({ bot_token: botToken }),
+  })
+}
+
+const TelegramOperatorSchema = z.object({
+  user_id: z.number().int(),
+  chat_id: z.number().int().nullable().optional(),
+  username: z.string().nullable().optional(),
+  display_name: z.string().nullable().optional(),
+  was_allowed: z.boolean(),
+  last_seen: z.string().optional(),
+  source: z.string(),
+})
+export type TelegramOperator = z.infer<typeof TelegramOperatorSchema>
+
+const TelegramDetectResponseSchema = z.object({
+  candidates: z.array(TelegramOperatorSchema),
+})
+
+/** Finds who has messaged the bot, so the allowlist can be filled by picking
+ * a person instead of typing a number Telegram never shows the user. */
+export function detectTelegramOperator(botToken: string | null) {
+  return apiFetch("/api/config/telegram/detect-operator", TelegramDetectResponseSchema, {
+    method: "POST",
+    body: JSON.stringify({ bot_token: botToken }),
   })
 }
 

@@ -216,9 +216,30 @@ def _check_node() -> Check:
         return Check("Node.js", "ok", node)
     return Check(
         "Node.js", "warn",
-        "not found on PATH - only needed for the WhatsApp channel and building the admin "
-        "console; install Node.js 20+ (https://nodejs.org) if you need either",
+        "not found on PATH - needed to build the admin console and for the WhatsApp "
+        "channel; install Node.js 20+ (https://nodejs.org) or `winget install "
+        "OpenJS.NodeJS.LTS`",
     )
+
+
+def _check_admin_console() -> Check:
+    """Whether an admin console actually exists to serve.
+
+    The Node check alone was a misleading signal: it reports a tool, while
+    what the operator experiences is a console that either loads or doesn't.
+    A machine with no Node and no build still passed doctor with "0 failures"
+    while /admin served nothing but build instructions - so the one check that
+    described the situation understated it as an optional dependency.
+    """
+    if (Path("backend/src/agent_control/static/admin") / "index.html").exists():
+        return Check("Admin console", "ok", "built - served at /admin")
+    if shutil.which("npm") is None:
+        return Check(
+            "Admin console", "warn",
+            "NOT BUILT and npm is missing, so /admin has no console at all - install "
+            "Node.js 20+ then run `ybm ui-build` (the JSON API at /admin/api/* still works)",
+        )
+    return Check("Admin console", "warn", "not built yet - run `ybm ui-build`")
 
 
 def _check_whatsapp(settings: AppSettings) -> Check:
@@ -269,7 +290,9 @@ def _check_vault(settings: AppSettings) -> Check:
 
 
 def collect_checks() -> list[Check]:
-    checks: list[Check] = [_check_python(), _check_venv(), *_check_modules(), _check_node()]
+    checks: list[Check] = [
+        _check_python(), _check_venv(), *_check_modules(), _check_node(), _check_admin_console(),
+    ]
     config_check, settings = _load_settings_checked()
     checks.append(config_check)
     if settings is not None:
@@ -436,9 +459,13 @@ def _build_admin_console() -> None:
     print("\n-- Building the admin console --")
     npm = shutil.which("npm")
     if npm is None:
-        print("WARN: npm not found - skipping the admin console build. Install Node.js 20+ "
-              "(https://nodejs.org), then run `ybm ui-build`. Until then, /admin shows a "
-              "build-instructions page instead of the real console.")
+        print("WARN: npm not found - skipping the admin console build.")
+        print("      There will be NO admin console until this is fixed: /admin serves a")
+        print("      build-instructions page, so every setting below has to be edited by hand")
+        print("      in config/config.yaml instead.")
+        print("      Fix: install Node.js 20+ (https://nodejs.org, or")
+        print("      `winget install OpenJS.NodeJS.LTS`), open a new terminal, then run")
+        print("      `.\\scripts\\ybm.ps1 ui-build`.")
         return
 
     use_shell = sys.platform == "win32"

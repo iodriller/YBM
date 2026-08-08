@@ -12,6 +12,7 @@ import pytest
 from agent_control.config import AppSettings, CapabilityPolicy
 from agent_control.orchestration import StaticToolAdapter, TaskWorker, ToolExecutor
 from agent_control.orchestration.auditor import AuditResult
+from agent_control.orchestration.signals import requeue_after_approval_decision
 from agent_control.policy import PolicyEngine
 from agent_control.recovery import RetryPolicy
 from agent_control.schemas import (
@@ -560,6 +561,47 @@ async def test_operator_loop_resumes_and_executes_after_approval_granted(tmp_pat
     assert "operator_pending_call" not in resumed.metadata
     assert "pending_approval_preview" not in resumed.metadata
     assert len(resumed.metadata["operator_history"]) == 1
+    assert resumed.metadata["operator_history"][0]["tool_name"] == "llm"
+    assert resumed.metadata["operator_history"][0]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_operator_loop_resumes_via_requeue_instead_of_asking_again(tmp_path) -> None:
+    """Granting an approval the way every real caller does must replay the call.
+
+    The test above sets the approval status directly and leaves the task in
+    AWAITING_APPROVAL. Real callers (Telegram buttons, the admin API) instead go
+    through requeue_after_approval_decision(), which flips the task to RUNNING so
+    the worker will claim it - and the resume used to be gated on
+    `status == AWAITING_APPROVAL`, so it was skipped exactly when it mattered.
+
+    The operator then re-planned from scratch and asked for approval again. Every
+    grant produced a new request, so a gated task could never finish no matter how
+    many times its approval was granted; one observed live task burned 14 approvals
+    in 11 minutes and completed nothing. Only ONE decision is queued below, so a
+    re-plan cannot silently look like success - it exhausts the operator instead.
+    """
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("needs approval")
+    executor = _executor(_approval_settings(), audit, repos, output={"answer": "42"})
+    operator = QueueOperator([
+        OperatorDecision(action=OperatorAction.CALL_TOOL, tool_name="llm", tool_input={"q": "?"}, risk_level=RiskLevel.LOW),
+        OperatorDecision(action=OperatorAction.DONE, final_answer="42"),
+    ])
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator)
+
+    awaiting = await worker.process_task(task.id)
+    assert awaiting.status == TaskStatus.AWAITING_APPROVAL
+
+    approvals = repos.approvals.list_for_task(task.id)
+    assert repos.approvals.decide_pending(approvals[0].id, ApprovalStatus.APPROVED)
+    requeue_after_approval_decision(repos, task.id)
+    assert repos.tasks.get(task.id).status == TaskStatus.RUNNING
+
+    resumed = await worker.process_task(task.id)
+
+    assert len(repos.approvals.list_for_task(task.id)) == 1, "a second approval means it re-planned"
+    assert "operator_pending_call" not in resumed.metadata
     assert resumed.metadata["operator_history"][0]["tool_name"] == "llm"
     assert resumed.metadata["operator_history"][0]["status"] == "succeeded"
 

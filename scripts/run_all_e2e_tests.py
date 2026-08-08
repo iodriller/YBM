@@ -46,7 +46,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib import request as urlrequest
+from urllib import error as urlerror, request as urlrequest
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -109,6 +109,66 @@ def admin_summary() -> dict:
 
 def admin_trace(task_id: str) -> dict:
     return admin_get(f"/admin/api/tasks/{task_id}/trace")
+
+
+def admin_post(path: str, body: dict | None = None, timeout: int = 10) -> Any:
+    url = f"{ADMIN_BASE}{path}"
+    headers = {"Content-Type": "application/json"}
+    admin_token = os.getenv("AGENT_ADMIN_TOKEN")
+    if admin_token:
+        headers["X-Agent-Control-Admin-Token"] = admin_token
+    request = urlrequest.Request(
+        url, data=json.dumps(body or {}).encode("utf-8"), headers=headers, method="POST"
+    )
+    with urlrequest.urlopen(request, timeout=timeout) as r:
+        return json.loads(r.read() or b"{}")
+
+
+async def auto_approve_loop(stop: asyncio.Event, granted: list[str]) -> None:
+    """Grant pending approvals while the suite runs.
+
+    e2e/README.md says the runner works unattended once the Telethon session
+    exists, but nothing here ever answered an approval - and approvals are not
+    optional for these cases. Some are forced by the runtime itself
+    (ToolDefinition.approval_required_operations covers schedule.manage:create,
+    mcp.client:install_server, memory.manage:forget and more), so no config
+    change can make them go away. Every affected case therefore sat in
+    awaiting_approval until it timed out, which reads as the product being
+    broken rather than the harness being incomplete.
+
+    Approving here rather than lowering approval_policy would also be the only
+    honest option: the point of these cases is to exercise the real gate, and a
+    run with the gate switched off proves nothing about it. Each grant is still
+    a normal, audited APPROVAL_DECIDED event, attributed to this harness.
+    """
+    while not stop.is_set():
+        try:
+            # Each item wraps the record: {"approval": {...}, "task_objective": ...}
+            for item in admin_get("/admin/api/approvals").get("approvals", []):
+                approval = item.get("approval") or {}
+                if approval.get("status") != "pending":
+                    continue
+                approval_id = approval.get("id")
+                if not approval_id:
+                    continue
+                try:
+                    admin_post(f"/admin/api/approvals/{approval_id}/decide", {"decision": "approve"})
+                except urlerror.HTTPError as exc:
+                    # 409 = decided between listing it and deciding it, which
+                    # is the normal outcome of polling a queue the worker is
+                    # draining. Reporting it as an error buries the failures
+                    # that actually matter.
+                    if exc.code == 409:
+                        continue
+                    raise
+                granted.append(approval_id)
+                print(f"    [auto-approve] {approval.get('capability') or '?'} ({approval_id})")
+        except Exception as exc:  # noqa: BLE001 - never let this kill the run
+            print(f"    [auto-approve] transient error: {exc}")
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=2.0)
+        except asyncio.TimeoutError:
+            pass
 
 
 def ping(url: str, timeout: float = 2.0) -> bool:
@@ -410,6 +470,9 @@ class TurnResult:
     # don't require grepping audit.json.
     classifier_verdict: dict | None = None
     forced_failed_by_runner: bool = False
+    # True when the runner answered a clarifying question during this turn, so
+    # a reader can tell an unprompted result from an assisted one.
+    clarification_sent: bool = False
 
 
 @dataclass
@@ -744,6 +807,25 @@ async def _run_turn(label: str, message: str, max_seconds: int) -> TurnResult:
             if status in {"completed", "failed", "blocked", "cancelled"}:
                 reached_terminal = True
                 break
+            # A task that asks a question waits for a human. Nothing here ever
+            # answered one, so any case where the agent chose to clarify sat in
+            # CLARIFYING until the deadline and was force-failed - scoring the
+            # agent's *correct* caution (safe_file_operations exists precisely
+            # to check it asks before destructive work) as a product failure.
+            # One neutral confirmation per turn, echoing the original request
+            # so the answer cannot smuggle in new instructions, and logged
+            # loudly so a pass here is never mistaken for an unprompted one.
+            if status == "clarifying" and not turn.clarification_sent:
+                turn.clarification_sent = True
+                answer = (
+                    "Yes, please go ahead with what you proposed, staying within the "
+                    "constraints in my original message."
+                )
+                print(f"    [clarify] agent asked a question; replying: {answer}")
+                try:
+                    await _send_message(answer)
+                except Exception as exc:  # noqa: BLE001 - keep polling regardless
+                    print(f"    [clarify] could not reply: {exc}")
             await asyncio.sleep(3)
 
         # If the wait expired and the task is STILL non-terminal, force it
@@ -1054,8 +1136,24 @@ def _preflight() -> list[str]:
         admin_get("/admin/api/summary?task_limit=1")
     except Exception:
         issues.append(f"YBM admin API not responding at {ADMIN_BASE}")
-    if not ping(f"{LOCALDEPLOY_BASE}/health", timeout=5.0):
-        issues.append(f"LocalDeploy not responding at {LOCALDEPLOY_BASE}")
+    # Check the LLM the stack is actually configured to use, not a fixed port.
+    # This used to ping LocalDeploy's :8000/health unconditionally, so every
+    # case refused to start on a perfectly working install pointed at Ollama or
+    # a cloud endpoint - reporting "LocalDeploy not responding" for a service
+    # that install was never meant to run. check_llm_configured() already
+    # knows the difference between an Ollama tag list, a LocalDeploy health
+    # endpoint and a cloud profile's key; reuse it rather than re-deriving it.
+    from agent_control.bootstrap import check_llm_configured
+    from agent_control.config import load_settings
+
+    settings = load_settings(ROOT / "config" / "config.yaml", _env_file=ENV_PATH)
+    if not check_llm_configured(settings):
+        profile = settings.llm.profiles.get(settings.llm.default_profile)
+        endpoint = (profile.base_url if profile else None) or "not configured"
+        issues.append(
+            f"default LLM profile {settings.llm.default_profile!r} is not reachable "
+            f"({endpoint}) - start it, or point llm.profiles at a working endpoint"
+        )
     return issues
 
 
@@ -1133,6 +1231,9 @@ async def main() -> int:
                         help="include codex/copilot/quota/limit cases (usually need external creds)")
     parser.add_argument("--no-web-fixture", action="store_true",
                         help="skip the local fixture web server (some cases will be skipped/fail)")
+    parser.add_argument("--no-auto-approve", action="store_true",
+                        help="do not grant approval prompts during the run (cases needing "
+                             "approval will stall until they time out)")
     args = parser.parse_args()
 
     _load_env()
@@ -1194,6 +1295,16 @@ async def main() -> int:
     if needs_browser:
         _warn_if_chrome_down()
 
+    # Answer approvals for the duration of the run. Without this the suite
+    # cannot complete at all: several tools force approval at the runtime level
+    # regardless of config, and nothing else here ever grants one.
+    approver_stop = asyncio.Event()
+    granted_approvals: list[str] = []
+    approver_task: asyncio.Task | None = None
+    if not args.no_auto_approve:
+        approver_task = asyncio.create_task(auto_approve_loop(approver_stop, granted_approvals))
+        print("  Auto-approving policy prompts for this run (--no-auto-approve to disable).")
+
     results: list[StageResult] = []
     suite_start = time.monotonic()
     total = len(selected)
@@ -1231,11 +1342,20 @@ async def main() -> int:
         status = "PASS" if stage.passed else "FAIL"
         print(f"  --> {status}  ({stage.total_duration_s:.1f}s)  {stage.failure_reason or 'ok'}")
 
+    approver_stop.set()
+    if approver_task is not None:
+        try:
+            await asyncio.wait_for(approver_task, timeout=5.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            approver_task.cancel()
+
     print(f"\n{'=' * 78}")
     passed = sum(1 for r in results if r.passed)
     total_time = _fmt_duration(time.monotonic() - suite_start)
     print(f"{_progress_bar(len(results), total, width=24)} {len(results)}/{total} done")
     print(f"Summary: {run_dir / 'summary.md'}")
+    if granted_approvals:
+        print(f"Approvals granted during the run: {len(granted_approvals)}")
     print(f"Passed {passed} / {len(results)}  |  total {total_time}")
     return 0 if passed == len(results) else 2
 

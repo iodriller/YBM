@@ -1206,6 +1206,19 @@ class AuditRepository:
             ).fetchall()
         return [self._row_to_event(row) for row in rows]
 
+    def list_by_type_recent(self, event_type: AuditEventType, limit: int = 50) -> list[AuditEvent]:
+        """Newest-first and bounded, unlike list_by_type() which returns every
+        matching row ascending. Callers that only want "what happened lately"
+        (the admin console's Telegram panel) must not pull an instance's entire
+        history of an event type into memory to look at the tail of it.
+        """
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM audit_events WHERE event_type = ? ORDER BY created_at DESC LIMIT ?",
+                (event_type.value, limit),
+            ).fetchall()
+        return [self._row_to_event(row) for row in rows]
+
     @staticmethod
     def _row_to_event(row: sqlite3.Row) -> AuditEvent:
         return AuditEvent(

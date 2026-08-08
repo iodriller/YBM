@@ -312,7 +312,27 @@ class TaskWorker:
         if latest.status in {TaskStatus.PAUSED, TaskStatus.CANCELLED}:
             return latest
 
-        if latest.status == TaskStatus.AWAITING_APPROVAL:
+        # Dispatch on the stashed call, not the status. This used to be
+        # `status == AWAITING_APPROVAL`, which made the resume unreachable for
+        # the one flow that matters: granting an approval calls
+        # requeue_after_approval_decision(), and that flips the task to RUNNING
+        # so the worker will claim it again. By the time the worker looked, the
+        # status was never AWAITING_APPROVAL, so this branch was skipped and the
+        # operator re-planned from scratch instead of replaying the approved
+        # call - producing a *new* approval request every time. Approving it
+        # simply created another one, forever: 14 approvals granted on a single
+        # observed task, none consumed, until the run timed out.
+        #
+        # requeue_after_approval_decision's own docstring already stated the
+        # intended contract ("resume ... regardless of which status the task was
+        # in"); this is the half that never matched it. Keyed on
+        # operator_pending_call the same way the pending_tool_result branch
+        # below is keyed on its own metadata, so both resume paths work off
+        # what was stashed rather than a status that a requeue may have moved.
+        pending_approval_call = latest.metadata.get("operator_pending_call")
+        if latest.status == TaskStatus.AWAITING_APPROVAL or (
+            isinstance(pending_approval_call, dict) and pending_approval_call.get("approval_id")
+        ):
             return await self._process_operator_awaiting_approval(latest)
 
         if latest.status == TaskStatus.RETRYING:

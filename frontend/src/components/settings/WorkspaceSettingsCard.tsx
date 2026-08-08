@@ -100,7 +100,7 @@ export function WorkspaceSettingsCard() {
   )
 }
 
-function Field({ label, children }: { label: string; children: React.ReactElement }) {
+function Field({ label, children }: { label: string; children: React.ReactElement<{ id?: string }> }) {
   // Every call site passes exactly one form control as children - id/htmlFor
   // pairing via useId() associates the visible label with it for screen
   // readers, without changing the sibling Label-then-control DOM structure
