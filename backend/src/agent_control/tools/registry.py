@@ -17,6 +17,8 @@ from agent_control.tools import (
     code_interpreter,
     computer_use,
     document_manage,
+    dependencies,
+    web_search,
     filesystem_manage,
     http_request,
     knowledge_base,
@@ -41,6 +43,8 @@ __all__ = ["ToolDefinition", "ToolRegistry", "build_tool_registry"]
 # adapter when the underlying integration is enabled.
 _REGISTRARS: tuple[Registrar, ...] = (
     local_workspace.register,
+    dependencies.register,
+    web_search.register,
     filesystem_manage.register,
     adapter_factory.register,
     code_interpreter.register,

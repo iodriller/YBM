@@ -235,9 +235,9 @@
     "number": 1,
     "id": "desktop_inspection",
     "requirement": "Inspect the actual desktop and summarize visible items.",
-    "small_test": "Tell me what is on my desktop right now.",
+    "small_test": "Tell me what is visible on my desktop screen right now.",
     "larger_test": "Look at my desktop, identify the visible files, folders, apps, and open windows, and summarize what you see.",
-    "message": "Tell me what is on my desktop right now.",
+    "message": "Tell me what is visible on my desktop screen right now.",
     "setup": [],
     "tags": [
       "desktop",
@@ -417,7 +417,7 @@
     ],
     "tags": [
       "mcp",
-      "external"
+      "local_fixture"
     ],
     "suites": [
       "mcp"

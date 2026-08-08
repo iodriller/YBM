@@ -86,13 +86,20 @@ class AdapterFactoryScaffoldInput(ToolInputModel):
     objective: str | None = None
     prompt: str | None = None
     adapter_name: str | None = None
+    name: str | None = None
+    description: str | None = None
     tool_name: str | None = None
     capability: str | None = None
+    operations: list[str] = Field(default_factory=list)
+    capabilities: list[str] = Field(default_factory=list)
+    api_endpoint: str | None = None
+    auto_load: bool = False
 
 
 class AdapterFactorySandboxExecuteInput(ToolInputModel):
     operation: Literal["sandbox_execute_once"] = "sandbox_execute_once"
     adapter_dir: str | None = None
+    adapter_id: str | None = None
     objective: str | None = None
     code: str | None = None
     dry_run: bool = True
@@ -257,6 +264,26 @@ class PersonaInput(ToolInputModel):
     def update_requires_content(self) -> "PersonaInput":
         if self.operation == "update" and not (self.content or "").strip():
             raise ValueError("operation=update requires 'content'")
+        return self
+
+
+class WebSearchInput(ToolInputModel):
+    operation: Literal["search"] = "search"
+    query: str = Field(min_length=1, max_length=500)
+    max_results: int = Field(default=5, ge=1, le=25)
+
+
+class DependenciesInstallInput(ToolInputModel):
+    operation: Literal["install", "list_allowed"] = "install"
+    # Plain `name` or `name==version` only. URLs, local paths and VCS refs are
+    # rejected by the adapter - each is a way to fetch code the allowlist never
+    # described.
+    packages: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def install_requires_packages(self) -> "DependenciesInstallInput":
+        if self.operation == "install" and not self.packages:
+            raise ValueError("dependencies.install install requires a non-empty 'packages' list")
         return self
 
 
@@ -900,6 +927,23 @@ class PersonaOutput(ToolOutputModel):
     operation: Literal["get", "update"] = "get"
     summary: str = Field(min_length=1)
     content: str = ""
+
+
+class WebSearchOutput(ToolOutputModel):
+    operation: Literal["search"] = "search"
+    summary: str = Field(min_length=1)
+    query: str = ""
+    provider: str = ""
+    # title / url / snippet per entry.
+    results: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class DependenciesOutput(ToolOutputModel):
+    operation: Literal["install", "list_allowed"] = "install"
+    summary: str = Field(min_length=1)
+    installed: list[str] = Field(default_factory=list)
+    allowed_packages: list[str] = Field(default_factory=list)
+    target_dir: str | None = None
 
 
 class SkillsOutput(ToolOutputModel):

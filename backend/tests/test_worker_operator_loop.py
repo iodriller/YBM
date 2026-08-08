@@ -119,7 +119,7 @@ class QueueAuditor:
         self.calls: list[tuple[str, str]] = []
         self.last_usage: dict | None = None
 
-    async def audit(self, objective, raw_output, *, original_message=None):
+    async def audit(self, objective, raw_output, *, original_message=None, deliverable_evidence=""):
         self.calls.append((objective, raw_output))
         if self._usages is not None:
             self.last_usage = self._usages.pop(0)
@@ -261,6 +261,111 @@ async def test_operator_loop_exhausts_step_budget(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_operator_step_budget_completes_when_nonempty_fulfillment_contract_is_satisfied(tmp_path) -> None:
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("Create an adapter proposal for stock quotes and keep it cached")
+    settings = _settings()
+    executor = _executor(
+        settings,
+        audit,
+        repos,
+        tool_name="llm",
+        output={"adapter_dir": "/tmp/adapters/stock_quotes", "adapter_name": "stock_quotes"},
+    )
+    operator = QueueOperator(
+        [OperatorDecision(action=OperatorAction.CALL_TOOL, tool_name="llm", tool_input={}, risk_level=RiskLevel.LOW)]
+    )
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator, operator_max_steps=1)
+
+    running = await worker.process_task(task.id)
+    completed = await worker.process_task(running.id)
+
+    assert completed.status == TaskStatus.COMPLETED
+    assert completed.metadata["operator_step_budget_completed_after_fulfillment"] is True
+    assert "/tmp/adapters/stock_quotes" in completed.metadata["synthesized_answer"]
+
+
+@pytest.mark.asyncio
+async def test_operator_step_budget_allows_targeted_fulfillment_repair(tmp_path) -> None:
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("Open the page and send me a screenshot")
+    settings = _settings()
+
+    class BrowserThenDeliveryAdapter:
+        async def execute(self, request: ToolCallRequest) -> ToolCallResult:
+            if request.tool_name == "browser.open":
+                output = {
+                    "browser_url": "https://example.test",
+                    "screenshot_path": "/tmp/page.png",
+                }
+            else:
+                output = {
+                    "delivered": True,
+                    "operation": "send_screenshot",
+                    "path": "/tmp/page.png",
+                    "delivery_method": "telegram.sendPhoto",
+                }
+            return ToolCallResult(
+                request_id=request.id,
+                status=ToolResultStatus.SUCCEEDED,
+                output=output,
+            )
+
+    adapter = BrowserThenDeliveryAdapter()
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"browser.open": adapter, "artifact.deliver": adapter},
+        tool_definitions={
+            name: ToolDefinition(
+                name=name,
+                capability=Capability.LLM_GENERATE,
+                enabled=True,
+                description="test tool",
+            )
+            for name in ("browser.open", "artifact.deliver")
+        },
+    )
+    operator = QueueOperator([
+        OperatorDecision(
+            action=OperatorAction.CALL_TOOL,
+            tool_name="browser.open",
+            tool_input={"operation": "screenshot"},
+            risk_level=RiskLevel.LOW,
+        ),
+        OperatorDecision(
+            action=OperatorAction.CALL_TOOL,
+            tool_name="artifact.deliver",
+            tool_input={"operation": "send_screenshot"},
+            risk_level=RiskLevel.LOW,
+        ),
+    ])
+    worker = TaskWorker(
+        repos,
+        audit,
+        executor=executor,
+        operator=operator,
+        operator_max_steps=1,
+    )
+
+    after_browser = await worker.process_task(task.id)
+    repair_requested = await worker.process_task(after_browser.id)
+    after_delivery = await worker.process_task(repair_requested.id)
+    completed = await worker.process_task(after_delivery.id)
+
+    assert repair_requested.status == TaskStatus.RUNNING
+    assert repair_requested.metadata["operator_history"][-1]["tool_name"] == "_fulfillment_check"
+    assert "operation=send_screenshot" in repair_requested.metadata["operator_history"][-1]["error"]
+    assert completed.status == TaskStatus.COMPLETED
+    real_calls = [
+        entry for entry in completed.metadata["operator_history"]
+        if not entry["tool_name"].startswith("_")
+    ]
+    assert [entry["tool_name"] for entry in real_calls] == ["browser.open", "artifact.deliver"]
+
+
+@pytest.mark.asyncio
 async def test_gap_check_entries_do_not_consume_the_tool_call_budget(tmp_path) -> None:
     """Regression guard (docs/HISTORY.md §3.1): the fulfillment/audit gap paths
     append check pseudo-entries to operator_history so the next decide() sees
@@ -276,7 +381,7 @@ async def test_gap_check_entries_do_not_consume_the_tool_call_budget(tmp_path) -
     class GapThenOkAuditor:
         def __init__(self) -> None:
             self.calls = 0
-        async def audit(self, objective, raw_output, *, original_message=None):
+        async def audit(self, objective, raw_output, *, original_message=None, deliverable_evidence=""):
             self.calls += 1
             if self.calls == 1:
                 return AuditResult(sufficient=False, reason="need more")
@@ -331,7 +436,7 @@ async def test_auditor_receives_full_output_not_the_truncated_history_summary(tm
     class RecordingAuditor:
         def __init__(self) -> None:
             self.seen: list[str] = []
-        async def audit(self, objective, raw_output, *, original_message=None):
+        async def audit(self, objective, raw_output, *, original_message=None, deliverable_evidence=""):
             self.seen.append(raw_output)
             return AuditResult(sufficient=True, answer="ok")
 
@@ -681,6 +786,7 @@ async def test_operator_loop_done_with_fulfillment_gap_continues_instead_of_comp
     assert result.metadata["operator_fulfillment_gap_count"] == 1
     assert result.metadata["operator_history"][-1]["status"] == "fulfillment_gap"
     assert "workspace_dir" in result.metadata["operator_history"][-1]["error"]
+    assert "workspace.manage or code.interpreter" in result.metadata["operator_history"][-1]["error"]
 
 
 @pytest.mark.asyncio
@@ -896,7 +1002,18 @@ async def test_operator_loop_retrying_resumes_and_retries_after_backoff_elapses(
 
 
 @pytest.mark.asyncio
-async def test_operator_loop_usage_limited_asks_user_instead_of_retrying(tmp_path) -> None:
+async def test_operator_loop_usage_limited_waits_and_resumes_by_itself(tmp_path) -> None:
+    """A usage limit is a timer, not a question for the operator.
+
+    This asserted CLARIFYING: the task stopped and waited for a human reply.
+    That is the wrong trade for the case it exists to serve - an unattended
+    overnight Copilot build - because the quota comes back on its own and the
+    human contributes only the delay until they next check their phone.
+
+    It now parks as RETRYING with next_retry_at set, which
+    _process_operator_retrying already honors, and claim_next skips while it
+    is not due so the wait cannot starve other work.
+    """
     repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("usage limited task")
     settings = _settings()
@@ -911,9 +1028,10 @@ async def test_operator_loop_usage_limited_asks_user_instead_of_retrying(tmp_pat
 
     result = await worker.process_task(task.id)
 
-    assert result.status == TaskStatus.CLARIFYING
-    assert result.metadata["clarifying_question"]
-    assert "next_retry_at" not in result.metadata
+    assert result.status == TaskStatus.RETRYING
+    assert result.metadata["next_retry_at"]
+    assert result.metadata["usage_limit_wait"]["wait_seconds"] > 0
+    assert "clarifying_question" not in result.metadata
 
 
 @pytest.mark.asyncio
@@ -1105,3 +1223,84 @@ async def test_worker_prefers_major_provider_on_the_step_after_an_audit_gap(tmp_
     # Steps 1 and 2 have no prior gap marker yet; step 3 runs after the
     # audit-gap entry was appended to history, so only it should prefer major.
     assert operator.prefer_major_calls == [False, False, True]
+
+
+@pytest.mark.asyncio
+async def test_auditor_mode_does_not_let_word_matching_overrule_the_agents(tmp_path) -> None:
+    """A `done` both agents accepted must not be vetoed by hardcoded intent inference.
+
+    fulfillment.py derives what a task "should" produce by intersecting the
+    objective with word sets - `{"organize","move","rename","sort"}` and
+    friends - and could reject a `done` the Operator declared AND the Auditor
+    confirmed. A semantic judgment made in Python, enforced over two LLM
+    judgments that already agreed.
+
+    The objective below deliberately trips the FILE_ORGANIZATION word sets
+    ("organize" + "files") while producing no organization metadata, which is
+    exactly the shape the legacy gate rejects.
+    """
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("organize the files and tell me what you found")
+    executor = _executor(_settings(), audit, repos, output={"answer": "42"})
+    decisions = [
+        OperatorDecision(action=OperatorAction.CALL_TOOL, tool_name="llm", tool_input={}, risk_level=RiskLevel.LOW),
+        OperatorDecision(action=OperatorAction.DONE, final_answer="Nothing needed moving."),
+    ]
+    auditor = QueueAuditor([AuditResult(sufficient=True, answer="Nothing needed moving.")])
+    worker = TaskWorker(
+        repos, audit, executor=executor,
+        operator=QueueOperator(list(decisions)), auditor=auditor,
+    )
+
+    running = await worker.process_task(task.id)
+    done = await worker.process_task(running.id)
+
+    assert done.status == TaskStatus.COMPLETED
+    assert "operator_fulfillment_gap_count" not in done.metadata
+
+
+@pytest.mark.asyncio
+async def test_heuristic_mode_still_available_as_a_rollback(tmp_path) -> None:
+    """The legacy gate must remain reachable, so the change can be undone
+    from config without a code revert."""
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("organize the files and tell me what you found")
+    executor = _executor(_settings(), audit, repos, output={"answer": "42"})
+    decisions = [
+        OperatorDecision(action=OperatorAction.CALL_TOOL, tool_name="llm", tool_input={}, risk_level=RiskLevel.LOW),
+        OperatorDecision(action=OperatorAction.DONE, final_answer="Nothing needed moving."),
+    ]
+    auditor = QueueAuditor([AuditResult(sufficient=True, answer="Nothing needed moving.")])
+    worker = TaskWorker(
+        repos, audit, executor=executor,
+        operator=QueueOperator(list(decisions)), auditor=auditor,
+        fulfillment_mode="heuristic",
+    )
+
+    running = await worker.process_task(task.id)
+    gated = await worker.process_task(running.id)
+
+    assert gated.status == TaskStatus.RUNNING
+    assert gated.metadata["operator_fulfillment_gap_count"] == 1
+
+
+def test_deliverable_evidence_reports_facts_without_inferring_intent(tmp_path) -> None:
+    """The evidence handed to the Auditor must describe the task record only.
+
+    This is the piece that replaces `_postconditions_from_objective`: the same
+    `_postcondition_satisfied` checks, reported for every postcondition type,
+    with the "which of these did the user actually want" decision left to the
+    agent that can read the request.
+    """
+    from agent_control.orchestration.fulfillment import deliverable_evidence
+
+    repos, _audit = make_repos(tmp_path)
+    task = repos.tasks.create("anything at all")
+    task = repos.tasks.update_metadata(task.id, {**task.metadata, "workspace_dir": "/tmp/ws"})
+
+    evidence = deliverable_evidence(task)
+
+    assert "workspace_dir" in evidence.split("Not produced:")[0]
+    assert "schedule_created" in evidence.split("Not produced:")[1]
+    # No objective text anywhere - it must not re-derive intent.
+    assert "anything at all" not in evidence

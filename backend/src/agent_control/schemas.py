@@ -173,6 +173,7 @@ class PostconditionType(StrEnum):
     PREVIEW_URL = "preview_url"
     ADAPTER_PROPOSAL = "adapter_proposal"
     ARTIFACT_DELIVERED = "artifact_delivered"
+    SCREENSHOT_DELIVERED = "screenshot_delivered"
     DOCUMENT_SUMMARY = "document_summary"
     PRESENTATION_FILE = "presentation_file"
     CODING_AGENT_STEP = "coding_agent_step"
@@ -358,6 +359,12 @@ class MessageClassification(StrictBaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     reason: str
     intent: OrchestrationIntent | None = None
+    # True when this message is a correction or addition to work already
+    # running, rather than a new job. Set only when the context shows an
+    # active task - see prompts/base/concierge_system.md. The alternative was
+    # spawning a second task for "make it five, not three", which is how a
+    # running task came to be unsteerable in the first place.
+    steers_active_task: bool = False
     # Populated only when is_task=False (see prompts/base/concierge_system.md) -
     # the Concierge composes the chat reply in the same call it classifies, so
     # a non-task message doesn't need a second LLM round trip. None/empty falls

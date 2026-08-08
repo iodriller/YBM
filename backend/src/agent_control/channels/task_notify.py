@@ -376,7 +376,28 @@ def _latest_attempt_summary(task: TaskRecord) -> str | None:
         return None
     tool = latest.get("tool_name") or "tool"
     status = latest.get("status") or "unknown"
-    line = f"Latest attempt: {tool} ended with {status}."
+    # Name the operation and the thing it acted on. "filesystem.manage ended
+    # with succeeded" tells the operator nothing they can follow; "read_file
+    # on budget.csv" is the same information they would have watched over
+    # someone's shoulder.
+    tool_input = latest.get("input") if isinstance(latest.get("input"), dict) else {}
+    operation = str(tool_input.get("operation") or "").strip()
+    target = next(
+        (
+            str(tool_input[key])
+            for key in ("path", "root", "query", "url", "name", "folder_path", "objective")
+            if tool_input.get(key)
+        ),
+        "",
+    )
+    described = f"{tool} {operation}".strip()
+    if target:
+        described += f" on {_trim(target, 120)}"
+    line = f"Latest attempt: {described} ended with {status}."
+    # Why it chose this, which the model already produced and nothing kept.
+    reasoning = str(latest.get("reasoning") or "").strip()
+    if reasoning:
+        line += f"\nWhy: {_trim(reasoning, 300)}"
     detail = str(latest.get("error") or "").strip()
     if detail and status != "succeeded":
         line += f"\nReason: {_trim(detail, 500)}"

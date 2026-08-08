@@ -122,6 +122,21 @@ def _postconditions_from_objective(objective: str) -> list[PlanPostcondition]:
                 description="A desktop observation or screenshot is reported.",
             )
         )
+    delivery_action = bool(words & {"send", "share", "deliver", "upload", "email"})
+    delivery_subject = bool(
+        words & {"artifact", "document", "file", "image", "photo", "pdf", "report", "screenshot"}
+    )
+    if delivery_action and delivery_subject:
+        expected.append(
+            PlanPostcondition(
+                type=(
+                    PostconditionType.SCREENSHOT_DELIVERED
+                    if "screenshot" in words
+                    else PostconditionType.ARTIFACT_DELIVERED
+                ),
+                description="The requested file or screenshot is delivered to the source channel.",
+            )
+        )
     if bool(words & {"organize", "move", "rename", "sort"}) and bool(
         words & {"file", "files", "folder", "folders", "directory", "directories"}
     ):
@@ -147,10 +162,16 @@ def _postconditions_from_objective(objective: str) -> list[PlanPostcondition]:
                 description="External command completion is reported.",
             )
         )
-    if (
-        bool(words & {"schedule", "scheduled", "recurring", "daily", "weekly"})
-        or bool(re.search(r"\bevery\s+\d+\s+(?:minute|minutes|hour|hours|day|days|week|weeks)\b", lowered))
-    ) and bool(words & {"create", "add", "set", "run", "check", "search"}):
+    schedule_subject = bool(words & {"schedule", "scheduled", "recurring"}) or bool(
+        re.search(r"\b(?:daily|weekly)\s+(?:schedule|job|task|check)\b", lowered)
+    )
+    cadence = bool(
+        re.search(
+            r"\bevery\s+(?:(?:\d+|one|two|three)\s+)?(?:minute|minutes|hour|hours|day|days|week|weeks)\b",
+            lowered,
+        )
+    )
+    if (schedule_subject or cadence) and bool(words & {"create", "add", "set", "run", "check", "search"}):
         expected.append(
             PlanPostcondition(
                 type=PostconditionType.SCHEDULE_CREATED,
@@ -158,6 +179,33 @@ def _postconditions_from_objective(objective: str) -> list[PlanPostcondition]:
             )
         )
     return _dedupe(expected)
+
+
+def deliverable_evidence(task: TaskRecord) -> str:
+    """What this task has demonstrably produced, as facts for the Auditor.
+
+    Deliberately free of intent inference. `_postconditions_from_objective`
+    guesses what the user *meant* from word-set intersections and then vetoes
+    the Operator when the guess isn't met - a semantic judgment made in Python
+    and enforced over two LLMs that already agreed. This reports only what is
+    observably true of the task record and lets the Auditor, which can read
+    the actual request, decide which of these the objective needed.
+
+    Every line is derived from the same `_postcondition_satisfied` checks the
+    old gate used, so nothing is weakened - only the "which ones matter here"
+    decision moves.
+    """
+    produced: list[str] = []
+    missing: list[str] = []
+    for postcondition in PostconditionType:
+        label = postcondition.value
+        if _postcondition_satisfied(task, postcondition):
+            produced.append(label)
+        else:
+            missing.append(label)
+    lines = ["Produced: " + (", ".join(produced) if produced else "(nothing recorded)")]
+    lines.append("Not produced: " + (", ".join(missing) if missing else "(none)"))
+    return "\n".join(lines)
 
 
 def _postcondition_satisfied(task: TaskRecord, expected: PostconditionType) -> bool:
@@ -170,10 +218,19 @@ def _postcondition_satisfied(task: TaskRecord, expected: PostconditionType) -> b
         return bool(_value(task, "adapter_dir", "adapter_dir"))
     if expected == PostconditionType.ARTIFACT_DELIVERED:
         delivery = task.metadata.get("artifact_delivery")
-        if isinstance(delivery, dict) and delivery.get("delivered") is True:
-            return True
         output = _last_output_dict(task)
-        return output.get("delivered") is True
+        candidate = delivery if isinstance(delivery, dict) else output
+        return candidate.get("delivered") is True
+    if expected == PostconditionType.SCREENSHOT_DELIVERED:
+        delivery = task.metadata.get("artifact_delivery")
+        output = _last_output_dict(task)
+        candidate = delivery if isinstance(delivery, dict) else output
+        path = str(candidate.get("path") or "").lower()
+        return candidate.get("delivered") is True and (
+            candidate.get("operation") == "send_screenshot"
+            or candidate.get("delivery_method") == "telegram.sendPhoto"
+            or path.endswith((".png", ".jpg", ".jpeg", ".webp"))
+        )
     if expected == PostconditionType.DOCUMENT_SUMMARY:
         return bool(_any_value(task, metadata_keys=("document_summary",), output_keys=("summary", "text")))
     if expected == PostconditionType.PRESENTATION_FILE:
@@ -305,6 +362,33 @@ def _gap_reason(value: PostconditionType) -> str:
     return f"expected_{value.value}_missing"
 
 
+def fulfillment_guidance(gap: str) -> str:
+    """Turn an internal postcondition code into an actionable next step.
+
+    The code remains stable for traces/tests, while the Operator gets the tool
+    and operation that can actually satisfy it instead of being asked to infer
+    that mapping from an enum-shaped string.
+    """
+    guidance = {
+        "expected_workspace_dir_missing": "Use workspace.manage or code.interpreter and retain its workspace_dir.",
+        "expected_preview_url_missing": "Use workspace.manage launch_static/web_app_preview and retain preview_url.",
+        "expected_adapter_proposal_missing": "Call adapter.factory with operation=scaffold and retain adapter_dir.",
+        "expected_schedule_created_missing": "Call schedule.manage with operation=create and retain schedule_id.",
+        "expected_artifact_delivered_missing": (
+            "Call artifact.deliver with operation=send_screenshot for a requested screenshot; "
+            "for other files use send_file with the exact requested path."
+        ),
+        "expected_screenshot_delivered_missing": (
+            "Call artifact.deliver with operation=send_screenshot so the screenshot image itself is sent."
+        ),
+        "expected_browser_state_missing": "Call browser.open to inspect the requested page and retain its URL/title.",
+        "expected_desktop_observation_missing": "Call computer.use with tool_input {\"operation\": \"observe\"}.",
+        "expected_file_organization_missing": (
+            "Call filesystem.manage organize_plan, then pass its returned manifest unchanged to apply_manifest."
+        ),
+        "expected_external_command_missing": "Use code.interpreter or the configured terminal tool and verify exit code 0.",
+    }
+    return guidance.get(gap, "Call the available tool that produces this missing result, or explain why it is blocked.")
 def _desktop_file_listing_request(lowered: str) -> bool:
     """True when the message uses 'desktop' as a folder path, not as a screen surface.
 

@@ -79,6 +79,13 @@ Add new cases there; the runner picks them up automatically.
 static-file web server that the case templates reference (e.g.
 `{{documents_folder}}`, `{{episode_url}}`).
 
+When a selected case requires `fake_mcp_server`, the runner temporarily adds
+the local echo server to YBM's MCP config and catalog, restarts the services,
+and performs preflight again. At the end of the run it restores the exact
+original config and catalog bytes and restarts once more, including when a
+test fails. The local MCP case is therefore part of the default catalogue and
+does not require a manually configured external service.
+
 ## Logs
 
 Every run writes:

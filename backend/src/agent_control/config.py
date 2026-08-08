@@ -179,6 +179,10 @@ class LoggingConfig(StrictBaseModel):
 
 class LimitsConfig(StrictBaseModel):
     max_parallel_tasks: int = Field(default=1, ge=1)
+    # Say something while a long step is still running. Progress was purely
+    # status-driven, so a task inside one 40-minute tool call went silent -
+    # indistinguishable, from the outside, from having died. 0 disables.
+    heartbeat_interval_seconds: int = Field(default=300, ge=0)
     max_retries: int = Field(default=3, ge=0)
     tool_timeout_seconds: int = Field(default=900, ge=1)
     max_log_chars: int = Field(default=12000, ge=100)
@@ -194,6 +198,15 @@ class OperatorConfig(StrictBaseModel):
     # execution path as of 2026-07-28 (the old plan-once-then-replan path and
     # its keyword-driven recovery were deleted, not just defaulted off).
     max_steps: int = Field(default=8, ge=1, le=50)
+    # Who decides whether a `done` actually delivered what was asked.
+    #
+    # "auditor"   - the Auditor judges it, reading the user's own words and a
+    #               factual list of what the task produced. Default.
+    # "heuristic" - the legacy gate in fulfillment.py, which infers intent by
+    #               intersecting the message with hardcoded word sets and can
+    #               veto a `done` both the Operator and the Auditor accepted.
+    #               Kept as a rollback path, not as a recommendation.
+    fulfillment_mode: Literal["auditor", "heuristic"] = "auditor"
 
 
 class VSCodeAdapterConfig(StrictBaseModel):
@@ -239,6 +252,25 @@ class HttpRequestAdapterConfig(StrictBaseModel):
     max_response_chars: int = Field(default=100000, ge=100, le=1000000)
     max_body_chars: int = Field(default=100000, ge=0, le=1000000)
     user_agent: str = "YBM-http-request/1.0"
+
+
+class WebSearchAdapterConfig(StrictBaseModel):
+    """Structured web search, so "search online and analyse this" does not
+    have to mean driving Chrome through a results page.
+
+    `duckduckgo` needs no key and no account, which is why it is the default -
+    a fresh install can search immediately. `brave` wants a key in
+    `api_key_env`; `searxng` wants `base_url` pointing at an instance the
+    operator runs, so no query leaves their own network.
+    """
+
+    enabled: bool = True
+    provider: Literal["duckduckgo", "brave", "searxng"] = "duckduckgo"
+    api_key_env: str | None = "BRAVE_SEARCH_API_KEY"
+    base_url: str | None = None
+    max_results: int = Field(default=5, ge=1, le=25)
+    timeout_seconds: int = Field(default=20, ge=1, le=120)
+    user_agent: str = "Mozilla/5.0 (compatible; YBM/1.0)"
 
 
 class TerminalAdapterConfig(StrictBaseModel):
@@ -443,6 +475,23 @@ class TTSAdapterConfig(StrictBaseModel):
     timeout_seconds: int = Field(default=120, ge=1)
 
 
+class DependenciesAdapterConfig(StrictBaseModel):
+    """Package installs, allowlisted and scoped to a task directory.
+
+    `allowed_packages` is empty by default on purpose: enabling the capability
+    should not by itself let an agent install arbitrary code. Name what is
+    acceptable first. Installs never touch the interpreter running YBM - they
+    go to `target_root/<task_id>` via pip --target.
+    """
+
+    enabled: bool = False
+    target_root: str = ".agent_control/dependencies"
+    allowed_packages: list[str] = Field(default_factory=list)
+    max_packages_per_call: int = Field(default=5, ge=1, le=50)
+    timeout_seconds: int = Field(default=300, ge=10, le=1800)
+    max_output_chars: int = Field(default=8000, ge=500, le=100000)
+
+
 class SkillsAdapterConfig(StrictBaseModel):
     """User-droppable capability packs (docs/HISTORY.md Part 4 T1.3): a flat
     directory of markdown files, each with a name/description in YAML
@@ -453,6 +502,12 @@ class SkillsAdapterConfig(StrictBaseModel):
 
     enabled: bool = True
     root_dir: str = ".agent_control/skills"
+    # Offer to save a procedure after a task succeeds through a novel
+    # sequence. Off by default, and proposals are queued for review rather
+    # than installed - a skill is instructions the Operator will follow on
+    # future tasks, so writing one unattended changes tomorrow's behavior
+    # with nobody having agreed to it. See skill_learning.py.
+    learning_enabled: bool = False
     max_skills_listed: int = Field(default=50, ge=1, le=500)
 
 
@@ -465,6 +520,12 @@ class PersonaAdapterConfig(StrictBaseModel):
 
     enabled: bool = True
     path: str = ".agent_control/persona.md"
+    # Watch the operator's own messages for durable preferences ("keep it
+    # short", "stop asking me that") and queue them for review. Off by
+    # default: learning from someone's phrasing should be chosen, not
+    # discovered later. Suggestions are never written straight to the file -
+    # see persona_learning.py for why review is not optional here.
+    learning_enabled: bool = False
     max_chars: int = Field(default=4000, ge=1, le=20000)
 
 
@@ -504,6 +565,8 @@ class AdaptersConfig(StrictBaseModel):
     stt: STTAdapterConfig = Field(default_factory=STTAdapterConfig)
     tts: TTSAdapterConfig = Field(default_factory=TTSAdapterConfig)
     skills: SkillsAdapterConfig = Field(default_factory=SkillsAdapterConfig)
+    dependencies: DependenciesAdapterConfig = Field(default_factory=DependenciesAdapterConfig)
+    web_search: WebSearchAdapterConfig = Field(default_factory=WebSearchAdapterConfig)
     persona: PersonaAdapterConfig = Field(default_factory=PersonaAdapterConfig)
     knowledge_base: KnowledgeBaseAdapterConfig = Field(default_factory=KnowledgeBaseAdapterConfig)
 

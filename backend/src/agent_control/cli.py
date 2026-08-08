@@ -33,10 +33,12 @@ from agent_control.llm import LLMMessageClassifier, build_default_llm_provider
 from agent_control.llm.providers import build_major_llm_provider
 from agent_control.observation import ArtifactService, ScreenshotService
 from agent_control.persona import persona_prompt_section
+from agent_control.tools.skills import skills_context_section
 from agent_control.orchestration import AuditorService, OperatorLoopService, TaskWorker, ToolExecutor, reconcile_orphaned_tasks
 from agent_control.orchestration.worker import TaskNotificationSink
 from agent_control.policy import PolicyEngine
 from agent_control.recovery import RetryPolicy
+from agent_control.heartbeat import run_heartbeat_forever
 from agent_control.scheduler import run_scheduler_forever
 from agent_control.schemas import AuditEventType, ChannelType, TaskRecord, TaskStatus
 from agent_control.storage import ApprovalRepository, AuditLogger, Database, Repositories
@@ -365,6 +367,9 @@ async def run_worker() -> None:
             task_budget_seconds=float(settings.limits.task_budget_seconds),
             operator=operator,
             operator_max_steps=settings.operator.max_steps,
+            fulfillment_mode=settings.operator.fulfillment_mode,
+            persona_config=settings.adapters.persona,
+            skills_config=settings.adapters.skills,
             auditor=auditor,
             persist_llm_calls=settings.storage.persist_llm_calls,
             llm_call_max_chars=settings.storage.llm_call_max_chars,
@@ -372,7 +377,18 @@ async def run_worker() -> None:
         )
         for _ in range(max(settings.limits.max_parallel_tasks, 1))
     ]
-    await asyncio.gather(*(worker.run_forever() for worker in workers))
+    loops = [worker.run_forever() for worker in workers]
+    # Beside the workers, not inside them: a worker awaiting a long subprocess
+    # cannot emit anything, which is exactly when an update matters most.
+    if settings.limits.heartbeat_interval_seconds > 0:
+        loops.append(
+            run_heartbeat_forever(
+                repositories,
+                notifier,
+                interval_seconds=float(settings.limits.heartbeat_interval_seconds),
+            )
+        )
+    await asyncio.gather(*loops)
 
 
 async def run_scheduler() -> None:
@@ -537,11 +553,26 @@ def _screenshot_service(settings, repositories: Repositories) -> ScreenshotServi
 
 def _worker_config_context(registry, settings: AppSettings) -> str:
     persona_section = persona_prompt_section(settings.adapters.persona)
+    # Rebuilt per decide() call via config_context_factory, so installing a
+    # skill takes effect on the next step rather than needing a worker restart.
+    skills_section = (
+        skills_context_section(
+            settings.adapters.skills.root_dir, settings.adapters.skills.max_skills_listed
+        )
+        if settings.adapters.skills.enabled
+        else ""
+    )
+    # registry.vault_summary() used to be rendered here too. It lists the same
+    # 24 tools with the same descriptions as registry.context() above, differing
+    # only in the words "available/known_gap" versus "enabled/disabled" - ~790
+    # tokens of duplication in every single Operator step. Measured: the static
+    # prefix was 4247 tokens against an average completion of 93, so this loop
+    # is prefill-bound and the catalog is the largest single item in it.
     return f"""{registry.context()}
 
-{registry.vault_summary()}
-
 {persona_section}
+
+{skills_section}
 
 Prefer conservative plans. Use registered tool names exactly and include explicit operations when a tool supports them. For exact JSON/REST APIs, prefer http.request when the target is allowlisted. If a needed connector is missing, refresh or install MCP when a matching server is known; otherwise use adapter.factory to scaffold and test a proposal instead of inventing unregistered tool names."""
 

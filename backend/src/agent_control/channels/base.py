@@ -26,6 +26,8 @@ text both channels' notifiers render into their own transport.
 
 from __future__ import annotations
 
+import time
+
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -53,6 +55,7 @@ from agent_control.schemas import (
 )
 from agent_control.storage.audit import AuditLogger
 from agent_control.storage.repositories import Repositories
+from agent_control.task_inbox import acknowledgement, attach_note, find_steerable_task
 
 
 @dataclass(frozen=True)
@@ -264,10 +267,17 @@ async def classify_and_spawn_task(
                 objective=inbound.text or "",
             )
         )
+        classify_started = time.monotonic()
         try:
             classification = await classifier.classify(inbound, context=classification_context)
         except TypeError:
             classification = await classifier.classify(inbound)
+        # The Concierge was the one agent with no timing anywhere: llm_calls
+        # records "operator" and "auditor" only, because a classification
+        # happens before a task exists to attach it to. It is also the call the
+        # operator waits on *first* - before "on it" is even sent - so its cost
+        # was both the most felt and the only unmeasured one.
+        classify_ms = (time.monotonic() - classify_started) * 1000
     except Exception as exc:
         return _spawn_failed(audit, inbound, f"classification failed: {exc}", actor)
 
@@ -287,6 +297,8 @@ async def classify_and_spawn_task(
             "reason": classification.reason,
             "intent": classification.intent.model_dump(mode="json") if classification.intent else None,
             "llm": classification_trace(inbound, context=classification_context),
+            "latency_ms": round(classify_ms, 1),
+            "context_chars": len(classification_context or ""),
         },
     )
 
@@ -302,6 +314,30 @@ async def classify_and_spawn_task(
     #                                     so observation tasks aren't dropped)
     #  - intent missing entirely       -> fall back to is_task (legacy behavior)
     # STATUS_REQUEST task_type still bypasses the gate as before.
+    # Steering comes first: a correction to work already running must reach
+    # that work, not become a second task. Before this, the only things an
+    # in-flight task could hear were pause/resume/cancel - "make it 5 not 3"
+    # spawned a rival task while the original carried on with 3.
+    if classification.steers_active_task:
+        steerable = find_steerable_task(
+            repositories, conversation_id=conversation_id, chat_id=inbound.chat_id
+        )
+        if steerable is not None:
+            steered = attach_note(repositories, audit, steerable, text=inbound.text, actor=actor)
+            return ChannelUpdateResult(
+                authorized=True,
+                inbound_message=inbound,
+                classification=classification,
+                outbound_message=OutboundMessage(
+                    channel=inbound.channel,
+                    chat_id=inbound.chat_id,
+                    text=acknowledgement(steered),
+                ),
+            )
+        # Nothing in flight any more - it finished between the message arriving
+        # and being classified. Fall through and treat it as a normal request
+        # rather than silently dropping what the user asked for.
+
     intent_route = classification.intent.route if classification.intent is not None else None
     if intent_route is None:
         is_chat_only = not classification.is_task and classification.task_type != TaskType.STATUS_REQUEST

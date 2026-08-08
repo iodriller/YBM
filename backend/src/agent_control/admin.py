@@ -1011,6 +1011,88 @@ def create_admin_router(
         _audit_config_update(repositories_loader(), loaded, "telegram", patch)
         return {"config_file": str(CONFIG_FILE_PATH), "telegram": telegram}
 
+    @router.get("/api/persona/suggestions")
+    def admin_list_persona_suggestions(request: Request) -> dict[str, Any]:
+        """Preferences the system has inferred but not applied.
+
+        Nothing here has changed behavior yet - that is the point. An accepted
+        line goes into persona.md and then shapes every future task, so the
+        decision belongs to a person, and this endpoint is where they see what
+        is waiting.
+        """
+        loaded = require_admin(request)
+        from agent_control.persona_learning import SuggestionStore
+
+        store = SuggestionStore.load(loaded.adapters.persona)
+        return {
+            "learning_enabled": loaded.adapters.persona.learning_enabled,
+            "persona_path": loaded.adapters.persona.path,
+            "pending": [s.to_dict() for s in store.pending()],
+            "history": [s.to_dict() for s in store.suggestions if s.status != "pending"][-20:],
+        }
+
+    @router.post("/api/persona/suggestions/{suggestion_id}/decide")
+    def admin_decide_persona_suggestion(
+        request: Request, suggestion_id: str, payload: AdminApprovalDecisionRequest
+    ) -> dict[str, Any]:
+        loaded = require_admin(request)
+        from agent_control.persona_learning import SuggestionStore, apply_to_persona
+
+        store = SuggestionStore.load(loaded.adapters.persona)
+        accept = payload.decision != "reject"
+        decided = store.decide(suggestion_id, accept)
+        if decided is None:
+            raise HTTPException(status_code=404, detail="suggestion not found or already decided")
+        persona = None
+        if accept:
+            persona = apply_to_persona(loaded.adapters.persona, decided)
+        _audit_config_update(
+            repositories_loader(), loaded, "persona_suggestion",
+            {"suggestion_id": suggestion_id, "decision": decided.status, "line": decided.line},
+        )
+        return {"suggestion": decided.to_dict(), "persona": persona}
+
+    @router.get("/api/skills/suggestions")
+    def admin_list_skill_suggestions(request: Request) -> dict[str, Any]:
+        """Procedures learned from successful runs, awaiting review.
+
+        An installed skill is injected into every future Operator prompt and
+        followed as instructions, so this queue is the point at which a person
+        decides what the system is allowed to have learned.
+        """
+        loaded = require_admin(request)
+        from agent_control.skill_learning import SkillSuggestionStore
+
+        store = SkillSuggestionStore.load(loaded.adapters.skills)
+        return {
+            "learning_enabled": loaded.adapters.skills.learning_enabled,
+            "skills_root": loaded.adapters.skills.root_dir,
+            "pending": [s.to_dict() for s in store.pending()],
+            "history": [s.to_dict() for s in store.suggestions if s.status != "pending"][-20:],
+        }
+
+    @router.post("/api/skills/suggestions/{suggestion_id}/decide")
+    def admin_decide_skill_suggestion(
+        request: Request, suggestion_id: str, payload: AdminApprovalDecisionRequest
+    ) -> dict[str, Any]:
+        loaded = require_admin(request)
+        from agent_control.skill_learning import SkillSuggestionStore, install
+
+        store = SkillSuggestionStore.load(loaded.adapters.skills)
+        accept = payload.decision != "reject"
+        decided = store.decide(suggestion_id, accept)
+        if decided is None:
+            raise HTTPException(status_code=404, detail="suggestion not found or already decided")
+        installed = install(loaded.adapters.skills, decided) if accept else None
+        _audit_config_update(
+            repositories_loader(), loaded, "skill_suggestion",
+            {"suggestion_id": suggestion_id, "decision": decided.status, "name": decided.name},
+        )
+        return {
+            "suggestion": decided.to_dict(),
+            "installed": {"name": installed["name"], "path": installed["path"]} if installed else None,
+        }
+
     @router.post("/api/config/telegram/test")
     async def admin_test_telegram(request: Request, payload: AdminTelegramProbeRequest) -> dict[str, Any]:
         """Verify a bot token before anything is written to .env, and report

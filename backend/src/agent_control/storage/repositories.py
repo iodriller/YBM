@@ -295,6 +295,17 @@ class TaskRepository:
                       OR claim_expires_at IS NULL
                       OR claim_expires_at < ?
                   )
+                  -- Skip a task that is deliberately waiting (retry backoff,
+                  -- or a usage limit that resets hours from now). Without
+                  -- this the oldest parked task is re-claimed on every poll
+                  -- and immediately handed back, and with max_parallel_tasks
+                  -- at 1 that starves every newer task behind it for the
+                  -- whole wait. Both sides are datetime.isoformat(), which
+                  -- compares correctly as text.
+                  AND (
+                      json_extract(metadata_json, '$.next_retry_at') IS NULL
+                      OR json_extract(metadata_json, '$.next_retry_at') <= ?
+                  )
                 ORDER BY created_at ASC
                 LIMIT 1
             )
@@ -309,6 +320,7 @@ class TaskRepository:
                     _dt(now),
                     *(status.value for status in statuses),
                     worker_id,
+                    _dt(now),
                     _dt(now),
                 ],
             ).fetchone()

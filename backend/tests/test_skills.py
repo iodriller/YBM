@@ -16,6 +16,7 @@ from agent_control.tools.skills import (
     delete_skill_file,
     detect_referenced_tools,
     list_skills_detailed,
+    skills_context_section,
     slugify,
     write_skill_file,
 )
@@ -242,3 +243,33 @@ def test_list_skills_detailed_infers_tools_only_when_not_declared(tmp_path) -> N
     assert by_name["Declared"]["tools"] == ["http.request"]
     assert by_name["Inferred"]["tools"] == ["filesystem.manage"]
     assert by_name["Inferred"]["tools_declared"] is False
+
+
+def test_context_section_lists_skills_without_leaking_bodies(tmp_path) -> None:
+    """The Operator must be told which skills exist.
+
+    Nothing in prompts/ mentioned skills, and the Operator's context was only
+    objective + memory + history + tool catalog - so an authored procedure for
+    exactly the job at hand was reachable only if the model happened to guess
+    that a `skills` tool existed and called `list` unprompted. Authored
+    guidance sat unread while the model improvised.
+
+    Bodies stay out for the same reason `list` omits them: this block is built
+    into every single step's prompt, so it has to stay cheap.
+    """
+    _write_skill(tmp_path, "invoice.md")
+
+    section = skills_context_section(str(tmp_path))
+
+    assert "invoice-extraction" in section
+    assert "How to pull the total from an invoice PDF." in section
+    # Tells the model how to act on the list, not just that it exists.
+    assert "read" in section.lower()
+    assert "Find the total line" not in section
+
+
+def test_context_section_is_empty_when_no_skills_are_installed(tmp_path) -> None:
+    """No skills means no section at all - not an empty heading. A stray
+    'Skills available' header with nothing under it invites the model to
+    invent skill names to read."""
+    assert skills_context_section(str(tmp_path)) == ""

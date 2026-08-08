@@ -36,17 +36,21 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import atexit
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import time
 import traceback
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib import error as urlerror, request as urlrequest
+from urllib import error as urlerror
+from urllib import request as urlrequest
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -55,6 +59,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ENV_PATH = ROOT / ".env"
 RESULTS_ROOT = ROOT / ".agent_control" / "e2e_results"
 CASES_PATH = ROOT / "e2e" / "all_cases.json"
+CONFIG_PATH = ROOT / "config" / "config.yaml"
 
 ADMIN_BASE = "http://127.0.0.1:8765"
 LOCALDEPLOY_BASE = "http://127.0.0.1:8000"
@@ -359,6 +364,145 @@ def prepare_fixtures(start_web: bool) -> dict[str, str]:
         return {}
 
 
+@dataclass
+class TemporaryMCPFixture:
+    """Exact local state needed to restore the operator after an E2E MCP run."""
+
+    config_path: Path
+    original_config: bytes
+    catalog_path: Path
+    original_catalog: bytes | None
+    restart_services: Callable[[], None]
+    active: bool = True
+
+    def restore(self, *, restart: bool = True) -> None:
+        if not self.active:
+            return
+        self.active = False
+        self.config_path.write_bytes(self.original_config)
+        if self.original_catalog is None:
+            self.catalog_path.unlink(missing_ok=True)
+        else:
+            self.catalog_path.parent.mkdir(parents=True, exist_ok=True)
+            self.catalog_path.write_bytes(self.original_catalog)
+        if restart:
+            self.restart_services()
+
+
+def _restart_ybm_services() -> None:
+    if os.name != "nt":
+        raise RuntimeError("automatic E2E fixture reload currently requires Windows/PowerShell")
+    command = [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(ROOT / "scripts" / "ybm.ps1"),
+        "restart",
+        "-SkipDoctor",
+        "-NoLocalDeploy",
+    ]
+    result = subprocess.run(
+        command,
+        cwd=ROOT,
+        text=True,
+        # YBM starts detached supervisors. Capturing a pipe here lets those
+        # grandchildren inherit its write handle, so communicate() waits for
+        # EOF forever even after PowerShell itself exits. They have their own
+        # service logs; discard lifecycle chatter here.
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=180,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"YBM restart failed while loading E2E fixtures (exit {result.returncode})")
+
+
+def provision_fake_mcp_fixture(
+    server_path: Path,
+    *,
+    restart_services: Callable[[], None] | None = None,
+) -> TemporaryMCPFixture:
+    """Temporarily register the catalogue's local fake MCP echo server."""
+    import yaml
+
+    if not server_path.is_file():
+        raise FileNotFoundError(f"fake MCP server fixture was not created: {server_path}")
+    if not CONFIG_PATH.is_file():
+        raise FileNotFoundError(f"YBM config does not exist: {CONFIG_PATH}")
+
+    original_config = CONFIG_PATH.read_bytes()
+    config = yaml.safe_load(original_config.decode("utf-8")) or {}
+    if not isinstance(config, dict):
+        raise TypeError(f"{CONFIG_PATH} must contain a YAML object")
+    mcp = config.setdefault("mcp", {})
+    if not isinstance(mcp, dict):
+        raise TypeError("config mcp section must be an object")
+    servers = mcp.setdefault("servers", {})
+    if not isinstance(servers, dict):
+        raise TypeError("config mcp.servers section must be an object")
+
+    catalog_value = str(mcp.get("catalog_path") or ".agent_control/mcp/tool_catalog.json")
+    catalog_path = Path(catalog_value)
+    if not catalog_path.is_absolute():
+        catalog_path = ROOT / catalog_path
+    original_catalog = catalog_path.read_bytes() if catalog_path.exists() else None
+    restart = restart_services or _restart_ybm_services
+    fixture = TemporaryMCPFixture(
+        config_path=CONFIG_PATH,
+        original_config=original_config,
+        catalog_path=catalog_path,
+        original_catalog=original_catalog,
+        restart_services=restart,
+    )
+
+    mcp["enabled"] = True
+    servers["fake"] = {
+        "enabled": True,
+        "command": sys.executable,
+        "args": [str(server_path.resolve())],
+        "cwd": str(ROOT),
+        "timeout_seconds": 30,
+        "capability": "terminal.run",
+        "risk_level": "high",
+        "disabled_tools": [],
+        "max_output_chars": 20000,
+    }
+    CONFIG_PATH.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8", newline="")
+    catalog_path.parent.mkdir(parents=True, exist_ok=True)
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "servers": [{"name": "fake", "enabled": True, "healthy": True, "tool_count": 1}],
+                "tools": [
+                    {
+                        "server": "fake",
+                        "name": "echo",
+                        "tool": "echo",
+                        "description": "Echo text exactly as received",
+                        "capability": "terminal.run",
+                        "risk_level": "high",
+                        "disabled": False,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    try:
+        restart()
+    except Exception:  # noqa: BLE001 - any reload failure must restore private config
+        fixture.restore(restart=False)
+        raise
+    return fixture
+
+
 def render_text(text: str, fixtures: dict[str, str]) -> str:
     out = text
     for k, v in fixtures.items():
@@ -516,8 +660,18 @@ async def _send_message(message: str) -> int:
 
 
 async def _find_new_task(
-    known_ids: set[str], spawn_timeout_s: int = TASK_SPAWN_TIMEOUT_S
+    known_ids: set[str],
+    original_message_text: str,
+    spawn_timeout_s: int = TASK_SPAWN_TIMEOUT_S,
 ) -> str | None:
+    """Find the task created for this exact Telegram message.
+
+    Matching only on "not in the initial snapshot" lets a delayed task from
+    an earlier turn steal the next case. Telegram intake persists the exact
+    original text and source channel in task metadata. Use those durable
+    values: Telethon's MTProto sent-message id is not guaranteed to equal the
+    Bot API update id stored by YBM.
+    """
     deadline = time.monotonic() + spawn_timeout_s
     while time.monotonic() < deadline:
         await asyncio.sleep(2)
@@ -526,7 +680,12 @@ async def _find_new_task(
         except Exception:
             continue
         for t in data.get("tasks", []):
-            if t["id"] not in known_ids:
+            metadata = t.get("metadata") if isinstance(t.get("metadata"), dict) else {}
+            if (
+                t["id"] not in known_ids
+                and metadata.get("source_channel") == "telegram"
+                and metadata.get("original_message_text") == original_message_text
+            ):
                 return t["id"]
     return None
 
@@ -743,7 +902,11 @@ async def _run_turn(label: str, message: str, max_seconds: int) -> TurnResult:
             return turn
 
         spawn_timeout_s = min(TASK_SPAWN_TIMEOUT_S, max_seconds)
-        task_id = await _find_new_task(known, spawn_timeout_s=spawn_timeout_s)
+        task_id = await _find_new_task(
+            known,
+            message,
+            spawn_timeout_s=spawn_timeout_s,
+        )
         if not task_id:
             # Distinguish "classifier said is_task=False" from "polling didn't see the message"
             # so the report can blame the right component.
@@ -1284,6 +1447,24 @@ async def main() -> int:
     )
     fixtures = prepare_fixtures(start_web=needs_web and not args.no_web_fixture)
 
+    mcp_fixture: TemporaryMCPFixture | None = None
+    if any("fake_mcp_server" in (case.get("setup") or []) for case in selected):
+        try:
+            print("  Provisioning temporary fake MCP server and reloading YBM...")
+            mcp_fixture = provision_fake_mcp_fixture(Path(fixtures["fake_mcp_server_path"]))
+            atexit.register(mcp_fixture.restore)
+        except Exception as exc:  # noqa: BLE001 - preflight boundary reports actionable failure
+            print(f"Preflight failed - could not provision fake MCP fixture: {exc}")
+            return 1
+        reload_issues = _preflight()
+        if reload_issues:
+            print("Preflight failed after loading the fake MCP fixture:")
+            for issue in reload_issues:
+                print(f"  - {issue}")
+            atexit.unregister(mcp_fixture.restore)
+            mcp_fixture.restore()
+            return 1
+
     # Browser cases need Chrome with remote debugging on :9222. Warn (and
     # try to auto-launch) before the run rather than after we've burned 20min
     # on a queue full of browser cases that all fail at the adapter.
@@ -1357,7 +1538,16 @@ async def main() -> int:
     if granted_approvals:
         print(f"Approvals granted during the run: {len(granted_approvals)}")
     print(f"Passed {passed} / {len(results)}  |  total {total_time}")
-    return 0 if passed == len(results) else 2
+    exit_code = 0 if passed == len(results) else 2
+    if mcp_fixture is not None:
+        print("  Restoring MCP config/catalog and reloading YBM...")
+        atexit.unregister(mcp_fixture.restore)
+        try:
+            mcp_fixture.restore()
+        except Exception as exc:  # noqa: BLE001 - restoration must convert any failure to exit 1
+            print(f"  [fixtures] ERROR: could not restore YBM after MCP run: {exc}")
+            return 1
+    return exit_code
 
 
 def _progress_bar(done: int, total: int, *, width: int = 24) -> str:
