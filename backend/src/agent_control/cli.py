@@ -368,6 +368,7 @@ async def run_worker() -> None:
             operator=operator,
             operator_max_steps=settings.operator.max_steps,
             fulfillment_mode=settings.operator.fulfillment_mode,
+            audit_min_tool_calls=settings.operator.audit_min_tool_calls,
             persona_config=settings.adapters.persona,
             skills_config=settings.adapters.skills,
             auditor=auditor,

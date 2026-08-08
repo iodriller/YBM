@@ -144,6 +144,7 @@ class TaskWorker:
         llm_call_max_chars: int = 8000,
         redact_patterns: list[str] | tuple[str, ...] | None = None,
         fulfillment_mode: str = "auditor",
+        audit_min_tool_calls: int = 2,
         persona_config: object | None = None,
         skills_config: object | None = None,
     ) -> None:
@@ -171,6 +172,7 @@ class TaskWorker:
         # Only the Auditor can own fulfillment, so a worker built without one
         # keeps the legacy gate rather than silently losing the check entirely.
         self._auditor_owns_fulfillment = fulfillment_mode == "auditor" and auditor is not None
+        self.audit_min_tool_calls = max(1, int(audit_min_tool_calls))
         # None disables the persona learning pass entirely (tests, and any
         # embedder that never configured a persona file).
         self.persona_config = persona_config
@@ -469,7 +471,18 @@ class TaskWorker:
 
         if decision.action == OperatorAction.DONE:
             final_answer = decision.final_answer
-            content_entry = _last_content_tool_history_entry(history) if self.auditor is not None else None
+            # Skip the grounding pass on a task that made a single tool call:
+            # the Operator has just read that one result directly and written
+            # final_answer from it, and the Auditor costs ~11s against a whole
+            # request that is often ~12s. Governed by
+            # operator.audit_min_tool_calls (1 restores auditing everything),
+            # because it is a real trade - see that setting's comment.
+            worth_auditing = _tool_call_count(history) >= self.audit_min_tool_calls
+            content_entry = (
+                _last_content_tool_history_entry(history)
+                if self.auditor is not None and worth_auditing
+                else None
+            )
             if content_entry is not None:
                 audit_gap_count = int(latest.metadata.get("operator_audit_gap_count", 0))
                 if audit_gap_count < 2:

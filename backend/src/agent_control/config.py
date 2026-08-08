@@ -207,6 +207,18 @@ class OperatorConfig(StrictBaseModel):
     #               veto a `done` both the Operator and the Auditor accepted.
     #               Kept as a rollback path, not as a recommendation.
     fulfillment_mode: Literal["auditor", "heuristic"] = "auditor"
+    # Run the Auditor only once a task has made at least this many real tool
+    # calls. Measured: 49 auditor calls averaging 11.1s each, on a loop where
+    # the whole request is often 12s - so on a one-tool task the grounding
+    # pass can cost as much as the work it is checking.
+    #
+    # The tradeoff is real and this is why it is a setting rather than a
+    # heuristic: the Auditor also performs the count/section check ("are all
+    # 5 files here?") and extracts the focused answer. Skipping it means
+    # trusting the Operator's own final_answer for single-tool tasks, where
+    # it has just read that one result directly. Set to 1 to audit everything,
+    # as before.
+    audit_min_tool_calls: int = Field(default=2, ge=1, le=10)
 
 
 class VSCodeAdapterConfig(StrictBaseModel):

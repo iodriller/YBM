@@ -111,7 +111,10 @@ async def test_auditor_call_is_persisted_as_a_separate_source(tmp_path) -> None:
         OperatorDecision(action=OperatorAction.CALL_TOOL, tool_name="filesystem.manage", tool_input={}, risk_level=RiskLevel.LOW)
     )
     auditor = OneShotAuditor(AuditResult(sufficient=True, answer="grounded answer"))
-    worker = TaskWorker(repos, audit, executor=executor, operator=operator, auditor=auditor)
+    # audit_min_tool_calls=1: this asserts an Auditor call is persisted, on a
+    # single-tool task that the production default (2) skips.
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator, auditor=auditor,
+                        audit_min_tool_calls=1)
 
     running = await worker.process_task(task.id)
 

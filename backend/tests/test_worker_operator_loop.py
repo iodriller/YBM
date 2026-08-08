@@ -404,7 +404,7 @@ async def test_gap_check_entries_do_not_consume_the_tool_call_budget(tmp_path) -
     ])
     worker = TaskWorker(
         repos, audit, executor=executor, operator=operator,
-        auditor=GapThenOkAuditor(), operator_max_steps=3,
+        auditor=GapThenOkAuditor(), operator_max_steps=3, audit_min_tool_calls=1,
     )
 
     result = task
@@ -445,7 +445,10 @@ async def test_auditor_receives_full_output_not_the_truncated_history_summary(tm
         OperatorDecision(action=OperatorAction.CALL_TOOL, tool_name="filesystem.manage", tool_input={}, risk_level=RiskLevel.LOW),
         OperatorDecision(action=OperatorAction.DONE, final_answer="done"),
     ])
-    worker = TaskWorker(repos, audit, executor=executor, operator=operator, auditor=auditor)
+    # audit_min_tool_calls=1: these exercise the Auditor on single-tool
+    # tasks, which the production default (2) deliberately skips.
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator, auditor=auditor,
+                        audit_min_tool_calls=1)
 
     running = await worker.process_task(task.id)
     await worker.process_task(running.id)
@@ -842,7 +845,10 @@ async def test_operator_loop_audit_replaces_final_answer_with_grounded_synthesis
         OperatorDecision(action=OperatorAction.DONE, final_answer="I found an invoice."),
     ])
     auditor = QueueAuditor([AuditResult(sufficient=True, answer="The invoice total is $250.00.")])
-    worker = TaskWorker(repos, audit, executor=executor, operator=operator, auditor=auditor)
+    # audit_min_tool_calls=1: these exercise the Auditor on single-tool
+    # tasks, which the production default (2) deliberately skips.
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator, auditor=auditor,
+                        audit_min_tool_calls=1)
 
     running = await worker.process_task(task.id)
     completed = await worker.process_task(running.id)
@@ -864,7 +870,10 @@ async def test_operator_loop_audit_gap_continues_loop_instead_of_completing(tmp_
         OperatorDecision(action=OperatorAction.DONE, final_answer="Here are the episodes."),
     ])
     auditor = QueueAuditor([AuditResult(sufficient=False, reason="only 2 of 5 requested episodes present")])
-    worker = TaskWorker(repos, audit, executor=executor, operator=operator, auditor=auditor)
+    # audit_min_tool_calls=1: these exercise the Auditor on single-tool
+    # tasks, which the production default (2) deliberately skips.
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator, auditor=auditor,
+                        audit_min_tool_calls=1)
 
     running = await worker.process_task(task.id)
     result = await worker.process_task(running.id)
@@ -892,7 +901,10 @@ async def test_operator_loop_audit_gap_exhausts_and_completes_with_operator_answ
         AuditResult(sufficient=False, reason="still insufficient"),
         AuditResult(sufficient=False, reason="still insufficient"),
     ])
-    worker = TaskWorker(repos, audit, executor=executor, operator=operator, auditor=auditor)
+    # audit_min_tool_calls=1: these exercise the Auditor on single-tool
+    # tasks, which the production default (2) deliberately skips.
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator, auditor=auditor,
+                        audit_min_tool_calls=1)
 
     result = task
     for _ in range(5):
@@ -917,7 +929,10 @@ async def test_operator_loop_skips_audit_when_no_content_tool_was_called(tmp_pat
     executor = _executor(settings, audit, repos)
     operator = QueueOperator([OperatorDecision(action=OperatorAction.DONE, final_answer="answer")])
     auditor = QueueAuditor([])
-    worker = TaskWorker(repos, audit, executor=executor, operator=operator, auditor=auditor)
+    # audit_min_tool_calls=1: these exercise the Auditor on single-tool
+    # tasks, which the production default (2) deliberately skips.
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator, auditor=auditor,
+                        audit_min_tool_calls=1)
 
     completed = await worker.process_task(task.id)
 
@@ -1155,7 +1170,10 @@ async def test_worker_accumulates_token_usage_across_operator_and_auditor_calls(
         [AuditResult(sufficient=True, answer="The invoice total is $250.00.")],
         usages=[{"prompt_tokens": 50, "completion_tokens": 15, "total_tokens": 65, "model": "gpt-4.1-mini"}],
     )
-    worker = TaskWorker(repos, audit, executor=executor, operator=operator, auditor=auditor)
+    # audit_min_tool_calls=1: these exercise the Auditor on single-tool
+    # tasks, which the production default (2) deliberately skips.
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator, auditor=auditor,
+                        audit_min_tool_calls=1)
 
     running = await worker.process_task(task.id)
     completed = await worker.process_task(running.id)
@@ -1214,7 +1232,10 @@ async def test_worker_prefers_major_provider_on_the_step_after_an_audit_gap(tmp_
         AuditResult(sufficient=False, reason="only 2 of 5 requested episodes present"),
         AuditResult(sufficient=True, answer="grounded final answer"),
     ])
-    worker = TaskWorker(repos, audit, executor=executor, operator=operator, auditor=auditor)
+    # audit_min_tool_calls=1: these exercise the Auditor on single-tool
+    # tasks, which the production default (2) deliberately skips.
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator, auditor=auditor,
+                        audit_min_tool_calls=1)
 
     running = await worker.process_task(task.id)  # step 1: call_tool
     gapped = await worker.process_task(running.id)  # step 2: done -> audit gap

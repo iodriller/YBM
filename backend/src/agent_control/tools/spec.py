@@ -169,19 +169,43 @@ class ToolRegistry:
         self.definitions = (*self.definitions, definition)
 
     def context(self) -> str:
+        """The tool catalog as the Operator sees it.
+
+        This block is the largest single item in every Operator prompt, and
+        the loop is prefill-bound (measured: ~4,700 prompt tokens per call
+        against ~93 completion tokens), so what is spent here is spent on
+        every step of every task. Two things were costing tokens without
+        changing any decision the model can make:
+
+        * Full descriptions and operation lists for tools that are switched
+          off - the model cannot call them, so all it needs is to know the
+          name exists in order to say "that capability is disabled". They are
+          now one line at the end instead of ~350 tokens of detail.
+        * `lifecycle=...` on every row, which no prompt rule refers to.
+        """
+        enabled = [definition for definition in self.definitions if definition.enabled]
+        disabled = [definition for definition in self.definitions if not definition.enabled]
         lines = ["Available worker tools:"]
-        for definition in self.definitions:
-            status = "enabled" if definition.enabled else "disabled"
+        for definition in enabled:
             operations = f" operations={','.join(definition.operations)}" if definition.operations else ""
             lines.append(
-                f"- {definition.name}: {status}; capability={definition.capability.value}; "
-                f"lifecycle={definition.lifecycle}; {definition.description}{operations}"
+                f"- {definition.name} ({definition.capability.value}): "
+                f"{definition.description}{operations}"
             )
-            if definition.enabled and definition.examples:
+            if definition.examples:
                 # Show worked examples inline — the model imitates these
                 # better than abstract descriptions of input shape.
                 for ex in definition.examples:
                     lines.append(f"    example tool_input: {json.dumps(ex, ensure_ascii=False)}")
+        if disabled:
+            # Named, not described: enough for the model to tell the user a
+            # capability exists but is turned off, without paying for detail
+            # it can never act on.
+            lines.append("")
+            lines.append(
+                "Disabled (cannot be called; tell the user to enable it in Access): "
+                + ", ".join(definition.name for definition in disabled)
+            )
         mcp_summary = self.mcp_summary_factory() if self.mcp_summary_factory is not None else self.mcp_summary
         if mcp_summary:
             lines.append("")
