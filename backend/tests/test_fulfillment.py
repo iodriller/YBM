@@ -160,6 +160,137 @@ def test_completed_coding_agent_session_satisfies_postcondition() -> None:
     assert _postcondition_satisfied(task, PostconditionType.CODING_AGENT_STEP)
 
 
+def test_inflected_verb_still_infers_the_postcondition() -> None:
+    """The classifier paraphrases the request into `objective`, and exact-token
+    matching meant "creating" did not count as "create" - the WORKSPACE_DIR
+    obligation silently vanished and a run that wrote nothing while claiming
+    otherwise completed unchallenged (docs/E2E_FINDINGS.md P0-2)."""
+    paraphrased = TaskRecord(
+        objective=(
+            "Scaffold a minimal VS Code extension called ybm-dog-facts, creating package.json, "
+            "extension.js, and README, and list exactly what was created."
+        ),
+        metadata={},
+    )
+
+    expected = {item.type for item in validate_fulfillment(paraphrased).expected}
+
+    assert PostconditionType.WORKSPACE_DIR in expected
+    assert PostconditionType.WORKSPACE_FILES in expected
+
+
+def test_original_message_keeps_an_obligation_the_paraphrase_dropped() -> None:
+    """A paraphrase may add an obligation it makes explicit, but must not be
+    able to drop one the user's own words already established."""
+    task = TaskRecord(
+        objective="Summarize what the extension should contain.",
+        metadata={"original_message_text": "Create the real app files in that folder."},
+    )
+
+    expected = {item.type for item in validate_fulfillment(task).expected}
+
+    assert PostconditionType.WORKSPACE_DIR in expected
+    assert PostconditionType.WORKSPACE_FILES in expected
+
+
+def test_empty_prepared_workspace_does_not_satisfy_project_creation() -> None:
+    task = TaskRecord(
+        objective="Scaffold a VS Code extension",
+        metadata={"workspace_dir": "C:/work/task", "files": ["C:/work/task/TASK.md"]},
+    )
+
+    validation = validate_fulfillment(task)
+
+    assert PostconditionType.WORKSPACE_FILES in validation.missing
+    assert validation.first_gap == "expected_workspace_files_missing"
+
+
+def test_real_changed_file_satisfies_project_file_evidence() -> None:
+    task = TaskRecord(
+        objective="Scaffold a VS Code extension",
+        metadata={
+            "workspace_dir": "C:/work/task",
+            "changed_files": ["package.json", "extension.js"],
+        },
+    )
+
+    assert validate_fulfillment(task).ok
+
+
+def test_starting_a_coding_project_does_not_imply_a_running_preview() -> None:
+    task = TaskRecord(
+        objective="Use Codex to start a small accessible dog-adoption web app",
+        metadata={},
+    )
+
+    expected = {item.type for item in validate_fulfillment(task).expected}
+
+    assert PostconditionType.PREVIEW_URL not in expected
+    assert PostconditionType.WORKSPACE_FILES in expected
+
+
+def test_explicitly_launching_a_web_app_still_requires_a_preview_url() -> None:
+    task = TaskRecord(objective="Launch the dog web app and give me its URL", metadata={})
+
+    expected = {item.type for item in validate_fulfillment(task).expected}
+
+    assert PostconditionType.PREVIEW_URL in expected
+
+
+def test_code_interpreter_created_files_satisfy_project_file_evidence() -> None:
+    task = TaskRecord(
+        objective="Write and run a small local Python script that creates report.json",
+        metadata={
+            "workspace_dir": "C:/work/task",
+            "last_tool_result": {
+                "output": {"files_created": ["report.json", "script.py"], "returncode": 0}
+            },
+        },
+    )
+
+    assert validate_fulfillment(task).ok
+
+
+def test_explicit_project_folder_writes_do_not_require_separate_workspace_metadata() -> None:
+    task = TaskRecord(
+        objective="Scaffold a VS Code extension in C:/projects/dog-helper",
+        metadata={"changed_paths": ["C:/projects/dog-helper/package.json"]},
+    )
+
+    assert validate_fulfillment(task).ok
+
+
+def test_named_coding_provider_requires_coding_agent_evidence_even_after_another_tool() -> None:
+    task = TaskRecord(
+        objective="Ask Codex to build a VS Code extension",
+        metadata={
+            "workspace_dir": "C:/work/task",
+            "changed_files": ["package.json", "extension.js"],
+            "coding_agent_session": {
+                "provider": "codex",
+                "status": "completed",
+                "returncode": 0,
+            },
+            # A later inspection/preview result must not erase provider proof.
+            "last_tool_result": {"output": {"operation": "inspect_folder"}},
+        },
+    )
+
+    expected = {item.type for item in validate_fulfillment(task).expected}
+
+    assert PostconditionType.CODING_AGENT_STEP in expected
+    assert validate_fulfillment(task).ok
+
+
+def test_inflection_expansion_does_not_match_unrelated_words() -> None:
+    """Inflections are generated from the known trigger vocabulary, never by
+    stemming arbitrary input - a false positive invents a postcondition nothing
+    can satisfy, which makes a finished task loop on an unclosable gap."""
+    task = TaskRecord(objective="Tell me the creation date of that spreadsheet.", metadata={})
+
+    assert validate_fulfillment(task).expected == ()
+
+
 def test_embedded_filesystem_path_does_not_fabricate_a_postcondition() -> None:
     """Regression guard (docs/HISTORY.md): objectives routinely embed a literal
     path whose last segment contains a trigger word. A folder named
@@ -173,6 +304,26 @@ def test_embedded_filesystem_path_does_not_fabricate_a_postcondition() -> None:
     validation = validate_fulfillment(task)
 
     assert PostconditionType.BROWSER_STATE not in {item.type for item in validation.expected}
+
+
+def test_natural_filesystem_search_does_not_require_browser_state() -> None:
+    task = TaskRecord(
+        objective="Search under my documents for the renamed career file, read it, and tell me its marker.",
+        metadata={},
+    )
+
+    expected = {item.type for item in validate_fulfillment(task).expected}
+
+    assert PostconditionType.SOURCE_CONTENT in expected
+    assert PostconditionType.BROWSER_STATE not in expected
+
+
+def test_explicit_online_search_still_requires_browser_state() -> None:
+    task = TaskRecord(objective="Search online for the official installer page.", metadata={})
+
+    expected = {item.type for item in validate_fulfillment(task).expected}
+
+    assert PostconditionType.BROWSER_STATE in expected
 
 
 def test_embedded_posix_path_does_not_fabricate_a_postcondition() -> None:
@@ -190,3 +341,114 @@ def test_embedded_posix_path_does_not_fabricate_a_postcondition() -> None:
     assert PostconditionType.BROWSER_STATE not in {
         item.type for item in validation.expected
     }
+
+
+def test_adapter_proposal_does_not_also_require_generic_workspace() -> None:
+    task = TaskRecord(
+        objective="Create an adapter proposal with code, manifest, and tests in the adapter cache",
+        metadata={"adapter_dir": "C:/cache/example_adapter"},
+    )
+
+    validation = validate_fulfillment(task)
+
+    assert validation.ok
+    assert {item.type for item in validation.expected} == {PostconditionType.ADAPTER_PROPOSAL}
+
+
+def test_adapter_review_boundary_does_not_invent_source_reading() -> None:
+    task = TaskRecord(
+        objective="Create the adapter proposal.",
+        metadata={
+            "original_message_text": (
+                "Compare a local career evidence pack with a profile export. Create a reusable "
+                "adapter proposal named linkedin_evidence_compare, then tell me exactly what "
+                "review is still required."
+            ),
+            "adapter_dir": "C:/cache/linkedin_evidence_compare",
+        },
+    )
+
+    validation = validate_fulfillment(task)
+
+    assert validation.ok
+    assert PostconditionType.SOURCE_CONTENT not in {
+        item.type for item in validation.expected
+    }
+
+
+def test_writing_a_named_file_does_not_require_a_code_workspace() -> None:
+    task = TaskRecord(
+        objective="Write a grounded LinkedIn brief to report.md and send the file",
+        metadata={"changed_paths": ["C:/output/report.md"], "artifact_delivery": {"delivered": True}},
+    )
+
+    validation = validate_fulfillment(task)
+
+    assert PostconditionType.WORKSPACE_DIR not in {item.type for item in validation.expected}
+
+
+def test_request_to_send_a_file_requires_delivery_evidence() -> None:
+    task = TaskRecord(
+        objective="Write a grounded LinkedIn brief to report.md and send me that exact file",
+        metadata={"changed_paths": ["C:/output/report.md"]},
+    )
+
+    validation = validate_fulfillment(task)
+
+    assert PostconditionType.ARTIFACT_DELIVERED in validation.missing
+    assert validation.first_gap == "expected_artifact_delivery_missing"
+
+
+def test_request_to_send_an_update_does_not_require_file_delivery() -> None:
+    task = TaskRecord(objective="Send me an update every five minutes", metadata={})
+
+    assert PostconditionType.ARTIFACT_DELIVERED not in {
+        item.type for item in validate_fulfillment(task).expected
+    }
+
+
+def test_inspecting_every_evidence_file_requires_content_not_just_a_listing() -> None:
+    task = TaskRecord(
+        objective="Inspect every career-evidence file and write a grounded brief",
+        metadata={
+            "operator_history": [
+                {
+                    "tool_name": "filesystem.manage",
+                    "status": "succeeded",
+                    "input": {"operation": "inspect_folder", "root": "C:/career"},
+                    "output_summary": "Entries:\n- [file] one.md\n- [file] two.csv\n- [file] three.txt",
+                }
+            ]
+        },
+    )
+
+    validation = validate_fulfillment(task)
+
+    assert PostconditionType.SOURCE_CONTENT in validation.missing
+    assert validation.first_gap == "expected_source_content_missing"
+
+
+def test_reading_every_listed_file_satisfies_source_content_evidence() -> None:
+    history = [
+        {
+            "tool_name": "filesystem.manage",
+            "status": "succeeded",
+            "input": {"operation": "inspect_folder", "root": "C:/career"},
+            "output_summary": "Entries:\n- [file] one.md\n- [file] two.csv\n- [file] three.txt",
+        }
+    ]
+    history.extend(
+        {
+            "tool_name": "filesystem.manage",
+            "status": "succeeded",
+            "input": {"operation": "read_file", "path": f"C:/career/{name}"},
+            "output_summary": f"Read {name}.",
+        }
+        for name in ("one.md", "two.csv", "three.txt")
+    )
+    task = TaskRecord(
+        objective="Inspect every career-evidence file",
+        metadata={"operator_history": history},
+    )
+
+    assert validate_fulfillment(task).ok

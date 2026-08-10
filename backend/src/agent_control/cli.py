@@ -43,12 +43,19 @@ from agent_control.storage import ApprovalRepository, AuditLogger, Database, Rep
 from agent_control.tools.registry import build_tool_registry
 from agent_control.tools.stt import build_stt_adapter
 from agent_control.tools.coding_agent import (
+    load_sessions,
+    mark_session_progress_notified,
     mark_session_notified,
     run_coding_agent_session as run_coding_agent_session_once,
     scan_coding_sessions_once,
     session_completion_message,
+    session_progress_due,
+    session_progress_message,
     terminal_session_result,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def build_repositories() -> tuple[Repositories, AuditLogger]:
@@ -332,7 +339,14 @@ async def run_worker() -> None:
         )
         for _ in range(max(settings.limits.max_parallel_tasks, 1))
     ]
-    await asyncio.gather(*(worker.run_forever() for worker in workers))
+    try:
+        await asyncio.gather(*(worker.run_forever() for worker in workers))
+    except Exception:
+        # Structured service logs are append-only, unlike the supervisor's
+        # redirected child stderr file which is reopened on a restart. Keep
+        # the terminating traceback durable so a self-restart is diagnosable.
+        logger.exception("worker_service_terminated")
+        raise
 
 
 async def run_scheduler() -> None:
@@ -364,6 +378,19 @@ async def run_coding_session_watcher(poll_interval_seconds: float = 5.0) -> None
                     str(session.get("session_id")),
                     error=error,
                 )
+            if telegram is not None:
+                active_sessions = load_sessions(settings.adapters.coding_agent.session_root, limit=None)
+                for session in active_sessions:
+                    if not session_progress_due(
+                        session,
+                        settings.adapters.coding_agent.progress_interval_seconds,
+                    ):
+                        continue
+                    if await _handle_coding_session_progress(repositories, session, telegram):
+                        mark_session_progress_notified(
+                            settings.adapters.coding_agent.session_root,
+                            str(session.get("session_id")),
+                        )
         except Exception as exc:
             audit.append(
                 AuditEventType.ERROR,
@@ -371,6 +398,23 @@ async def run_coding_session_watcher(poll_interval_seconds: float = 5.0) -> None
                 payload={"error": "watcher_scan_failed", "reason": str(exc)},
             )
         await asyncio.sleep(poll_interval_seconds)
+
+
+async def _handle_coding_session_progress(repositories: Repositories, session: dict, telegram) -> bool:
+    """Send one durable heartbeat only for the task actually awaiting this session."""
+    task_id = session.get("task_id")
+    task = repositories.tasks.get(str(task_id)) if task_id else None
+    if task is None or task.status != TaskStatus.AWAITING_EXTERNAL:
+        return False
+    awaiting = task.metadata.get("awaiting_external") if isinstance(task.metadata, dict) else None
+    expected_session_id = str(awaiting.get("session_id") or "") if isinstance(awaiting, dict) else ""
+    if expected_session_id != str(session.get("session_id") or ""):
+        return False
+    chat_id = task.metadata.get("source_chat_id")
+    if not chat_id:
+        return False
+    await telegram.send_message(str(chat_id), session_progress_message(session))
+    return True
 
 
 async def _handle_coding_session_completion(settings, repositories: Repositories, session: dict, telegram) -> str | None:

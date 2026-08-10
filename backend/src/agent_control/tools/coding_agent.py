@@ -7,6 +7,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -33,6 +34,14 @@ PROVIDERS = ("codex", "github_copilot", "claude_code")
 
 RUN_OPERATIONS = {"start", "plan", "run_step", "run_goal", "resume"}
 
+# A runner writes the terminal session record immediately after its child
+# exits. The independent watcher can observe the PID disappear in that tiny
+# interval; finalizing at once races the authoritative runner and turns a
+# clean completion into "process ended without a final report". One watcher
+# grace window removes that race while still recovering a genuinely orphaned
+# session promptly.
+PROCESS_EXIT_GRACE_SECONDS = 15
+
 
 class ProcessHandle(Protocol):
     pid: int
@@ -45,19 +54,34 @@ class ProcessHandle(Protocol):
 
 
 class ProcessSpawner(Protocol):
-    async def spawn(self, command: list[str], *, cwd: str, log_path: str) -> ProcessHandle:
+    async def spawn(
+        self,
+        command: list[str],
+        *,
+        cwd: str,
+        log_path: str,
+        env: dict[str, str] | None = None,
+    ) -> ProcessHandle:
         ...
 
 
 class AsyncProcessSpawner:
     """Spawn the coding CLI detached from the tool call, streaming output to a log file."""
 
-    async def spawn(self, command: list[str], *, cwd: str, log_path: str) -> ProcessHandle:
+    async def spawn(
+        self,
+        command: list[str],
+        *,
+        cwd: str,
+        log_path: str,
+        env: dict[str, str] | None = None,
+    ) -> ProcessHandle:
         log_file = open(log_path, "ab")
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,
                 cwd=cwd,
+                env=env,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
             )
@@ -150,7 +174,8 @@ class CodingAgentAdapter:
         session_id = str(request.input.get("session_id") or f"{provider}_{uuid4().hex[:12]}")
         log_path = session_root / f"{session_id}.log"
         event_path = session_root / f"{session_id}.events.jsonl"
-        command = self._command(provider, executable, prompt, workspace)
+        command = self._command(provider, executable, prompt, workspace, operation=operation)
+        environment_overrides = _coding_agent_environment_overrides(provider)
 
         session = {
             "session_id": session_id,
@@ -168,6 +193,7 @@ class CodingAgentAdapter:
             "runner_pid": None,
             "returncode": None,
             "command": command,
+            "environment_overrides": environment_overrides,
             "runner_enabled": self._use_runner(),
             "started_at": _now(),
             "ended_at": None,
@@ -195,7 +221,12 @@ class CodingAgentAdapter:
                 session_id,
             ]
             runner_log_path = session_root / f"{session_id}.runner.log"
-            runner = await self.spawner.spawn(runner_command, cwd=str(workspace), log_path=str(runner_log_path))
+            runner = await self.spawner.spawn(
+                runner_command,
+                cwd=str(workspace),
+                log_path=str(runner_log_path),
+                env=None,
+            )
             session["runner_pid"] = runner.pid
             _write_session(session_root, session)
             try:
@@ -219,7 +250,12 @@ class CodingAgentAdapter:
                 )
             return self._result_from_session(request, operation, stored)
 
-        process = await self.spawner.spawn(command, cwd=str(workspace), log_path=str(log_path))
+        process = await self.spawner.spawn(
+            command,
+            cwd=str(workspace),
+            log_path=str(log_path),
+            env=_merged_process_environment(environment_overrides),
+        )
         session["pid"] = process.pid
         session["child_pid"] = process.pid
         self._processes[session_id] = process
@@ -355,7 +391,17 @@ class CodingAgentAdapter:
             return load_session(session_root, session_id)
         return latest_session(session_root, provider=provider or None)
 
-    def _command(self, provider: str, executable: str, prompt: str, workspace: Path) -> list[str]:
+    def _command(
+        self,
+        provider: str,
+        executable: str,
+        prompt: str,
+        workspace: Path,
+        *,
+        operation: str,
+    ) -> list[str]:
+        if operation != "plan":
+            prompt = _execution_prompt(prompt)
         if provider == "codex":
             command = [
                 executable,
@@ -404,7 +450,7 @@ class CodingAgentAdapter:
             "claude_code": self.config.claude_path,
         }.get(provider)
         if configured and Path(configured).exists():
-            return configured
+            return _prefer_native_claude_executable(configured) if provider == "claude_code" else configured
         names = {
             "codex": ["codex"],
             "github_copilot": ["copilot", "gh"],
@@ -413,14 +459,15 @@ class CodingAgentAdapter:
         for name in names:
             found = shutil.which(name)
             if found:
-                return found
+                return _prefer_native_claude_executable(found) if provider == "claude_code" else found
         return None
 
     def _workspace(self, request: ToolCallRequest) -> Path:
         value = request.input.get("workspace_dir")
         if value:
             return Path(str(value)).expanduser().resolve()
-        return (Path(self.config.workspace_root).expanduser().resolve() / f"task_{request.task_id}")
+        task_dir = request.task_id if request.task_id.startswith("task_") else f"task_{request.task_id}"
+        return Path(self.config.workspace_root).expanduser().resolve() / task_dir
 
     def _session_root(self) -> Path:
         return Path(self.config.session_root).expanduser().resolve()
@@ -495,6 +542,50 @@ def mark_session_notified(session_root: str, session_id: str, *, error: str | No
         session["notification_error"] = error[:1000]
     _write_session(root, session)
     return session
+
+
+def session_progress_due(
+    session: dict,
+    interval_seconds: int,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Return whether a live session is due for a source-chat heartbeat.
+
+    The timestamp lives with the external session rather than the task. That
+    keeps the cadence durable across watcher restarts and avoids racing a
+    terminal callback by rewriting stale task metadata.
+    """
+    if session.get("status") not in {"starting", "running"}:
+        return False
+    baseline = _parse_time(session.get("progress_notified_at")) or _parse_time(session.get("started_at"))
+    if baseline is None:
+        return False
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return (current - baseline).total_seconds() >= interval_seconds
+
+
+def mark_session_progress_notified(session_root: str, session_id: str) -> dict | None:
+    root = Path(session_root)
+    session = load_session(session_root, session_id)
+    if session is None:
+        return None
+    session["progress_notified_at"] = _now()
+    _write_session(root, session)
+    return session
+
+
+def session_progress_message(session: dict) -> str:
+    provider = str(session.get("provider") or "Coding agent").replace("_", " ")
+    session_id = str(session.get("session_id") or "unknown")
+    workspace = str(session.get("workspace_dir") or "").strip()
+    lines = [f"{provider} is still working (session {session_id})."]
+    if workspace:
+        lines.append(f"Workspace preserved at: {workspace}")
+    lines.append("I will keep monitoring it and report completion or a safe pause.")
+    return "\n".join(lines)
 
 
 def terminal_session_result(session: dict) -> ToolCallResult:
@@ -664,6 +755,67 @@ def session_completion_message(session: dict) -> str:
     return "\n".join(lines)
 
 
+def _sandbox_compatible_codex_path(
+    path_value: str,
+    resolved_pwsh: str | None,
+    *,
+    is_windows: bool,
+) -> str:
+    """Hide Microsoft Store shell aliases that the Windows sandbox cannot execute.
+
+    Codex prefers ``pwsh`` when it is discoverable. Microsoft Store installs
+    resolve that name inside ``WindowsApps``; a restricted/elevated sandbox
+    token cannot execute that packaged path even though the interactive user
+    can. Removing only WindowsApps entries makes Codex fall back to the normal
+    System32 Windows PowerShell while preserving workspace-write isolation.
+    """
+    if not is_windows or not resolved_pwsh or "\\windowsapps\\" not in resolved_pwsh.casefold():
+        return path_value
+    return ";".join(
+        entry
+        for entry in path_value.split(";")
+        if "\\windowsapps" not in entry.strip().strip('"').casefold()
+    )
+
+
+def _prefer_native_claude_executable(executable: str) -> str:
+    """Resolve the official npm shim to its native Windows binary when present.
+
+    A ``.CMD`` shim can return while ``claude.exe`` remains detached. The
+    session runner then observes the wrapper, not the real long-lived process,
+    and cannot report completion or stop it reliably. The official package
+    ships the native executable at this stable path beside its npm shims.
+    """
+    if os.name != "nt":
+        return executable
+    path = Path(executable).resolve()
+    if path.suffix.casefold() not in {".cmd", ".ps1", ""}:
+        return executable
+    native = path.parent / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe"
+    return str(native) if native.is_file() else executable
+
+
+def _coding_agent_environment_overrides(provider: str) -> dict[str, str]:
+    if provider != "codex" or os.name != "nt":
+        return {}
+    current_path = os.environ.get("PATH", "")
+    resolved_pwsh = shutil.which("pwsh", path=current_path)
+    compatible_path = _sandbox_compatible_codex_path(
+        current_path,
+        resolved_pwsh,
+        is_windows=True,
+    )
+    if compatible_path == current_path or shutil.which("powershell", path=compatible_path) is None:
+        return {}
+    return {"PATH": compatible_path}
+
+
+def _merged_process_environment(overrides: dict[str, str] | None) -> dict[str, str] | None:
+    if not overrides:
+        return None
+    return {**os.environ, **overrides}
+
+
 async def run_coding_agent_session(session_root: str, session_id: str) -> dict:
     """Run one queued coding session to completion.
 
@@ -688,12 +840,16 @@ async def run_coding_agent_session(session_root: str, session_id: str) -> dict:
 
     process = None
     timed_out = False
+    environment_overrides = session.get("environment_overrides")
+    if not isinstance(environment_overrides, dict):
+        environment_overrides = {}
     try:
         log_file = open(log_path, "ab")
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,
                 cwd=str(workspace),
+                env=_merged_process_environment(environment_overrides),
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
             )
@@ -736,6 +892,14 @@ async def scan_coding_sessions_once(session_root: str) -> list[dict]:
         status = str(session.get("status") or "")
         session_id = str(session.get("session_id") or "")
         if status in {"starting", "running"} and session_id and not session_process_alive(session):
+            missing_since = _parse_time(session.get("process_missing_since"))
+            now = datetime.now(timezone.utc)
+            if missing_since is None:
+                session["process_missing_since"] = now.isoformat()
+                _write_session(root, session)
+                continue
+            if (now - missing_since).total_seconds() < PROCESS_EXIT_GRACE_SECONDS:
+                continue
             session = _finalize_session(
                 root,
                 session_id,
@@ -743,6 +907,9 @@ async def scan_coding_sessions_once(session_root: str) -> list[dict]:
                 summary="coding session process ended without a runner final report",
             )
             status = str(session.get("status") or "")
+        elif status in {"starting", "running"} and session.get("process_missing_since"):
+            session.pop("process_missing_since", None)
+            _write_session(root, session)
         if status in {"completed", "failed", "stopped"} and not session.get("notified_at"):
             completed.append(session)
     return completed
@@ -785,12 +952,51 @@ def _completion_summary(session: dict, changed: list[str], log_tail: str) -> str
 
 
 def _limit_state(text: str, rate_patterns: list[str], usage_patterns: list[str]) -> dict:
-    lowered = text.lower()
-    if any(pattern.lower() in lowered for pattern in usage_patterns):
+    if any(_contains_limit_pattern(text, pattern) for pattern in usage_patterns):
         return {"limited": True, "kind": "usage", "source": "cli_output"}
-    if any(pattern.lower() in lowered for pattern in rate_patterns):
+    if any(_contains_limit_pattern(text, pattern) for pattern in rate_patterns):
         return {"limited": True, "kind": "rate", "source": "cli_output"}
     return {"limited": False, "source": "cli_output"}
+
+
+def _contains_limit_pattern(text: str, pattern: str) -> bool:
+    """Match a configured provider phrase without accepting word fragments.
+
+    Provider output is also ordinary prose. A substring search classified
+    ``no quota-introspection tool`` as the configured ``no quota`` failure,
+    turning a successful, exit-0 Claude build into a usage-limit failure.
+    Treat hyphen/underscore as part of a token here so diagnostic prose cannot
+    accidentally manufacture a provider state from the start of a longer
+    compound word.
+    """
+    phrase = pattern.strip()
+    if not phrase:
+        return False
+    expression = rf"(?<![A-Za-z0-9_-]){re.escape(phrase)}(?![A-Za-z0-9_-])"
+    return re.search(expression, text, flags=re.IGNORECASE) is not None
+
+
+def _execution_prompt(prompt: str) -> str:
+    """Turn an external coding run into an on-disk task, not a chat answer.
+
+    The Operator composes this prompt and can accidentally phrase an artifact
+    request as "output the files". The user-facing contract is execution: when
+    files are requested, the external agent must use its editing tools in the
+    assigned workspace. Planning operations are intentionally excluded by the
+    caller so a request for a plan remains read-only.
+    """
+    return (
+        f"{prompt.rstrip()}\n\n"
+        "Execution contract from YBM:\n"
+        "- Work directly in the current working directory assigned to this session.\n"
+        "- If the task asks to create, edit, fix, scaffold, or build files, make those changes on disk.\n"
+        "- Prioritize the requested deliverable and keep verification bounded. Do not launch GUI/headless browsers, "
+        "install dependencies, or start persistent servers unless the user explicitly requested that.\n"
+        "- Run focused static or syntax checks when available. If optional verification is blocked, report the gap "
+        "and finish instead of repeatedly trying alternate browsers, shells, or cleanup strategies.\n"
+        "- Do not treat pasted code or a prose description as completion when an artifact was requested.\n"
+        "- Before finishing, verify the requested paths exist and briefly report what you actually changed."
+    )
 
 
 def _workspace_snapshot(workspace: Path) -> dict[str, list[int]]:
@@ -800,9 +1006,15 @@ def _workspace_snapshot(workspace: Path) -> dict[str, list[int]]:
     for path in workspace.rglob("*"):
         if not path.is_file():
             continue
+        relative = path.resolve().relative_to(workspace)
+        # Coding CLIs and YBM may write their own control/log files below the
+        # working directory. They are not user project output and must never
+        # turn a text-only response into a false "files changed" success.
+        if relative.parts and relative.parts[0].casefold() in {".agent_control", ".git"}:
+            continue
         try:
             stat = path.stat()
-            snapshot[str(path.resolve().relative_to(workspace))] = [stat.st_size, int(stat.st_mtime_ns)]
+            snapshot[str(relative)] = [stat.st_size, int(stat.st_mtime_ns)]
         except OSError:
             continue
     return snapshot

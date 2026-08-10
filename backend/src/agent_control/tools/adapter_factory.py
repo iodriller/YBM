@@ -202,7 +202,11 @@ class AdapterFactoryAdapter:
 
 
 def _adapter_name(request: ToolCallRequest) -> str:
-    explicit = str(request.input.get("adapter_name") or "").strip()
+    # Accept the concise ``name`` spelling used naturally by operators and API
+    # callers. The validated payload preserves extra fields, so normalizing at
+    # this shared boundary prevents an explicit requested name from being
+    # ignored in favor of an objective-derived slug.
+    explicit = str(request.input.get("adapter_name") or request.input.get("name") or "").strip()
     if explicit:
         return explicit
     objective = str(request.input.get("objective") or request.input.get("prompt") or request.task_id)
@@ -515,6 +519,13 @@ def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -
             approval_reasons={
                 "promote_after_approval": "hot-registers a generated, LLM-written adapter into the live tool registry",
             },
+            examples=(
+                {
+                    "operation": "scaffold",
+                    "adapter_name": "example_adapter",
+                    "objective": "Create an inactive adapter proposal with a manifest and tests.",
+                },
+            ),
         )
     )
     if settings.adapters.adapter_factory.enabled:

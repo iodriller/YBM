@@ -294,7 +294,7 @@ function Stop-YbmOrphansForName {
     return
   }
   $patterns = switch ($Name) {
-    "backend" { @("run_backend.ps1", "uvicorn agent_control.main:app") }
+    "backend" { @("run_backend.ps1", "uvicorn agent_control.main:app", "agent_control.serve_backend") }
     "localdeploy" { @("run_localdeploy.ps1", "api_server.py") }
     "worker" { @("run_worker.ps1", "agent_control.cli run-worker") }
     "coding_session_watcher" { @("run_coding_session_watcher.ps1", "agent_control.cli run-coding-session-watcher") }
@@ -588,14 +588,21 @@ function Invoke-YbmTest {
   # The wrapper imports the repo's .env at startup for normal operator
   # commands. The unit suite creates isolated TestClient instances that do
   # not send the real local admin token, so carrying it into pytest turns
-  # otherwise-valid admin API tests into blanket 401s. Individual auth tests
-  # set their own token explicitly with monkeypatch.
+  # otherwise-valid admin API tests into blanket 401s. Run from backend as
+  # the documented Python workflow does, so read_env_value() cannot fall
+  # back to the repo-root .env after the process variable is removed.
+  # Individual auth tests set their own token explicitly with monkeypatch.
   $savedAdminToken = $env:AGENT_ADMIN_TOKEN
   Remove-Item Env:AGENT_ADMIN_TOKEN -ErrorAction SilentlyContinue
-  & (Get-YbmPython) -m pytest "$Script:YbmRoot\backend\tests" @Argv
-  $testExitCode = $LASTEXITCODE
-  if ($null -ne $savedAdminToken) {
-    $env:AGENT_ADMIN_TOKEN = $savedAdminToken
+  Push-Location (Join-Path $Script:YbmRoot "backend")
+  try {
+    & (Get-YbmPython) -m pytest "tests" @Argv
+    $testExitCode = $LASTEXITCODE
+  } finally {
+    Pop-Location
+    if ($null -ne $savedAdminToken) {
+      $env:AGENT_ADMIN_TOKEN = $savedAdminToken
+    }
   }
   exit $testExitCode
 }

@@ -61,6 +61,12 @@ class LocalWorkspaceAdapter:
 
     def _prepare(self, request: ToolCallRequest) -> dict[str, Any]:
         workspace_dir = workspace_dir_for_task(self.config.root_dir, request.task_id)
+        requested_workspace = str(request.input.get("workspace_path") or "").strip()
+        if requested_workspace and Path(requested_workspace).expanduser().resolve() != workspace_dir:
+            raise ValueError(
+                "workspace_path does not match this task's managed workspace; "
+                f"expected {workspace_dir}"
+            )
         workspace_dir.mkdir(parents=True, exist_ok=True)
         objective = str(request.input.get("objective") or "").strip()
         task_file = workspace_dir / "TASK.md"
@@ -89,6 +95,7 @@ class LocalWorkspaceAdapter:
         return {
             "workspace_dir": str(workspace_dir),
             "files": [*prepared.get("files", []), *files],
+            "changed_paths": files,
         }
 
     def _launch_static(self, request: ToolCallRequest) -> dict[str, Any]:
@@ -112,6 +119,7 @@ class LocalWorkspaceAdapter:
             "url": url,
             "server_pid": process.pid,
             "files": sorted(set([*prepared.get("files", []), *_workspace_preview_files(workspace_dir), *fallback_files])),
+            "changed_paths": fallback_files,
         }
 
     def _materialize_static_app(self, request: ToolCallRequest) -> dict[str, Any]:
@@ -130,6 +138,7 @@ class LocalWorkspaceAdapter:
             return {
                 "workspace_dir": str(workspace_dir),
                 "files": sorted(set([*prepared.get("files", []), str(existing_index), *fallback_files])),
+                "changed_paths": fallback_files,
                 "materialized_from": "existing_files",
             }
 
@@ -165,6 +174,7 @@ class LocalWorkspaceAdapter:
         return {
             "workspace_dir": str(workspace_dir),
             "files": sorted(set([*prepared.get("files", []), *files])),
+            "changed_paths": sorted(set(files)),
             "materialized_from": materialized_from,
         }
 
@@ -190,6 +200,9 @@ class LocalWorkspaceAdapter:
             **launch_output,
             "workspace_dir": write_output["workspace_dir"],
             "files": sorted(set([*write_output.get("files", []), *launch_output.get("files", [])])),
+            "changed_paths": sorted(
+                set([*write_output.get("changed_paths", []), *launch_output.get("changed_paths", [])])
+            ),
         }
 
 

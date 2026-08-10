@@ -361,17 +361,26 @@ class TaskRepository:
         metadata: dict[str, Any],
         status: TaskStatus | None = None,
     ) -> TaskRecord:
+        """Update task state without reviving a cooperatively cancelled task.
+
+        Worker model/tool calls run outside the SQLite transaction.  A user can
+        cancel while one of those calls is in flight, so the worker may return
+        with a stale pre-cancellation ``TaskRecord`` and try to persist it as
+        RUNNING.  Keep cancellation authoritative at the repository boundary;
+        the conditional write is atomic and protects every worker/callback
+        path, including metadata-only writes.
+        """
         now = utc_now()
         with self.database.connect() as connection:
             if status is None:
                 connection.execute(
-                    "UPDATE tasks SET metadata_json = ?, updated_at = ? WHERE id = ?",
-                    (_dump(metadata), _dt(now), task_id),
+                    "UPDATE tasks SET metadata_json = ?, updated_at = ? WHERE id = ? AND status != ?",
+                    (_dump(metadata), _dt(now), task_id, TaskStatus.CANCELLED.value),
                 )
             else:
                 connection.execute(
-                    "UPDATE tasks SET metadata_json = ?, status = ?, updated_at = ? WHERE id = ?",
-                    (_dump(metadata), status.value, _dt(now), task_id),
+                    "UPDATE tasks SET metadata_json = ?, status = ?, updated_at = ? WHERE id = ? AND status != ?",
+                    (_dump(metadata), status.value, _dt(now), task_id, TaskStatus.CANCELLED.value),
                 )
             row = connection.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
         if row is None:

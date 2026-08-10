@@ -193,7 +193,7 @@ operator:
   # Hard ceiling on REAL tool calls per task - the only backstop against a
   # model that never converges. Fulfillment/audit check entries do not count
   # against it. Raise for genuinely long multi-tool work; lower to fail fast.
-  max_steps: 8
+  max_steps: 12
 
 adapters:
   vscode:
@@ -260,6 +260,7 @@ adapters:
     use_runner: true
     timeout_seconds: 3600
     start_wait_seconds: 20
+    progress_interval_seconds: 300
     output_limit_chars: 20000
     rate_limit_patterns:
       - "rate limit"

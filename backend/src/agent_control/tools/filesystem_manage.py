@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 import logging
 from pathlib import Path
 import os
@@ -104,13 +105,18 @@ class FilesystemManageAdapter:
     def _search(self, request: ToolCallRequest) -> dict[str, Any]:
         root = self._safe_path(str(request.input["root"]))
         query = str(request.input["query"]).lower()
+        wildcard_query = any(char in query for char in "*?[")
         include_content = bool(request.input.get("include_content", False))
         max_results = int(request.input.get("max_results") or 100)
         results = []
         for path in _walk_limited(root, max_depth=20):
             if path == root:
                 continue
-            matched = query in path.name.lower()
+            matched = (
+                fnmatch.fnmatch(path.name.lower(), query)
+                if wildcard_query
+                else query in path.name.lower()
+            )
             content_preview = None
             content_summary = None
             if include_content and path.is_file() and _is_text_file(path):
@@ -811,9 +817,10 @@ def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -
                 "apply_manifest": RiskLevel.HIGH,
             },
             examples=(
-                {"operation": "inspect_folder", "root": "desktop"},
+                {"operation": "inspect_folder", "root": "{{folder_path}}"},
                 {"operation": "search", "root": "desktop", "query": "resume"},
                 {"operation": "read_file", "path": "{{last_entry_path}}", "max_chars": 8000},
+                {"operation": "write_text_file", "path": "{{output_path}}", "content": "Report content"},
             ),
         )
     )

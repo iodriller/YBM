@@ -9,6 +9,8 @@ because those are the ones whose failure modes the planner sees as
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -24,8 +26,10 @@ from agent_control.tools.contracts import (
     ComputerActInput,
     ComputerRunGoalInput,
     DocumentManageInput,
+    FilesystemInspectInput,
     FilesystemReadFileInput,
     FilesystemSearchInput,
+    FilesystemWriteTextFileInput,
     HttpRequestInput,
     MCPClientInput,
     ScheduleManageInput,
@@ -47,6 +51,26 @@ def test_scope_target_and_timeout_seconds_are_optional() -> None:
 def test_unknown_operation_literal_rejected() -> None:
     with pytest.raises(ValidationError):
         ArtifactDeliverInput(operation="upload_to_drive")
+
+
+def test_filesystem_write_text_accepts_text_alias_without_losing_content() -> None:
+    model = FilesystemWriteTextFileInput(
+        operation="write_text_file",
+        path="report.md",
+        text="Evidence-backed report",
+    )
+
+    assert model.content == "Evidence-backed report"
+
+
+def test_filesystem_inspect_combines_allowed_root_and_relative_folder_path(tmp_path) -> None:
+    model = FilesystemInspectInput(
+        operation="inspect_folder",
+        root=str(tmp_path),
+        folder_path="nested/evidence",
+    )
+
+    assert Path(model.root) == tmp_path / "nested" / "evidence"
 
 
 # ----- artifact.deliver -----------------------------------------------------

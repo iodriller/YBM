@@ -15,10 +15,23 @@ from __future__ import annotations
 from pathlib import Path
 
 from agent_control.schemas import TaskRecord, TaskStatus
+from agent_control.storage.redaction import redact_text
 from agent_control.tools.mcp_client import mcp_output_text
 
 
 def format_task_message(task: TaskRecord) -> str:
+    """Channel-agnostic outbound text for a task, with credentials stripped.
+
+    Every channel's notifier renders this, so it is the one place that can
+    guarantee a credential read out of a user's file does not leave the system
+    in a chat message (docs/E2E_FINDINGS.md P0-1). The audit sink is covered
+    separately by `AuditLogger.append`; a task's answer reaches the user through
+    here regardless of which tool produced it.
+    """
+    return redact_text(_format_task_message(task))
+
+
+def _format_task_message(task: TaskRecord) -> str:
     if task.status == TaskStatus.RECEIVED:
         return "Got your message, working on it now…"
     if task.status == TaskStatus.RUNNING:

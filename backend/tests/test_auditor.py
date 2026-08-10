@@ -94,3 +94,17 @@ async def test_audit_passes_original_message_for_language_and_terminology() -> N
     await auditor.audit("summarize the page", "raw html", original_message="Résume la page en français")
 
     assert "Résume la page en français" in provider.prompts[0][1]
+
+
+@pytest.mark.asyncio
+async def test_audit_passes_remembered_response_requirements() -> None:
+    provider = QueueProvider(["- One\n- Two\n- Three\nConfidence: high"])
+    auditor = AuditorService(provider)
+
+    await auditor.audit(
+        "summarize the report",
+        "raw report",
+        response_context="Remembered facts: exactly three bullets, then Confidence:",
+    )
+
+    assert "exactly three bullets" in provider.prompts[0][1]

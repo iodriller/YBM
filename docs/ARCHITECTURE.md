@@ -205,7 +205,7 @@ completes anyway (flagging the gap) or fails outright:
 
 | Counter | Max | Triggered by | On exhaustion |
 |---------|-----|---------------|----------------|
-| `operator_max_steps` (config, default 8) | 8 real tool calls | Every `call_tool` decision. Fulfillment/audit gap check entries do NOT count against this (HISTORY.md §3.1 - they used to, which could exhaust the whole budget on bookkeeping alone) | Task FAILED |
+| `operator_max_steps` (config, default 12) | 12 real tool calls | Every `call_tool` decision. Fulfillment/audit gap check entries do NOT count against this (HISTORY.md §3.1 - they used to, which could exhaust the whole budget on bookkeeping alone) | Task BLOCKED |
 | `operator_audit_gap_count` | 2 | Auditor judges the raw output insufficient after a `done` decision | Completes anyway with the operator's own `final_answer` |
 | `operator_fulfillment_gap_count` | 2 | Deterministic postcondition check fails after a `done` decision | Completes anyway with `metadata.fulfillment_gap` set |
 | `clarify_count` | 2 | `ask_user` decision, or usage-limit backoff | Task FAILED |

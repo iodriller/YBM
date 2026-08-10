@@ -5,6 +5,8 @@ from collections.abc import Callable
 from datetime import datetime
 import json
 import logging
+from pathlib import Path
+import re
 from typing import Any, Protocol
 from uuid import uuid4
 
@@ -23,6 +25,7 @@ from agent_control.schemas import (
     OperatorAction,
     OperatorDecision,
     ParallelToolCall,
+    PostconditionType,
     RiskLevel,
     TaskRecord,
     TaskStatus,
@@ -80,7 +83,10 @@ ORPHANABLE_STATUSES = (TaskStatus.RUNNING, TaskStatus.INTERPRETING)
 # not work - _tool_call_count() excludes them from the step budget.
 CHECK_ENTRY_FULFILLMENT = "_fulfillment_check"
 CHECK_ENTRY_AUDIT = "_audit_check"
-CHECK_ENTRY_NAMES = frozenset({CHECK_ENTRY_FULFILLMENT, CHECK_ENTRY_AUDIT})
+CHECK_ENTRY_CLARIFICATION = "_clarification_check"
+CHECK_ENTRY_NAMES = frozenset(
+    {CHECK_ENTRY_FULFILLMENT, CHECK_ENTRY_AUDIT, CHECK_ENTRY_CLARIFICATION}
+)
 
 def reconcile_orphaned_tasks(repositories: Repositories, audit: AuditLogger) -> int:
     """Explicitly fail any task left RUNNING/INTERPRETING by a worker that
@@ -132,7 +138,7 @@ class TaskWorker:
         notification_sink: TaskNotificationSink | None = None,
         task_budget_seconds: float | None = None,
         operator: OperatorLoopService | None = None,
-        operator_max_steps: int = 8,
+        operator_max_steps: int = 12,
         auditor: AuditorService | None = None,
         persist_llm_calls: bool = True,
         llm_call_max_chars: int = 8000,
@@ -234,8 +240,40 @@ class TaskWorker:
             return failed
 
     async def run_forever(self, poll_interval_seconds: float = 3.0) -> None:
+        consecutive_poll_failures = 0
         while True:
-            processed = await self.process_next()
+            try:
+                processed = await self.process_next()
+                consecutive_poll_failures = 0
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # `process_next` handles task-scoped failures. What can still
+                # escape here is infrastructure around claiming/persisting or
+                # a secondary failure while reporting the first one. One such
+                # transient must not terminate every parallel loop via
+                # asyncio.gather and orphan an unrelated in-flight task.
+                consecutive_poll_failures += 1
+                logger.exception(
+                    "worker_poll_failed",
+                    extra={"consecutive_failures": consecutive_poll_failures},
+                )
+                try:
+                    self.audit.append(
+                        AuditEventType.ERROR,
+                        actor="worker",
+                        payload={
+                            "error": "worker_poll_failed",
+                            "reason": str(exc),
+                            "consecutive_failures": consecutive_poll_failures,
+                        },
+                    )
+                except Exception:
+                    logger.exception("worker_poll_failure_audit_failed")
+                if consecutive_poll_failures >= 5:
+                    raise
+                await asyncio.sleep(min(poll_interval_seconds * consecutive_poll_failures, 30.0))
+                continue
             # AWAITING_APPROVAL is deliberately NOT in WORKABLE_STATUSES
             # (docs/UI_UX_AUDIT.md Phase 8, second pass) - claim_next never
             # re-selects it, the same way it already never re-selected
@@ -302,7 +340,17 @@ class TaskWorker:
         if latest.status in {TaskStatus.PAUSED, TaskStatus.CANCELLED}:
             return latest
 
-        if latest.status == TaskStatus.AWAITING_APPROVAL:
+        pending_call = latest.metadata.get("operator_pending_call")
+        # Approval decision handlers requeue AWAITING_APPROVAL as RUNNING so
+        # the task becomes claimable again. Preserve the pending call as the
+        # resume discriminator: replay that exact approved request before
+        # asking the operator for another decision, otherwise it creates an
+        # identical second approval instead of executing the first one.
+        if latest.status == TaskStatus.AWAITING_APPROVAL or (
+            latest.status == TaskStatus.RUNNING
+            and isinstance(pending_call, dict)
+            and pending_call.get("approval_id")
+        ):
             return await self._process_operator_awaiting_approval(latest)
 
         if latest.status == TaskStatus.RETRYING:
@@ -324,7 +372,7 @@ class TaskWorker:
         if _tool_call_count(history) >= self.operator_max_steps:
             return self._transition_operator(
                 latest, {**latest.metadata, "operator_history": history},
-                TaskStatus.FAILED, "operator_step_budget_exhausted",
+                TaskStatus.BLOCKED, "operator_step_budget_exhausted",
             )
 
         memory_context = str(latest.metadata.get("memory_context") or "")
@@ -370,8 +418,13 @@ class TaskWorker:
         )
 
         if decision.action == OperatorAction.DONE:
-            final_answer = decision.final_answer
-            content_entry = _last_content_tool_history_entry(history) if self.auditor is not None else None
+            final_answer = _ground_operator_final_answer(decision.final_answer, history)
+            evidence_offset = _post_clarification_history_offset(latest, history)
+            content_entry = (
+                _last_content_tool_history_entry(history[evidence_offset:])
+                if self.auditor is not None
+                else None
+            )
             if content_entry is not None:
                 audit_gap_count = int(latest.metadata.get("operator_audit_gap_count", 0))
                 if audit_gap_count < 2:
@@ -381,15 +434,21 @@ class TaskWorker:
                     # judging a truncation produces false INSUFFICIENT verdicts
                     # on exactly the long-content objectives it exists for.
                     # See docs/HISTORY.md §3.2.
+                    full_content_request_id = latest.metadata.get("last_content_tool_request_id")
                     raw_output = str(
-                        latest.metadata.get("last_tool_output_text")
-                        or content_entry.get("output_summary")
-                        or ""
+                        latest.metadata.get("last_content_tool_output_text")
+                        if full_content_request_id
+                        and full_content_request_id == content_entry.get("request_id")
+                        else content_entry.get("output_summary") or ""
+                    )
+                    audit_evidence = _operator_audit_evidence(
+                        history[evidence_offset:], content_entry, raw_output
                     )
                     audit_result = await self.auditor.audit(
                         latest.objective,
-                        raw_output,
+                        audit_evidence,
                         original_message=str(latest.metadata.get("original_message_text") or "") or None,
+                        response_context=_auditor_response_context(latest, memory_context),
                     )
                     latest = self._record_llm_usage(latest, "auditor", getattr(self.auditor, "last_usage", None))
                     self._record_llm_call(latest.id, "auditor", len(history), self.auditor, step_id=step_id)
@@ -413,10 +472,27 @@ class TaskWorker:
                         }
                         return self.repositories.tasks.update_metadata(latest.id, metadata, TaskStatus.RUNNING)
                     if audit_result.answer:
-                        final_answer = audit_result.answer
+                        final_answer = _ground_operator_final_answer(audit_result.answer, history)
+                else:
+                    metadata = {
+                        **latest.metadata,
+                        "operator_history": history,
+                        "last_worker_error": (
+                            "Blocked after two grounded-output audits found the available evidence "
+                            "insufficient; stopped instead of reporting an unverified answer."
+                        ),
+                    }
+                    return self._transition_operator(
+                        latest,
+                        metadata,
+                        TaskStatus.BLOCKED,
+                        "operator_audit_gap_exhausted",
+                    )
 
             metadata = {**latest.metadata, "operator_history": history, "synthesized_answer": final_answer}
-            gap = validate_fulfillment(latest.model_copy(update={"metadata": metadata})).first_gap
+            gap = validate_fulfillment(
+                latest.model_copy(update={"metadata": metadata})
+            ).first_gap or _unsupported_write_claim(final_answer, history, metadata)
             if gap:
                 gap_count = int(latest.metadata.get("operator_fulfillment_gap_count", 0))
                 if gap_count < 2:
@@ -437,21 +513,74 @@ class TaskWorker:
                         "operator_fulfillment_gap_count": gap_count + 1,
                     }
                     return self.repositories.tasks.update_metadata(latest.id, metadata, TaskStatus.RUNNING)
-                metadata["fulfillment_gap"] = gap
+                metadata.update(
+                    {
+                        "fulfillment_gap": gap,
+                        "last_worker_error": (
+                            f"Blocked after two recovery attempts because the required evidence is still missing: {gap}."
+                        ),
+                    }
+                )
+                return self._transition_operator(
+                    latest,
+                    metadata,
+                    TaskStatus.BLOCKED,
+                    "operator_fulfillment_gap_exhausted",
+                )
             return self._transition_operator(latest, metadata, TaskStatus.COMPLETED, "operator_done")
 
         if decision.action == OperatorAction.ASK_USER:
+            candidate = latest.model_copy(
+                update={"metadata": {**latest.metadata, "operator_history": history}}
+            )
+            clarification_recovery = _clarification_recovery_reason(candidate, history)
+            if clarification_recovery:
+                recovery_count = int(
+                    latest.metadata.get("operator_optional_question_recovery_count", 0)
+                )
+                if recovery_count < 2:
+                    history.append(
+                        {
+                            "tool_name": CHECK_ENTRY_CLARIFICATION,
+                            "input": None,
+                            "status": "clarification_gap",
+                            "error": (
+                                f"Clarification rejected: {clarification_recovery} "
+                                "Do not pause for optional refinement, repeated confirmation, or details "
+                                "that can be derived from the objective and tool evidence. Take the next "
+                                "available action, or return done with a grounded answer when complete."
+                            ),
+                            "step_id": step_id,
+                        }
+                    )
+                    metadata = {
+                        **latest.metadata,
+                        "operator_history": history,
+                        "operator_optional_question_recovery_count": recovery_count + 1,
+                    }
+                    return self.repositories.tasks.update_metadata(
+                        latest.id, metadata, TaskStatus.RUNNING
+                    )
             latest = self.repositories.tasks.update_metadata(latest.id, {**latest.metadata, "operator_history": history})
             return self._operator_ask_user(latest, decision.question or "Need more information to continue.")
 
         if decision.action == OperatorAction.BLOCKED:
-            metadata = {**latest.metadata, "operator_history": history}
-            return self._transition_operator(latest, metadata, TaskStatus.BLOCKED, decision.reason or "operator_blocked")
+            reason = _operator_blocked_reason(decision.reason, history)
+            metadata = {**latest.metadata, "operator_history": history, "last_worker_error": reason}
+            return self._transition_operator(latest, metadata, TaskStatus.BLOCKED, reason)
 
         if decision.action == OperatorAction.CALL_TOOLS_PARALLEL:
             entries = await self._run_parallel_calls(latest.id, decision.parallel_calls, step_id=step_id)
             history.extend(entries)
-            return self.repositories.tasks.update_metadata(latest.id, {**latest.metadata, "operator_history": history})
+            # Each call promotes its result into task metadata. Reload after
+            # the batch before adding history; writing the pre-batch `latest`
+            # snapshot here erased changed_paths/workspace evidence produced
+            # by every successful parallel call.
+            recorded = self.repositories.tasks.get(latest.id) or latest
+            return self.repositories.tasks.update_metadata(
+                recorded.id,
+                {**recorded.metadata, "operator_history": history},
+            )
 
         if decision.action == OperatorAction.DELEGATE:
             latest, entry = await self._run_delegate(latest, decision, step_id=step_id)
@@ -459,21 +588,55 @@ class TaskWorker:
             return self.repositories.tasks.update_metadata(latest.id, {**latest.metadata, "operator_history": history})
 
         # CALL_TOOL
-        tool_def = self.executor.tool_definitions.get(decision.tool_name)
+        requested_tool_name = decision.tool_name
+        requested_tool_input = decision.tool_input
+        tool_name, tool_input = _canonical_operator_tool_call(
+            requested_tool_name,
+            requested_tool_input,
+            self.executor.tool_definitions,
+        )
+        tool_name, tool_input = _required_named_coding_agent_call(
+            latest,
+            tool_name,
+            tool_input,
+            self.executor.tool_definitions,
+        )
+        tool_name, tool_input = _ordered_artifact_delivery_call(
+            latest,
+            tool_name,
+            tool_input,
+            history,
+            self.executor.tool_definitions,
+        )
+        tool_input = _filesystem_search_input_with_content_intent(latest, tool_name, tool_input)
+        tool_name, tool_input = _stale_read_recovery_call(
+            latest,
+            tool_name,
+            tool_input,
+            history,
+        )
+        tool_input = _coding_agent_input_with_task_defaults(latest, tool_name, tool_input)
+        tool_input = _coding_agent_input_with_explicit_workspace(latest, tool_name, tool_input)
+        decision = decision.model_copy(update={"tool_name": tool_name, "tool_input": tool_input})
+        normalization = _normalization_history_fields(
+            requested_tool_name, requested_tool_input, tool_name, tool_input
+        )
+        tool_def = self.executor.tool_definitions.get(tool_name)
         if tool_def is None:
             history.append({
-                "tool_name": decision.tool_name, "input": decision.tool_input,
-                "status": "failed", "error": f"unregistered tool: {decision.tool_name}",
+                "tool_name": tool_name, "input": tool_input,
+                "status": "failed", "error": f"unregistered tool: {tool_name}",
                 "step_id": step_id,
+                **normalization,
             })
             return self.repositories.tasks.update_metadata(latest.id, {**latest.metadata, "operator_history": history})
 
         request = ToolCallRequest(
             task_id=latest.id,
-            tool_name=decision.tool_name,
+            tool_name=tool_name,
             capability=tool_def.capability,
             risk_level=_effective_operator_risk(tool_def, decision.tool_input, decision.risk_level),
-            input=decision.tool_input,
+            input=tool_input,
             parent_step_id=step_id,
         )
         if request.risk_level != decision.risk_level:
@@ -489,8 +652,8 @@ class TaskWorker:
                 step_id=step_id,
             )
 
-        recorded = self._record_tool_result(latest.id, decision.tool_name, result)
-        if _is_background_external_tool_result(decision.tool_name, result):
+        recorded = self._record_tool_result(latest.id, tool_name, result)
+        if _is_background_external_tool_result(tool_name, result):
             return self._await_operator_external(recorded, decision, result, history, step_id=step_id)
         if result.status != ToolResultStatus.SUCCEEDED:
             retry_outcome = self._operator_retry_or_ask(recorded, decision, result, history, step_id=step_id)
@@ -498,14 +661,41 @@ class TaskWorker:
                 return retry_outcome
         output_text = _tool_output_text(result) if result.status == ToolResultStatus.SUCCEEDED else None
         history.append({
-            "tool_name": decision.tool_name,
-            "input": decision.tool_input,
+            "tool_name": tool_name,
+            "input": tool_input,
             "status": result.status.value,
             "output_summary": output_text[:2000] if output_text else None,
             "error": result.error_message,
             "request_id": result.request_id,
             "step_id": step_id,
+            **normalization,
         })
+        completed_coding_task = self._complete_fulfilled_coding_result(
+            recorded,
+            tool_name,
+            result,
+            history,
+            {**recorded.metadata, "operator_history": history},
+        )
+        if completed_coding_task is not None:
+            return completed_coding_task
+        repeated_call = _repeated_no_progress_call(history)
+        if repeated_call is not None:
+            tool_name, operation = repeated_call
+            metadata = {
+                **recorded.metadata,
+                "operator_history": history,
+                "last_worker_error": (
+                    f"Blocked after repeated {tool_name}:{operation} calls returned the same result; "
+                    "stopped to avoid a no-progress loop. A different capability or user input is required."
+                ),
+            }
+            return self._transition_operator(
+                recorded,
+                metadata,
+                TaskStatus.BLOCKED,
+                "operator_repeated_no_progress",
+            )
         return self.repositories.tasks.update_metadata(recorded.id, {**recorded.metadata, "operator_history": history})
 
     async def _run_parallel_calls(
@@ -547,49 +737,61 @@ class TaskWorker:
         batch_origin = f"{origin_prefix}parallel_batch:{uuid4().hex[:12]}"
 
         async def _one(call: ParallelToolCall) -> dict[str, Any]:
-            tool_def = self.executor.tool_definitions.get(call.tool_name)
+            tool_name, tool_input = _canonical_operator_tool_call(
+                call.tool_name,
+                call.tool_input,
+                self.executor.tool_definitions,
+            )
+            normalization = _normalization_history_fields(
+                call.tool_name, call.tool_input, tool_name, tool_input
+            )
+            tool_def = self.executor.tool_definitions.get(tool_name)
             if tool_def is None:
                 return {
-                    "tool_name": call.tool_name, "input": call.tool_input,
-                    "status": "failed", "error": f"unregistered tool: {call.tool_name}",
+                    "tool_name": tool_name, "input": tool_input,
+                    "status": "failed", "error": f"unregistered tool: {tool_name}",
                     "parallel": True, "origin": batch_origin, "step_id": step_id,
+                    **normalization,
                 }
             request = ToolCallRequest(
-                task_id=task_id, tool_name=call.tool_name, capability=tool_def.capability,
-                risk_level=_effective_operator_risk(tool_def, call.tool_input, call.risk_level),
-                input=call.tool_input, origin=batch_origin, parent_step_id=step_id,
+                task_id=task_id, tool_name=tool_name, capability=tool_def.capability,
+                risk_level=_effective_operator_risk(tool_def, tool_input, call.risk_level),
+                input=tool_input, origin=batch_origin, parent_step_id=step_id,
             )
             result = await self.executor.execute(request)
             if result.status == ToolResultStatus.NEEDS_APPROVAL:
                 return {
-                    "tool_name": call.tool_name, "input": call.tool_input,
+                    "tool_name": tool_name, "input": tool_input,
                     "status": "failed",
                     "error": (
                         "this call needs approval, which call_tools_parallel does not support - "
                         "reissue it alone via call_tool if it actually needs to run"
                     ),
                     "parallel": True, "origin": batch_origin, "step_id": step_id,
+                    **normalization,
                 }
-            if _is_background_external_tool_result(call.tool_name, result):
+            if _is_background_external_tool_result(tool_name, result):
                 return {
-                    "tool_name": call.tool_name, "input": call.tool_input,
+                    "tool_name": tool_name, "input": tool_input,
                     "status": "failed",
                     "error": (
                         "this call started a background session, which call_tools_parallel does not "
                         "support - reissue it alone via call_tool"
                     ),
                     "parallel": True, "origin": batch_origin, "step_id": step_id,
+                    **normalization,
                 }
-            self._record_tool_result(task_id, call.tool_name, result)
+            self._record_tool_result(task_id, tool_name, result)
             output_text = _tool_output_text(result) if result.status == ToolResultStatus.SUCCEEDED else None
             return {
-                "tool_name": call.tool_name, "input": call.tool_input,
+                "tool_name": tool_name, "input": tool_input,
                 "status": result.status.value,
                 "output_summary": output_text[:2000] if output_text else None,
                 "error": result.error_message,
                 "parallel": True, "origin": batch_origin,
                 "request_id": result.request_id,
                 "step_id": step_id,
+                **normalization,
             }
 
         return list(await asyncio.gather(*[_one(call) for call in calls]))
@@ -629,7 +831,14 @@ class TaskWorker:
         """
         delegate_origin = f"subagent:{uuid4().hex[:12]}"
         objective = decision.delegate_objective or ""
-        allowed_tools = set(decision.delegate_tools) if decision.delegate_tools else None
+        allowed_tools = (
+            {
+                _canonical_operator_tool_call(name, {}, self.executor.tool_definitions)[0]
+                for name in decision.delegate_tools
+            }
+            if decision.delegate_tools
+            else None
+        )
         extra_context = ""
         if allowed_tools:
             extra_context = (
@@ -686,7 +895,11 @@ class TaskWorker:
                 continue
             if sub_decision.action == OperatorAction.CALL_TOOLS_PARALLEL:
                 calls = sub_decision.parallel_calls
-                if allowed_tools and any(call.tool_name not in allowed_tools for call in calls):
+                if allowed_tools and any(
+                    _canonical_operator_tool_call(call.tool_name, call.tool_input, self.executor.tool_definitions)[0]
+                    not in allowed_tools
+                    for call in calls
+                ):
                     sub_history.append({
                         "tool_name": "call_tools_parallel", "input": None, "status": "failed",
                         "error": f"one or more tools are not in this sub-task's allowed set: {sorted(allowed_tools)}",
@@ -701,49 +914,64 @@ class TaskWorker:
                 continue
 
             # CALL_TOOL
-            if allowed_tools and sub_decision.tool_name not in allowed_tools:
+            requested_tool_name = sub_decision.tool_name
+            requested_tool_input = sub_decision.tool_input
+            tool_name, tool_input = _canonical_operator_tool_call(
+                requested_tool_name,
+                requested_tool_input,
+                self.executor.tool_definitions,
+            )
+            normalization = _normalization_history_fields(
+                requested_tool_name, requested_tool_input, tool_name, tool_input
+            )
+            if allowed_tools and tool_name not in allowed_tools:
                 sub_history.append({
-                    "tool_name": sub_decision.tool_name, "input": sub_decision.tool_input, "status": "failed",
+                    "tool_name": tool_name, "input": tool_input, "status": "failed",
                     "error": f"tool not in this sub-task's allowed set: {sorted(allowed_tools)}",
                     "step_id": sub_step_id,
+                    **normalization,
                 })
                 continue
-            tool_def = self.executor.tool_definitions.get(sub_decision.tool_name)
+            tool_def = self.executor.tool_definitions.get(tool_name)
             if tool_def is None:
                 sub_history.append({
-                    "tool_name": sub_decision.tool_name, "input": sub_decision.tool_input, "status": "failed",
-                    "error": f"unregistered tool: {sub_decision.tool_name}",
+                    "tool_name": tool_name, "input": tool_input, "status": "failed",
+                    "error": f"unregistered tool: {tool_name}",
                     "step_id": sub_step_id,
+                    **normalization,
                 })
                 continue
             request = ToolCallRequest(
-                task_id=task.id, tool_name=sub_decision.tool_name, capability=tool_def.capability,
-                risk_level=_effective_operator_risk(tool_def, sub_decision.tool_input, sub_decision.risk_level),
-                input=sub_decision.tool_input, origin=delegate_origin, parent_step_id=sub_step_id,
+                task_id=task.id, tool_name=tool_name, capability=tool_def.capability,
+                risk_level=_effective_operator_risk(tool_def, tool_input, sub_decision.risk_level),
+                input=tool_input, origin=delegate_origin, parent_step_id=sub_step_id,
             )
             result = await self.executor.execute(request)
             if result.status == ToolResultStatus.NEEDS_APPROVAL:
                 sub_history.append({
-                    "tool_name": sub_decision.tool_name, "input": sub_decision.tool_input, "status": "failed",
+                    "tool_name": tool_name, "input": tool_input, "status": "failed",
                     "error": "this call needs approval, which delegation does not support",
                     "step_id": sub_step_id,
+                    **normalization,
                 })
                 continue
-            if _is_background_external_tool_result(sub_decision.tool_name, result):
+            if _is_background_external_tool_result(tool_name, result):
                 sub_history.append({
-                    "tool_name": sub_decision.tool_name, "input": sub_decision.tool_input, "status": "failed",
+                    "tool_name": tool_name, "input": tool_input, "status": "failed",
                     "error": "this call started a background session, which delegation does not support",
                     "step_id": sub_step_id,
+                    **normalization,
                 })
                 continue
-            task = self._record_tool_result(task.id, sub_decision.tool_name, result)
+            task = self._record_tool_result(task.id, tool_name, result)
             output_text = _tool_output_text(result) if result.status == ToolResultStatus.SUCCEEDED else None
             sub_history.append({
-                "tool_name": sub_decision.tool_name, "input": sub_decision.tool_input,
+                "tool_name": tool_name, "input": tool_input,
                 "status": result.status.value,
                 "output_summary": output_text[:2000] if output_text else None,
                 "error": result.error_message,
                 "step_id": sub_step_id,
+                **normalization,
             })
 
         return task, {
@@ -886,7 +1114,56 @@ class TaskWorker:
         final_metadata = {**metadata, **recorded.metadata, "operator_history": history}
         for key in ("pending_tool_result", "awaiting_external", "operator_pending_call"):
             final_metadata.pop(key, None)
+        completed_coding_task = self._complete_fulfilled_coding_result(
+            recorded,
+            tool_name,
+            result,
+            history,
+            final_metadata,
+        )
+        if completed_coding_task is not None:
+            return completed_coding_task
         return self.repositories.tasks.update_metadata(task.id, final_metadata, TaskStatus.RUNNING)
+
+    def _complete_fulfilled_coding_result(
+        self,
+        task: TaskRecord,
+        tool_name: str,
+        result: ToolCallResult,
+        history: list[dict[str, Any]],
+        metadata: dict[str, Any],
+    ) -> TaskRecord | None:
+        """Finish a successful external coding handoff without another poll.
+
+        The session callback is authoritative terminal evidence. Asking the
+        model what to do next can make it poll the same completed session until
+        the no-progress guard fires. Auto-completion remains gated by the full
+        typed fulfillment check, so compound requests (deliver, preview,
+        schedule, and so on) continue through the operator loop.
+        """
+        answer = _completed_coding_agent_answer(tool_name, result)
+        if not answer:
+            return None
+        completed_metadata = {**metadata, "operator_history": history, "synthesized_answer": answer}
+        candidate = task.model_copy(update={"metadata": completed_metadata})
+        validation = validate_fulfillment(candidate)
+        # An empty expectation set is not proof of completion for an open-ended
+        # request; let the operator interpret the result in that case.
+        if not validation.expected:
+            return None
+        gap = validation.first_gap or _unsupported_write_claim(
+            answer,
+            history,
+            completed_metadata,
+        )
+        if gap:
+            return None
+        return self._transition_operator(
+            task,
+            completed_metadata,
+            TaskStatus.COMPLETED,
+            "operator_external_completed",
+        )
 
     def _process_operator_retrying(self, task: TaskRecord) -> TaskRecord:
         next_retry_at = task.metadata.get("next_retry_at")
@@ -1008,6 +1285,9 @@ class TaskWorker:
         runs fulfillment-gap recovery which can attach a plan-based recovery
         plan, crossing back into the plan-once path from inside this one.
         """
+        if status in {TaskStatus.FAILED, TaskStatus.BLOCKED}:
+            metadata = {**metadata}
+            metadata.setdefault("last_worker_error", _operator_transition_error_message(reason, self.operator_max_steps))
         updated = self.repositories.tasks.update_metadata(task.id, metadata, status)
         self.audit.task_state_changed("worker", task.id, task.status, status)
         if status in {TaskStatus.FAILED, TaskStatus.BLOCKED}:
@@ -1203,6 +1483,11 @@ class TaskWorker:
         output_text = _tool_output_text(result)
         if output_text:
             metadata["last_tool_output_text"] = output_text if len(output_text) <= 20000 else f"{output_text[:19997]}..."
+            if AuditorService.is_content_tool(tool_name):
+                metadata["last_content_tool_output_text"] = (
+                    output_text if len(output_text) <= 20000 else f"{output_text[:19997]}..."
+                )
+                metadata["last_content_tool_request_id"] = result.request_id
         output = result.output if isinstance(result.output, dict) else {}
         usage = output.get("usage")
         if isinstance(usage, dict) and usage:
@@ -1222,14 +1507,13 @@ class TaskWorker:
             ("desktop_observation", "observation"),
             ("computer_use_actions", "actions_taken"),
             ("changed_paths", "changed_paths"),
+            ("files_created", "files_created"),
+            ("files_modified", "files_modified"),
             ("organized_paths", "changed_paths"),
             ("rename_manifest", "rename_manifest"),
             ("file_manifest", "manifest"),
             ("document_path", "path"),
             ("document_summary", "summary"),
-            ("coding_agent_workspace", "workspace_dir"),
-            ("coding_agent_session_id", "session_id"),
-            ("coding_agent_limit_state", "limit_state"),
             ("changed_files", "changed_files"),
             ("schedule_id", "schedule_id"),
             ("scheduled_task_id", "task_id"),
@@ -1239,7 +1523,26 @@ class TaskWorker:
             ("mcp_selected_tool", "selected_tool"),
         ):
             if output.get(output_key):
-                metadata[metadata_key] = output[output_key]
+                if metadata_key in {
+                    "changed_paths",
+                    "files_created",
+                    "files_modified",
+                    "organized_paths",
+                    "changed_files",
+                }:
+                    metadata[metadata_key] = _merge_unique_list(
+                        metadata.get(metadata_key), output[output_key]
+                    )
+                else:
+                    metadata[metadata_key] = output[output_key]
+        if tool_name == "coding.agent":
+            for metadata_key, output_key in (
+                ("coding_agent_workspace", "workspace_dir"),
+                ("coding_agent_session_id", "session_id"),
+                ("coding_agent_limit_state", "limit_state"),
+            ):
+                if output.get(output_key):
+                    metadata[metadata_key] = output[output_key]
         if tool_name == "mcp.client":
             metadata["mcp_catalog"] = {
                 "catalog_path": output.get("catalog_path"),
@@ -1262,27 +1565,515 @@ class TaskWorker:
         return self.repositories.tasks.update_metadata(task_id, metadata)
 
 
+_OPERATOR_TOOL_ALIASES = {
+    "filesystem": "filesystem.manage",
+    "file_system": "filesystem.manage",
+    "filesystem_manager": "filesystem.manage",
+    "workspace": "workspace.manage",
+    "workspace_manager": "workspace.manage",
+    "coding_agent": "coding.agent",
+    "coding-agent": "coding.agent",
+    "codingagent": "coding.agent",
+}
+
+_OPERATOR_OPERATION_ALIASES = {
+    "filesystem.manage": {
+        "create_file": "write_text_file",
+        "save_file": "write_text_file",
+        "write_file": "write_text_file",
+        "read_text_file": "read_file",
+        "list_directory": "inspect_folder",
+        "list_directory_with_sizes": "inspect_folder",
+        "list_folder": "inspect_folder",
+        "directory_tree": "inspect_folder",
+        "tree": "inspect_folder",
+        "search_files": "search",
+        "find_files": "search",
+        "search_file": "search",
+    },
+}
+
+
+def _merge_unique_list(existing: Any, incoming: Any) -> list[Any]:
+    result = list(existing) if isinstance(existing, list) else []
+    values = incoming if isinstance(incoming, list) else [incoming]
+    for value in values:
+        if value not in result:
+            result.append(value)
+    return result
+
+
+def _canonical_operator_tool_call(
+    requested_name: str | None,
+    requested_input: dict[str, Any] | None,
+    definitions: dict[str, Any],
+) -> tuple[str | None, dict[str, Any]]:
+    """Recover common model dialects without weakening the tool catalog.
+
+    Only aliases whose canonical target is actually registered are accepted,
+    and operation aliases are applied only when that operation exists on the
+    registered definition. Policy, schema validation, approval, and allowed
+    roots therefore still run against the canonical request exactly as they
+    do for a model that emitted the catalog spelling on its first try.
+    """
+    tool_name = requested_name.strip() if isinstance(requested_name, str) else requested_name
+    tool_input = dict(requested_input or {})
+    if tool_name not in definitions and isinstance(tool_name, str):
+        alias = _OPERATOR_TOOL_ALIASES.get(tool_name.casefold())
+        if alias in definitions:
+            tool_name = alias
+
+    definition = definitions.get(tool_name) if tool_name is not None else None
+    operation = tool_input.get("operation")
+    if definition is not None and isinstance(operation, str):
+        operation_alias = _OPERATOR_OPERATION_ALIASES.get(str(tool_name), {}).get(operation.casefold())
+        supported = set(getattr(definition, "operations", ()) or ())
+        if operation_alias and operation_alias in supported:
+            tool_input["operation"] = operation_alias
+            if operation_alias == "inspect_folder" and "root" not in tool_input and "path" in tool_input:
+                tool_input["root"] = tool_input.pop("path")
+    if tool_name == "filesystem.manage":
+        operation = tool_input.get("operation")
+        if operation in {"inspect_folder", "search"} and "root" not in tool_input:
+            for alias in ("folder_path", "root_folder", "path"):
+                if tool_input.get(alias):
+                    tool_input["root"] = tool_input.pop(alias)
+                    break
+        if operation == "search" and "query" not in tool_input:
+            pattern = str(tool_input.pop("pattern", "") or "").strip()
+            if pattern and pattern not in {"*", "**", "*.*", "**/*", "**\\*"}:
+                tool_input["query"] = pattern
+        if operation == "read_file" and "path" not in tool_input:
+            file_path = tool_input.pop("file_path", None)
+            if file_path:
+                tool_input["path"] = file_path
+            else:
+                folder_path = tool_input.pop("folder_path", None)
+                file_name = tool_input.pop("file_name", None)
+                if folder_path and file_name:
+                    tool_input["path"] = str(Path(str(folder_path)) / str(file_name))
+    return tool_name, tool_input
+
+
+def _normalization_history_fields(
+    requested_name: str | None,
+    requested_input: dict[str, Any],
+    tool_name: str | None,
+    tool_input: dict[str, Any],
+) -> dict[str, Any]:
+    if requested_name == tool_name and requested_input == tool_input:
+        return {}
+    return {
+        "normalized_from": {
+            "tool_name": requested_name,
+            "operation": requested_input.get("operation"),
+        }
+    }
+
+
+def _coding_agent_input_with_explicit_workspace(
+    task: TaskRecord,
+    tool_name: str | None,
+    tool_input: dict[str, Any],
+) -> dict[str, Any]:
+    """Carry an explicitly requested folder into the coding-agent session.
+
+    The classifier already extracts ``folder_path``. Using it is safe only
+    when that exact path also appears in the user's original message; this
+    prevents a model-invented path from expanding terminal scope. Without the
+    handoff, the CLI writes in YBM's default task workspace while the prompt
+    and later verification refer to a different directory.
+    """
+    if tool_name != "coding.agent":
+        return tool_input
+    intent = task.metadata.get("orchestration_intent")
+    folder_path = None
+    if isinstance(intent, dict):
+        # Classifier schemas use ``folder_path`` for filesystem routes but
+        # commonly use the generic ``path`` field for workspace.manage. Both
+        # are bounded by the same exact-user-text check below.
+        folder_path = intent.get("folder_path") or intent.get("path")
+    original = str(task.metadata.get("original_message_text") or "")
+    if isinstance(folder_path, str) and folder_path.strip():
+        if folder_path.casefold() not in original.casefold():
+            return tool_input
+        if any(
+            folder_path.casefold() in match.group(0).casefold()
+            for match in re.finditer(r"\{\{.*?\}\}", original)
+        ):
+            return tool_input
+        return {**tool_input, "workspace_dir": folder_path}
+
+    # Classifiers sometimes recognize the coding route but omit the literal
+    # path even though it appears in the message. Recover only when the user's
+    # text contains exactly one existing absolute directory. Existence plus
+    # exact source-text provenance avoids guessing where code may be written;
+    # the coding adapter's own allowed-root and policy checks still apply.
+    candidates = _existing_absolute_directories(original)
+    if len(candidates) != 1:
+        return tool_input
+    return {**tool_input, "workspace_dir": candidates[0]}
+
+
+def _coding_agent_input_with_task_defaults(
+    task: TaskRecord,
+    tool_name: str | None,
+    tool_input: dict[str, Any],
+) -> dict[str, Any]:
+    """Fill schema-required coding fields already explicit in the task.
+
+    This is recovery from an incomplete tool dialect, not model invention:
+    a provider is filled only when exactly one supported provider is named in
+    the user/task text, and the task's own normalized objective supplies a
+    missing start prompt.
+    """
+    if tool_name != "coding.agent" or tool_input.get("operation") != "start":
+        return tool_input
+    enriched = dict(tool_input)
+    if not enriched.get("provider"):
+        providers = _named_coding_providers(task)
+        if len(providers) == 1:
+            enriched["provider"] = providers[0]
+    if not enriched.get("prompt") and not enriched.get("objective"):
+        enriched["objective"] = task.objective
+    return enriched
+
+
+def _named_coding_providers(task: TaskRecord) -> list[str]:
+    request_text = " ".join(
+        str(value or "")
+        for value in (task.metadata.get("original_message_text"), task.objective)
+    ).casefold()
+    providers = []
+    if re.search(r"\bcodex\b", request_text):
+        providers.append("codex")
+    if re.search(r"\bclaude(?:\s+code)?\b", request_text):
+        providers.append("claude_code")
+    if re.search(r"\b(?:github\s+)?copilot\b", request_text):
+        providers.append("github_copilot")
+    return providers
+
+
+def _existing_absolute_directories(text: str) -> list[str]:
+    candidates: list[str] = []
+    for match in re.finditer(r"(?i)\b[a-z]:\\", text):
+        segment = text[match.start() : match.start() + 600].splitlines()[0]
+        resolved: str | None = None
+        for end in range(len(segment), 2, -1):
+            candidate = segment[:end].rstrip(" \t\r\n.,;:!?)]}\"'")
+            if not re.fullmatch(r"(?i)[a-z]:\\.+", candidate):
+                continue
+            try:
+                path = Path(candidate)
+                if path.is_absolute() and path.is_dir():
+                    resolved = str(path.resolve())
+                    break
+            except OSError:
+                continue
+        if resolved and resolved.casefold() not in {item.casefold() for item in candidates}:
+            candidates.append(resolved)
+    return candidates
+
+
+def _filesystem_search_input_with_content_intent(
+    task: TaskRecord,
+    tool_name: str | None,
+    tool_input: dict[str, Any],
+) -> dict[str, Any]:
+    """Preserve an explicit request to search inside files.
+
+    ``filesystem.manage:search`` supports content search, but an operator can
+    omit the boolean and repeatedly search filenames for a marker the user
+    explicitly said was in the file contents. Enrich only that declared
+    intent; ordinary filename searches retain their cheaper default.
+    """
+    if tool_name != "filesystem.manage" or tool_input.get("operation") != "search":
+        return tool_input
+    request_text = " ".join(
+        str(value or "")
+        for value in (task.metadata.get("original_message_text"), task.objective)
+    ).casefold()
+    content_intent = bool(
+        re.search(
+            r"\b(?:contents?|text|body)\b[^.\n]{0,50}\b(?:contain|contains|include|includes|has|have|match|matches)\b",
+            request_text,
+        )
+        or re.search(r"\b(?:search|find|look)\b[^.\n]{0,50}\b(?:inside|within|in)\s+(?:the\s+)?(?:file|files|contents?|text)\b", request_text)
+    )
+    if not content_intent:
+        return tool_input
+    enriched = {**tool_input, "include_content": True}
+    if not enriched.get("query"):
+        query = _explicit_content_query(request_text)
+        if query:
+            enriched["query"] = query
+    return enriched
+
+
+def _explicit_content_query(request_text: str) -> str | None:
+    for pattern in (
+        r"\bcontents?\s+(?:contain|contains|include|includes|match|matches)\s+[\"']?([a-z0-9][a-z0-9_.:-]{2,})",
+        r"\bmarker\s+(?:is|named|called)\s+[\"']?([a-z0-9][a-z0-9_.:-]{2,})",
+    ):
+        match = re.search(pattern, request_text, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).rstrip(".,;!?")
+    return None
+
+
+def _stale_read_recovery_call(
+    task: TaskRecord,
+    tool_name: str | None,
+    tool_input: dict[str, Any],
+    history: list[dict[str, Any]],
+) -> tuple[str | None, dict[str, Any]]:
+    """Switch an unchanged missing-file retry to a bounded parent search."""
+    if tool_name != "filesystem.manage" or tool_input.get("operation") != "read_file":
+        return tool_name, tool_input
+    path = str(tool_input.get("path") or "").strip()
+    if not path:
+        return tool_name, tool_input
+    repeated_failure = any(
+        isinstance(entry, dict)
+        and entry.get("tool_name") == "filesystem.manage"
+        and entry.get("status") == ToolResultStatus.FAILED.value
+        and isinstance(entry.get("input"), dict)
+        and entry["input"].get("operation") == "read_file"
+        and str(entry["input"].get("path") or "").casefold() == path.casefold()
+        for entry in history
+    )
+    if not repeated_failure:
+        return tool_name, tool_input
+    request_text = str(task.metadata.get("original_message_text") or task.objective)
+    if not re.search(r"\b(?:search|find|recover|renamed|moved|no longer)\b", request_text, re.IGNORECASE):
+        return tool_name, tool_input
+    if path.casefold() not in request_text.casefold():
+        return tool_name, tool_input
+    stale_path = Path(path).expanduser()
+    recovery_root = next(
+        (
+            parent
+            for parent in stale_path.parents
+            if parent.is_dir() and str(parent) != stale_path.anchor
+        ),
+        None,
+    )
+    if recovery_root is None:
+        return tool_name, tool_input
+    query = Path(path).stem.strip()
+    if not query:
+        return tool_name, tool_input
+    return "filesystem.manage", {
+        "operation": "search",
+        "root": str(recovery_root.resolve()),
+        "query": query,
+        "include_content": False,
+    }
+
+
+def _required_named_coding_agent_call(
+    task: TaskRecord,
+    tool_name: str | None,
+    tool_input: dict[str, Any],
+    definitions: dict[str, Any],
+) -> tuple[str | None, dict[str, Any]]:
+    """Honor an explicit named-provider delegation before fallback tools."""
+    definition = definitions.get("coding.agent")
+    if definition is None or not getattr(definition, "enabled", False):
+        return tool_name, tool_input
+    providers = _named_coding_providers(task)
+    if len(providers) != 1:
+        return tool_name, tool_input
+    if PostconditionType.CODING_AGENT_STEP not in set(validate_fulfillment(task).missing):
+        return tool_name, tool_input
+    if tool_name == "coding.agent":
+        return tool_name, tool_input
+    return "coding.agent", {
+        "operation": "start",
+        "provider": providers[0],
+        "objective": task.objective,
+    }
+
+
+def _ordered_artifact_delivery_call(
+    task: TaskRecord,
+    tool_name: str | None,
+    tool_input: dict[str, Any],
+    history: list[dict[str, Any]],
+    definitions: dict[str, Any],
+) -> tuple[str | None, dict[str, Any]]:
+    """Honor an explicit delivery-before-follow-up dependency.
+
+    A model repeatedly tried to create a schedule before sending the file in
+    "only after the file is delivered, create a schedule", then fabricated
+    that delivery and asked for confirmation. Once a successful write gives
+    an exact path, no semantic choice remains: route the attempted schedule
+    step through the registered delivery tool first. Its normal schema,
+    policy, root, channel, and approval checks still apply; only ordering is
+    made deterministic.
+    """
+    if tool_name != "schedule.manage":
+        return tool_name, tool_input
+    request_text = str(task.metadata.get("original_message_text") or task.objective)
+    ordered_request = re.search(
+        r"\bonly\s+after\b[^.\n]{0,120}\b(?:deliver\w*|send|sent)\b"
+        r"[^.\n]{0,120}\b(?:schedule\w*|scheduled)\b",
+        request_text,
+        flags=re.IGNORECASE,
+    )
+    if not ordered_request:
+        return tool_name, tool_input
+    if PostconditionType.ARTIFACT_DELIVERED not in set(validate_fulfillment(task).missing):
+        return tool_name, tool_input
+    output_path = _known_written_file_path(task, history)
+    delivery_definition = definitions.get("artifact.deliver")
+    if not output_path or delivery_definition is None:
+        return tool_name, tool_input
+    if "send_file" not in set(getattr(delivery_definition, "operations", ()) or ()):
+        return tool_name, tool_input
+    return "artifact.deliver", {
+        "operation": "send_file",
+        "path": output_path,
+        "caption": "Requested completed file",
+    }
+
+
+def _satisfied_task_does_not_need_clarification(
+    task: TaskRecord,
+    history: list[dict[str, Any]],
+) -> bool:
+    """Reject optional follow-up questions after typed work is complete.
+
+    An empty expectation set cannot prove that the user's input is complete,
+    so the guard deliberately does nothing for open-ended requests. At least
+    one successful tool call and one satisfied inferred postcondition are
+    required before asking the operator to finish instead of seek polish or
+    confirmation that the user never made a prerequisite.
+    """
+    validation = validate_fulfillment(task)
+    if not validation.expected or not validation.ok:
+        return False
+    return any(
+        isinstance(entry, dict)
+        and entry.get("status") == ToolResultStatus.SUCCEEDED.value
+        for entry in history
+    )
+
+
+def _clarification_recovery_reason(
+    task: TaskRecord,
+    history: list[dict[str, Any]],
+) -> str | None:
+    if _satisfied_task_does_not_need_clarification(task, history):
+        return (
+            "the requested work's inferred postconditions are already satisfied; "
+            "report optional review or verification gaps instead of asking the user"
+        )
+
+    validation = validate_fulfillment(task)
+    missing = set(validation.missing)
+    if PostconditionType.ARTIFACT_DELIVERED in missing:
+        output_path = _known_written_file_path(task, history)
+        if output_path:
+            return (
+                f"artifact delivery is still required and the successful write already provides "
+                f"the exact path {output_path!r}; use the delivery tool"
+            )
+    if PostconditionType.ADAPTER_PROPOSAL in missing and _request_has_named_adapter(task):
+        return (
+            "the user supplied a concrete adapter name, generic contract, and safety boundary; "
+            "scaffold the cache-only proposal with conservative defaults and report review gaps"
+        )
+    return None
+
+
+def _known_written_file_path(task: TaskRecord, history: list[dict[str, Any]]) -> str | None:
+    for entry in reversed(history):
+        if not isinstance(entry, dict) or entry.get("status") != ToolResultStatus.SUCCEEDED.value:
+            continue
+        tool_input = entry.get("input") if isinstance(entry.get("input"), dict) else {}
+        if (
+            entry.get("tool_name") == "filesystem.manage"
+            and tool_input.get("operation") == "write_text_file"
+            and tool_input.get("path")
+        ):
+            return str(tool_input["path"])
+    for key in ("changed_paths", "files_created", "files_modified", "changed_files"):
+        values = task.metadata.get(key)
+        if isinstance(values, list) and values:
+            return str(values[-1])
+    return None
+
+
+def _request_has_named_adapter(task: TaskRecord) -> bool:
+    request_text = " ".join(
+        str(value or "")
+        for value in (task.metadata.get("original_message_text"), task.objective)
+    ).casefold()
+    return bool(
+        re.search(r"\b(?:adapter|proposal)\s+(?:named|called)\s+[a-z][a-z0-9_-]{2,}\b", request_text)
+        or re.search(r"\bcreate\s+(?:a\s+)?[a-z][a-z0-9_-]{2,}\s+adapter\b", request_text)
+    )
+
+
+def _post_clarification_history_offset(task: TaskRecord, history: list[dict[str, Any]]) -> int:
+    raw_offset = task.metadata.get("operator_history_offset_after_clarification")
+    try:
+        offset = int(raw_offset)
+    except (TypeError, ValueError):
+        # Conservative compatibility for a task resumed by an older process:
+        # do not let any pre-answer content replace the current answer.
+        return len(history) if task.metadata.get("clarification_answer") else 0
+    return max(0, min(offset, len(history)))
+
+
+def _auditor_response_context(task: TaskRecord, memory_context: str) -> str | None:
+    parts: list[str] = []
+    if memory_context.strip():
+        parts.append(memory_context.strip())
+    question = str(task.metadata.get("answered_clarifying_question") or "").strip()
+    answer = str(task.metadata.get("clarification_answer") or "").strip()
+    if answer:
+        clarification = f"Latest user clarification: {answer}"
+        if question:
+            clarification = f"Latest clarifying question: {question}\n{clarification}"
+        parts.append(clarification)
+    return "\n\n".join(parts) or None
+
+
+def _operator_blocked_reason(reason: str | None, history: list[dict[str, Any]]) -> str:
+    stated = str(reason or "").strip()
+    if stated and stated != "operator_blocked":
+        return stated
+    for entry in reversed(history):
+        if entry.get("tool_name") in CHECK_ENTRY_NAMES:
+            continue
+        if entry.get("status") in {"failed", "denied", "rate_limited"}:
+            tool_name = str(entry.get("tool_name") or "the latest capability")
+            error = str(entry.get("error") or "it did not succeed").strip()
+            return (
+                "No available capability completed the request. "
+                f"The latest attempt with {tool_name} did not succeed: {error}"
+            )
+    return "No available tool or capability can complete the request with the current configuration."
+
+
 def _effective_operator_risk(tool_definition: Any, tool_input: dict[str, Any], declared: RiskLevel) -> RiskLevel:
-    """Apply the runtime-owned risk floor to a model-authored tool call.
+    """Use the runtime-owned risk for a model-authored tool call.
 
     The executor still rejects understated requests from any other caller.
-    Operator decisions are normalized first so a small model cannot bypass
-    policy or derail a valid task merely by labeling a write as a low-risk
-    read. Invalid inputs stay untouched and are rejected by the executor's
-    normal schema validation path.
+    Operator decisions are normalized first so a model cannot bypass policy
+    by understating risk *or* derail a valid call by conservatively
+    overstating it above the capability ceiling. Tool definitions and their
+    operation-specific resolvers are the authoritative risk classifiers.
+    Invalid inputs stay untouched and are rejected by the executor's normal
+    schema validation path.
     """
     try:
         validated_input = tool_definition.validate_input(tool_input)
     except ValueError:
         return declared
-    required = tool_definition.required_risk(validated_input)
-    risk_order = {
-        RiskLevel.LOW: 1,
-        RiskLevel.MEDIUM: 2,
-        RiskLevel.HIGH: 3,
-        RiskLevel.CRITICAL: 4,
-    }
-    return required if risk_order[required] > risk_order[declared] else declared
+    return tool_definition.required_risk(validated_input)
 
 def _is_background_external_tool_result(tool_name: str | None, result: ToolCallResult) -> bool:
     if tool_name != "coding.agent" or result.status != ToolResultStatus.SUCCEEDED:
@@ -1298,6 +2089,41 @@ def _last_content_tool_history_entry(history: list[dict[str, Any]]) -> dict[str,
     return None
 
 
+def _operator_audit_evidence(
+    history: list[dict[str, Any]],
+    last_content_entry: dict[str, Any],
+    last_raw_output: str,
+) -> str:
+    """Build observable evidence for auditing a multi-tool objective.
+
+    A one-tool task retains the full raw output byte-for-byte (important for
+    long list/count audits). For a multi-tool task, include every recorded
+    outcome so the auditor can see that earlier inspection, write, delivery,
+    and scheduling steps happened instead of judging the entire objective
+    from only the final tool's output.
+    """
+    real_entries = [entry for entry in history if entry.get("tool_name") not in CHECK_ENTRY_NAMES]
+    if len(real_entries) <= 1:
+        return last_raw_output
+    parts: list[str] = []
+    for index, entry in enumerate(real_entries, 1):
+        tool_name = str(entry.get("tool_name") or "unknown")
+        status = str(entry.get("status") or "unknown")
+        if entry is last_content_entry:
+            evidence = last_raw_output
+        else:
+            evidence = str(entry.get("output_summary") or entry.get("error") or "")
+        tool_input = entry.get("input")
+        input_text = json.dumps(tool_input, ensure_ascii=False, default=str)[:8000] if tool_input else ""
+        details = []
+        if input_text:
+            details.append(f"Input: {input_text}")
+        if evidence:
+            details.append(f"Output: {evidence}")
+        parts.append(f"{index}. {tool_name} ({status})\n" + "\n".join(details))
+    return "\n\n".join(parts)
+
+
 def _tool_call_count(history: list[dict[str, Any]]) -> int:
     """Real tool calls only, excluding the check pseudo-entries.
 
@@ -1310,6 +2136,198 @@ def _tool_call_count(history: list[dict[str, Any]]) -> int:
     tools. See docs/HISTORY.md §3.1.
     """
     return len([entry for entry in history if entry.get("tool_name") not in CHECK_ENTRY_NAMES])
+
+
+def _repeated_no_progress_call(
+    history: list[dict[str, Any]],
+    *,
+    threshold: int = 3,
+) -> tuple[str, str] | None:
+    """Detect a bounded run of identical observations or failures.
+
+    An operator may vary the prose in a read-only request while continuing to
+    receive exactly the same page or status. Treating those calls as progress
+    burns the whole step budget and hides the actual limitation. Three
+    consecutive identical outcomes are enough evidence to stop safely. This
+    also catches a model retrying the same missing path despite receiving the
+    same explicit error; writes with changing output do not match this guard.
+    """
+    real_entries = [
+        entry
+        for entry in history
+        if isinstance(entry, dict) and entry.get("tool_name") not in CHECK_ENTRY_NAMES
+    ]
+    if len(real_entries) < threshold:
+        return None
+    recent = real_entries[-threshold:]
+    statuses = {str(entry.get("status") or "") for entry in recent}
+    if len(statuses) != 1 or next(iter(statuses)) not in {
+        ToolResultStatus.SUCCEEDED.value,
+        ToolResultStatus.FAILED.value,
+        ToolResultStatus.DENIED.value,
+    }:
+        return None
+    tool_names = {str(entry.get("tool_name") or "") for entry in recent}
+    operations = {
+        str((entry.get("input") or {}).get("operation") or "")
+        for entry in recent
+        if isinstance(entry.get("input"), dict)
+    }
+    observation_key = (
+        "output_summary"
+        if next(iter(statuses)) == ToolResultStatus.SUCCEEDED.value
+        else "error"
+    )
+    outputs = {" ".join(str(entry.get(observation_key) or "").split()) for entry in recent}
+    operation = next(iter(operations), "")
+    if (
+        len(tool_names) != 1
+        or len(operations) != 1
+        or not operation
+        or len(outputs) != 1
+        or not next(iter(outputs), "")
+    ):
+        return None
+    return next(iter(tool_names)), operation
+
+
+def _operator_transition_error_message(reason: str, max_steps: int) -> str:
+    if reason == "operator_step_budget_exhausted":
+        return (
+            f"Blocked after the bounded {max_steps}-step operator budget was exhausted; "
+            "stopped instead of continuing an unproductive loop."
+        )
+    return reason
+
+
+# Operations and tools that actually put bytes on disk. Plan-producing
+# operations (organize_plan, rename_plan) deliberately do not qualify - they
+# describe a change without making it.
+_WRITE_OPERATIONS = frozenset(
+    {"write_text_file", "write_files", "materialize_static_app", "web_app_preview", "apply_manifest", "scaffold"}
+)
+
+_WRITE_CLAIM = re.compile(
+    r"(?i)\b(?:created?|creating|wrote|written|writing|saved|saving|scaffolded|scaffolding|generated|"
+    r"added|placed)\b[^.!?\n]{0,90}?\b(?:file|files|folder|directory|package\.json|readme|extension|script)\b"
+    r"|\bfiles?\b[^.!?\n]{0,40}?\b(?:were|was|have been|has been|is|are)\s+(?:created|written|saved|added)\b"
+)
+
+
+_NEGATED_CLAIM = re.compile(
+    r"(?i)\b(?:not|cannot|can't|can’t|could\s?n[o']?t|couldn’t|un(?:able|successful)|"
+    r"fail(?:ed|s|ure)?|did\s?n[o']?t|was\s?n[o']?t|were\s?n[o']?t|no|never|without|skip(?:ped)?)\b"
+)
+
+
+def _claim_is_negated(answer: str, start: int) -> bool:
+    """Whether a write claim sits inside a denial of that same write.
+
+    "I could not create the files" states the truth this guard exists to
+    protect; flagging it would push a correctly-behaving run into a pointless
+    replan and teach the operator that honesty is penalized.
+    """
+    clause_start = max(
+        answer.rfind(".", 0, start), answer.rfind("\n", 0, start), answer.rfind(";", 0, start)
+    )
+    window = answer[max(clause_start + 1, start - 60):start]
+    return bool(_NEGATED_CLAIM.search(window))
+
+
+# Metadata keys the tool layer promotes when something was actually produced.
+# Same notion of evidence `fulfillment._postcondition_satisfied` checks, so the
+# two guards cannot disagree about whether a write happened.
+_WRITE_EVIDENCE_KEYS = (
+    "changed_paths", "changed_files", "files_created", "files_modified",
+    "organized_paths", "document_path", "adapter_dir",
+)
+
+
+def _unsupported_write_claim(
+    answer: str | None,
+    history: list[dict[str, Any]],
+    metadata: dict[str, Any] | None = None,
+) -> str | None:
+    """Reject a final answer that claims files were written when none were.
+
+    A single unsupported-operation failure was enough for the operator to stop
+    and synthesize "The following files were created:" for an empty workspace,
+    and the task completed (docs/E2E_FINDINGS.md P0-2). Objective-derived
+    postconditions are the other guard, but they are inferred from wording; this
+    one reads the claim the answer actually makes and demands matching evidence.
+
+    Returns a gap reason for the caller's existing bounded-replan path, so a
+    false positive costs two extra steps rather than blocking the task.
+    """
+    if not answer:
+        return None
+    claims = [match for match in _WRITE_CLAIM.finditer(answer) if not _claim_is_negated(answer, match.start())]
+    if not claims:
+        return None
+    if isinstance(metadata, dict) and any(metadata.get(key) for key in _WRITE_EVIDENCE_KEYS):
+        return None
+    for entry in history:
+        if not isinstance(entry, dict) or entry.get("status") != ToolResultStatus.SUCCEEDED.value:
+            continue
+        tool_input = entry.get("input")
+        if isinstance(tool_input, dict) and str(tool_input.get("operation") or "") in _WRITE_OPERATIONS:
+            return None
+    return (
+        "the answer states that files were created or written, but no successful write "
+        "operation is recorded - either perform the write or say plainly that it did not happen"
+    )
+
+
+def _ground_operator_final_answer(answer: str | None, history: list[dict[str, Any]]) -> str | None:
+    """Keep the identity of a file-read result in the user-facing answer.
+
+    Models occasionally return only the file contents even though the user
+    asked which file was found and read. The tool history has the authoritative
+    path, so append it when neither the full path nor basename survived the
+    synthesis. This does not infer a path or alter non-file answers.
+    """
+    if not answer:
+        return answer
+    source_path = ""
+    for entry in reversed(history):
+        tool_input = entry.get("input") if isinstance(entry, dict) else None
+        if (
+            entry.get("status") == ToolResultStatus.SUCCEEDED.value
+            and isinstance(tool_input, dict)
+            and tool_input.get("operation") == "read_file"
+            and tool_input.get("path")
+        ):
+            source_path = str(tool_input["path"])
+            break
+    if not source_path:
+        return answer
+    filename = source_path.replace("\\", "/").rsplit("/", 1)[-1]
+    lowered = answer.lower()
+    if source_path.lower() in lowered or (filename and filename.lower() in lowered):
+        return answer
+    return f"{answer.rstrip()}\n\nSource file: {source_path}"
+
+
+def _completed_coding_agent_answer(tool_name: str, result: ToolCallResult) -> str | None:
+    if tool_name != "coding.agent" or result.status != ToolResultStatus.SUCCEEDED:
+        return None
+    output = result.output if isinstance(result.output, dict) else {}
+    if output.get("status") != "completed" or output.get("returncode") not in (None, 0):
+        return None
+    provider = str(output.get("provider") or "coding agent")
+    lines = [f"{provider} completed successfully."]
+    workspace = str(output.get("workspace_dir") or "").strip()
+    if workspace:
+        lines.append(f"Workspace: {workspace}")
+    changed_files = [str(item) for item in output.get("changed_files") or [] if str(item).strip()]
+    if changed_files:
+        lines.append("Changed files:")
+        lines.extend(f"- {path}" for path in changed_files[:40])
+    summary = str(output.get("summary") or "").strip()
+    if summary:
+        lines.extend(("", summary[:2_000]))
+    return "\n".join(lines)
+
 
 def _tool_output_text(result: ToolCallResult) -> str:
     output = result.output

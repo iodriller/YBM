@@ -69,7 +69,12 @@ class AuditorService:
         return tool_name in CONTENT_TOOLS
 
     async def audit(
-        self, objective: str, raw_output: str, *, original_message: str | None = None
+        self,
+        objective: str,
+        raw_output: str,
+        *,
+        original_message: str | None = None,
+        response_context: str | None = None,
     ) -> AuditResult:
         """Checks raw_output is grounded evidence for objective, and if so,
         returns the focused answer extracted from it.
@@ -82,12 +87,15 @@ class AuditorService:
         """
         if not raw_output.strip():
             return AuditResult(sufficient=False, reason="empty raw output")
-        user_prompt = render_prompt(
-            "tasks/auditor_user.md",
-            objective=objective,
-            original_message=(original_message or "(same as normalized objective)").strip()[:1000],
-            raw_output=raw_output.strip()[:6000],
-        )
+        prompt_name = "tasks/auditor_user_with_context.md" if response_context and response_context.strip() else "tasks/auditor_user.md"
+        prompt_values = {
+            "objective": objective,
+            "original_message": (original_message or "(same as normalized objective)").strip()[:1000],
+            "raw_output": raw_output.strip()[:6000],
+        }
+        if response_context and response_context.strip():
+            prompt_values["response_context"] = response_context.strip()[:1800]
+        user_prompt = render_prompt(prompt_name, **prompt_values)
         try:
             result = await self.provider.generate_text(AUDITOR_SYSTEM_PROMPT, user_prompt)
             self.last_usage = getattr(self.provider, "last_usage", None)

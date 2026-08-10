@@ -43,7 +43,9 @@ async def test_file_find_and_read_returns_file_contents(tmp_path, monkeypatch) -
         for call in tool_calls
         if call["tool_name"] == "filesystem.manage"
     ]
-    assert "search" in operations
+    # Either operation is a grounded discovery step for a known folder: the
+    # operator may list it directly or search it before selecting the file.
+    assert {"inspect_folder", "search"} & set(operations)
     assert "read_file" in operations
 
 

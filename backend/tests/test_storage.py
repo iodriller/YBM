@@ -94,6 +94,26 @@ def test_task_claim_next_is_atomic_across_concurrent_workers(tmp_path) -> None:
     assert claim_a_again.id == task.id
 
 
+def test_stale_worker_metadata_cannot_revive_cancelled_task(tmp_path) -> None:
+    database = Database(f"sqlite:///{tmp_path / 'agent.db'}")
+    database.initialize()
+    repos = Repositories.for_database(database)
+    task = repos.tasks.create("cancel while a model call is running")
+    stale_metadata = {**task.metadata, "operator_loop": True}
+
+    cancelled = repos.tasks.update_metadata(
+        task.id,
+        {**task.metadata, "last_control_signal": "cancel"},
+        TaskStatus.CANCELLED,
+    )
+    result = repos.tasks.update_metadata(task.id, stale_metadata, TaskStatus.RUNNING)
+
+    assert cancelled.status == TaskStatus.CANCELLED
+    assert result.status == TaskStatus.CANCELLED
+    assert result.metadata["last_control_signal"] == "cancel"
+    assert "operator_loop" not in result.metadata
+
+
 def test_task_claim_releases_when_terminal(tmp_path) -> None:
     """release_claim clears the worker hint so the task is free for reclaim
     (mostly cosmetic; the claim would also expire naturally)."""

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -456,6 +457,21 @@ class FilesystemInspectInput(ToolInputModel):
     max_depth: int = Field(default=2, ge=0, le=10)
     max_entries: int = Field(default=200, ge=1, le=5000)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_folder_path(cls, value: Any) -> Any:
+        # Some clients split a target into an allowed ``root`` plus a relative
+        # ``folder_path``. The adapter historically ignored the latter and
+        # inspected the entire allowed root, which can look successful while
+        # making no progress toward the requested folder.
+        if not isinstance(value, dict) or not value.get("folder_path"):
+            return value
+        normalized = dict(value)
+        folder = Path(str(normalized.pop("folder_path")))
+        parent = normalized.get("root")
+        normalized["root"] = str(folder if folder.is_absolute() or not parent else Path(str(parent)) / folder)
+        return normalized
+
 
 class FilesystemSearchInput(ToolInputModel):
     operation: Literal["search"] = "search"
@@ -495,6 +511,18 @@ class FilesystemWriteTextFileInput(ToolInputModel):
     path: str = Field(min_length=1)
     content: str = ""
     overwrite: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_text_alias(cls, value: Any) -> Any:
+        # ``text`` is the natural field name models and API clients use for a
+        # text-writing operation. Keep ``content`` canonical while accepting
+        # that equivalent spelling; without normalization the permissive base
+        # schema retained ``text`` as an extra and silently wrote an empty file.
+        if isinstance(value, dict) and "content" not in value and "text" in value:
+            value = dict(value)
+            value["content"] = value.pop("text")
+        return value
 
 
 class FilesystemCollectFolderSnapshotInput(ToolInputModel):

@@ -3,7 +3,12 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from agent_control.orchestration.operator import OperatorLoopService, _format_history
+from agent_control.orchestration.operator import (
+    OPERATOR_SYSTEM_PROMPT,
+    OperatorLoopService,
+    _MAX_OPERATOR_REQUEST_CHARS,
+    _format_history,
+)
 from agent_control.schemas import OperatorAction, OperatorDecision
 
 
@@ -175,6 +180,64 @@ def test_format_history_truncates_to_recent_entries() -> None:
     assert "earlier step(s) omitted" in formatted
     assert "tool_0" not in formatted
     assert "tool_19" in formatted
+
+
+def test_format_history_caps_large_tool_payloads_but_keeps_paths() -> None:
+    history = [
+        {
+            "tool_name": "filesystem.manage",
+            "status": "succeeded",
+            "input": {
+                "content": "x" * 20_000,
+                "operation": "write_text_file",
+                "path": "C:/output/linkedin-brief.md",
+            },
+            "output_summary": "y" * 20_000,
+        }
+        for _ in range(12)
+    ]
+
+    formatted = _format_history(history)
+
+    assert len(formatted) <= 5_000
+    assert "C:/output/linkedin-brief.md" in formatted
+    assert "<20000 chars>" in formatted
+
+
+def test_operator_prompt_has_a_whole_request_budget_and_keeps_tool_identities() -> None:
+    tool_lines = []
+    for index in range(40):
+        tool_lines.extend(
+            [
+                (
+                    f"- tool.{index}: enabled; capability=terminal.run; lifecycle=runtime; "
+                    f"{'long description ' * 80} operations=start,status,resume"
+                ),
+                f'    example tool_input: {{"operation": "status", "payload": "{"x" * 600}"}}',
+            ]
+        )
+    config_context = "Available worker tools:\n" + "\n".join(tool_lines)
+    history = [
+        {
+            "tool_name": f"tool.{index}",
+            "status": "succeeded",
+            "output_summary": "y" * 20_000,
+        }
+        for index in range(12)
+    ]
+
+    prompt = OperatorLoopService._prompt(
+        "build the app " * 2_000,
+        config_context,
+        history,
+        "recent conversation " * 2_000,
+    )
+
+    assert len(OPERATOR_SYSTEM_PROMPT) + len(prompt) <= _MAX_OPERATOR_REQUEST_CHARS
+    assert "tool.0" in prompt
+    assert "tool.20" in prompt
+    assert "tool.39" in prompt
+    assert "operations=start,status,resume" in prompt
 
 
 @pytest.mark.asyncio

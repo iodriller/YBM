@@ -23,6 +23,7 @@ Outputs:
             result.json      # full structured stage result
             timeline.txt     # human-readable status flow + plan + answer
             audit.json       # every audit event for the task
+            decision_trace.json # structured decisions + tool outcomes, every run
             diagnosis.md     # only present for failed stages
 
 Usage:
@@ -38,12 +39,13 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
 import traceback
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib import request as urlrequest
@@ -63,8 +65,12 @@ LOCALDEPLOY_BASE = "http://127.0.0.1:8000"
 GUARDED_TAGS = {"codex", "copilot", "external", "quota", "limit", "presentation"}
 
 # Per-case absolute ceiling regardless of what the JSON declares. Protects the
-# whole run from getting stuck on one runaway case.
-HARD_CEILING_S = 900
+# whole run from getting stuck on one runaway case. It must stay above the
+# largest declared `timeout_seconds` plus the worker-budget headroom below, or
+# the longest cases are quietly cut short — at 900 it under-budgeted every
+# 900s case by the 30s margin. `_turn_ceiling_seconds` reports any clipping and
+# a catalogue test fails if a case declares a budget this cannot honor.
+HARD_CEILING_S = 1260
 TASK_SPAWN_TIMEOUT_S = 180
 
 # The runner must wait AT LEAST this long after the case's declared timeout so
@@ -72,6 +78,11 @@ TASK_SPAWN_TIMEOUT_S = 180
 # default 600s) has time to fire. Without this safety margin the runner
 # moves on while the worker is still busy, blocking the next case in queue.
 WORKER_BUDGET_SAFETY_S = 640
+
+# Chat-route turns settle in seconds, not minutes — they run no tools. The
+# settle pause lets the substantive reply land after the acknowledgment ping.
+CHAT_REPLY_TIMEOUT_S = 90
+CHAT_REPLY_SETTLE_S = 6
 
 
 # ---------- HTTP / DB helpers ----------
@@ -103,6 +114,22 @@ def admin_get(path: str, timeout: int = 10) -> Any:
         return json.loads(r.read())
 
 
+def admin_post(path: str, payload: dict[str, Any], timeout: int = 10) -> Any:
+    url = f"{ADMIN_BASE}{path}"
+    headers = {"Content-Type": "application/json"}
+    admin_token = os.getenv("AGENT_ADMIN_TOKEN")
+    if admin_token:
+        headers["X-Agent-Control-Admin-Token"] = admin_token
+    request = urlrequest.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    with urlrequest.urlopen(request, timeout=timeout) as r:
+        return json.loads(r.read())
+
+
 def admin_summary() -> dict:
     return admin_get("/admin/api/summary?task_limit=30")
 
@@ -129,68 +156,116 @@ def clear_conversation_memory() -> None:
         pass
 
 
-def _latest_classifier_verdict_for_message(message: str) -> tuple[bool, str] | None:
-    """Find the most recent ``message_classified`` audit event whose ``text``
-    matches ``message`` (within the last 5 minutes). Returns
-    ``(is_task, reason)`` or ``None`` if no matching event was logged.
-    """
+def _memory_fact_ids() -> set[str]:
     try:
         conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute(
-            "SELECT payload_json FROM audit_events "
-            "WHERE event_type='message_classified' "
-            "AND created_at >= datetime('now','-5 minute') "
-            "ORDER BY created_at DESC LIMIT 25"
-        )
-        for (payload_json,) in c.fetchall():
-            try:
-                payload = json.loads(payload_json)
-            except Exception:
-                continue
-            text = str(payload.get("text") or "").strip()
-            if text and text == message.strip():
-                return bool(payload.get("is_task")), str(payload.get("reason") or "")
-        return None
+        rows = conn.execute("SELECT id FROM memory_facts").fetchall()
+        conn.close()
+        return {str(row[0]) for row in rows}
     except Exception:
-        return None
-    finally:
-        try:
-            conn.close()  # type: ignore[has-type]
-        except Exception:
-            pass
+        return set()
 
 
-def force_fail_task(task_id: str, reason: str) -> bool:
-    """Mark a task FAILED directly in the DB so the worker stops trying.
-
-    Used by the runner when its own wait deadline has expired but the task is
-    still in a workable status. Without this, the worker would keep grinding
-    on the task and block every queued case behind it.
-    """
+def _delete_memory_facts_created_after(existing_ids: set[str]) -> None:
+    """Remove only facts created by the E2E stage, preserving real user memory."""
     try:
         conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute(
-            "UPDATE tasks "
-            "SET status='failed', metadata_json = COALESCE(metadata_json, '{}') "
-            "WHERE id=? AND status NOT IN ('completed','failed','blocked','cancelled')",
-            (task_id,),
-        )
-        changed = c.rowcount
+        current = {str(row[0]) for row in conn.execute("SELECT id FROM memory_facts").fetchall()}
+        created = sorted(current - existing_ids)
+        if created:
+            conn.executemany("DELETE FROM memory_facts WHERE id = ?", [(item,) for item in created])
         conn.commit()
         conn.close()
-        return changed > 0
+    except Exception:
+        pass
+
+
+def cleanup_catalog_memory_facts(cases: list[dict]) -> None:
+    """Clean exact standing-instruction fixtures left by an interrupted run.
+
+    A preference is intentionally global in production. Without scoped E2E
+    cleanup, EVO-1's three-bullet rule contaminates every later case and even
+    the user's real assistant after the suite exits. Exact-content matching
+    removes test-created rows without touching unrelated user facts.
+    """
+    fixture_texts = {
+        str(case.get("message") or "").strip()
+        for case in cases
+        if "memory" in (case.get("tags") or []) and not bool(case.get("expects_task", True))
+    }
+    fixture_texts.discard("")
+    if not fixture_texts:
+        return
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.executemany("DELETE FROM memory_facts WHERE content = ?", [(text,) for text in fixture_texts])
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def cancel_task(task_id: str) -> bool:
+    """Cancel a deadline-exceeded task through YBM's public control path.
+
+    Going through the admin signal endpoint records the signal and audit event,
+    clears task-scoped approvals, and stops an external coding session when
+    applicable.  Direct database status writes bypass all of those guarantees.
+    """
+    try:
+        response = admin_post(f"/admin/api/tasks/{task_id}/signals", {"signal": "cancel"})
+        return str(response.get("task", {}).get("status") or "") == "cancelled"
     except Exception:
         return False
 
 
-def fetch_classifier_verdict_for_text(message: str) -> dict | None:
+async def _wait_for_status_notification(
+    task_id: str,
+    status: str,
+    *,
+    timeout_s: float = 10.0,
+    poll_s: float = 0.25,
+) -> None:
+    """Let the worker finish the channel notification for a settled state.
+
+    Task status is persisted before ``process_next`` calls its notification
+    sink. Capturing immediately can therefore assign the approval/completion
+    message to the next E2E turn even though it belongs to this one. The worker
+    records successful sends in ``notified_statuses``, which gives the runner
+    a durable synchronization point without guessing a fixed sleep.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            task = admin_trace(task_id).get("task") or {}
+            notified = (task.get("metadata") or {}).get("notified_statuses") or []
+            if status in notified:
+                return
+        except Exception:
+            pass
+        await asyncio.sleep(poll_s)
+
+
+def _iso_minutes_ago(minutes: int) -> str:
+    """A cutoff string comparable to the stored ``created_at`` column.
+
+    Audit rows store ``datetime.isoformat()`` (``2026-08-09T14:05:00+00:00``),
+    so SQLite's own ``datetime('now', ...)`` is the wrong shape to compare
+    against: its space separator sorts below ``T``, which made every same-day
+    row satisfy the predicate and silently widened a "last N minutes" window to
+    "any time today or later".
+    """
+    return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+
+
+def fetch_classifier_verdict_for_text(message: str, *, within_minutes: int = 10) -> dict | None:
     """Find the latest message_classified audit event matching ``message``.
 
     Returns a small dict of the most useful classifier fields, or None if not
-    found. Used to surface route + reason + confidence in per-stage diagnostics,
-    so failures at the classifier are visible without grepping audit.json.
+    found. Used both to surface route + reason + confidence in per-stage
+    diagnostics and to attribute a missing task to the classifier rather than
+    to intake, so failures at the classifier are visible without grepping
+    audit.json.
     """
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -198,8 +273,9 @@ def fetch_classifier_verdict_for_text(message: str) -> dict | None:
         c.execute(
             "SELECT payload_json FROM audit_events "
             "WHERE event_type='message_classified' "
-            "AND created_at >= datetime('now','-10 minute') "
-            "ORDER BY created_at DESC LIMIT 25"
+            "AND created_at >= ? "
+            "ORDER BY created_at DESC LIMIT 25",
+            (_iso_minutes_ago(within_minutes),),
         )
         for (payload_json,) in c.fetchall():
             try:
@@ -284,19 +360,21 @@ def _ensure_fixtures_path() -> None:
 
 
 def prepare_fixtures(start_web: bool) -> dict[str, str]:
-    """Build the file/folder fixtures cases depend on. Returns template values.
-
-    On any error, fall back to a minimal dict so the run can still proceed with
-    cases that don't need fixtures.
-    """
+    """Build the file/folder fixtures cases depend on. Returns template values."""
     _ensure_fixtures_path()
-    try:
-        from fixtures import prepare_fixtures as _prep  # type: ignore[import]
-        fx = _prep(start_web_server=start_web)
-        return dict(fx.values)
-    except Exception as exc:
-        print(f"  [fixtures] WARN: fallback (no fixtures): {exc}")
-        return {}
+    from fixtures import prepare_fixtures as _prep  # type: ignore[import]
+    fx = _prep(start_web_server=start_web)
+    return dict(fx.values)
+
+
+def required_fixture_names(cases: list[dict]) -> set[str]:
+    names: set[str] = set()
+    for case in cases:
+        texts = [str(case.get("message") or "")]
+        texts.extend(str(item.get("message") or "") for item in case.get("follow_ups") or [])
+        for value in texts:
+            names.update(re.findall(r"\{\{(\w+)\}\}", value))
+    return names
 
 
 def render_text(text: str, fixtures: dict[str, str]) -> str:
@@ -401,7 +479,12 @@ class TurnResult:
     telegram_sent_events: list[dict] = field(default_factory=list)
     telegram_confirmed_text: str = ""
     telegram_confirmed_media_count: int = 0
+    telegram_update_count: int = 0
+    telegram_max_update_gap_seconds: float | None = None
     changed_paths_count: int = 0
+    tool_failure_count: int = 0
+    tool_approval_count: int = 0
+    operator_decision_count: int = 0
     status_transitions: list[dict] = field(default_factory=list)
     audit_event_count: int = 0
     error: str | None = None              # exception in the runner itself
@@ -468,7 +551,13 @@ async def _find_new_task(
     return None
 
 
-def _diagnose_turn(case: dict, turn: TurnResult, *, is_followup: bool) -> tuple[bool, str | None]:
+def _diagnose_turn(
+    case: dict,
+    turn: TurnResult,
+    *,
+    is_followup: bool,
+    fixtures: dict[str, str] | None = None,
+) -> tuple[bool, str | None]:
     """Return (passed, reason). Uses case assertions when present, plus generic checks."""
     if turn.error:
         return False, f"runner_error: {turn.error[:200]}"
@@ -488,8 +577,26 @@ def _diagnose_turn(case: dict, turn: TurnResult, *, is_followup: bool) -> tuple[
             why_parts.append(f"fulfillment_gap: {turn.fulfillment_gap}")
         return False, "; ".join(why_parts)
 
-    if status not in {"completed", "blocked"}:
+    if not final_status_allowed and status not in {"completed", "blocked"}:
         return False, f"unexpected terminal status: {status or '(timed out)'}"
+
+    blocked_requirements = assertions.get("blocked_requires_any") or {}
+    if status == "blocked" and blocked_requirements:
+        blocked_evidence: list[bool] = []
+        for dotted_key, expected_value in (blocked_requirements.get("metadata_equals") or {}).items():
+            blocked_evidence.append(_metadata_value(turn.metadata, str(dotted_key)) == expected_value)
+        for dotted_key, expected_values in (blocked_requirements.get("metadata_in") or {}).items():
+            blocked_evidence.append(
+                _metadata_value(turn.metadata, str(dotted_key)) in list(expected_values or [])
+            )
+        worker_error = str(turn.last_worker_error or "").casefold()
+        for needle in blocked_requirements.get("last_worker_error_contains_any") or []:
+            blocked_evidence.append(str(needle).casefold() in worker_error)
+        if not any(blocked_evidence):
+            return False, (
+                "blocked without required terminal evidence; "
+                f"worker_error={turn.last_worker_error!r}"
+            )
 
     missing_tools = [
         requirement
@@ -499,9 +606,32 @@ def _diagnose_turn(case: dict, turn: TurnResult, *, is_followup: bool) -> tuple[
     if missing_tools:
         return False, f"missing required tool invocation(s): {missing_tools}; saw={turn.tools_seen}"
 
+    # Safety cases assert what must NOT have happened: an approval that was
+    # denied must leave no write behind, and a "prepare the installer" case must
+    # not have executed one. A positive-only assertion set cannot express that.
+    forbidden_tools = [
+        requirement
+        for requirement in assertions.get("tools_none") or []
+        if _tool_requirement_satisfied(str(requirement), turn)
+    ]
+    if forbidden_tools:
+        return False, f"forbidden tool invocation(s) occurred: {forbidden_tools}; saw={turn.tools_seen}"
+
     metadata_any = [str(item) for item in assertions.get("metadata_any") or []]
     if metadata_any and not any(_metadata_key_present(turn.metadata, key) for key in metadata_any):
         return False, f"none of metadata_any present: {metadata_any}"
+
+    metadata_equals = assertions.get("metadata_equals") or {}
+    if status == "completed":
+        metadata_equals = {**metadata_equals, **(assertions.get("completed_metadata_equals") or {})}
+    for dotted_key, expected_value in metadata_equals.items():
+        if fixtures and isinstance(expected_value, str):
+            expected_value = render_text(expected_value, fixtures)
+        actual_value = _metadata_value(turn.metadata, str(dotted_key))
+        if actual_value != expected_value:
+            return False, (
+                f"metadata {dotted_key!r} was {actual_value!r}, expected {expected_value!r}"
+            )
 
     artifacts_min = assertions.get("artifacts_min")
     if artifacts_min is not None and turn.artifact_count < int(artifacts_min):
@@ -522,8 +652,97 @@ def _diagnose_turn(case: dict, turn: TurnResult, *, is_followup: bool) -> tuple[
             )
 
     changed_paths_min = assertions.get("changed_paths_min")
+    if status == "completed" and assertions.get("completed_changed_paths_min") is not None:
+        changed_paths_min = assertions["completed_changed_paths_min"]
     if changed_paths_min is not None and turn.changed_paths_count < int(changed_paths_min):
         return False, f"changed_paths_count={turn.changed_paths_count} below changed_paths_min={changed_paths_min}"
+
+    if status == "completed":
+        for requirement in assertions.get("completed_files_exist_under") or []:
+            root_value = str(requirement.get("root") or "")
+            root_value = render_text(root_value, fixtures or {})
+            root = Path(root_value)
+            missing_under = [
+                str(relative)
+                for relative in requirement.get("files") or []
+                if not (root / str(relative)).is_file()
+            ]
+            if missing_under:
+                return False, (
+                    f"required file(s) missing under explicit workspace {root}: {missing_under}"
+                )
+
+        for requirement in assertions.get("completed_files_exist_any_under") or []:
+            root_value = str(requirement.get("root") or "")
+            root_value = render_text(root_value, fixtures or {})
+            root = Path(root_value)
+            candidates = [
+                str(relative)
+                for relative in requirement.get("files") or []
+                if str(relative).strip()
+            ]
+            if candidates and not any((root / relative).is_file() for relative in candidates):
+                return False, (
+                    f"none of the acceptable file(s) exist under explicit workspace {root}: "
+                    f"{candidates}"
+                )
+
+    required_files = [str(item) for item in assertions.get("files_exist_all") or [] if str(item).strip()]
+    if required_files:
+        observed_files = _observed_file_paths(turn.metadata)
+        missing_files = [
+            required
+            for required in required_files
+            if not any(
+                _path_matches(path, required) and path.is_file()
+                for path in observed_files
+            )
+        ]
+        if missing_files:
+            return False, (
+                f"required produced file(s) missing on disk: {missing_files}; "
+                f"observed={[str(path) for path in observed_files]}"
+            )
+
+    file_contains = assertions.get("file_contains_all") or {}
+    for expected_path, needles in file_contains.items():
+        observed_files = _observed_file_paths(turn.metadata)
+        matches = [path for path in observed_files if _path_matches(path, str(expected_path)) and path.is_file()]
+        if not matches:
+            return False, f"cannot inspect required produced file {expected_path!r}"
+        content = matches[0].read_text(encoding="utf-8", errors="replace").lower()
+        missing_needles = [str(needle) for needle in needles if str(needle).lower() not in content]
+        if missing_needles:
+            return False, f"{expected_path!r} is missing required content: {missing_needles}"
+
+    tool_failures_min = assertions.get("tool_failures_min")
+    if tool_failures_min is not None and turn.tool_failure_count < int(tool_failures_min):
+        return False, f"tool_failure_count={turn.tool_failure_count} below tool_failures_min={tool_failures_min}"
+
+    tool_approvals_min = assertions.get("tool_approvals_min")
+    if tool_approvals_min is not None and turn.tool_approval_count < int(tool_approvals_min):
+        return False, f"tool_approval_count={turn.tool_approval_count} below tool_approvals_min={tool_approvals_min}"
+
+    operator_decisions_min = assertions.get("operator_decisions_min")
+    if operator_decisions_min is not None and turn.operator_decision_count < int(operator_decisions_min):
+        return False, (
+            f"operator_decision_count={turn.operator_decision_count} "
+            f"below operator_decisions_min={operator_decisions_min}"
+        )
+
+    telegram_updates_min = assertions.get("telegram_updates_min")
+    if telegram_updates_min is not None and turn.telegram_update_count < int(telegram_updates_min):
+        return False, f"telegram_update_count={turn.telegram_update_count} below telegram_updates_min={telegram_updates_min}"
+
+    max_update_gap = assertions.get("telegram_update_max_gap_seconds")
+    if max_update_gap is not None:
+        if turn.telegram_max_update_gap_seconds is None:
+            return False, "telegram update cadence could not be calculated"
+        if turn.telegram_max_update_gap_seconds > float(max_update_gap):
+            return False, (
+                f"telegram_max_update_gap_seconds={turn.telegram_max_update_gap_seconds} "
+                f"exceeds telegram_update_max_gap_seconds={max_update_gap}"
+            )
 
     reply_needles = [str(item).lower() for item in assertions.get("bot_reply_contains_any") or [] if str(item).strip()]
     if reply_needles:
@@ -543,6 +762,26 @@ def _diagnose_turn(case: dict, turn: TurnResult, *, is_followup: bool) -> tuple[
                 f"bot reply did not contain any of {reply_needles}; "
                 f"reply={reply[:240]!r}; audit_confirmed={confirmed[:240]!r}"
             )
+
+    # Leak checks. A secret that reaches the user is a failure even when every
+    # positive assertion passed, so these are evaluated against both the
+    # task-derived reply and what Telegram actually received.
+    excluded = [str(item) for item in assertions.get("bot_reply_excludes_all") or [] if str(item).strip()]
+    if excluded:
+        haystack = f"{_turn_reply_text(turn)}\n{turn.telegram_confirmed_text}".lower()
+        leaked = [needle for needle in excluded if needle.lower() in haystack]
+        if leaked:
+            return False, f"reply leaked forbidden content: {leaked}"
+
+    # The audit trail is persisted and operator-visible, so a secret redacted
+    # from the reply but written into an event payload is still a leak. Fetched
+    # only when asserted, to keep the common path free of extra queries.
+    audit_excluded = [str(item) for item in assertions.get("audit_excludes_all") or [] if str(item).strip()]
+    if audit_excluded and turn.task_id:
+        audit_blob = json.dumps(fetch_task_audit(turn.task_id), default=str).lower()
+        leaked_audit = [needle for needle in audit_excluded if needle.lower() in audit_blob]
+        if leaked_audit:
+            return False, f"audit trail leaked forbidden content: {leaked_audit}"
 
     return True, None
 
@@ -570,16 +809,75 @@ def _metadata_key_present(value: Any, key: str) -> bool:
     return False
 
 
+def _metadata_value(value: Any, dotted_key: str) -> Any:
+    current = value
+    for part in dotted_key.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    return current
+
+
+def _reported_file_values(metadata: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+
+    def collect(container: Any) -> None:
+        if not isinstance(container, dict):
+            return
+        for key in ("changed_paths", "changed_files", "files", "files_created", "files_modified"):
+            found = container.get(key)
+            if isinstance(found, list):
+                values.extend(str(item) for item in found if str(item).strip())
+
+    collect(metadata)
+    collect(metadata.get("coding_agent_session"))
+    last_result = metadata.get("last_tool_result")
+    if isinstance(last_result, dict):
+        collect(last_result.get("output"))
+    return values
+
+
+def _observed_file_paths(metadata: dict[str, Any]) -> list[Path]:
+    roots: list[Path] = []
+    for key in ("coding_agent_workspace", "workspace_dir"):
+        value = metadata.get(key)
+        if value:
+            roots.append(Path(str(value)))
+    last_result = metadata.get("last_tool_result")
+    output = last_result.get("output") if isinstance(last_result, dict) else None
+    if isinstance(output, dict) and output.get("workspace_dir"):
+        roots.append(Path(str(output["workspace_dir"])))
+
+    resolved: list[Path] = []
+    for raw_value in _reported_file_values(metadata):
+        raw = Path(raw_value)
+        if raw.is_absolute():
+            candidates = [raw]
+        else:
+            candidates = [root / raw for root in roots]
+        if not candidates:
+            continue
+        existing = next((candidate for candidate in candidates if candidate.is_file()), None)
+        resolved.append((existing or candidates[0]).resolve())
+    return list(dict.fromkeys(resolved))
+
+
+def _path_matches(path: Path, expected: str) -> bool:
+    actual = str(path).replace("\\", "/").lower()
+    suffix = expected.replace("\\", "/").strip().lstrip("./").lower()
+    return actual == suffix or actual.endswith(f"/{suffix}")
+
+
 def _count_changed_paths(metadata: dict[str, Any]) -> int:
-    value = metadata.get("changed_paths") or metadata.get("organized_paths")
-    if isinstance(value, list):
-        return len(value)
-    if isinstance(value, dict):
-        for key in ("changed_paths", "paths", "files", "entries"):
-            nested = value.get(key)
-            if isinstance(nested, list):
-                return len(nested)
-    return 1 if value else 0
+    reported = {
+        value.replace("\\", "/").lower()
+        for value in _reported_file_values(metadata)
+        if value.replace("\\", "/").rsplit("/", 1)[-1].lower() != "task.md"
+    }
+    if reported:
+        return len(reported)
+    value = metadata.get("organized_paths")
+    return len(value) if isinstance(value, list) else (1 if value else 0)
 
 
 def _turn_reply_text(turn: TurnResult) -> str:
@@ -614,6 +912,108 @@ def _compact_tool_invocations(invocations: list[dict]) -> list[dict]:
     return compact
 
 
+def _tool_outcome_counts(invocations: list[dict]) -> tuple[int, int]:
+    failures = 0
+    approvals = 0
+    for item in invocations:
+        status = str(item.get("status") or "").lower()
+        if status == "needs_approval":
+            approvals += 1
+        elif status and status not in {"succeeded", "running"}:
+            failures += 1
+    return failures, approvals
+
+
+def _operator_decision_count(events: list[dict]) -> int:
+    return sum(
+        1
+        for event in events
+        if event.get("event") == "task_state_changed"
+        and (event.get("payload") or {}).get("action") == "operator_decision"
+    )
+
+
+def _parse_timestamp(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _max_update_gap_seconds(start_iso: str, end_iso: str, events: list[dict]) -> float | None:
+    timestamps = [_parse_timestamp(start_iso)]
+    timestamps.extend(_parse_timestamp(str(event.get("time") or "")) for event in events)
+    timestamps.append(_parse_timestamp(end_iso))
+    valid = sorted(item for item in timestamps if item is not None)
+    if len(valid) < 2:
+        return None
+    return round(max((right - left).total_seconds() for left, right in zip(valid, valid[1:])), 1)
+
+
+def _turn_ceiling_seconds(max_seconds: int) -> tuple[int, bool]:
+    """How long the runner waits for one turn, and whether that clipped the case.
+
+    The wait must outlast the worker's own per-task budget, or the runner walks
+    away while the worker is still busy and blocks the next case. HARD_CEILING_S
+    remains a backstop against a runaway case, but a case that deliberately
+    declares a longer budget gets told it was clipped: a silently halved deadline
+    reads as "the agent stalled" when the runner simply left early.
+    """
+    ceiling = max(int(max_seconds), WORKER_BUDGET_SAFETY_S) + 30
+    if ceiling > HARD_CEILING_S:
+        return HARD_CEILING_S, True
+    return ceiling, False
+
+
+def _filler_reply_texts() -> frozenset[str]:
+    """The pre-classification pings that carry no answer.
+
+    `channels/base.py` names these constants precisely so a consumer can
+    recognize them; importing them keeps the runner from drifting out of sync
+    with the strings the product actually sends.
+    """
+    try:
+        from agent_control.channels.base import ACKNOWLEDGMENT_TEXT, TASK_STARTED_TEXT
+
+        return frozenset({ACKNOWLEDGMENT_TEXT.strip(), TASK_STARTED_TEXT.strip()})
+    except Exception:
+        return frozenset()
+
+
+_FILLER_REPLIES = _filler_reply_texts()
+
+
+def _is_filler_reply(event: dict) -> bool:
+    payload = event.get("payload") if isinstance(event, dict) else None
+    text = str((payload or {}).get("text") or (payload or {}).get("caption") or "").strip()
+    return bool(text) and text in _FILLER_REPLIES
+
+
+def _capture_sent_messages(turn: TurnResult, turn_start_iso: str) -> None:
+    """Populate every outbound-message field from the audit log.
+
+    Shared by the task path and the chat path so both are judged against the
+    same independent record of what the channel actually sent.
+    """
+    turn.telegram_sent_events = fetch_message_sent_events(turn_start_iso)
+    turn.telegram_update_count = len(turn.telegram_sent_events)
+    turn.telegram_confirmed_text = "\n".join(
+        str((event.get("payload") or {}).get("text") or (event.get("payload") or {}).get("caption") or "")
+        for event in turn.telegram_sent_events
+    ).strip()
+    turn.telegram_confirmed_media_count = sum(
+        1 for event in turn.telegram_sent_events if (event.get("payload") or {}).get("kind") in {"photo", "document"}
+    )
+    turn.telegram_max_update_gap_seconds = _max_update_gap_seconds(
+        turn_start_iso,
+        datetime.now(timezone.utc).isoformat(),
+        turn.telegram_sent_events,
+    )
+
+
 def _tools_seen(invocations: list[dict], plan_steps: list[dict]) -> list[str]:
     seen: list[str] = []
     for item in invocations:
@@ -641,6 +1041,11 @@ def _telegram_media_count(metadata: dict[str, Any], invocations: list[dict]) -> 
 
 def _bot_reply_text(task: dict[str, Any], metadata: dict[str, Any], last_tool_output: str | None) -> str:
     status = str(task.get("status") or "")
+    # A clarifying task has no synthesized answer, so this used to fall through
+    # to the last tool output and report a file's contents as "the bot reply" —
+    # hiding the actual question and making the diagnosis unreadable.
+    if status == "clarifying" and metadata.get("clarifying_question"):
+        return str(metadata["clarifying_question"])
     if metadata.get("synthesized_answer"):
         return str(metadata["synthesized_answer"])
     delivery = metadata.get("artifact_delivery")
@@ -655,8 +1060,22 @@ def _bot_reply_text(task: dict[str, Any], metadata: dict[str, Any], last_tool_ou
     return ""
 
 
-async def _run_turn(label: str, message: str, max_seconds: int) -> TurnResult:
-    """Send one message + poll the spawned task until terminal/timeout. All errors caught."""
+async def _run_turn(
+    label: str,
+    message: str,
+    max_seconds: int,
+    *,
+    resume_task_id: str | None = None,
+    settled_statuses: set[str] | None = None,
+    expects_task: bool = True,
+) -> TurnResult:
+    """Send one message + poll the spawned task until terminal/timeout. All errors caught.
+
+    ``expects_task=False`` covers the chat route, where the correct behavior is a
+    direct reply and *no* persisted task. Those turns were previously untestable:
+    the runner treated "no task spawned" as a failure, so conversational
+    behavior — including teaching a durable preference — had no coverage at all.
+    """
     turn = TurnResult(label=label, message=message)
     start_mono = time.monotonic()
     try:
@@ -679,15 +1098,39 @@ async def _run_turn(label: str, message: str, max_seconds: int) -> TurnResult:
             turn.duration_s = round(time.monotonic() - start_mono, 1)
             return turn
 
+        if not expects_task:
+            turn.final_status = "chat"
+            turn.classifier_verdict = fetch_classifier_verdict_for_text(message)
+            deadline = time.monotonic() + min(max_seconds, CHAT_REPLY_TIMEOUT_S)
+            while time.monotonic() < deadline:
+                # Wait for a *substantive* reply, not merely the first event.
+                # The acknowledgment ping is sent before classification runs, so
+                # any fixed settle after it is a race against an LLM call —
+                # losing that race captured only the filler line and failed a
+                # turn the system had actually answered correctly.
+                if any(not _is_filler_reply(event) for event in fetch_message_sent_events(turn_start_iso)):
+                    await asyncio.sleep(CHAT_REPLY_SETTLE_S)
+                    break
+                await asyncio.sleep(2)
+            _capture_sent_messages(turn, turn_start_iso)
+            turn.bot_reply_text = turn.telegram_confirmed_text
+            if not turn.telegram_sent_events:
+                turn.error = f"chat-route turn produced no reply within {CHAT_REPLY_TIMEOUT_S}s"
+            turn.duration_s = round(time.monotonic() - start_mono, 1)
+            print(f"    [chat] {turn.telegram_update_count} reply message(s)")
+            return turn
+
         spawn_timeout_s = min(TASK_SPAWN_TIMEOUT_S, max_seconds)
-        task_id = await _find_new_task(known, spawn_timeout_s=spawn_timeout_s)
+        task_id = resume_task_id or await _find_new_task(known, spawn_timeout_s=spawn_timeout_s)
         if not task_id:
             # Distinguish "classifier said is_task=False" from "polling didn't see the message"
-            # so the report can blame the right component.
-            classifier_verdict = _latest_classifier_verdict_for_message(message)
-            if classifier_verdict is not None:
-                is_task, reason = classifier_verdict
-                if is_task is False:
+            # so the report can blame the right component. One lookup serves both
+            # the blame attribution and the diagnosis dump.
+            verdict = fetch_classifier_verdict_for_text(message)
+            turn.classifier_verdict = verdict
+            if verdict is not None:
+                reason = str(verdict.get("reason") or "")
+                if verdict.get("is_task") is False:
                     turn.error = (
                         f"classifier ruled is_task=False (no persisted task spawned). "
                         f"reason: {reason[:200]}"
@@ -702,8 +1145,6 @@ async def _run_turn(label: str, message: str, max_seconds: int) -> TurnResult:
                     f"no task spawned within {spawn_timeout_s}s — "
                     "message never classified (telegram intake stuck?)"
                 )
-            # Also capture the full classifier verdict for the diagnosis dump.
-            turn.classifier_verdict = fetch_classifier_verdict_for_text(message)
             turn.duration_s = round(time.monotonic() - start_mono, 1)
             return turn
         turn.task_id = task_id
@@ -712,9 +1153,13 @@ async def _run_turn(label: str, message: str, max_seconds: int) -> TurnResult:
         last_status = None
         last_step = None
         last_replan = None
-        # Wait at least long enough for the worker's per-task budget to fire,
-        # then add a small headroom. Cap at HARD_CEILING_S as a hard backstop.
-        ceiling = min(max(max_seconds, WORKER_BUDGET_SAFETY_S) + 30, HARD_CEILING_S)
+        ceiling, clipped = _turn_ceiling_seconds(max_seconds)
+        if clipped:
+            print(
+                f"    [warn] declared timeout {max_seconds}s needs more than "
+                f"HARD_CEILING_S={HARD_CEILING_S}s of runner wait — capping at {ceiling}s; "
+                "raise the constant to honor it"
+            )
         deadline = start_mono + ceiling
         reached_terminal = False
         while time.monotonic() < deadline:
@@ -741,20 +1186,24 @@ async def _run_turn(label: str, message: str, max_seconds: int) -> TurnResult:
                 last_status = status
                 last_step = step
                 last_replan = replan
-            if status in {"completed", "failed", "blocked", "cancelled"}:
+            terminal_statuses = {"completed", "failed", "blocked", "cancelled"} | (settled_statuses or set())
+            if status in terminal_statuses:
                 reached_terminal = True
                 break
             await asyncio.sleep(3)
 
-        # If the wait expired and the task is STILL non-terminal, force it
-        # FAILED. The worker is presumably still grinding on it; without this
-        # the next queued case would be starved indefinitely.
+        if reached_terminal and last_status:
+            await _wait_for_status_notification(task_id, str(last_status))
+
+        # If the wait expired and the task is STILL non-terminal, cancel it
+        # cooperatively. This records the signal and lets YBM clean up pending
+        # approvals or external sessions before the runner advances.
         if not reached_terminal:
-            forced = force_fail_task(task_id, "runner deadline exceeded")
-            if forced:
+            cancelled = cancel_task(task_id)
+            if cancelled:
                 turn.forced_failed_by_runner = True
                 elapsed = round(time.monotonic() - start_mono, 1)
-                print(f"    [{elapsed:>6.1f}s] FORCE-FAILED stuck task to unblock queue")
+                print(f"    [{elapsed:>6.1f}s] CANCELLED stuck task through admin control path")
 
         # Capture the classifier verdict for this turn's message regardless
         # of pass/fail, so the timeline always shows what the classifier said.
@@ -799,21 +1248,17 @@ async def _run_turn(label: str, message: str, max_seconds: int) -> TurnResult:
         ]
         turn.tool_invocations = _compact_tool_invocations(raw_invocations)
         turn.tools_seen = _tools_seen(turn.tool_invocations, turn.plan_steps)
+        turn.tool_failure_count, turn.tool_approval_count = _tool_outcome_counts(turn.tool_invocations)
         turn.artifacts = artifacts if isinstance(artifacts, list) else []
         turn.artifact_count = len(turn.artifacts)
         turn.telegram_media_count = _telegram_media_count(turn.metadata, raw_invocations if isinstance(raw_invocations, list) else [])
         turn.bot_reply_text = _bot_reply_text(task, turn.metadata, turn.last_tool_output)
         turn.changed_paths_count = _count_changed_paths(turn.metadata)
         turn.duration_s = round(time.monotonic() - start_mono, 1)
-        turn.audit_event_count = len(fetch_task_audit(task_id))
-        turn.telegram_sent_events = fetch_message_sent_events(turn_start_iso)
-        turn.telegram_confirmed_text = "\n".join(
-            str((event.get("payload") or {}).get("text") or (event.get("payload") or {}).get("caption") or "")
-            for event in turn.telegram_sent_events
-        ).strip()
-        turn.telegram_confirmed_media_count = sum(
-            1 for event in turn.telegram_sent_events if (event.get("payload") or {}).get("kind") in {"photo", "document"}
-        )
+        task_audit = fetch_task_audit(task_id)
+        turn.audit_event_count = len(task_audit)
+        turn.operator_decision_count = _operator_decision_count(task_audit)
+        _capture_sent_messages(turn, turn_start_iso)
     except Exception as exc:
         turn.error = f"runner exception: {exc}\n{traceback.format_exc()[-1500:]}"
         turn.duration_s = round(time.monotonic() - start_mono, 1)
@@ -830,6 +1275,7 @@ async def _run_one(case: dict, fixtures: dict[str, str]) -> StageResult:
     )
     stage.started_at = datetime.now().isoformat(timespec="seconds")
     start_mono = time.monotonic()
+    existing_memory_fact_ids = _memory_fact_ids()
 
     print(f"\n{'=' * 78}")
     print(f"  {stage.case_id}  [{stage.size}/{stage.source_file}]")
@@ -845,19 +1291,34 @@ async def _run_one(case: dict, fixtures: dict[str, str]) -> StageResult:
         rendered_message = render_text(stage.message, fixtures)
         max_seconds = int(case.get("timeout_seconds") or 360)
 
-        initial = await _run_turn("initial", rendered_message, max_seconds=max_seconds)
+        initial = await _run_turn(
+            "initial",
+            rendered_message,
+            max_seconds=max_seconds,
+            settled_statuses={str(item) for item in case.get("settled_statuses") or []},
+            expects_task=bool(case.get("expects_task", True)),
+        )
         stage.turns.append(initial)
-        passed, reason = _diagnose_turn(case, initial, is_followup=False)
+        passed, reason = _diagnose_turn(case, initial, is_followup=False, fixtures=fixtures)
 
         # Follow-ups (keep memory) — declared in JSON
         for fu in (case.get("follow_ups") or []):
             fu_msg = render_text(str(fu.get("message") or ""), fixtures)
             fu_to = int(fu.get("timeout_seconds") or max_seconds)
             print(f"    [follow-up] {fu.get('id')}: {fu_msg[:120]}")
-            fu_turn = await _run_turn(f"followup:{fu.get('id')}", fu_msg, max_seconds=fu_to)
+            fu_turn = await _run_turn(
+                f"followup:{fu.get('id')}",
+                fu_msg,
+                max_seconds=fu_to,
+                resume_task_id=initial.task_id if fu.get("resume_task") else None,
+                settled_statuses={str(item) for item in fu.get("settled_statuses") or []},
+                expects_task=bool(fu.get("expects_task", True)),
+            )
             stage.turns.append(fu_turn)
             fu_case = {**case, "assertions": fu.get("assertions", case.get("assertions") or {})}
-            fu_ok, fu_reason = _diagnose_turn(fu_case, fu_turn, is_followup=True)
+            fu_ok, fu_reason = _diagnose_turn(
+                fu_case, fu_turn, is_followup=True, fixtures=fixtures
+            )
             if passed and not fu_ok:
                 passed, reason = False, f"follow-up `{fu.get('id')}` failed: {fu_reason}"
 
@@ -868,9 +1329,29 @@ async def _run_one(case: dict, fixtures: dict[str, str]) -> StageResult:
         stage.failure_reason = f"runner exception: {exc}"
         stage.passed = False
     finally:
+        _cleanup_settled_stage_tasks(stage)
+        _delete_memory_facts_created_after(existing_memory_fact_ids)
         stage.total_duration_s = round(time.monotonic() - start_mono, 1)
         stage.ended_at = datetime.now().isoformat(timespec="seconds")
     return stage
+
+
+def _cleanup_settled_stage_tasks(stage: StageResult) -> None:
+    """Prevent one independent E2E case from becoming another's clarification.
+
+    Telegram correctly routes the next user message into the newest task that
+    is still awaiting approval or clarification. An E2E case may deliberately
+    stop at that boundary, but leaving its task live makes the next top-level
+    case look like a reply to it. Capture has already finished here, so cancel
+    only genuinely unsettled final task states through the public admin signal.
+    """
+    final_by_task: dict[str, str | None] = {}
+    for turn in stage.turns:
+        if turn.task_id:
+            final_by_task[turn.task_id] = turn.final_status
+    for task_id, status in final_by_task.items():
+        if status in {"awaiting_approval", "clarifying", "awaiting_external"}:
+            cancel_task(task_id)
 
 
 # ---------- Output / reporting ----------
@@ -907,6 +1388,10 @@ def _write_stage_artifacts(stage_dir: Path, case: dict, stage: StageResult) -> N
                 f"  Tools seen:  {', '.join(turn.tools_seen) or '(none)'}",
                 f"  Artifacts:   {turn.artifact_count}",
                 f"  TG media:    {turn.telegram_media_count}",
+                f"  TG updates:  {turn.telegram_update_count}",
+                f"  Max TG gap:  {turn.telegram_max_update_gap_seconds}s",
+                f"  Tool failures/approvals: {turn.tool_failure_count}/{turn.tool_approval_count}",
+                f"  Operator decisions: {turn.operator_decision_count}",
             ])
             if turn.classifier_verdict:
                 v = turn.classifier_verdict
@@ -948,6 +1433,46 @@ def _write_stage_artifacts(stage_dir: Path, case: dict, stage: StageResult) -> N
                 encoding="utf-8",
             )
 
+        # Compact, reviewable evidence for why the system took each visible
+        # action. These are structured decision fields emitted by the agents,
+        # tool outcomes, and observed state transitions — not hidden chain of
+        # thought. audit.json remains the lossless source when deeper diagnosis
+        # is needed.
+        decision_trace = {
+            "case_id": stage.case_id,
+            "description": "Observable structured decisions, actions, and outcomes; no private chain-of-thought.",
+            "turns": [],
+        }
+        for turn in stage.turns:
+            task_audit = fetch_task_audit(turn.task_id) if turn.task_id else []
+            decisions = [
+                {
+                    "time": event.get("time"),
+                    "actor": event.get("actor"),
+                    "step_id": (event.get("payload") or {}).get("step_id"),
+                    "step_index": (event.get("payload") or {}).get("step_index"),
+                    "decision": (event.get("payload") or {}).get("decision"),
+                }
+                for event in task_audit
+                if event.get("event") == "task_state_changed"
+                and (event.get("payload") or {}).get("action") == "operator_decision"
+            ]
+            decision_trace["turns"].append({
+                "label": turn.label,
+                "task_id": turn.task_id,
+                "classifier": turn.classifier_verdict,
+                "status_transitions": turn.status_transitions,
+                "operator_decisions": decisions,
+                "operator_history": turn.metadata.get("operator_history", []),
+                "tool_invocations": turn.tool_invocations,
+                "telegram_update_count": turn.telegram_update_count,
+                "telegram_max_update_gap_seconds": turn.telegram_max_update_gap_seconds,
+            })
+        (stage_dir / "decision_trace.json").write_text(
+            json.dumps(decision_trace, indent=2, default=str),
+            encoding="utf-8",
+        )
+
         if not stage.passed:
             diag = [
                 f"# Why `{stage.case_id}` failed",
@@ -968,6 +1493,11 @@ def _write_stage_artifacts(stage_dir: Path, case: dict, stage: StageResult) -> N
                     f"- tools_seen: `{turn.tools_seen}`",
                     f"- artifacts: `{turn.artifact_count}`",
                     f"- telegram_media_count: `{turn.telegram_media_count}`",
+                    f"- telegram_update_count: `{turn.telegram_update_count}`",
+                    f"- telegram_max_update_gap_seconds: `{turn.telegram_max_update_gap_seconds}`",
+                    f"- tool_failure_count: `{turn.tool_failure_count}`",
+                    f"- tool_approval_count: `{turn.tool_approval_count}`",
+                    f"- operator_decision_count: `{turn.operator_decision_count}`",
                 ])
                 if turn.classifier_verdict:
                     v = turn.classifier_verdict
@@ -1031,7 +1561,8 @@ def _write_summary(run_dir: Path, results: list[StageResult]) -> None:
             "|---|---|---|---|---|---|---|",
             *rows,
             "",
-            "Per-stage artifacts: `<index>_<case_id>/` (timeline.txt, audit.json, diagnosis.md if failed)",
+            "Per-stage artifacts: `<index>_<case_id>/` (timeline.txt, audit.json, "
+            "decision_trace.json, diagnosis.md if failed)",
         ]
         (run_dir / "summary.md").write_text("\n".join(md), encoding="utf-8")
         (run_dir / "summary.json").write_text(
@@ -1127,7 +1658,10 @@ async def main() -> int:
     parser.add_argument(
         "--suite",
         default="",
-        help="comma-separated suites: smoke,tools,code_interpreter,mcp,recovery,external_agent,full",
+        help=(
+            "comma-separated suites: smoke,tools,autonomy,evolution,code_interpreter,"
+            "mcp,recovery,external_agent,human_autonomy,full"
+        ),
     )
     parser.add_argument("--include-guarded", action="store_true",
                         help="include codex/copilot/quota/limit cases (usually need external creds)")
@@ -1144,6 +1678,7 @@ async def main() -> int:
         return 1
 
     cases_all = load_cases()
+    cleanup_catalog_memory_facts(cases_all)
     selected = select_cases(
         cases_all,
         only={s.strip() for s in args.only.split(",") if s.strip()},
@@ -1181,7 +1716,20 @@ async def main() -> int:
         or "{{form_url}}" in (c.get("message") or "")
         for c in selected
     )
-    fixtures = prepare_fixtures(start_web=needs_web and not args.no_web_fixture)
+    try:
+        fixtures = prepare_fixtures(start_web=needs_web and not args.no_web_fixture)
+        missing_fixtures = required_fixture_names(selected) - set(fixtures)
+        if missing_fixtures:
+            raise RuntimeError(f"missing fixture values: {sorted(missing_fixtures)}")
+    except Exception as exc:
+        message = f"Fixture preparation failed; no Telegram cases were sent: {exc}"
+        print(f"  [fixtures] ERROR: {message}")
+        (run_dir / "fixture_error.txt").write_text(message + "\n", encoding="utf-8")
+        (run_dir / "summary.md").write_text(
+            f"# YBM E2E Run — {run_dir.name}\n\n{message}\n",
+            encoding="utf-8",
+        )
+        return 1
 
     # Browser cases need Chrome with remote debugging on :9222. Warn (and
     # try to auto-launch) before the run rather than after we've burned 20min

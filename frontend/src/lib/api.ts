@@ -1053,7 +1053,7 @@ const AuditEventTypeSchema = z.enum([
   "channel_access_decision", "message_classified", "task_spawn_failed", "task_created",
   "task_state_changed", "plan_created", "policy_decision", "approval_requested",
   "approval_decided", "tool_requested", "tool_completed", "artifact_created",
-  "egress_contacted", "error", "task_cancelled",
+  "memory_updated", "egress_contacted", "error", "task_cancelled",
 ])
 
 // Mirrors storage/audit_view.py's CATEGORY_BY_TYPE value set - a small,
@@ -1063,7 +1063,7 @@ const AuditEventTypeSchema = z.enum([
 export const AUDIT_CATEGORIES = [
   "raw_message", "telegram_access", "channel_access", "classification", "failed_classification",
   "spawned_task", "policy", "config", "tool", "approval", "task_state", "artifact",
-  "egress", "error", "system",
+  "memory", "egress", "error", "system",
 ] as const
 
 const FormattedAuditEventSchema = z.object({

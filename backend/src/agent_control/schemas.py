@@ -170,6 +170,8 @@ class ArtifactType(StrEnum):
 
 class PostconditionType(StrEnum):
     WORKSPACE_DIR = "workspace_dir"
+    WORKSPACE_FILES = "workspace_files"
+    SOURCE_CONTENT = "source_content"
     PREVIEW_URL = "preview_url"
     ADAPTER_PROPOSAL = "adapter_proposal"
     ARTIFACT_DELIVERED = "artifact_delivered"
@@ -206,6 +208,11 @@ class AuditEventType(StrEnum):
     TOOL_REQUESTED = "tool_requested"
     TOOL_COMPLETED = "tool_completed"
     ARTIFACT_CREATED = "artifact_created"
+    # A durable fact was stored outside a tool call - the chat route persisting
+    # a standing instruction the user stated. Tool-driven memory writes are
+    # already covered by TOOL_COMPLETED; this one has no tool invocation to
+    # attach to, and an unaudited memory write is not acceptable.
+    MEMORY_UPDATED = "memory_updated"
     EGRESS_CONTACTED = "egress_contacted"
     ERROR = "error"
     # What a task cancellation cleaned up - pending approvals rejected,

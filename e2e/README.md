@@ -62,7 +62,33 @@ Filter by size (`small`, `medium`, `long-running`):
 .\scripts\ybm.ps1 e2e --sizes small,medium
 ```
 
-Include guarded cases (codex / copilot / external quota — usually need
+Run the distinct autonomy suite (persistent recovery, approval resume,
+long-running progress, capability gaps, and quota-aware external agents):
+
+```powershell
+.\scripts\ybm.ps1 e2e --suite autonomy
+```
+
+Run the `evolution` suite — the complementary question to autonomy's "can it
+finish a hard job?": *does it stay trustworthy while doing so?* Covers learned
+preferences, credential redaction, honoring a refusal, compound instructions,
+admitting a capability gap, real scaffolding, scheduled continuation instead of
+a retry loop, and refusing to invent a missing file's contents:
+
+```powershell
+.\scripts\ybm.ps1 e2e --suite evolution
+```
+
+Run the two guarded, human-style coding-agent tests. These deliberately sound
+like ordinary Telegram requests rather than test scripts, and verify the
+Claude Code and Codex VS Code-extension files on disk (including command
+wiring), not just the assistants' completion prose:
+
+```powershell
+.\scripts\ybm.ps1 e2e --suite human_autonomy --include-guarded
+```
+
+Include guarded cases (Claude Code / Codex / Copilot / external quota — usually need
 credentials we don't have locally):
 
 ```powershell
@@ -74,6 +100,31 @@ credentials we don't have locally):
 `all_cases.json` is the single source of truth. Each case declares its message,
 required fixtures, expected behavior, pass criteria, and any follow-up turns.
 Add new cases there; the runner picks them up automatically.
+
+Assertions a case can declare, beyond the positive ones (`tools_all`,
+`metadata_any`, `*_min`, `bot_reply_contains_any`):
+
+- `tools_none` — these tools must **not** have been invoked. Use for safety
+  cases where the point is that nothing happened (a denied approval must leave
+  no write behind).
+- `bot_reply_excludes_all` — none of these strings may appear in the reply or
+  in what Telegram actually received. Use for credential canaries and for
+  overclaims like "installed successfully".
+- `audit_excludes_all` — none of these strings may appear anywhere in the
+  task's audit events. A secret redacted from the reply but persisted into an
+  event payload is still a leak.
+- `metadata_equals` — dotted metadata keys must equal the declared values;
+  useful for proving the requested external provider actually ran.
+- `files_exist_all` — every named file must be present among the tool-reported
+  changed files and must still exist on disk.
+- `file_contains_all` — maps a produced file to required content fragments,
+  so a scaffold is checked for coherent command wiring rather than file count
+  alone.
+
+A case may also set `expects_task: false` (on the case or on a single
+follow-up) for the **chat route**, where the correct behavior is a direct reply
+and no persisted task. Those turns report `final_status: "chat"` and are judged
+purely on what the channel sent back.
 
 `fixtures.py` builds the Desktop folders, mock documents, and optional local
 static-file web server that the case templates reference (e.g.
@@ -91,7 +142,10 @@ Every run writes:
         result.json      # full structured result
         timeline.txt     # human-readable status flow + plan + answer
         audit.json       # every audit event for the task
+        decision_trace.json # structured decisions, actions, and outcomes
         diagnosis.md     # only present for failed stages — explains why
 ```
 
 The summary is rewritten after every stage, so a partial run is still useful.
+`decision_trace.json` contains observable structured decision fields and tool
+outcomes for diagnosis; it does not contain private chain-of-thought.

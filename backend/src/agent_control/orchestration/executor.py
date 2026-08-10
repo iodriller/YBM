@@ -13,6 +13,7 @@ from agent_control.schemas import (
     ToolResultStatus,
 )
 from agent_control.storage.audit import AuditLogger
+from agent_control.storage.redaction import redact_payload
 from agent_control.storage.repositories import Repositories
 
 
@@ -55,7 +56,11 @@ class ToolExecutor:
 
     async def execute(self, request: ToolCallRequest, approval_id: str | None = None) -> ToolCallResult:
         request, validation_error = self._validated_request(request)
-        self.repositories.tool_invocations.create(request)
+        # Persist only a sanitized copy. The live request still reaches the
+        # adapter unchanged (a credential may be required to perform the
+        # operation), but task traces and the admin API must never become a
+        # second secret store.
+        self.repositories.tool_invocations.create(_redacted_request(request))
         self.audit.append(
             AuditEventType.TOOL_REQUESTED,
             actor="orchestrator",
@@ -237,6 +242,12 @@ class ToolExecutor:
         return result.model_copy(update={"output": validated_output}), None
 
     def _complete(self, request: ToolCallRequest, result: ToolCallResult) -> ToolCallResult:
+        # This is the shared ingestion boundary for every adapter result. A
+        # secret read from a local file otherwise flows into tool_invocations,
+        # task metadata, the next LLM prompt, memory summaries, notifications,
+        # and E2E dumps. Sanitize once here and return the same safe result to
+        # the worker so all downstream consumers agree.
+        result = _redacted_result(result)
         self.repositories.tool_invocations.complete(result)
         self.audit.append(
             AuditEventType.TOOL_COMPLETED,
@@ -245,6 +256,14 @@ class ToolExecutor:
             payload=result.model_dump(mode="json"),
         )
         return result
+
+
+def _redacted_request(request: ToolCallRequest) -> ToolCallRequest:
+    return ToolCallRequest.model_validate(redact_payload(request.model_dump(mode="python")))
+
+
+def _redacted_result(result: ToolCallResult) -> ToolCallResult:
+    return ToolCallResult.model_validate(redact_payload(result.model_dump(mode="python")))
 
 
 _RISK_ORDER = {

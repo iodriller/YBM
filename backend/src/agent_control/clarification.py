@@ -81,6 +81,13 @@ def resume_clarifying_task(
         "clarification_answer": text,
         "clarification_answers": answers,
         "answered_clarifying_question": task.metadata.get("clarifying_question"),
+        # Evidence collected before the user answered is still useful context
+        # for the Operator, but it must not be treated as fresh output by the
+        # post-DONE Auditor. Without this checkpoint, a read performed before
+        # a confirmation question could be synthesized again after the user
+        # declined the change, replacing the Operator's correct "I stopped"
+        # response with stale content.
+        "operator_history_offset_after_clarification": len(task.metadata.get("operator_history") or []),
         "retry_count": 0,
         "replan_count": 0,
         "evaluator_repair_count": 0,
