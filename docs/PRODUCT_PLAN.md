@@ -30,13 +30,27 @@ polish one.** The recommended preset says *"free, runs on this machine"*, and
 we never looked at the machine. On a device with 4 GB of VRAM that sentence is
 simply false, and the user finds out by watching it fail.
 
-`docs/LLM_SETUP_PROPOSAL.md` established that LocalDeploy already has the
-answer — `hardware.py` (CPU/RAM/GPU via nvidia-smi, Apple, sysfs), `fit.py`
-(`fit_check`/`fit_table`), `calibration.py` (per-GPU VRAM learned from real
-runs) — with **no HTTP surface**. So:
+**Correction:** an earlier version of this plan (and of
+`docs/LLM_SETUP_PROPOSAL.md`) said LocalDeploy's control subsystem had **no
+HTTP surface**. That was wrong. Every module under `localdeploy/control/`
+defines an `APIRouter`, `control/__init__.py` aggregates them, and
+`server.py:1851` includes it as `web_router` whenever `ENABLE_WEB_UI` is on —
+which is the default. The mistake came from grepping `@app.` decorators and a
+top-level `from .control import`, both of which miss a function-scoped import.
 
-**1a.** Expose `GET /hardware` and `POST /fit` in LocalDeploy. Thin wrappers;
-the logic exists. *(Different repository — needs your go-ahead.)*
+So these already exist and are live:
+
+| Endpoint | What it gives |
+|---|---|
+| `GET /system/hardware` | Per-GPU name, vendor, backend, **total and free** VRAM, driver, utilization, multi-GPU grouping |
+| `POST /system/fit-check` · `/system/fit-table` · `/system/fit-batch` | Does this model fit? |
+| `POST /system/recommend` · `/system/recommend/stream` | Tune for my GPU |
+| `POST /registry/starter-pack` · `/registry/recommend` | Curated picks for a new user |
+| `POST /system/install-ollama`, `GET /system/ollama-status` | Runtime install |
+
+**1a — done, and nothing needed writing.** YBM now calls `GET /system/hardware`
+first and falls back to its own detection only when LocalDeploy is not
+running.
 
 **1b.** YBM asks, and the answer drives the screen:
 - Fits → *"Recommended for your machine — RTX 3080, 8 GB VRAM"*

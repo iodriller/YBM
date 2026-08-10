@@ -77,3 +77,77 @@ def test_every_local_preset_has_a_vram_estimate() -> None:
 
     for key in LLM_PRESETS:
         assert key in hw.PRESET_VRAM_GB, f"{key} has no VRAM estimate"
+
+
+# -- LocalDeploy is preferred when it is running -----------------------------
+
+_REAL_PAYLOAD = {
+    "success": True,
+    "gpu_available": True,
+    "gpus": [
+        {
+            "name": "NVIDIA GeForce RTX 3080 Laptop GPU",
+            "vendor": "NVIDIA",
+            "vram_total_mb": 8192,
+            "vram_free_mb": 5703,
+            "vram_estimated": False,
+        },
+        {
+            "name": "AMD Radeon(TM) Graphics",
+            "vendor": "AMD",
+            "vram_total_mb": 512,
+            "vram_free_mb": None,
+            "vram_estimated": True,
+        },
+    ],
+    "system": {"memory_total_mb": 32768},
+}
+
+
+def test_localdeploy_payload_picks_the_gpu_a_model_would_load_onto() -> None:
+    """Two GPUs, and the integrated one must not win. Fit is judged against
+    free VRAM, so a card already busy does not get a model recommended into
+    memory it does not have."""
+    machine = hw._from_localdeploy(_REAL_PAYLOAD)
+    assert machine is not None
+    assert "3080" in (machine.gpu_name or "")
+    assert machine.vram_gb == 5.6  # free, not the 8 GB total
+    assert machine.ram_gb == 32.0
+    assert any("free right now" in n for n in machine.notes)
+    assert any("2 GPUs" in n for n in machine.notes)
+
+
+def test_localdeploy_with_no_gpu_reports_cpu_rather_than_failure() -> None:
+    machine = hw._from_localdeploy({"success": True, "gpus": [], "system": {"memory_total_mb": 16384}})
+    assert machine is not None and machine.detected is True
+    assert machine.vram_gb is None
+    assert any("CPU" in n for n in machine.notes)
+
+
+def test_an_unsuccessful_localdeploy_response_is_not_trusted() -> None:
+    assert hw._from_localdeploy({"success": False, "gpus": [{"vram_total_mb": 99999}]}) is None
+
+
+def test_probe_prefers_localdeploy_over_local_detection(monkeypatch) -> None:
+    monkeypatch.setattr(hw, "probe_localdeploy", lambda timeout=2.5: hw.Hardware(detected=True, gpu_name="from-ld", vram_gb=5.6))
+    # Local detection would say something different; it must not be consulted.
+    monkeypatch.setattr(hw, "_in_container", lambda: True)
+    assert hw.probe().gpu_name == "from-ld"
+
+
+def test_probe_falls_back_when_localdeploy_is_not_running(monkeypatch) -> None:
+    monkeypatch.setattr(hw, "probe_localdeploy", lambda timeout=2.5: None)
+    monkeypatch.setattr(hw, "_in_container", lambda: False)
+    monkeypatch.setattr(hw, "_nvidia_gpu", lambda: ("RTX 3080", 8.0))
+    monkeypatch.setattr(hw, "_system_ram_gb", lambda: 32.0)
+    assert hw.probe().vram_gb == 8.0
+
+
+def test_a_free_vram_gpu_that_cannot_fit_a_model_is_reported_honestly() -> None:
+    """5.6 GB free against a 7 GB model: exactly the case the old label got
+    wrong by claiming it 'runs on this machine'."""
+    machine = hw._from_localdeploy(_REAL_PAYLOAD)
+    assert machine is not None
+    verdict = hw.fit("localdeploy_qwen3vl_8b", machine)
+    assert verdict["status"] == "too_big"
+    assert "5.6" in verdict["reason"]

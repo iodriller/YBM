@@ -10,11 +10,15 @@ because the user acts on it. In particular, inside a container the host GPU is
 usually invisible, so `detected` comes back False rather than reporting the
 container's own view as if it were the machine's.
 
-LocalDeploy already has a much better version of this - `control/hardware.py`
-(`detect_hardware()`) plus `control/fit.py` (`fit_check`) and per-GPU VRAM
-calibration learned from real runs - but none of it is reachable over HTTP.
-When those endpoints exist, `probe()` should prefer them and this becomes the
-fallback. See docs/PRODUCT_PLAN.md section 1.
+LocalDeploy has a much better version of this and it *is* reachable over HTTP:
+`GET /system/hardware` (per-GPU name, vendor, backend, total **and free** VRAM,
+driver, utilization, multi-GPU grouping) and `POST /system/fit-check`, backed by
+per-GPU VRAM calibration learned from real runs. `probe()` asks it first and
+only falls back to the detection below when LocalDeploy is not running.
+
+Preferring it matters for more than richness: it reports *free* VRAM, so a card
+already busy with something else does not get a model recommended into memory
+it does not have.
 """
 
 from __future__ import annotations
@@ -110,9 +114,90 @@ def _system_ram_gb() -> float | None:
     return None
 
 
-def probe() -> Hardware:
-    """Look at the machine, and be honest when we cannot."""
+#: Where LocalDeploy usually listens. The container entry is second because a
+#: containerised YBM cannot reach the host on loopback.
+_LOCALDEPLOY_BASE_URLS = ("http://127.0.0.1:8000", "http://host.docker.internal:8000")
+
+
+def _from_localdeploy(payload: dict) -> Hardware | None:
+    """Map LocalDeploy's /system/hardware payload onto our shape.
+
+    It reports every GPU; we want the one a model would actually load onto, so
+    the pick is the largest *free* VRAM, falling back to total when free is
+    unknown (integrated GPUs often report only total).
+    """
+    if not payload.get("success"):
+        return None
+    gpus = [g for g in (payload.get("gpus") or []) if isinstance(g, dict)]
+    ram_mb = ((payload.get("system") or {}).get("memory_total_mb")) if isinstance(payload.get("system"), dict) else None
+    ram_gb = round(ram_mb / 1024, 1) if isinstance(ram_mb, (int, float)) and ram_mb else None
+
+    if not gpus:
+        return Hardware(
+            detected=True,
+            ram_gb=ram_gb,
+            notes=["No GPU found - local models will run on the CPU and be slow."],
+        )
+
+    def _usable_mb(gpu: dict) -> float:
+        free = gpu.get("vram_free_mb")
+        total = gpu.get("vram_total_mb")
+        return float(free if isinstance(free, (int, float)) else (total or 0))
+
+    best = max(gpus, key=_usable_mb)
+    total_mb = best.get("vram_total_mb")
+    free_mb = best.get("vram_free_mb")
     notes: list[str] = []
+    if isinstance(free_mb, (int, float)) and isinstance(total_mb, (int, float)) and total_mb:
+        notes.append(f"{round(free_mb / 1024, 1):g} GB of {round(total_mb / 1024, 1):g} GB free right now.")
+    if best.get("vram_estimated"):
+        notes.append("Graphics memory is an estimate on this device.")
+    if len(gpus) > 1:
+        notes.append(f"{len(gpus)} GPUs found; using {best.get('name') or 'the largest'}.")
+
+    # Fit is judged against what is actually available, not what exists.
+    usable_gb = round(_usable_mb(best) / 1024, 1) if _usable_mb(best) else None
+    return Hardware(
+        detected=True,
+        gpu_name=best.get("name"),
+        vram_gb=usable_gb,
+        ram_gb=ram_gb,
+        notes=notes,
+    )
+
+
+def probe_localdeploy(timeout: float = 2.5) -> Hardware | None:
+    """Ask LocalDeploy about the machine. None when it is not running."""
+    import httpx
+
+    for base in _LOCALDEPLOY_BASE_URLS:
+        try:
+            response = httpx.get(f"{base}/system/hardware", timeout=timeout)
+        except httpx.HTTPError:
+            continue
+        if response.status_code != 200:
+            continue
+        try:
+            mapped = _from_localdeploy(response.json() or {})
+        except ValueError:
+            continue
+        if mapped is not None:
+            return mapped
+    return None
+
+
+def probe() -> Hardware:
+    """Look at the machine, and be honest when we cannot.
+
+    LocalDeploy first - it knows about free VRAM, multiple GPUs, and its own
+    calibration data. Everything below is the fallback for when it is not
+    running.
+    """
+    notes: list[str] = []
+
+    from_localdeploy = probe_localdeploy()
+    if from_localdeploy is not None:
+        return from_localdeploy
 
     if _in_container():
         # The container's view is not the host's. Reporting it would be the
