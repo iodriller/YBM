@@ -1392,6 +1392,33 @@ def test_write_claim_is_accepted_on_real_evidence() -> None:
     assert _unsupported_write_claim(answer, [], {"changed_files": ["package.json"]}) is None
 
 
+def test_write_claim_must_match_the_files_actually_written() -> None:
+    """Evidence that *some* write happened is not evidence the claimed one did.
+
+    P0-2 listed package.json for an empty workspace; a task that had already
+    written something unrelated would otherwise carry the same fabrication
+    through, because any truthy evidence key disabled the check task-wide.
+    """
+    answer = "The following files were created: package.json and extension.ts"
+
+    unrelated = {"changed_files": ["notes.txt"]}
+    assert _unsupported_write_claim(answer, [], unrelated) is not None
+
+    matching = {"changed_files": ["/ws/package.json", "/ws/extension.ts"]}
+    assert _unsupported_write_claim(answer, [], matching) is None
+
+    # Partial evidence is enough - the operator named one file it really wrote.
+    assert _unsupported_write_claim(answer, [], {"changed_files": ["package.json"]}) is None
+
+
+def test_unspecific_write_claim_passes_on_any_recorded_write() -> None:
+    """Without named files there is nothing to compare, so a recorded write is
+    all that can reasonably be required."""
+    wrote = [{"tool_name": "filesystem.manage", "status": "succeeded", "input": {"operation": "write_text_file"}}]
+
+    assert _unsupported_write_claim("I created the files you asked for.", wrote, {}) is None
+
+
 def test_honest_report_of_a_failed_write_is_not_treated_as_a_claim() -> None:
     """Flagging this would push a correctly-behaving run into a pointless
     replan and penalize the exact honesty the guard exists to encourage."""

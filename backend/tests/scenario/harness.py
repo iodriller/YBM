@@ -8,6 +8,7 @@ mocked unit tests and a live Telegram+LLM+desktop E2E run previously did).
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import os
 import shutil
@@ -289,6 +290,52 @@ async def run_task_to_completion(
         f"task {task.id} did not reach a terminal status within {max_ticks} ticks "
         f"(stuck at {task.status}); either the fixture is missing a replan-cycle "
         f"response or this is a real non-terminating loop"
+    )
+
+
+
+# A replay miss and a real refusal both leave the task non-COMPLETED, so
+# `assert task.status != TaskStatus.COMPLETED` is satisfied either way. Every
+# negative scenario test asserted exactly that, and the out-of-roots cases were
+# in fact all failing on a missing fixture: their allowed_root is a pytest
+# ``tmp_path``, whose ``pytest-<n>`` counter changes every run, so the recorded
+# key could never be hit again - not on CI, not on the recording machine. They
+# would have passed with the policy check deleted.
+_REPLAY_MISS_MARKERS = ("No recorded", "closest fixture")
+
+
+def assert_rejected(task: TaskRecord, *, because: str | None = None) -> None:
+    """Assert a task was refused by the behaviour under test, not by the harness.
+
+    ``because`` additionally requires a substring in the recorded failure or
+    tool history, so the test pins *why* it was refused.
+    """
+    assert task.status != TaskStatus.COMPLETED, f"expected a refusal, got {task.status}"
+
+    error = str(task.metadata.get("last_worker_error") or "")
+    for marker in _REPLAY_MISS_MARKERS:
+        assert marker not in error, (
+            "task did not complete, but only because the replay fixture did not match:\n"
+            f"  {error[:400]}\n"
+            "That is a harness miss, not the refusal this test exists to prove. "
+            "Re-record this fixture (ybm scenario record <name>)."
+        )
+    # Distinct from a replay miss, and worth its own message: during a live
+    # recording run there is no fixture to miss, and a failed model call would
+    # otherwise be reported as a stale fixture and sent someone re-recording.
+    assert "operator_decide_failed" not in error, (
+        "the operator itself failed, so the task never reached the check under test:\n"
+        f"  {error[:400] or '(the exception carried no message)'}\n"
+        "On a replay run re-record the fixture; on a live recording run this is "
+        "usually a transient model-call failure - retry it."
+    )
+
+    if because is None:
+        return
+    history = task.metadata.get("operator_history")
+    haystack = error + json.dumps(history, default=str) if isinstance(history, list) else error
+    assert because.casefold() in haystack.casefold(), (
+        f"expected the refusal to mention {because!r}; got: {haystack[:400]}"
     )
 
 

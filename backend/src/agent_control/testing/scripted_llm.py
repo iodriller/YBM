@@ -96,6 +96,24 @@ _SCENARIO_SCRATCH_PATH = re.compile(
     _SCENARIO_SCRATCH_PATTERN + r"(?:[\\/][^\s'\"),\]}]+)*",
     re.IGNORECASE,
 )
+
+# pytest's own ``tmp_path`` fixture: ``.../pytest-of-<user>/pytest-<n>/<test><n>``.
+# The ``pytest-<n>`` counter increments on every single run, so any prompt
+# carrying a tmp_path keyed differently each time and could never replay - not
+# on another machine, and not even on the recording machine a minute later.
+# The scenario tests that pass an out-of-roots directory do exactly this, so
+# they failed on a missing fixture rather than on the policy denial they exist
+# to prove, while still satisfying `status != COMPLETED`. Collapsing the
+# volatile prefix leaves the stable per-test directory name intact, and also
+# stops every re-record from appending a fresh set of dead keys.
+_PYTEST_TMP_ROOT = re.compile(
+    r"(?:[A-Za-z]:\\|/)(?:[^\\/\r\n]+?[\\/])*?pytest-of-[^\\/\r\n]+?[\\/]pytest-\d+",
+    re.IGNORECASE,
+)
+_PYTEST_TMP_PATH = re.compile(
+    _PYTEST_TMP_ROOT.pattern + r"(?:[\\/][^\s'\"),\]}]+)*",
+    re.IGNORECASE,
+)
 def _normalize(text: str) -> str:
     # Tool output uses the host platform's native line endings. Recordings
     # made on Windows therefore contain CRLF while Linux CI produces LF for
@@ -116,6 +134,14 @@ def _normalize(text: str) -> str:
         return f"<scenario_scratch_root>{normalized_suffix}"
 
     text = _SCENARIO_SCRATCH_PATH.sub(replace_path, text)
+
+    def replace_pytest_tmp(match: re.Match[str]) -> str:
+        matched_path = match.group(0)
+        root_match = _PYTEST_TMP_ROOT.match(matched_path)
+        suffix = matched_path[root_match.end():] if root_match else ""
+        return f"<pytest_tmp>{suffix.replace(chr(92), '/')}"
+
+    text = _PYTEST_TMP_PATH.sub(replace_pytest_tmp, text)
     return _HEX_RUN.sub("<id>", _TEMPDIR_RUN.sub("<tmpdir>", text))
 
 
@@ -207,8 +233,19 @@ def _closest_prompt_difference(
 
 
 def _save(fixture_path: Path, entries: dict[str, dict[str, Any]]) -> None:
+    """Sort the fixture keys, but never the recorded payload underneath them.
+
+    ``sort_keys=True`` reordered the recorded response too, so replay handed the
+    tool a differently-ordered dict than recording did. Pydantic renders the
+    offending dict into its validation message (``input_value={'operation':
+    ...}``), that message lands in the operator history, and the next step's
+    prompt therefore differed from the recorded one - a guaranteed key miss on
+    any scenario whose second call follows a rejected first call. Sorting only
+    the outer mapping keeps diffs stable without touching replay fidelity.
+    """
     fixture_path.parent.mkdir(parents=True, exist_ok=True)
-    fixture_path.write_text(json.dumps(entries, indent=2, sort_keys=True), encoding="utf-8")
+    ordered = {key: entries[key] for key in sorted(entries)}
+    fixture_path.write_text(json.dumps(ordered, indent=2), encoding="utf-8")
 
 
 class ScriptedLLMProvider:

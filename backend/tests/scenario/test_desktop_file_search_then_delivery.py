@@ -14,7 +14,7 @@ from __future__ import annotations
 from agent_control.schemas import TaskStatus
 import pytest
 
-from .harness import build_scenario, filesystem_settings, run_task_to_completion, scenario_scratch_dir
+from .harness import assert_rejected, build_scenario, filesystem_settings, run_task_to_completion, scenario_scratch_dir
 
 
 
@@ -53,5 +53,5 @@ async def test_desktop_file_search_then_delivery_rejects_path_outside_allowed_ro
         scenario, f"Find me the file named agent-control-sample from {desktop_dir} and send it to me."
     )
 
-    assert task.status != TaskStatus.COMPLETED
+    assert_rejected(task)
     assert not scenario.telegram.documents

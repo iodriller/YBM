@@ -12,7 +12,7 @@ from __future__ import annotations
 from agent_control.schemas import TaskStatus
 import pytest
 
-from .harness import build_scenario, filesystem_settings, run_task_to_completion, scenario_scratch_dir
+from .harness import assert_rejected, build_scenario, filesystem_settings, run_task_to_completion, scenario_scratch_dir
 
 
 
@@ -65,4 +65,4 @@ async def test_file_find_and_read_rejects_path_outside_allowed_roots(tmp_path, m
         scenario, f"Find a .txt file in {desktop_dir} and read me its contents"
     )
 
-    assert task.status != TaskStatus.COMPLETED
+    assert_rejected(task)

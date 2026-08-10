@@ -778,15 +778,20 @@ def _sandbox_compatible_codex_path(
     )
 
 
-def _prefer_native_claude_executable(executable: str) -> str:
+def _prefer_native_claude_executable(executable: str, *, is_windows: bool | None = None) -> str:
     """Resolve the official npm shim to its native Windows binary when present.
 
     A ``.CMD`` shim can return while ``claude.exe`` remains detached. The
     session runner then observes the wrapper, not the real long-lived process,
     and cannot report completion or stop it reliably. The official package
     ships the native executable at this stable path beside its npm shims.
+
+    ``is_windows`` is injected the same way ``_sandbox_compatible_codex_path``
+    takes it, so this branch is testable off Windows. Patching ``os.name``
+    instead reaches the real ``os`` module and changes it process-wide, which
+    makes ``pathlib`` hand out ``WindowsPath`` on POSIX and raise.
     """
-    if os.name != "nt":
+    if not (os.name == "nt" if is_windows is None else is_windows):
         return executable
     path = Path(executable).resolve()
     if path.suffix.casefold() not in {".cmd", ".ps1", ""}:

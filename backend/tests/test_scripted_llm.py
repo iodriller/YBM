@@ -127,6 +127,45 @@ def test_fixture_key_normalizes_scenario_scratch_root_across_platforms() -> None
     )
 
 
+def test_fixture_key_normalizes_pytest_tmp_path_across_runs_and_platforms() -> None:
+    """pytest's tmp_path carries a run counter that increments every single
+    run, so a prompt containing one keyed differently each time and could never
+    replay - not on CI, and not on the recording machine a minute later.
+
+    The scenario tests that pass an out-of-roots directory all do this, and all
+    were failing on a missing fixture while still satisfying their
+    `status != COMPLETED` assertion, so none of them ever exercised the policy
+    refusal they exist to prove.
+    """
+    first_run = (
+        r"roots: C:\Users\recording-user\AppData\Local\Temp\pytest-of-recording-user"
+        r"\pytest-2292\test_filesystem_search_rejects0\somewhere_else"
+    )
+    later_run = (
+        r"roots: C:\Users\recording-user\AppData\Local\Temp\pytest-of-recording-user"
+        r"\pytest-9999\test_filesystem_search_rejects0\somewhere_else"
+    )
+    on_linux = (
+        "roots: /tmp/pytest-of-runner/pytest-7"
+        "/test_filesystem_search_rejects0/somewhere_else"
+    )
+
+    key = fixture_key("generate_structured", "sys", first_run)
+    assert key == fixture_key("generate_structured", "sys", later_run)
+    assert key == fixture_key("generate_structured", "sys", on_linux)
+
+
+def test_fixture_key_still_separates_different_pytest_test_directories() -> None:
+    """Only the volatile prefix is collapsed; the per-test directory name is
+    stable and must keep two different tests keyed apart."""
+    one = r"C:\Temp\pytest-of-u\pytest-1\test_alpha0\somewhere_else"
+    two = r"C:\Temp\pytest-of-u\pytest-1\test_beta0\somewhere_else"
+
+    assert fixture_key("generate_structured", "sys", one) != fixture_key(
+        "generate_structured", "sys", two
+    )
+
+
 def test_fixture_key_normalizes_macos_scenario_scratch_aliases() -> None:
     windows = (
         r"search C:\Users\recording-user\AppData\Local\Temp"

@@ -484,8 +484,22 @@ class FilesystemManageAdapter:
         return path
 
     def _candidate_roots(self, alias: str) -> list[Path]:
+        """Allowed roots reachable from an alias like "desktop".
+
+        The alias path used to be included unconditionally - ``root ==
+        alias_path`` is trivially true for it - so the desktop was enumerated
+        even when it was not an allowed root, making this the one operation
+        that read outside the configured boundary. It is kept only when an
+        allowed root actually covers it.
+        """
         alias_path = self._alias_path(alias).resolve()
-        return [root for root in [alias_path, *self.allowed_roots] if root == alias_path or alias_path in root.parents or root in alias_path.parents]
+        covered = any(root == alias_path or root in alias_path.parents for root in self.allowed_roots)
+        candidates = [alias_path] if covered else []
+        return candidates + [
+            root
+            for root in self.allowed_roots
+            if root != alias_path and (alias_path in root.parents or root in alias_path.parents)
+        ]
 
     def _first_existing_root(self) -> Path:
         for root in self.allowed_roots:

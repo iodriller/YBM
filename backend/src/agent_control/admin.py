@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 import os
 from pathlib import Path
+import secrets
 from typing import Any
 from urllib.parse import urlparse
 
@@ -387,7 +388,10 @@ def create_admin_router(
                     ),
                 )
             return loaded
-        if provided != expected:
+        # compare_digest, not ==: a plain comparison returns as soon as two
+        # bytes differ, which leaks the shared prefix length to anything that
+        # can time requests.
+        if not secrets.compare_digest(str(provided or ""), str(expected)):
             raise HTTPException(status_code=401, detail="invalid admin token")
         return loaded
 

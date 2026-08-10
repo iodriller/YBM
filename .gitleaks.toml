@@ -3,6 +3,20 @@ title = "YBM secret-scanning rules"
 [extend]
 useDefault = true
 
+# Redaction tests need credential-shaped input to have anything to assert on,
+# so the canaries below are committed on purpose. Allowlisted by their own
+# marker text rather than by file path: the files stay fully scanned, so a
+# real secret pasted into a test is still caught.
+[allowlist]
+description = "Deliberate credential canaries in redaction/e2e-runner tests"
+regexTarget = "line"
+regexes = [
+  # sk-live-EVOLEAK-9931-DO-NOT-ECHO and friends (docs/E2E_FINDINGS.md P0-1).
+  '''EVOLEAK''',
+  # The RFC 7519 example JWT, used to prove the jwt shape is redacted.
+  '''eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.''',
+]
+
 [[rules]]
 id = "telegram-api-hash"
 description = "Detected a literal Telegram API hash"

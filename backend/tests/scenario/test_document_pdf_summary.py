@@ -15,7 +15,7 @@ from agent_control.config import CapabilityPolicy, default_capability_policies
 from agent_control.schemas import Capability, RiskLevel, TaskStatus
 import pytest
 
-from .harness import build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
+from .harness import assert_rejected, build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "e2e"))
 from fixtures import _write_minimal_pdf  # noqa: E402
@@ -66,4 +66,4 @@ async def test_document_pdf_summary_denied_without_filesystem_write(tmp_path, mo
 
     task = await run_task_to_completion(scenario, f"summarize the PDF at {pdf_path}")
 
-    assert task.status != TaskStatus.COMPLETED
+    assert_rejected(task)

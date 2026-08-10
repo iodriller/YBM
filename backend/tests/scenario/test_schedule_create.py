@@ -13,7 +13,7 @@ from agent_control.config import CapabilityPolicy, default_capability_policies
 from agent_control.schemas import Capability, RiskLevel, TaskStatus
 import pytest
 
-from .harness import build_scenario, isolated_settings, run_task_to_completion
+from .harness import assert_rejected, build_scenario, isolated_settings, run_task_to_completion
 
 
 @pytest.mark.asyncio
@@ -50,5 +50,5 @@ async def test_schedule_create_denied_without_capability(tmp_path, monkeypatch) 
         scenario, "create a daily schedule that checks https://example.com/status for updates"
     )
 
-    assert task.status != TaskStatus.COMPLETED
+    assert_rejected(task)
     assert scenario.repositories.schedules.list_recent(10) == []

@@ -62,6 +62,56 @@ def test_ordinary_text_is_untouched() -> None:
     assert redact_text(plain) == plain
 
 
+def test_quoted_key_forms_are_redacted() -> None:
+    """A JSON config is as likely to be summarized as a .env one. The separator
+    used to be anchored to the key name, so `"api_key": "..."` slipped through
+    while `API_KEY=...` was caught."""
+    samples = (
+        '{"api_key": "abc123def456ghi", "port": 8080}',
+        '"secret" : "hunter2hunter2"',
+        'api_key: abc123def456ghi',
+        '<config apiKey="abc123def456"/>',
+    )
+    for sample in samples:
+        redacted = redact_text(sample)
+        assert "***" in redacted, sample
+        for leaked in ("abc123def456ghi", "hunter2hunter2", "abc123def456"):
+            assert leaked not in redacted, sample
+
+
+def test_json_stays_parseable_after_redaction() -> None:
+    """The value is replaced inside its quotes, so a redacted payload can still
+    be read by whatever consumes it."""
+    import json
+
+    redacted = redact_text('{"api_key": "abc123def456ghi", "port": 8080}')
+
+    assert json.loads(redacted) == {"api_key": "***", "port": 8080}
+
+
+def test_whole_multi_word_value_is_redacted() -> None:
+    """Stopping at the first space left `*** horse battery staple` - the
+    placeholder implied the secret was handled while most of it survived."""
+    redacted = redact_text("password = correct horse battery staple")
+
+    for word in ("correct", "horse", "battery", "staple"):
+        assert word not in redacted
+
+
+def test_token_accounting_is_not_mistaken_for_a_credential() -> None:
+    """`TOKEN` in the key pattern also matches LLM usage counters; redacting
+    those destroys telemetry and teaches nobody anything."""
+    plain = "used total_tokens: 1530 and completion_tokens: 210"
+
+    assert redact_text(plain) == plain
+    assert redact_text('{"max_tokens": "4096"}') == '{"max_tokens": "4096"}'
+
+
+def test_numeric_value_is_still_redacted_for_non_token_names() -> None:
+    """The numeric exemption is scoped to token-shaped names on purpose."""
+    assert redact_text("SECRET=1234") == "SECRET=***"
+
+
 def test_audit_payload_scans_string_values_not_just_key_names() -> None:
     """AuditLogger.append funnels every payload through redact_payload, so the
     content scan there covers the whole audit sink."""
@@ -76,6 +126,43 @@ def test_existing_key_name_and_vault_value_rules_still_apply() -> None:
 
     assert payload["api_key"] == "***"
     assert "zzz9" not in payload["note"]
+
+
+def test_persisted_task_answer_is_redacted_at_rest(tmp_path) -> None:
+    """Scrubbing the outbound message is not enough: anything reading the task
+    row directly - the admin API, a trace export, a database backup - would
+    otherwise still hand back the raw credential."""
+    from helpers import make_repos
+
+    repositories, _ = make_repos(tmp_path)
+    task = repositories.tasks.create(objective="summarize the config")
+
+    stored = repositories.tasks.update_metadata(
+        task.id, {"synthesized_answer": f"The config sets {CONFIG_BLOB}"}
+    )
+
+    assert CANARY not in stored.metadata["synthesized_answer"]
+    assert "ACME_API_KEY" in stored.metadata["synthesized_answer"]
+
+    # Straight out of the row, bypassing every application-level reader.
+    with repositories.tasks.database.connect() as connection:
+        raw = connection.execute(
+            "SELECT metadata_json FROM tasks WHERE id = ?", (task.id,)
+        ).fetchone()["metadata_json"]
+    assert CANARY not in str(raw)
+
+
+def test_operator_history_is_left_intact_for_the_model() -> None:
+    """The history is the model's working context, not an output sink. Blanking
+    it mid-task would change what the next step can reason about."""
+    from agent_control.storage.repositories import _redact_answer_fields
+
+    metadata = {"operator_history": [{"output": CONFIG_BLOB}], "synthesized_answer": CANARY}
+
+    redacted = _redact_answer_fields(metadata)
+
+    assert redacted["operator_history"][0]["output"] == CONFIG_BLOB
+    assert CANARY not in redacted["synthesized_answer"]
 
 
 def test_task_notification_text_is_redacted_for_every_channel() -> None:

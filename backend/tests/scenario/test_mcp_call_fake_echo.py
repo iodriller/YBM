@@ -50,6 +50,7 @@ import pytest
 
 from .harness import (
     MCP_HANDSHAKE_TIMEOUT_SECONDS,
+    assert_rejected,
     build_scenario,
     mcp_settings,
     isolated_settings,
@@ -171,7 +172,7 @@ async def test_mcp_call_fake_echo_disabled_by_capability_policy(tmp_path, monkey
     # decides to try mcp.client, and the policy gate is what refuses it -
     # recorded as a denied attempt in the audit trail, not as the call never
     # being attempted at all.
-    assert task.status != TaskStatus.COMPLETED
+    assert_rejected(task)
     tool_calls = scenario.repositories.tool_invocations.list_for_task(task.id)
     mcp_calls = [call for call in tool_calls if call["tool_name"] == "mcp.client"]
     assert mcp_calls

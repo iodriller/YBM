@@ -19,11 +19,48 @@ PLACEHOLDER = "***"
 # `NAME=value` / `"name": value` where the name itself announces a credential.
 # The name is deliberately preserved: "the file also sets ACME_API_KEY" is
 # useful, its value never is.
+#
+# The key may be quoted (`"api_key": ...` in JSON) - an earlier version anchored
+# the separator directly to the name, so every JSON-shaped config leaked while
+# the .env form was caught.
+#
+# An unquoted value runs to a structural delimiter rather than to the first
+# space. Stopping at whitespace meant a passphrase redacted to `*** horse
+# battery staple` - the placeholder made it look handled while most of the
+# secret survived. Over-redacting the rest of a prose line is the safe
+# direction here; the value is what must never escape.
 _ASSIGNMENT = re.compile(
-    r"(?i)\b([A-Z0-9_.-]*(?:API[_-]?KEY|SECRET|PASSWORD|PASSWD|TOKEN|CREDENTIALS?|PRIVATE[_-]?KEY)[A-Z0-9_.-]*)"
+    r"(?i)"
+    r"(\"?\b[A-Z0-9_.-]*(?:API[_-]?KEY|SECRET|PASSWORD|PASSWD|TOKEN|CREDENTIALS?|PRIVATE[_-]?KEY)[A-Z0-9_.-]*\b\"?)"
     r"(\s*[:=]\s*)"
-    r"(\"[^\"\n]+\"|'[^'\n]+'|[^\s,;}]+)"
+    r"(\"[^\"\n]*\"|'[^'\n]*'|[^\n,;}]+)"
 )
+
+# `TOKEN` in the name pattern also matches LLM accounting (`total_tokens: 1530`,
+# `completion_tokens: 210`), which is useful telemetry and never a credential.
+# Exempt it only when the name is token-shaped *and* the value is a bare number
+# - narrow on purpose, so `SECRET=1234` is still redacted. The residual gap is a
+# purely numeric `*_TOKEN`, which providers do not issue (Telegram's numeric
+# prefix form is caught by _TOKEN_SHAPES below).
+_NUMERIC_VALUE = re.compile(r"[-+]?\d[\d_]*(?:\.\d+)?")
+_TOKEN_NAME = re.compile(r"(?i)tokens?\b")
+
+
+def _redact_assignment(match: re.Match[str]) -> str:
+    name, separator, value = match.group(1), match.group(2), match.group(3)
+    stripped = value.strip()
+    quote = stripped[:1] if stripped[:1] in {'"', "'"} else ""
+    inner = stripped[1:-1] if quote and stripped.endswith(quote) and len(stripped) >= 2 else stripped
+    # An unquoted value runs to a delimiter, so a count is followed by prose
+    # ("1530 and completion_tokens: 210"); judge the first token, not the run.
+    leading = inner.split()[0] if inner.split() else inner
+    if _TOKEN_NAME.search(name) and _NUMERIC_VALUE.fullmatch(leading):
+        return match.group(0)
+    if quote:
+        return f"{name}{separator}{quote}{PLACEHOLDER}{quote}"
+    # Keep trailing whitespace so surrounding text spaces normally.
+    trailing = value[len(value.rstrip()):]
+    return f"{name}{separator}{PLACEHOLDER}{trailing}"
 
 # Provider-issued credentials are recognizable on their own, with no key name
 # nearby - these appear mid-sentence in summaries and error text.
@@ -46,7 +83,7 @@ def redact_text(text: str) -> str:
     """
     if not text:
         return text
-    redacted = _ASSIGNMENT.sub(lambda match: f"{match.group(1)}{match.group(2)}{PLACEHOLDER}", text)
+    redacted = _ASSIGNMENT.sub(_redact_assignment, text)
     for pattern in _TOKEN_SHAPES:
         redacted = pattern.sub(PLACEHOLDER, redacted)
     return redacted

@@ -15,7 +15,7 @@ from __future__ import annotations
 from agent_control.schemas import TaskStatus
 import pytest
 
-from .harness import build_scenario, filesystem_settings, isolated_settings, run_task_to_completion, scenario_scratch_dir
+from .harness import assert_rejected, build_scenario, filesystem_settings, isolated_settings, run_task_to_completion, scenario_scratch_dir
 
 
 def _write_minimal_pdf(path, text: str) -> None:
@@ -86,5 +86,5 @@ async def test_send_found_pdf_rejects_path_outside_allowed_roots(tmp_path, monke
 
     task = await run_task_to_completion(scenario, f"Send me the PDF file at {pdf_path}.")
 
-    assert task.status != TaskStatus.COMPLETED
+    assert_rejected(task)
     assert not scenario.telegram.documents

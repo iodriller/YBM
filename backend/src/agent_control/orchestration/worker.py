@@ -5,6 +5,7 @@ from collections.abc import Callable
 from datetime import datetime
 import json
 import logging
+import os
 from pathlib import Path
 import re
 from typing import Any, Protocol
@@ -1237,7 +1238,8 @@ class TaskWorker:
         tool_name = str(pending_call["tool_name"])
         tool_input = pending_call.get("tool_input") or {}
         step_id = pending_call.get("step_id")
-        assert self.executor is not None
+        if self.executor is None:
+            raise RuntimeError("cannot resume an approved tool call without an executor")
         tool_def = self.executor.tool_definitions.get(tool_name)
         metadata = {**task.metadata}
         metadata.pop("operator_pending_call", None)
@@ -1754,14 +1756,31 @@ def _named_coding_providers(task: TaskRecord) -> list[str]:
     return providers
 
 
+# Where an absolute path can begin. Matching only drive letters meant this
+# recovery was dead on Linux and macOS - a user could name a workspace
+# explicitly and the coding agent would still write to YBM's default task
+# directory.
+#
+# The POSIX root alternative is enabled only off Windows, and deliberately so:
+# on Windows a bare "/Users" resolves against the current drive, so scanning
+# for it there would turn any forward-slash fragment in a message into a real
+# existing directory and hand the coding agent a folder the user never named.
+# The lookbehind keeps "https://", "and/or", "./foo" and "../bar" from starting
+# a match.
+_ABSOLUTE_PATH_START = re.compile(
+    r"(?i)\b[a-z]:\\" if os.name == "nt" else r"(?i)(?:\b[a-z]:\\|(?<![\w:/.])/(?=[^\s/]))"
+)
+_ABSOLUTE_PATH_SHAPE = re.compile(r"(?i)(?:[a-z]:\\.+|/.+)")
+
+
 def _existing_absolute_directories(text: str) -> list[str]:
     candidates: list[str] = []
-    for match in re.finditer(r"(?i)\b[a-z]:\\", text):
+    for match in _ABSOLUTE_PATH_START.finditer(text):
         segment = text[match.start() : match.start() + 600].splitlines()[0]
         resolved: str | None = None
-        for end in range(len(segment), 2, -1):
+        for end in range(len(segment), 1, -1):
             candidate = segment[:end].rstrip(" \t\r\n.,;:!?)]}\"'")
-            if not re.fullmatch(r"(?i)[a-z]:\\.+", candidate):
+            if not _ABSOLUTE_PATH_SHAPE.fullmatch(candidate):
                 continue
             try:
                 path = Path(candidate)
@@ -2264,18 +2283,59 @@ def _unsupported_write_claim(
     claims = [match for match in _WRITE_CLAIM.finditer(answer) if not _claim_is_negated(answer, match.start())]
     if not claims:
         return None
-    if isinstance(metadata, dict) and any(metadata.get(key) for key in _WRITE_EVIDENCE_KEYS):
-        return None
+
+    evidence = _recorded_write_evidence(history, metadata)
+    if not evidence:
+        return (
+            "the answer states that files were created or written, but no successful write "
+            "operation is recorded - either perform the write or say plainly that it did not happen"
+        )
+
+    # Evidence that *some* write happened is not evidence that the claimed one
+    # did. P0-2 listed package.json and extension.ts for an empty workspace; a
+    # task that had already written something unrelated would otherwise let the
+    # same fabrication through.
+    #
+    # Only compared when both sides actually name files. A recorded write whose
+    # path never surfaced (nothing in the tool input, nothing in the truncated
+    # output summary) leaves nothing to compare against, and guessing wrong
+    # there costs a correct task two replans and then blocks it - worse than
+    # accepting a claim that is already backed by a real write.
+    claimed = _claimed_filenames(answer)
+    if claimed and _claimed_filenames(evidence) and not any(name in evidence for name in claimed):
+        listed = ", ".join(sorted(claimed)[:5])
+        return (
+            f"the answer names files ({listed}) that no recorded write produced - write them, "
+            "or name only what the tool history actually shows"
+        )
+    return None
+
+
+# A filename as it appears in prose: a stem plus a short extension. Deliberately
+# not matching bare words, so "created the extension" is not read as a file.
+_CLAIMED_FILENAME = re.compile(r"\b[\w][\w.-]*\.[A-Za-z][A-Za-z0-9]{0,4}\b")
+
+
+def _claimed_filenames(answer: str) -> set[str]:
+    return {match.group(0).casefold() for match in _CLAIMED_FILENAME.finditer(answer)}
+
+
+def _recorded_write_evidence(history: list[dict[str, Any]], metadata: dict[str, Any] | None) -> str:
+    """Everything the run can show for a write, as one searchable blob."""
+    parts: list[str] = []
+    if isinstance(metadata, dict):
+        for key in _WRITE_EVIDENCE_KEYS:
+            value = metadata.get(key)
+            if value:
+                parts.append(json.dumps(value, default=str))
     for entry in history:
         if not isinstance(entry, dict) or entry.get("status") != ToolResultStatus.SUCCEEDED.value:
             continue
         tool_input = entry.get("input")
         if isinstance(tool_input, dict) and str(tool_input.get("operation") or "") in _WRITE_OPERATIONS:
-            return None
-    return (
-        "the answer states that files were created or written, but no successful write "
-        "operation is recorded - either perform the write or say plainly that it did not happen"
-    )
+            parts.append(json.dumps(tool_input, default=str))
+            parts.append(str(entry.get("output_summary") or ""))
+    return " ".join(parts).casefold()
 
 
 def _ground_operator_final_answer(answer: str | None, history: list[dict[str, Any]]) -> str | None:

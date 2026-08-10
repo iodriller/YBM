@@ -17,7 +17,7 @@ from agent_control.config import CapabilityPolicy, default_capability_policies
 from agent_control.schemas import Capability, RiskLevel, TaskStatus
 import pytest
 
-from .harness import build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
+from .harness import assert_rejected, build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
 
 
 @pytest.mark.asyncio
@@ -87,4 +87,4 @@ async def test_implicit_routing_disabled_by_capability_policy(tmp_path, monkeypa
         "numbers 3, 5, and 8. Include the count, total, and average, then tell me where the file is.",
     )
 
-    assert task.status != TaskStatus.COMPLETED
+    assert_rejected(task)

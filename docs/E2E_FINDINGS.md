@@ -232,10 +232,29 @@ genuine config error.
 Re-run `.\scripts\ybm.ps1 e2e --suite evolution` after each; the suite is the
 regression test for all five.
 
+## Status of the fixes
+
+All three are now implemented. Kept in this file rather than deleted, because
+the evidence above is what the regression tests are pinned to.
+
+| Finding | State | Where |
+|---|---|---|
+| P0-1 credential echoed and persisted | **Fixed** | `storage/redaction.py` content scan, applied at the audit sink, the channel message, and the task row |
+| P0-2b postcondition matching | **Fixed** | `fulfillment.py` stems the matcher and unions the original message with the paraphrase |
+| P0-2c claimed write needs evidence | **Fixed** | `worker.py` `_unsupported_write_claim`, now comparing claimed filenames against recorded writes |
+| P1-3 preferences never applied | **Fixed** | `channels/base.py` `_remember_standing_instruction` |
+| P0-2a operator retry on unsupported operation | Not implemented | Lowest priority by the ordering above; a fabrication is now caught rather than shipped |
+
+A follow-up review found the first redaction pass incomplete in two ways, both
+now closed and covered by `tests/test_redaction.py`: a quoted key
+(`"api_key": "..."`, i.e. any JSON config) was not matched at all, and an
+unquoted value stopped at the first space, so a passphrase was redacted to
+`*** horse battery staple`.
+
 ## Not verified
 
 - The `autonomy` suite was not re-run live this session (scope was the evolution
   suite). AUTO-1…4 last ran before the working-tree worker changes.
 - AUTO-5/6/7 remain guarded (external credentials) and have never run live here.
-- The three P0/P1 fixes above are **planned, not implemented** — only the harness
-  and config-leak fixes were made this session.
+- The evolution suite has **not** been re-run live since these fixes landed, so
+  EVO-1/2/6 are verified by unit and scenario coverage, not by a live run.

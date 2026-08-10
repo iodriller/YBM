@@ -101,7 +101,10 @@ class OperatorLoopService:
                 # than guessing complexity from objective text up front.
                 if self.major_provider is not None and provider is not self.major_provider:
                     provider = self.major_provider
-        assert last_error is not None
+        # Not an `assert`: that is stripped under `python -O`, turning a
+        # never-should-happen into `raise None` -> TypeError with no context.
+        if last_error is None:
+            raise RuntimeError("operator retry loop ended without a decision or an error")
         raise last_error
 
     @staticmethod

@@ -182,11 +182,19 @@ def test_windows_claude_npm_shim_resolves_to_tracked_native_binary(tmp_path, mon
     native.write_text("", encoding="utf-8")
     shim = npm_root / "claude.CMD"
     shim.write_text("@echo off", encoding="utf-8")
-    monkeypatch.setattr("agent_control.tools.coding_agent.os.name", "nt")
 
-    resolved = _prefer_native_claude_executable(str(shim))
+    # Injected rather than monkeypatching os.name: that attribute lives on the
+    # real os module, so setting it flips pathlib to the Windows flavour and
+    # every later Path() raises NotImplementedError on POSIX CI.
+    resolved = _prefer_native_claude_executable(str(shim), is_windows=True)
 
     assert resolved == str(native)
+
+
+def test_native_claude_preference_is_a_windows_only_behaviour() -> None:
+    """On POSIX the npm shim is the real entry point; rewriting it to a .exe
+    that cannot exist there would break an otherwise working install."""
+    assert _prefer_native_claude_executable("/usr/local/bin/claude", is_windows=False) == "/usr/local/bin/claude"
 
 @pytest.mark.asyncio
 async def test_copilot_command_keeps_autonomy_flags(tmp_path) -> None:

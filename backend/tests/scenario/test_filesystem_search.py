@@ -14,7 +14,7 @@ from agent_control.config import AppSettings, CapabilityPolicy, default_capabili
 from agent_control.schemas import Capability, RiskLevel, TaskStatus
 import pytest
 
-from .harness import build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
+from .harness import assert_rejected, build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
 
 
 def _settings(monkeypatch, tmp_path, allowed_root: str) -> AppSettings:
@@ -64,4 +64,4 @@ async def test_filesystem_search_rejects_path_outside_allowed_roots(tmp_path, mo
         scenario, f"look in the folder {docs_dir} and find which file mentions a resume"
     )
 
-    assert task.status != TaskStatus.COMPLETED
+    assert_rejected(task)
