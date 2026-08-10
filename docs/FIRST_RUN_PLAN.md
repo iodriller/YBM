@@ -1,5 +1,8 @@
 # First run: what actually happens, and the plan to fix it
 
+> **Status: all of P1-P5 implemented.** Each section below keeps the evidence
+> that motivated it; the fix is noted inline.
+
 Written after installing YBM the way a new user would — `docker build`,
 `docker run`, open the console — and screenshotting every step. Everything
 below was observed, not inferred.
@@ -86,7 +89,7 @@ Telegram bot cannot complete this step from what is on screen.
 
 ## The plan
 
-### P1 — Make Telegram setup hand-held (highest value)
+### P1 — Make Telegram setup hand-held — DONE
 
 Replace the token field with a short guided sequence. Concretely:
 
@@ -107,7 +110,7 @@ documenting it. Fall back to a manual id field for anyone who wants it.
 **Backend needed:** a `verify` call for the token (`getMe`), and a bounded
 "wait for the first message" endpoint that returns the sender id.
 
-### P2 — Say what the choices mean
+### P2 — Say what the choices mean — DONE
 
 - Rename presets in user terms: *"Qwen3-VL 8B — free, runs on this machine
   (~5 GB download)"*, *"OpenAI GPT-4.1 — needs a paid API key"*. Keep the
@@ -120,20 +123,20 @@ documenting it. Fall back to a manual id field for anyone who wants it.
 - Promote "paste an API key" out of the disclosure when nothing local is
   reachable.
 
-### P3 — Make the container's default actually work
+### P3 — Make the container's default actually work — DONE
 
 The compose file already sets `host.docker.internal:host-gateway`. Add a preset
 that uses it, and select that one when `YBM_HEADLESS=1` and a model server
 answers there. A containerised install should reach a host Ollama without the
 user knowing what a gateway is.
 
-### P4 — Progress and consequences
+### P4 — Progress and consequences — DONE
 
 "Step 1 of 2" instead of "1.". On `Skip`, one line of what it costs: *"You can
 add this later in Settings — until you pick a model, YBM cannot answer
 anything."*
 
-### P5 — End on something that works
+### P5 — End on something that works — DONE
 
 The final screen should not be "You're set." It should be a first message
 already typed and ready to send, so the user's first act is a working round
@@ -164,3 +167,27 @@ dependency.
 - No message was actually sent through a real Telegram bot. F6 is read from
   `_authorization_decision` and from the payload the wizard submits, both of
   which are unambiguous, but the end-to-end silence was not observed.
+
+## What landed
+
+- `POST /api/setup/telegram/verify` calls `getMe` and names the bot back, so a
+  pasted token is confirmed instead of accepted blindly.
+- `POST /api/setup/telegram/await-first-message` long-polls for the user's own
+  first message and returns the sender id, which fills the allowlist. Nobody
+  has to find a numeric id, and **Continue stays disabled until the link is
+  confirmed** - enabling Telegram can no longer produce a bot that ignores its
+  owner.
+- Presets read as "Qwen3-VL 8B - free, runs on this machine" rather than
+  "LocalDeploy Qwen3-VL 8B", and a `host.docker.internal` preset exists for
+  containerised installs, where every loopback preset is unreachable.
+- The wizard states what it detected ("No local model server found on this
+  machine..."), shows "Step 1 of 2", says what skipping costs, and ends with a
+  suggested first message instead of an empty chat box.
+
+Verified by rebuilding the image and walking the wizard again: 919 backend
+tests, ruff clean, tsc clean, container healthy in 4s, and the guided Telegram
+sequence renders with Continue correctly disabled until linked.
+
+Still not verified: `docker compose up`, and no message has been sent through a
+real bot - the two new endpoints are covered by tests against a mocked Telegram
+API, not against Telegram itself.

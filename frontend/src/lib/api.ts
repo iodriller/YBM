@@ -1006,6 +1006,43 @@ export function updateTelegramConfig(input: TelegramConfigInput) {
   })
 }
 
+/** Setup-time only: the token may not be saved to .env yet, so it is passed in. */
+const TelegramVerifySchema = z.object({
+  ok: z.boolean(),
+  username: z.string().nullable(),
+  display_name: z.string().nullable(),
+  link: z.string().nullable(),
+})
+export type TelegramVerifyResult = z.infer<typeof TelegramVerifySchema>
+
+export function verifyTelegramToken(botToken: string | null) {
+  return apiFetch("/api/setup/telegram/verify", TelegramVerifySchema, {
+    method: "POST",
+    body: JSON.stringify({ bot_token: botToken }),
+  })
+}
+
+const TelegramFirstMessageSchema = z.object({
+  found: z.boolean(),
+  user_id: z.number().optional(),
+  chat_id: z.number().optional(),
+  username: z.string().nullable().optional(),
+  first_name: z.string().nullable().optional(),
+})
+export type TelegramFirstMessage = z.infer<typeof TelegramFirstMessageSchema>
+
+/**
+ * Learns the operator's Telegram id from a message they send. The allowlist is
+ * what makes the bot answer at all, and asking anyone to find their own numeric
+ * id is the worst way to fill it.
+ */
+export function awaitFirstTelegramMessage(botToken: string | null, waitSeconds = 45) {
+  return apiFetch("/api/setup/telegram/await-first-message", TelegramFirstMessageSchema, {
+    method: "POST",
+    body: JSON.stringify({ bot_token: botToken, wait_seconds: waitSeconds }),
+  })
+}
+
 export type VSCodeConfigInput = Partial<{
   enabled: boolean
   bridge_host: string

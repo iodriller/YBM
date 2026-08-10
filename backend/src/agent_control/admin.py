@@ -9,6 +9,7 @@ import secrets
 from typing import Any
 from urllib.parse import urlparse
 
+import httpx
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import Field
@@ -88,6 +89,14 @@ class AdminTelegramConfigRequest(StrictBaseModel):
     allowed_chat_ids: list[int] | None = None
     polling: bool | None = None
     bot_token: str | None = None
+
+
+class AdminTelegramVerifyRequest(StrictBaseModel):
+    """Setup-time only: the token may not be saved to .env yet."""
+
+    bot_token: str | None = None
+    token_env: str | None = Field(default=None, min_length=1, max_length=120)
+    wait_seconds: int | None = Field(default=None, ge=5, le=60)
 
 
 class AdminVSCodeConfigRequest(StrictBaseModel):
@@ -334,7 +343,7 @@ def _recommended_ollama_model(models: list[str]) -> str | None:
 
 LLM_PRESETS: dict[str, dict[str, Any]] = {
     "localdeploy_qwen3vl_8b": {
-        "label": "LocalDeploy Qwen3-VL 8B (recommended)",
+        "label": "Qwen3-VL 8B - free, runs on this machine (recommended)",
         "profile_name": "localdeploy_qwen3vl_8b",
         "provider": "openai_compatible",
         "model": "qwen3vl_8b_ollama",
@@ -346,7 +355,7 @@ LLM_PRESETS: dict[str, dict[str, Any]] = {
         "context_limit": 32768,
     },
     "localdeploy_gemma3_12b": {
-        "label": "LocalDeploy Gemma 3 12B",
+        "label": "Gemma 3 12B - free, runs on this machine",
         "profile_name": "localdeploy_gemma3_12b",
         "provider": "openai_compatible",
         "model": "gemma3_12b_ollama_safe",
@@ -358,7 +367,7 @@ LLM_PRESETS: dict[str, dict[str, Any]] = {
         "context_limit": 32768,
     },
     "localdeploy_gemma3_4b": {
-        "label": "LocalDeploy Gemma 3 4B",
+        "label": "Gemma 3 4B - free, smallest and fastest",
         "profile_name": "localdeploy_gemma3_4b",
         "provider": "openai_compatible",
         "model": "gemma3_4b_ollama_safe",
@@ -369,8 +378,23 @@ LLM_PRESETS: dict[str, dict[str, Any]] = {
         "temperature": 0.2,
         "context_limit": 32768,
     },
+    # Inside a container, 127.0.0.1 is the container - so every preset above is
+    # unreachable there, including the recommended one. compose already maps
+    # host.docker.internal, so this is the same local model seen from inside.
+    "localdeploy_qwen3vl_8b_container": {
+        "label": "Qwen3-VL 8B on the host - free (use this in Docker)",
+        "profile_name": "localdeploy_qwen3vl_8b_container",
+        "provider": "openai_compatible",
+        "model": "qwen3vl_8b_ollama",
+        "base_url": "http://host.docker.internal:8000/v1",
+        "api_key_env": None,
+        "timeout_seconds": 800,
+        "max_tokens": 4096,
+        "temperature": 0.1,
+        "context_limit": 32768,
+    },
     "openai_gpt41": {
-        "label": "OpenAI GPT-4.1",
+        "label": "OpenAI GPT-4.1 - needs a paid API key",
         "profile_name": "openai_saved",
         "provider": "openai_compatible",
         "model": "gpt-4.1",
@@ -1043,6 +1067,82 @@ def create_admin_router(
             config_manager.upsert_env(env_updates)
         _audit_config_update(repositories_loader(), loaded, "telegram", patch)
         return {"config_file": str(CONFIG_FILE_PATH), "telegram": telegram}
+
+    @router.post("/api/setup/telegram/verify")
+    async def admin_verify_telegram_token(request: Request, payload: AdminTelegramVerifyRequest) -> dict[str, Any]:
+        """Confirm a pasted bot token and name the bot back to the user.
+
+        Pasting a long opaque string and being told nothing is the step people
+        get wrong, and the failure is silent and much later. `getMe` costs one
+        call and turns it into "Connected to @your_bot".
+        """
+        require_admin(request)
+        token = payload.bot_token.strip() if payload.bot_token else read_env_value(payload.token_env or "TELEGRAM_BOT_TOKEN")
+        if not token:
+            raise HTTPException(status_code=400, detail="no bot token supplied and none is configured")
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.get(f"https://api.telegram.org/bot{token}/getMe")
+        except httpx.HTTPError as exc:
+            # Never echo the URL: it contains the token.
+            raise HTTPException(status_code=502, detail=f"could not reach Telegram ({type(exc).__name__})") from None
+        if response.status_code == 401:
+            raise HTTPException(status_code=400, detail="Telegram rejected that token. Check you copied all of it.")
+        if response.status_code >= 400:
+            raise HTTPException(status_code=502, detail=f"Telegram returned HTTP {response.status_code}")
+        result = (response.json() or {}).get("result") or {}
+        username = result.get("username")
+        return {
+            "ok": True,
+            "username": username,
+            "display_name": result.get("first_name") or username,
+            "link": f"https://t.me/{username}" if username else None,
+        }
+
+    @router.post("/api/setup/telegram/await-first-message")
+    async def admin_await_first_telegram_message(
+        request: Request, payload: AdminTelegramVerifyRequest
+    ) -> dict[str, Any]:
+        """Learn the operator's Telegram id from a message they send.
+
+        The allowlist is what makes the bot answer at all - `_authorization_decision`
+        fails closed on an empty one - and the wizard used to collect only a
+        token, so the documented happy path produced a bot that ignored every
+        message with the reason buried in an audit event. Asking someone to
+        find their own numeric id is the worst way to fix that; watching for
+        the message they were about to send anyway is the best.
+
+        Long-polls Telegram directly rather than through the polling service,
+        which is not running yet during setup.
+        """
+        require_admin(request)
+        token = payload.bot_token.strip() if payload.bot_token else read_env_value(payload.token_env or "TELEGRAM_BOT_TOKEN")
+        if not token:
+            raise HTTPException(status_code=400, detail="no bot token supplied and none is configured")
+        wait_seconds = max(5, min(int(payload.wait_seconds or 45), 60))
+        try:
+            async with httpx.AsyncClient(timeout=wait_seconds + 10) as client:
+                response = await client.get(
+                    f"https://api.telegram.org/bot{token}/getUpdates",
+                    params={"timeout": wait_seconds, "limit": 1, "allowed_updates": '["message"]'},
+                )
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"could not reach Telegram ({type(exc).__name__})") from None
+        if response.status_code >= 400:
+            raise HTTPException(status_code=502, detail=f"Telegram returned HTTP {response.status_code}")
+        for update in (response.json() or {}).get("result") or []:
+            message = update.get("message") or {}
+            sender = message.get("from") or {}
+            chat = message.get("chat") or {}
+            if sender.get("id"):
+                return {
+                    "found": True,
+                    "user_id": sender["id"],
+                    "chat_id": chat.get("id") or sender["id"],
+                    "username": sender.get("username"),
+                    "first_name": sender.get("first_name"),
+                }
+        return {"found": False}
 
     @router.post("/api/config/vscode")
     def admin_update_vscode_config(request: Request, payload: AdminVSCodeConfigRequest) -> dict[str, Any]:

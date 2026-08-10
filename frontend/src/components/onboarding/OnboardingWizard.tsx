@@ -7,7 +7,13 @@ import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
-import { ApiError } from "@/lib/api"
+import {
+  ApiError,
+  awaitFirstTelegramMessage,
+  verifyTelegramToken,
+  type TelegramFirstMessage,
+  type TelegramVerifyResult,
+} from "@/lib/api"
 import {
   useSelectLLMPreset,
   useSettingsSummary,
@@ -45,6 +51,43 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
   const [customModel, setCustomModel] = useState({ apiKeyEnv: "OPENAI_API_KEY", apiKeyValue: "", model: "gpt-4.1" })
   const [telegramEnabled, setTelegramEnabled] = useState(false)
   const [telegramToken, setTelegramToken] = useState("")
+  // The guided Telegram sequence. Enabling used to save a token and nothing
+  // else, which produced a bot that ignored every message: the allowlist is
+  // what makes it answer, and _authorization_decision fails closed on an empty
+  // one. `linked` is the id learned from the user's own first message, so
+  // nobody has to go and find a numeric id.
+  const [botIdentity, setBotIdentity] = useState<TelegramVerifyResult | null>(null)
+  const [verifying, setVerifying] = useState(false)
+  const [listening, setListening] = useState(false)
+  const [linked, setLinked] = useState<TelegramFirstMessage | null>(null)
+  const [telegramError, setTelegramError] = useState<string | null>(null)
+
+  async function verifyToken() {
+    setTelegramError(null)
+    setVerifying(true)
+    try {
+      setBotIdentity(await verifyTelegramToken(telegramToken.trim() || null))
+    } catch (err) {
+      setBotIdentity(null)
+      setTelegramError(err instanceof ApiError ? err.message : "Could not check that token.")
+    } finally {
+      setVerifying(false)
+    }
+  }
+
+  async function listenForFirstMessage() {
+    setTelegramError(null)
+    setListening(true)
+    try {
+      const result = await awaitFirstTelegramMessage(telegramToken.trim() || null)
+      if (result.found) setLinked(result)
+      else setTelegramError("No message arrived yet. Send your bot any message, then try again.")
+    } catch (err) {
+      setTelegramError(err instanceof ApiError ? err.message : "Could not check for a message.")
+    } finally {
+      setListening(false)
+    }
+  }
 
   const presets = settingsData?.integrations.llm.presets ?? []
 
@@ -63,7 +106,21 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
 
           {!detectPending && detect && step === "brain" && (
             <>
-              <p className="text-sm font-medium">1. Pick a brain</p>
+              <p className="text-sm font-medium">Step 1 of 2 &middot; Pick a brain</p>
+
+              {/* Say what was found before offering choices. The list used to
+                  be presented with equal confidence whether or not anything
+                  behind it was reachable, and in a container none of the
+                  loopback presets can work at all. */}
+              {!detect.llm_configured && (
+                <p className="text-xs text-muted-foreground">
+                  {detect.ollama.available
+                    ? `Found Ollama on this machine with ${detect.ollama.models.length} model(s) installed.`
+                    : detect.ollama.reachable
+                      ? "Ollama is running here but has no models installed yet."
+                      : "No local model server found on this machine. A cloud API key is the quickest way to start."}
+                </p>
+              )}
 
               {detect.llm_configured ? (
                 <div className="flex flex-col gap-2 rounded-md border border-border bg-muted/30 p-3">
@@ -260,6 +317,12 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                 </>
               )}
 
+              {!detect.llm_configured && (
+                <p className="text-xs text-muted-foreground">
+                  Skipping is fine - you can pick a model later in Settings. Until you do, YBM has nothing to think
+                  with and cannot answer.
+                </p>
+              )}
               <div className="flex justify-between">
                 <Button variant="ghost" size="sm" onClick={() => setStep("face")}>
                   Skip
@@ -275,7 +338,7 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
 
           {!detectPending && detect && step === "face" && (
             <>
-              <p className="text-sm font-medium">2. Pick a face</p>
+              <p className="text-sm font-medium">Step 2 of 2 &middot; Pick a face</p>
               <p className="text-sm text-muted-foreground">
                 Web chat works with zero setup — you&apos;re using it right now.
               </p>
@@ -298,9 +361,91 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                     <Label className="text-sm">Also enable Telegram</Label>
                   </div>
                   {telegramEnabled && (
-                    <div className="flex flex-col gap-1">
-                      <Label className="text-xs text-muted-foreground">Bot token</Label>
-                      <Input type="password" value={telegramToken} onChange={(e) => setTelegramToken(e.target.value)} />
+                    <div className="flex flex-col gap-3 rounded-md border border-border bg-muted/30 p-3">
+                      {/* Three steps, each confirmed before the next. A bare
+                          token field asked for something most people have never
+                          made, then failed silently later if the allowlist was
+                          empty - which it always was, because nothing collected
+                          it. */}
+                      <div className="flex flex-col gap-1">
+                        <p className="text-xs font-medium">1. Create a bot</p>
+                        <p className="text-xs text-muted-foreground">
+                          Message{" "}
+                          <a
+                            href="https://t.me/BotFather"
+                            target="_blank"
+                            rel="noreferrer"
+                            className="underline underline-offset-2"
+                          >
+                            @BotFather
+                          </a>{" "}
+                          on Telegram and send <code className="rounded bg-background px-1">/newbot</code>. He replies
+                          with a token.
+                        </p>
+                      </div>
+
+                      <div className="flex flex-col gap-1">
+                        <p className="text-xs font-medium">2. Paste the token</p>
+                        <div className="flex gap-2">
+                          <Input
+                            type="password"
+                            placeholder="123456789:AA..."
+                            value={telegramToken}
+                            onChange={(e) => {
+                              setTelegramToken(e.target.value)
+                              setBotIdentity(null)
+                              setLinked(null)
+                            }}
+                          />
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={verifying || !telegramToken.trim()}
+                            onClick={verifyToken}
+                          >
+                            {verifying ? "Checking..." : "Check"}
+                          </Button>
+                        </div>
+                        {botIdentity?.username && (
+                          <p className="text-xs text-success">Connected to @{botIdentity.username}.</p>
+                        )}
+                      </div>
+
+                      {botIdentity?.username && (
+                        <div className="flex flex-col gap-1">
+                          <p className="text-xs font-medium">3. Say hello to your bot</p>
+                          <p className="text-xs text-muted-foreground">
+                            Open{" "}
+                            <a
+                              href={botIdentity.link ?? "https://telegram.org"}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="underline underline-offset-2"
+                            >
+                              @{botIdentity.username}
+                            </a>{" "}
+                            and send it any message. That is how YBM learns it is you - only you will be able to talk
+                            to it.
+                          </p>
+                          {linked ? (
+                            <p className="text-xs text-success">
+                              Linked to {linked.username ? `@${linked.username}` : linked.first_name ?? "you"}.
+                            </p>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="self-start"
+                              disabled={listening}
+                              onClick={listenForFirstMessage}
+                            >
+                              {listening ? "Waiting for your message..." : "I've sent a message"}
+                            </Button>
+                          )}
+                        </div>
+                      )}
+
+                      {telegramError && <p className="text-xs text-destructive">{telegramError}</p>}
                     </div>
                   )}
                 </>
@@ -314,7 +459,10 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                   size="sm"
                   disabled={
                     updateTelegram.isPending ||
-                    (telegramEnabled && !detect.telegram_token_present && !telegramToken.trim())
+                    // Requiring the link is the point: enabling Telegram
+                    // without an allowlist produces a bot that silently
+                    // ignores its owner.
+                    (telegramEnabled && !linked)
                   }
                   onClick={() => {
                     if (!telegramEnabled) {
@@ -326,6 +474,12 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                         enabled: true,
                         token_env: "TELEGRAM_BOT_TOKEN",
                         bot_token: detect.telegram_token_present ? null : telegramToken,
+                        // Without these the bot ignores every message:
+                        // _authorization_decision fails closed on an empty
+                        // allowlist. Learned from the user's own first message
+                        // rather than asking them to find a numeric id.
+                        ...(linked?.user_id ? { allowed_user_ids: [linked.user_id] } : {}),
+                        ...(linked?.chat_id ? { allowed_chat_ids: [linked.chat_id] } : {}),
                       },
                       {
                         onSuccess: () => {
@@ -349,10 +503,16 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
             <>
               <p className="text-sm font-medium">You&apos;re set.</p>
               <p className="text-sm text-muted-foreground">
-                Everything dangerous is off by default. Enable capabilities in Access when you&apos;re ready.
+                Everything dangerous is off by default - YBM will ask before it touches anything. You can turn
+                capabilities on in Access whenever you need them.
               </p>
+              {/* Ending on an empty chat box leaves the user to invent a first
+                  request. Suggesting one makes the first act a working round
+                  trip instead. */}
+              <p className="text-xs text-muted-foreground">Try asking it something like:</p>
+              <code className="rounded bg-muted px-2 py-1 text-xs">What can you do?</code>
               <Button size="sm" onClick={onDone}>
-                Go to Chat
+                Start chatting
               </Button>
             </>
           )}

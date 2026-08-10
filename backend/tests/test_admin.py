@@ -2071,3 +2071,95 @@ def test_admin_chat_send_audits_task_creation(monkeypatch, tmp_path) -> None:
         e.type == AuditEventType.TASK_CREATED and e.task_id == task_id and e.actor == "admin_chat"
         for e in events
     )
+
+
+def test_telegram_verify_names_the_bot_back(monkeypatch, tmp_path) -> None:
+    """Pasting an opaque string and being told nothing is the step people get
+    wrong, and the failure is silent and much later. getMe turns it into a
+    confirmation the user can recognise."""
+    import respx
+    from httpx import Response
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    with respx.mock:
+        respx.get(url__regex=r".*/getMe$").mock(
+            return_value=Response(200, json={"ok": True, "result": {"username": "my_bot", "first_name": "My Bot"}})
+        )
+        body = client.post("/admin/api/setup/telegram/verify", json={"bot_token": "123:AA-token"}).json()
+
+    assert body["ok"] is True
+    assert body["username"] == "my_bot"
+    assert body["link"] == "https://t.me/my_bot"
+
+
+def test_telegram_verify_reports_a_rejected_token_plainly(monkeypatch, tmp_path) -> None:
+    import respx
+    from httpx import Response
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    with respx.mock:
+        respx.get(url__regex=r".*/getMe$").mock(return_value=Response(401, json={"ok": False}))
+        response = client.post("/admin/api/setup/telegram/verify", json={"bot_token": "nope"})
+
+    assert response.status_code == 400
+    assert "copied" in response.json()["detail"]
+    # The token must never appear in an error, since it lives in the request URL.
+    assert "nope" not in response.text
+
+
+def test_telegram_await_first_message_returns_the_sender_id(monkeypatch, tmp_path) -> None:
+    """The allowlist is what makes the bot answer at all - _authorization_decision
+    fails closed on an empty one - and asking someone to find their own numeric
+    id is the worst way to fill it. This learns it from the message they were
+    going to send anyway."""
+    import respx
+    from httpx import Response
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    update = {
+        "message": {
+            "from": {"id": 4242, "username": "someone", "first_name": "Some"},
+            "chat": {"id": 4242},
+        }
+    }
+    with respx.mock:
+        respx.get(url__regex=r".*/getUpdates.*").mock(return_value=Response(200, json={"ok": True, "result": [update]}))
+        body = client.post(
+            "/admin/api/setup/telegram/await-first-message",
+            json={"bot_token": "123:AA-token", "wait_seconds": 5},
+        ).json()
+
+    assert body == {
+        "found": True,
+        "user_id": 4242,
+        "chat_id": 4242,
+        "username": "someone",
+        "first_name": "Some",
+    }
+
+
+def test_telegram_await_first_message_reports_nothing_arrived(monkeypatch, tmp_path) -> None:
+    import respx
+    from httpx import Response
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    with respx.mock:
+        respx.get(url__regex=r".*/getUpdates.*").mock(return_value=Response(200, json={"ok": True, "result": []}))
+        body = client.post(
+            "/admin/api/setup/telegram/await-first-message",
+            json={"bot_token": "123:AA-token", "wait_seconds": 5},
+        ).json()
+
+    assert body == {"found": False}
