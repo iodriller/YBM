@@ -134,7 +134,7 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
 
           {!detectPending && detect && step === "brain" && (
             <>
-              <p className="text-sm font-medium">Step 1 of 2 &middot; Pick a brain</p>
+              <p className="text-sm font-medium">Step 1 of 2 &middot; Which model should it use?</p>
 
               {/* Say what was found before offering choices. The list used to
                   be presented with equal confidence whether or not anything
@@ -148,6 +148,10 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                       ? "Ollama is running here but has no models installed yet."
                       : "No local model server found on this machine. A cloud API key is the quickest way to start."}
                 </p>
+              )}
+
+              {!detect.llm_configured && (
+                <p className="text-sm font-medium">Run a model on this computer — free and private</p>
               )}
 
               {detect.llm_configured ? (
@@ -295,9 +299,17 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                       provider - and it offered no provider choice at all.
                       ProviderPicker verifies the key and asks the provider
                       what models it has before saving anything. */}
+                  {/* 2b: downloading several GB is not something to discover
+                      after clicking. Say what will happen, before it happens. */}
+                  <p className="rounded-md border border-border bg-muted/30 p-2 text-xs text-muted-foreground">
+                    Picking one of these installs LocalDeploy if it is missing, downloads the model,
+                    and runs it on this computer. It costs nothing to use and nothing you type leaves
+                    the machine.
+                  </p>
+
                   <details className="text-sm" open={!detect.ollama.available}>
-                    <summary className="cursor-pointer text-muted-foreground">
-                      Or use an API key (Anthropic, OpenAI, and others)
+                    <summary className="cursor-pointer font-medium">
+                      Or use an API key — Anthropic, OpenAI, and 11 others
                     </summary>
                     <div className="mt-2">
                       <ProviderPicker onConfigured={() => setStep("face")} />

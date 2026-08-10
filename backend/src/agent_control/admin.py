@@ -365,7 +365,7 @@ def _recommended_ollama_model(models: list[str]) -> str | None:
 
 LLM_PRESETS: dict[str, dict[str, Any]] = {
     "localdeploy_qwen3vl_8b": {
-        "label": "Qwen3-VL 8B - free, runs on this machine (recommended)",
+        "label": "Qwen3-VL 8B - free and private, runs locally (~6 GB download)",
         "profile_name": "localdeploy_qwen3vl_8b",
         "provider": "openai_compatible",
         "model": "qwen3vl_8b_ollama",
@@ -377,7 +377,7 @@ LLM_PRESETS: dict[str, dict[str, Any]] = {
         "context_limit": 32768,
     },
     "localdeploy_gemma3_12b": {
-        "label": "Gemma 3 12B - free, runs on this machine",
+        "label": "Gemma 3 12B - free and private, runs locally (~8 GB download)",
         "profile_name": "localdeploy_gemma3_12b",
         "provider": "openai_compatible",
         "model": "gemma3_12b_ollama_safe",
@@ -389,7 +389,7 @@ LLM_PRESETS: dict[str, dict[str, Any]] = {
         "context_limit": 32768,
     },
     "localdeploy_gemma3_4b": {
-        "label": "Gemma 3 4B - free, smallest and fastest",
+        "label": "Gemma 3 4B - free and private, smallest and fastest (~3 GB download)",
         "profile_name": "localdeploy_gemma3_4b",
         "provider": "openai_compatible",
         "model": "gemma3_4b_ollama_safe",
@@ -400,11 +400,16 @@ LLM_PRESETS: dict[str, dict[str, Any]] = {
         "temperature": 0.2,
         "context_limit": 32768,
     },
+    # Local runtimes only. A cloud model needs a key, and the provider picker
+    # is the only path that verifies one and proves the model answers before
+    # saving - offering a cloud preset here as well was two routes to the same
+    # place with different quality.
+    #
     # Inside a container, 127.0.0.1 is the container - so every preset above is
     # unreachable there, including the recommended one. compose already maps
     # host.docker.internal, so this is the same local model seen from inside.
     "localdeploy_qwen3vl_8b_container": {
-        "label": "Qwen3-VL 8B on the host - free (use this in Docker)",
+        "label": "Qwen3-VL 8B on your computer - free and private (~6 GB download)",
         "profile_name": "localdeploy_qwen3vl_8b_container",
         "provider": "openai_compatible",
         "model": "qwen3vl_8b_ollama",
@@ -414,17 +419,6 @@ LLM_PRESETS: dict[str, dict[str, Any]] = {
         "max_tokens": 4096,
         "temperature": 0.1,
         "context_limit": 32768,
-    },
-    "openai_gpt41": {
-        "label": "OpenAI GPT-4.1 - needs a paid API key",
-        "profile_name": "openai_saved",
-        "provider": "openai_compatible",
-        "model": "gpt-4.1",
-        "base_url": "https://api.openai.com/v1",
-        "api_key_env": "OPENAI_API_KEY",
-        "timeout_seconds": 60,
-        "max_tokens": 4096,
-        "temperature": 0.2,
     },
 }
 
@@ -588,7 +582,7 @@ def create_admin_router(
                     "default_profile_configured": loaded.llm.default_profile in loaded.llm.profiles,
                     "presets": [
                         {**preset, "key": key, "active": loaded.llm.default_profile == preset["profile_name"]}
-                        for key, preset in LLM_PRESETS.items()
+                        for key, preset in _presets_that_can_work().items()
                     ],
                 },
             },
@@ -1794,6 +1788,39 @@ def _provider_error(spec: "llm_catalog.ProviderSpec", exc: Exception) -> str:
     if spec.local:
         return f"Could not reach {spec.label}. Is it running?"
     return f"Could not reach {spec.label} ({type(exc).__name__})"
+
+
+def _in_container() -> bool:
+    """Whether this process is running inside the shipped container image.
+
+    The Dockerfile sets YBM_HEADLESS=1; /.dockerenv is the belt-and-braces
+    check for other container runtimes.
+    """
+    if os.environ.get("YBM_HEADLESS"):
+        return True
+    try:
+        return Path("/.dockerenv").exists()
+    except OSError:
+        return False
+
+
+def _presets_that_can_work() -> dict[str, dict[str, Any]]:
+    """Only offer presets that could actually serve a request here.
+
+    Inside a container, 127.0.0.1 is the container itself, so every loopback
+    preset is unreachable - offering them means the recommended choice is the
+    one that cannot work. Outside a container the reverse is true: the
+    host-gateway preset is meaningless and just looks like a duplicate of the
+    loopback one with confusing wording. Which environment we are in is
+    something we can actually check, so it should not be a question put to the
+    user.
+    """
+    containerised = _in_container()
+    return {
+        key: preset
+        for key, preset in LLM_PRESETS.items()
+        if key.endswith("_container") == containerised
+    }
 
 
 def _telegram_config_env_keys() -> list[str]:

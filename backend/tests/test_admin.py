@@ -2402,3 +2402,39 @@ def test_llm_test_routes_anthropic_to_the_native_provider(monkeypatch, tmp_path)
     # the whole reason that provider exists.
     assert "temperature" not in captured
     assert captured["model"] == "claude-sonnet-5"
+
+
+def test_presets_offered_are_only_the_ones_that_could_work(monkeypatch, tmp_path) -> None:
+    """Inside a container 127.0.0.1 is the container, so every loopback preset
+    is unreachable - offering them makes the recommended choice the one that
+    cannot work. Outside one, the host-gateway preset is just a confusing
+    duplicate. Which it is, is checkable."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    monkeypatch.delenv("YBM_HEADLESS", raising=False)
+    keys = {p["key"] for p in client.get("/admin/api/summary").json()["integrations"]["llm"]["presets"]}
+    assert not any(k.endswith("_container") for k in keys), keys
+    assert keys, "a normal install must still be offered local presets"
+
+    monkeypatch.setenv("YBM_HEADLESS", "1")
+    container_keys = {
+        p["key"] for p in client.get("/admin/api/summary").json()["integrations"]["llm"]["presets"]
+    }
+    assert all(k.endswith("_container") for k in container_keys), container_keys
+    assert container_keys, "a containerised install must still get a workable preset"
+
+
+def test_no_cloud_preset_bypasses_the_verified_provider_path(monkeypatch, tmp_path) -> None:
+    """A cloud preset saved without verifying a key, while the picker verifies
+    and requires a real completion - two routes to the same place with
+    different quality."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    presets = client.get("/admin/api/summary").json()["integrations"]["llm"]["presets"]
+    assert all(p.get("api_key_env") is None for p in presets), (
+        "presets must be local-only; anything needing a key goes through the picker"
+    )
