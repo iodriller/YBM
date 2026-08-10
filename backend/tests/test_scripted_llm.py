@@ -183,10 +183,23 @@ def test_fixture_key_normalizes_a_truncated_pydantic_input_value() -> None:
         "1 validation error for FilesystemSearchInput\nquery\n  Field required "
         "[type=missing, input_value={'operation': 'search', '...ch/file_find_and_read'}, input_type=dict]"
     )
-
-    assert fixture_key("generate_structured", "sys", windows) == fixture_key(
-        "generate_structured", "sys", posix
+    # Truncation position differs too: the underlying paths are different
+    # lengths, so pydantic cuts the repr at a different character. Normalizing
+    # only the separator left this case still failing on CI.
+    posix_cut_elsewhere = (
+        "1 validation error for FilesystemSearchInput\nquery\n  Field required "
+        "[type=missing, input_value={'operation': 'search', '...atch/file_find_and_read'}, input_type=dict]"
     )
+
+    key = fixture_key("generate_structured", "sys", windows)
+    assert key == fixture_key("generate_structured", "sys", posix)
+    assert key == fixture_key("generate_structured", "sys", posix_cut_elsewhere)
+
+    # The parts that carry meaning survive - only the rendered value is dropped.
+    from agent_control.testing.scripted_llm import _normalize
+
+    assert "FilesystemSearchInput" in _normalize(windows)
+    assert "Field required" in _normalize(windows)
 
 
 def test_fixture_key_is_independent_of_the_recording_account() -> None:
@@ -219,15 +232,40 @@ def test_recorded_response_stores_a_placeholder_and_replays_as_a_real_path() -> 
 
     assert stored["tool_input"]["root"] == "<scenario_scratch_root>/demo"
     assert "somebody" not in stored["tool_input"]["root"]
-    # Source code is replay input, not a returned path - rewriting it can send
-    # platforms down different recorded control flow.
-    assert stored["code"] == recorded_on_windows["code"]
+    # Source code keeps its path shape - rewriting it can send platforms down
+    # different recorded control flow - but not the account name, which has no
+    # bearing on replay. See the dedicated test below.
+    assert "<scenario_scratch_root>" not in stored["code"]
+    assert r"AppData\Local\Temp\ybm_scenario_scratch\demo\x.py" in stored["code"]
+    assert "somebody" not in stored["code"]
 
     replayed = _rebase_scenario_paths(stored)
 
     assert replayed["tool_input"]["root"] == str(
         Path(_CURRENT_SCENARIO_SCRATCH_ROOT, "demo")
     )
+
+
+def test_recorded_source_code_keeps_its_shape_but_not_the_account_name() -> None:
+    """Paths inside generated code stay a carve-out - rewriting them can change
+    parse or runtime behaviour. The account name in them is a different matter:
+    the path already resolves nowhere but the recording machine, so scrubbing
+    just that segment costs nothing and keeps the fixture publishable.
+    """
+    from agent_control.testing.scripted_llm import _placeholder_scenario_paths
+
+    recorded = {
+        "code": r"open('C:\\Users\\somebody\\AppData\\Local\\Temp\\ybm_scenario_scratch\\r.txt', 'w')",
+    }
+
+    stored = _placeholder_scenario_paths(recorded)
+
+    assert "somebody" not in stored["code"]
+    assert "<user>" in stored["code"]
+    # Shape preserved: still the same absolute path, still doubly-escaped, and
+    # not turned into a placeholder the way a returned path would be.
+    assert r"AppData\\Local\\Temp\\ybm_scenario_scratch\\r.txt" in stored["code"]
+    assert "<scenario_scratch_root>" not in stored["code"]
 
 
 def test_normalize_is_idempotent() -> None:

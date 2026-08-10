@@ -122,6 +122,12 @@ _INPUT_VALUE_SPAN = re.compile(r"input_value=\{[^}\n]*\}")
 # `C:\Users\<name>` / `C:/Users/<name>`, capturing the separator style so the
 # replacement does not itself change one.
 _WINDOWS_USER_DIR = re.compile(r"([A-Za-z]:[\\/]Users[\\/])[^\\/\s'\"),\]}]+", re.IGNORECASE)
+
+# The same, but tolerating the doubled separators that appear when a path is
+# embedded in generated source (`open('C:\\Users\\name\\...')`).
+_WINDOWS_USER_DIR_ANY_SEP = re.compile(
+    r"([A-Za-z]:[\\/]{1,2}Users[\\/]{1,2})[^\\/\s'\"),\]}]+", re.IGNORECASE
+)
 SCRATCH_PLACEHOLDER = "<scenario_scratch_root>"
 
 # A stored placeholder path, with whatever suffix followed the scratch root.
@@ -158,15 +164,18 @@ def _normalize(text: str) -> str:
     text = _PYTEST_TMP_PATH.sub(replace_pytest_tmp, text)
 
     # Pydantic renders the offending value into its validation message as
-    # `input_value={...}`, and truncates the middle of that repr with a literal
-    # "...". The truncation throws away the scenario-scratch prefix the
-    # substitutions above match on, leaving only a tail - which still carries
-    # the platform's path separator. So a recording made on Windows ends
-    # "...ch\file_find_and_read'}" and the same run on Linux ends
-    # "...tch/file_find_and_read'}", the prompts differ, and the fixture cannot
-    # replay. Separators inside that span are normalized to "/", which is safe
-    # because this text is only ever hashed and diffed, never executed.
-    text = _INPUT_VALUE_SPAN.sub(lambda m: m.group(0).replace("\\", "/"), text)
+    # `input_value={...}` and truncates that repr at a fixed length. Two things
+    # then differ per platform, and normalizing only the first is not enough:
+    #
+    #   1. the path separator in whatever survives, and
+    #   2. *where* the truncation falls - the underlying path lengths differ
+    #      (`C:\Users\...\AppData\Local\Temp\...` against `/tmp/...`), so the
+    #      surviving tail is cut at a different character.
+    #
+    # The whole span is replaced. The field name and error type either side of
+    # it still carry the meaning; the rendered value never did, and it is only
+    # ever hashed and diffed, never executed.
+    text = _INPUT_VALUE_SPAN.sub("input_value={<omitted>}", text)
 
     # Any remaining Windows user directory: the recording machine's account
     # name is not part of the behaviour under test, and committing it to a
@@ -224,11 +233,28 @@ def _placeholder_scenario_paths(value: Any) -> Any:
     if isinstance(value, list):
         return [_placeholder_scenario_paths(item) for item in value]
     if isinstance(value, dict):
-        # Same carve-out as the rebase below: source code is replay input.
+        # Source code stays a carve-out for *paths* - rewriting it can change
+        # parse/runtime behaviour, which is why _rebase_scenario_paths skips it
+        # too. But the model routinely bakes the absolute workspace path into
+        # the code it writes, and the account name in it has no bearing on
+        # replay: the path already does not resolve anywhere but the recording
+        # machine. Scrub just the user segment, leaving the path's shape and
+        # every other character untouched.
         return {
-            key: item if key == "code" else _placeholder_scenario_paths(item)
+            key: _scrub_user_segment(item) if key == "code" else _placeholder_scenario_paths(item)
             for key, item in value.items()
         }
+    return value
+
+
+def _scrub_user_segment(value: Any) -> Any:
+    """Replace the account name in a Windows user directory, nothing else."""
+    if isinstance(value, str):
+        return _WINDOWS_USER_DIR_ANY_SEP.sub(r"\1<user>", value)
+    if isinstance(value, list):
+        return [_scrub_user_segment(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _scrub_user_segment(item) for key, item in value.items()}
     return value
 
 

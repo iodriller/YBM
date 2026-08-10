@@ -27,7 +27,7 @@ Recorded because these are the usual fears, and they do not apply here:
 - **`e2e/all_cases.json`'s "career"/"resume" strings are synthetic** test-case
   names (`autonomy_career_fixture`, `resume_task` — the verb).
 
-## Blockers
+## Blockers — all cleared
 
 ### B1 — The secret scan had never scanned history — FIXED
 
@@ -56,68 +56,41 @@ Worth knowing: scanning the working tree rather than git finds 702 hits - 671 in
 `.agent_control/`, **six real ones in `.env`**, two in `__pycache__`. All
 gitignored. `.gitignore` is what stands between those and a public repository.
 
-### B2 — Account name in tracked files — FIXED, with one residual
+### B2 — Account name in tracked files — FIXED
 
-Was 19 files. The cause was that the recorder stored **raw** prompts, so every
-recording carried the recording machine's absolute paths. It now stores
-normalized ones, `_normalize` collapses a Windows user directory, and responses
-are stored with a `<scenario_scratch_root>` placeholder that
+Was 19 files, now **zero**. The cause was that the recorder stored **raw**
+prompts, so every recording carried the recording machine's absolute paths. It
+now stores normalized ones, `_normalize` collapses a Windows user directory, and
+responses are stored with a `<scenario_scratch_root>` placeholder that
 `_rebase_scenario_paths` expands again at replay.
 
-**One residual, deliberately left:** `code_interpreter_generate_file.json`
-still contains it inside a `tool_input.code` value — source code the model
-generated, which embedded the absolute path it had been given. Re-recording
-reproduces it; the model writes that path every time.
-
-`_placeholder_scenario_paths` and `_rebase_scenario_paths` both skip `code` on
-purpose ("source code is replay input, not a returned path"), and
-`test_replay_does_not_rewrite_recorded_source_code` pins that. Narrowing the
-carve-out to rebase only the scratch root inside `code` would clear it and
-would arguably fix a latent problem — generated code currently replays with a
-path that does not exist on any other machine — but it changes replay semantics
-for generated code, and that is a poor trade against one account name already
-discoverable from the repository owner's public profile.
-
-**If you want it gone:** narrow the carve-out and update that test, or hand-edit
-the single fixture value. Both are deliberate acts; neither should happen by
-accident.
+Source code inside a response keeps its path shape - rewriting it can change
+parse or runtime behaviour, which is why `_rebase_scenario_paths` skips it - but
+the account name in it is scrubbed to `<user>`. The path already resolved
+nowhere but the recording machine, so that segment costs nothing to remove.
 
 ### B3 — `mcp_client.py` model-facing example — FIXED
 
 The `install_server` example no longer names a home directory. It is shown to
 the model in the tool catalog, so it was both public source and prompt content.
 
-### B4 — CI is red — cause now known
+### B4 — CI red on POSIX — FIXED
 
-One scenario test fails on Linux and macOS (`test_file_find_and_read`), 908 of
-909 pass. A public repo whose first impression is a red badge invites the
-question in every issue thread.
+Pydantic renders the offending value into its validation message as
+`input_value={...}` and truncates that repr at a fixed length. Two things then
+differed per platform: the path separator in whatever survived, and *where* the
+truncation fell, because the underlying path lengths differ
+(`C:\Users\...\AppData\Local\Temp\...` against `/tmp/...`). Normalizing only
+the separator left a second failure on the next CI run.
 
-`harness.assert_completed` reported the cause on the next run:
+The whole span is now replaced with a constant. The field name and error type
+either side of it still carry the meaning; the rendered value never did, and it
+is only ever hashed and diffed, never executed.
 
-```
-expected="...ch\file_find_and_read'}"     recorded on Windows
-actual  ="...tch/file_find_and_read'}"    on POSIX
-```
-
-A tool-input validation failure is fed back into the operator's next prompt,
-and pydantic renders the offending dict as `input_value={...}` — **truncating
-its own middle with a literal `...`**. That truncation discards the scenario
-scratch-root prefix that `scripted_llm._normalize` matches on, so the only part
-left is a tail still carrying the platform's path separator. Nothing else in
-the prompt differs.
-
-**Fix:** normalize separators inside an `input_value={…}` span in `_normalize`.
-It is test-infrastructure only — no production behaviour changes — but it
-alters the fixture key, so the affected fixtures (four entries in
-`file_find_and_read`, plus any other prompt containing a path inside
-`input_value=`) must be re-recorded, which needs the local model running.
-
-This is the third distinct way a recorded prompt has proved host-dependent
-(after the pytest `tmp_path` counter and `sort_keys` reordering the recorded
-payload). Worth a single test that asserts a representative prompt normalises
-identically under Windows and POSIX shapes, rather than finding the fourth on
-CI.
+No fixtures needed re-recording: `_reindex` recomputes every key from the stored
+prompts with the current normalizer, so both sides move together. That holds for
+any key-derivation change - only a change to prompt *content* (a prompt file, a
+tool's description or examples) genuinely invalidates a recording.
 
 ## Should do
 
