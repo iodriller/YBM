@@ -13,6 +13,22 @@
 # Python is provided: scripts/install.ps1 also lets uv supply the interpreter
 # rather than requiring one.
 
+# --- frontend: build the admin console ------------------------------------
+# Without this the image serves the "No admin console build was found yet - run
+# ybm ui-build" placeholder, and that instruction cannot be followed inside a
+# container: there is no frontend/ directory and no node. The whole UI was
+# missing until this stage existed.
+FROM node:22-bookworm-slim AS frontend
+
+WORKDIR /build/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+# vite.config.ts writes to ../backend/src/agent_control/static/admin, so give
+# it that path to write into.
+RUN mkdir -p /build/backend/src/agent_control/static \
+    && npm run build
+
 # --- builder: resolve and install dependencies -----------------------------
 FROM ghcr.io/astral-sh/uv:0.9.7-python3.12-bookworm-slim AS builder
 
@@ -51,6 +67,10 @@ RUN useradd --create-home --uid 10001 ybm
 WORKDIR /app
 COPY --from=builder --chown=ybm:ybm /app/backend/.venv /app/backend/.venv
 COPY --chown=ybm:ybm backend/ /app/backend/
+# The built console, served at /admin. Copied after backend/ so it is not
+# clobbered by it.
+COPY --from=frontend --chown=ybm:ybm \
+     /build/backend/src/agent_control/static/admin /app/backend/src/agent_control/static/admin
 COPY --chown=ybm:ybm config/config.example.yaml /app/config/config.example.yaml
 COPY --chown=ybm:ybm scripts/ /app/scripts/
 COPY --chown=ybm:ybm docs/ /app/docs/

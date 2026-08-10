@@ -38,8 +38,11 @@ vscode-extension/*.vsix
 # recorded prompts to every pull.
 backend/tests/
 e2e/
-frontend/
 vscode-extension/
 whatsapp-bridge/node_modules/
 skills/
 **/.DS_Store
+
+# frontend/ is NOT excluded: the image builds the admin console from it in its
+# own stage. Only its install and build outputs are, since the stage produces
+# them itself (the **/node_modules and frontend/dist rules above).

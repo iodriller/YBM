@@ -93,6 +93,29 @@ def _localdeploy_spec() -> ServiceSpec | None:
     )
 
 
+def _telegram_configured() -> bool:
+    """Whether starting the Telegram poller can possibly succeed.
+
+    `poll-telegram` raises `Telegram token not found in TELEGRAM_BOT_TOKEN` and
+    exits when no token is set, which is the normal state of a fresh install -
+    the web chat needs no setup and Telegram is opt-in. Starting it anyway gave
+    every first run a required service that dies immediately: on the host that
+    is a crash-loop and an alarming [FAIL], and in the container it takes the
+    whole stack down with it, because a foreground supervisor treats a dead
+    required service as fatal.
+
+    Same treatment WhatsApp already gets, and for the same reason. Fails closed
+    on an unreadable config so a config problem surfaces in `ybm doctor`.
+    """
+    try:
+        settings = load_settings()
+        if not settings.channels.telegram.enabled:
+            return False
+        return bool(read_env_value(settings.channels.telegram.token_env))
+    except Exception:
+        return False
+
+
 def _whatsapp_enabled() -> bool:
     # Fail closed on a broken/unreadable config - `ybm doctor` (which runs
     # before `ybm start` unless -SkipDoctor) is where a config problem
@@ -121,7 +144,7 @@ def build_service_specs(
         cwd=_repo_root(), env=env,
         ready_url="http://127.0.0.1:8765/health", ready_timeout_seconds=45, required=True,
     ))
-    if not no_telegram:
+    if not no_telegram and _telegram_configured():
         specs.append(ServiceSpec(
             name="telegram_polling",
             args=[sys.executable, "-m", "agent_control.cli", "poll-telegram"],
@@ -307,7 +330,7 @@ def start_all(*, open_browser: bool = False, **flags) -> int:
     return 0
 
 
-def run_foreground(*, poll_seconds: float = 5.0, **flags) -> int:
+def run_foreground(*, poll_seconds: float = 5.0, open_browser: bool = False, **flags) -> int:
     """Start everything, then stay in the foreground until it stops.
 
     ``start_all`` spawns detached children and returns, which is right for an
@@ -319,7 +342,10 @@ def run_foreground(*, poll_seconds: float = 5.0, **flags) -> int:
     rest down so nothing is orphaned. Exit code is non-zero when a service died
     on its own, so a restart policy can act on it.
     """
-    started = start_all(**flags)
+    # open_browser is consumed here rather than left in **flags: start_all
+    # takes it, build_service_specs does not, and forwarding the whole bag to
+    # both raised TypeError the first time this ran in a container.
+    started = start_all(open_browser=open_browser, **flags)
     if started != 0:
         stop_all()
         return started
@@ -338,15 +364,26 @@ def run_foreground(*, poll_seconds: float = 5.0, **flags) -> int:
             # No signal handling on this thread/platform; Ctrl+C still raises.
             pass
 
+    required_names = {spec.name for spec in build_service_specs(**flags) if spec.required}
+
     print("Supervising services in the foreground. Send SIGTERM (or Ctrl+C) to stop.")
     exit_code = 0
+    reported: set[str] = set()
     try:
         while not stopping:
-            dead = _first_dead_service()
+            dead = _first_dead_service(ignore=reported)
             if dead is not None:
-                print(f"[FAIL] {dead} exited - shutting the rest down. Log: {_log_path(dead)}")
-                exit_code = 1
-                break
+                # Only a *required* service takes the stack down. An optional
+                # one exiting is worth saying out loud and worth nothing more -
+                # taking everything with it turns "WhatsApp is not linked yet"
+                # into "the container stopped".
+                if dead in required_names:
+                    print(f"[FAIL] {dead} exited - shutting the rest down. Log: {_log_path(dead)}")
+                    exit_code = 1
+                    break
+                print(f"[WARN] {dead} exited; continuing without it. Log: {_log_path(dead)}")
+                reported.add(dead)
+                continue
             time.sleep(poll_seconds)
     except KeyboardInterrupt:
         pass
@@ -355,9 +392,12 @@ def run_foreground(*, poll_seconds: float = 5.0, **flags) -> int:
     return exit_code
 
 
-def _first_dead_service() -> str | None:
+def _first_dead_service(*, ignore: set[str] | None = None) -> str | None:
+    ignore = ignore or set()
     for state_file in sorted(_run_dir().glob(f"*{_STATE_SUFFIX}")):
         name = state_file.name.removesuffix(_STATE_SUFFIX)
+        if name in ignore:
+            continue
         state = _read_state(name)
         if state and not _pid_alive(int(state["pid"])):
             return name
