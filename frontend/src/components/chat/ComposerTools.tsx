@@ -1,5 +1,5 @@
-import { useState } from "react"
-import { Plus, X } from "lucide-react"
+import { useEffect, useRef, useState } from "react"
+import { Globe, Plus, Telescope, TerminalSquare, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 
 /**
@@ -9,19 +9,27 @@ import { Button } from "@/components/ui/button"
  *
  * These force a capability; they do not enable one. The default is unchanged
  * and is the right default - the agent decides which tool a request needs. A
- * chip is for the case where the user already knows they want the web searched,
- * or wants to pay for the slow thorough version on purpose.
+ * chip is for the case where the user already knows they want the web
+ * searched, or wants the slow thorough version on purpose.
  *
- * Deep research states its cost up front. A mode that silently runs for minutes
- * reads as a hang, so the runtime is part of the label rather than a surprise.
+ * Layout note: the menu is absolutely positioned *above* the composer. The
+ * first version let it sit in normal flow, which pushed the "+" onto its own
+ * row and dropped the panel on top of the textarea and the send button.
  */
 
 export type ComposerMode = {
   key: string
   label: string
   hint: string
-  /** The capability this needs, so a disabled one can say where to enable it. */
+  icon: typeof Globe
+  /** The capability this needs, so a blocked one can say where to enable it. */
   capability: string
+  /**
+   * What gets prepended to the message. Naming the operation is the point
+   * here - a mode chip means "use this one", which is exactly the case where
+   * being explicit is correct rather than hand-holding.
+   */
+  instruction: string
 }
 
 export const COMPOSER_MODES: ComposerMode[] = [
@@ -29,21 +37,63 @@ export const COMPOSER_MODES: ComposerMode[] = [
     key: "web_search",
     label: "Search the web",
     hint: "Look things up online before answering",
+    icon: Globe,
     capability: "browser.open",
+    instruction: "Search the web before answering.",
   },
   {
     key: "deep_research",
     label: "Deep research",
     hint: "Reads many sources and writes up findings — takes several minutes",
+    icon: Telescope,
     capability: "browser.open",
+    // browser.research_pages searches, then visits and summarizes up to ten
+    // external results - the multi-source behaviour this mode promises.
+    instruction:
+      "Research this thoroughly across multiple sources using browser research_pages, then write up what you found with links.",
   },
   {
     key: "code",
     label: "Run code",
     hint: "Compute, transform data, or check a result by running it",
+    icon: TerminalSquare,
     capability: "code.execute",
+    instruction: "Work this out by running code rather than answering from memory.",
   },
 ]
+
+/** The chips, rendered above the input row so they never overlap it. */
+export function ComposerModeChips({
+  selected,
+  onToggle,
+}: {
+  selected: string[]
+  onToggle: (key: string) => void
+}) {
+  if (selected.length === 0) return null
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 px-1 pb-1.5">
+      {selected.map((key) => {
+        const mode = COMPOSER_MODES.find((m) => m.key === key)
+        if (!mode) return null
+        const Icon = mode.icon
+        return (
+          <button
+            key={key}
+            type="button"
+            onClick={() => onToggle(key)}
+            title={`${mode.hint} — click to remove`}
+            className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 py-1 pl-2.5 pr-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/20"
+          >
+            <Icon className="size-3.5" />
+            {mode.label}
+            <X className="size-3.5 opacity-70" />
+          </button>
+        )
+      })}
+    </div>
+  )
+}
 
 export function ComposerTools({
   selected,
@@ -52,49 +102,52 @@ export function ComposerTools({
 }: {
   selected: string[]
   onToggle: (key: string) => void
-  /** Capabilities policy currently forbids, so chips can explain rather than lie. */
+  /** Capabilities policy currently forbids, so the menu explains rather than lies. */
   disabledCapabilities?: string[]
 }) {
   const [open, setOpen] = useState(false)
+  const wrapRef = useRef<HTMLDivElement>(null)
   const blocked = new Set(disabledCapabilities ?? [])
 
+  // Click-away and Escape, so the panel behaves like a menu rather than a
+  // block of markup that happens to be visible.
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false)
+    }
+    document.addEventListener("mousedown", onDown)
+    document.addEventListener("keydown", onKey)
+    return () => {
+      document.removeEventListener("mousedown", onDown)
+      document.removeEventListener("keydown", onKey)
+    }
+  }, [open])
+
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
+    <div ref={wrapRef} className="relative shrink-0">
       <Button
         type="button"
         size="icon"
         variant="ghost"
         aria-label="Tools"
+        aria-expanded={open}
         title="Tools"
-        className="h-8 w-8"
+        className="size-9 rounded-xl text-muted-foreground"
         onClick={() => setOpen((v) => !v)}
       >
-        <Plus className="h-4 w-4" />
+        <Plus className={`size-4 transition-transform ${open ? "rotate-45" : ""}`} />
       </Button>
 
-      {/* Chips show scope before send, and can be taken back off. */}
-      {selected.map((key) => {
-        const mode = COMPOSER_MODES.find((m) => m.key === key)
-        if (!mode) return null
-        return (
-          <button
-            key={key}
-            type="button"
-            onClick={() => onToggle(key)}
-            className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-xs"
-            title={`${mode.hint} — click to remove`}
-          >
-            {mode.label}
-            <X className="h-3 w-3" />
-          </button>
-        )
-      })}
-
       {open && (
-        <div className="mt-1 flex w-full flex-col gap-1 rounded-md border border-border bg-popover p-1.5 shadow-md">
+        <div className="absolute bottom-full left-0 z-50 mb-2 w-72 overflow-hidden rounded-xl border border-border bg-popover p-1 shadow-lg">
           {COMPOSER_MODES.map((mode) => {
             const isBlocked = blocked.has(mode.capability)
             const isOn = selected.includes(mode.key)
+            const Icon = mode.icon
             return (
               <button
                 key={mode.key}
@@ -104,20 +157,23 @@ export function ComposerTools({
                   onToggle(mode.key)
                   setOpen(false)
                 }}
-                className={`flex flex-col items-start rounded px-2 py-1.5 text-left transition-colors ${
+                className={`flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors ${
                   isBlocked
-                    ? "cursor-not-allowed opacity-60"
+                    ? "cursor-not-allowed opacity-50"
                     : isOn
                       ? "bg-primary/10"
                       : "hover:bg-muted"
                 }`}
               >
-                <span className="text-sm">{mode.label}</span>
-                <span className="text-xs text-muted-foreground">
-                  {/* The composer must not become a way around the policy
-                      engine, so a blocked mode points at Access like the
-                      Tools page does. */}
-                  {isBlocked ? `Turn on ${mode.capability} in Access to use this` : mode.hint}
+                <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                <span className="flex min-w-0 flex-col">
+                  <span className="text-sm font-medium leading-tight">{mode.label}</span>
+                  <span className="mt-0.5 text-xs leading-snug text-muted-foreground">
+                    {/* The composer must not become a way around the policy
+                        engine, so a blocked mode points at Access the way the
+                        Tools page does. */}
+                    {isBlocked ? `Turn on ${mode.capability} in Access` : mode.hint}
+                  </span>
                 </span>
               </button>
             )

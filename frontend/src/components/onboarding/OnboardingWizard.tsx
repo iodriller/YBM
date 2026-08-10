@@ -274,8 +274,12 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                         <Button
                           key={preset.key}
                           variant="outline"
-                          className="justify-start"
-                          disabled={selectPreset.isPending}
+                          // A model that cannot fit is not offered as a choice
+                          // that fails later; it is shown greyed with the two
+                          // numbers that make the reason obvious.
+                          disabled={preset.fit?.status === "too_big" || selectPreset.isPending}
+                          title={preset.fit?.reason ?? undefined}
+                          className="h-auto flex-col items-start gap-0.5 py-2 text-left"
                           onClick={() => {
                             selectPreset.mutate(preset.key, {
                               onSuccess: () => {
@@ -288,7 +292,16 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                             })
                           }}
                         >
-                          {preset.label ?? preset.key}
+                          <span className="font-medium">{preset.label ?? preset.key}</span>
+                          {preset.fit?.reason && (
+                            <span
+                              className={`text-xs font-normal ${
+                                preset.fit.status === "too_big" ? "text-destructive" : "text-muted-foreground"
+                              }`}
+                            >
+                              {preset.fit.reason}
+                            </span>
+                          )}
                         </Button>
                       ))}
                     </div>

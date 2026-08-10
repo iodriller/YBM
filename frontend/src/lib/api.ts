@@ -855,6 +855,15 @@ const LLMPresetSchema = z.object({
   key: z.string(),
   label: z.string().optional(),
   active: z.boolean(),
+  // An earned verdict from real hardware detection, or "unknown" when the
+  // machine could not be inspected. Optional so an older backend still parses.
+  fit: z
+    .object({
+      status: z.enum(["fits", "too_big", "unknown"]),
+      needed_gb: z.number().nullable(),
+      reason: z.string().nullable(),
+    })
+    .optional(),
 }).passthrough()
 
 const ToolItemSchema = z.object({

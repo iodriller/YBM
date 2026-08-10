@@ -7,7 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { ArtifactCard } from "@/components/chat/ArtifactCard"
 import { ChatMarkdown } from "@/components/chat/ChatMarkdown"
-import { ComposerTools, COMPOSER_MODES } from "@/components/chat/ComposerTools"
+import { ComposerModeChips, ComposerTools, COMPOSER_MODES } from "@/components/chat/ComposerTools"
 import { FolderPicker } from "@/components/chat/FolderPicker"
 import { InlineApproval } from "@/components/chat/InlineApproval"
 import { TaskReceiptCard } from "@/components/chat/TaskReceiptCard"
@@ -107,11 +107,13 @@ export function ChatPage() {
     // Selected modes ride along as an explicit instruction. The default is no
     // modes, which is the right default - the agent picks its own tools. A
     // chip is for when the user has already decided.
-    const prefix = modes
-      .map((key) => COMPOSER_MODES.find((m) => m.key === key)?.label)
+    const instructions = modes
+      .map((key) => COMPOSER_MODES.find((m) => m.key === key)?.instruction)
       .filter(Boolean)
-      .join(", ")
-    const body = prefix ? `[${prefix}] ${trimmed}` : trimmed
+      .join(" ")
+    const body = instructions ? `${trimmed}
+
+${instructions}` : trimmed
     sendMessage.mutate({ text: body, attachmentIds })
     setDraft("")
     setAttachments([])
@@ -232,6 +234,12 @@ export function ChatPage() {
               ))}
             </div>
           )}
+          <ComposerModeChips
+            selected={modes}
+            onToggle={(key) =>
+              setModes((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]))
+            }
+          />
           <div className="flex items-end gap-2 rounded-2xl border border-input bg-card p-2 shadow-sm focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/20">
             <input
               ref={fileInputRef}

@@ -4,6 +4,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 import os
+from functools import lru_cache
 from pathlib import Path
 import secrets
 from typing import Any
@@ -22,6 +23,7 @@ from agent_control.config import AppSettings, backend_base_url, is_loopback_host
 from agent_control.config import LLMProfileConfig
 from agent_control.channels import catalog as channel_catalog
 from agent_control.llm import catalog as llm_catalog
+from agent_control.llm import hardware as llm_hardware
 from agent_control.llm.providers import build_provider_for_profile
 from agent_control.observation.artifacts import ArtifactService
 from agent_control.orchestration.signals import apply_task_signal, requeue_after_approval_decision
@@ -580,8 +582,16 @@ def create_admin_router(
                     "default_profile": loaded.llm.default_profile,
                     "profile_count": len(loaded.llm.profiles),
                     "default_profile_configured": loaded.llm.default_profile in loaded.llm.profiles,
+                    "hardware": _hardware_probe().as_dict(),
                     "presets": [
-                        {**preset, "key": key, "active": loaded.llm.default_profile == preset["profile_name"]}
+                        {
+                            **preset,
+                            "key": key,
+                            "active": loaded.llm.default_profile == preset["profile_name"],
+                            # Earned, not asserted: "fits" / "too_big" /
+                            # "unknown", with the reason for whichever it is.
+                            "fit": llm_hardware.fit(key, _hardware_probe()),
+                        }
                         for key, preset in _presets_that_can_work().items()
                     ],
                 },
@@ -1788,6 +1798,12 @@ def _provider_error(spec: "llm_catalog.ProviderSpec", exc: Exception) -> str:
     if spec.local:
         return f"Could not reach {spec.label}. Is it running?"
     return f"Could not reach {spec.label} ({type(exc).__name__})"
+
+
+@lru_cache(maxsize=1)
+def _hardware_probe() -> "llm_hardware.Hardware":
+    """Probing shells out, so do it once per process rather than per preset."""
+    return llm_hardware.probe()
 
 
 def _in_container() -> bool:
