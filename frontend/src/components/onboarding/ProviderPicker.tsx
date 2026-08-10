@@ -7,8 +7,10 @@ import { Badge } from "@/components/ui/badge"
 import {
   ApiError,
   fetchLLMProviders,
+  testLLMModel,
   verifyLLMProvider,
   type LLMProviderSpec,
+  type LLMTestResult,
   type LLMVerifyResult,
 } from "@/lib/api"
 import { useUpdateLLMConfig } from "@/lib/queries"
@@ -36,6 +38,8 @@ export function ProviderPicker({ onConfigured }: { onConfigured: () => void }) {
   const [verifying, setVerifying] = useState(false)
   const [verified, setVerified] = useState<LLMVerifyResult | null>(null)
   const [model, setModel] = useState("")
+  const [testing, setTesting] = useState(false)
+  const [tested, setTested] = useState<LLMTestResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const updateLLM = useUpdateLLMConfig()
 
@@ -51,6 +55,7 @@ export function ProviderPicker({ onConfigured }: { onConfigured: () => void }) {
     setSelectedKey(key)
     // Everything downstream belongs to the old provider.
     setVerified(null)
+    setTested(null)
     setModel("")
     setError(null)
     setBaseUrl("")
@@ -75,6 +80,31 @@ export function ProviderPicker({ onConfigured }: { onConfigured: () => void }) {
       setError(err instanceof ApiError ? err.message : "Could not reach that provider.")
     } finally {
       setVerifying(false)
+    }
+  }
+
+  /**
+   * One real completion before anything is written. A key that lists models
+   * can still fail on the chosen model, on provider routing, or on parsing -
+   * and each of those surfaces later, somewhere the user will not connect back
+   * to this screen. Showing the reply makes "it works" something they can see.
+   */
+  async function testModel() {
+    if (!spec || !model.trim()) return
+    setError(null)
+    setTesting(true)
+    try {
+      setTested(await testLLMModel({
+        provider: spec.key,
+        model: model.trim(),
+        api_key: apiKey.trim() || null,
+        base_url: baseUrl.trim() || null,
+      }))
+    } catch (err) {
+      setTested(null)
+      setError(err instanceof ApiError ? err.message : "That model did not answer.")
+    } finally {
+      setTesting(false)
     }
   }
 
@@ -200,7 +230,10 @@ export function ProviderPicker({ onConfigured }: { onConfigured: () => void }) {
             <select
               className="h-9 rounded-md border border-input bg-transparent px-2 text-sm"
               value={model}
-              onChange={(e) => setModel(e.target.value)}
+              onChange={(e) => {
+                setModel(e.target.value)
+                setTested(null)
+              }}
             >
               {verified.models.map((m) => (
                 <option key={m.id} value={m.id}>
@@ -211,14 +244,31 @@ export function ProviderPicker({ onConfigured }: { onConfigured: () => void }) {
           ) : (
             <Input value={model} onChange={(e) => setModel(e.target.value)} />
           )}
-          <Button
-            size="sm"
-            className="self-start"
-            disabled={updateLLM.isPending || !model.trim()}
-            onClick={save}
-          >
-            Use this model
-          </Button>
+          {tested ? (
+            <div className="flex flex-col gap-2 rounded-md border border-success/40 bg-success/5 p-2">
+              <p className="text-xs text-success">
+                It answered in {tested.latency_ms} ms:
+              </p>
+              <p className="text-xs italic text-muted-foreground">&ldquo;{tested.reply}&rdquo;</p>
+              <Button
+                size="sm"
+                className="self-start"
+                disabled={updateLLM.isPending}
+                onClick={save}
+              >
+                Use this model
+              </Button>
+            </div>
+          ) : (
+            <Button
+              size="sm"
+              className="self-start"
+              disabled={testing || !model.trim()}
+              onClick={testModel}
+            >
+              {testing ? "Sending a test message…" : "Test this model"}
+            </Button>
+          )}
         </div>
       )}
 

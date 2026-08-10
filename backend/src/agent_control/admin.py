@@ -9,14 +9,17 @@ import secrets
 from typing import Any
 from urllib.parse import urlparse
 
+import time
+
 import httpx
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
-from pydantic import Field
+from pydantic import Field, SecretStr
 
 from agent_control.bootstrap import OLLAMA_TAGS_URL, _http_json, check_llm_configured, collect_checks
 from agent_control.config_sync import CONFIG_FILE_PATH, ConfigManager, read_env_value
 from agent_control.config import AppSettings, backend_base_url, is_loopback_host
+from agent_control.config import LLMProfileConfig
 from agent_control.channels import catalog as channel_catalog
 from agent_control.llm import catalog as llm_catalog
 from agent_control.llm.providers import build_provider_for_profile
@@ -97,6 +100,15 @@ class AdminLLMVerifyRequest(StrictBaseModel):
     """Setup-time only: the key may not be saved to .env yet."""
 
     provider: str = Field(min_length=1, max_length=60)
+    api_key: str | None = None
+    base_url: str | None = None
+
+
+class AdminLLMTestRequest(StrictBaseModel):
+    """Setup-time only: nothing is saved until the model actually answers."""
+
+    provider: str = Field(min_length=1, max_length=60)
+    model: str = Field(min_length=1, max_length=200)
     api_key: str | None = None
     base_url: str | None = None
 
@@ -1257,6 +1269,57 @@ def create_admin_router(
             # Only meaningful when a real list came back; the UI shows the
             # count rather than claiming a number it did not verify.
             "listed": bool(models),
+        }
+
+    @router.post("/api/setup/llm/test")
+    async def admin_test_llm_model(request: Request, payload: AdminLLMTestRequest) -> dict[str, Any]:
+        """Make one real completion before setup is allowed to finish.
+
+        Listing models proves a key is valid. It does not prove the chosen
+        model answers, that the provider routing is right, or that the response
+        parses - and each of those fails later, in a place the user will not
+        connect back to this screen. A single real round trip proves the whole
+        chain, and the reply is shown to them so "it works" is something they
+        can see rather than something we assert.
+
+        Deliberately not free: this spends a token or two of the user's own
+        quota. It is triggered by an explicit click, and the alternative is
+        discovering the failure on their first real message.
+        """
+        require_admin(request)
+        spec = llm_catalog.get(payload.provider)
+        if spec is None:
+            raise HTTPException(status_code=400, detail=f"unknown provider: {payload.provider}")
+
+        key = (payload.api_key or "").strip() or (
+            read_env_value(spec.api_key_env) if spec.api_key_env else None
+        )
+        if spec.needs_key and not key:
+            raise HTTPException(status_code=400, detail=f"{spec.label} needs an API key")
+
+        profile = LLMProfileConfig(
+            provider=spec.kind,
+            model=payload.model.strip(),
+            base_url=(payload.base_url or spec.base_url or None),
+            api_key=SecretStr(key) if key else None,
+            timeout_seconds=45,
+            max_tokens=128,
+        )
+        started = time.monotonic()
+        try:
+            provider = build_provider_for_profile(profile)
+            reply = await provider.generate_text(
+                render_prompt("base/llm_health_check_system.md"),
+                render_prompt("tasks/llm_health_check_user.md"),
+            )
+        except Exception as exc:  # noqa: BLE001 - normalized for the UI
+            raise HTTPException(status_code=502, detail=_provider_error(spec, exc)) from None
+
+        return {
+            "ok": True,
+            "model": profile.model,
+            "reply": reply.strip()[:500],
+            "latency_ms": round((time.monotonic() - started) * 1000),
         }
 
     @router.post("/api/config/vscode")

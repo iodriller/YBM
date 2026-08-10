@@ -2307,3 +2307,98 @@ def test_channel_catalog_does_not_call_telegram_connected_on_a_token_alone(
     body = client.get("/admin/api/channels").json()
     telegram = next(c for c in body["channels"] if c["key"] == "telegram")
     assert telegram["connected"] is False
+
+
+def test_llm_test_makes_a_real_completion_before_setup_finishes(monkeypatch, tmp_path) -> None:
+    """Listing models proves the key. Only a real round trip proves the chosen
+    model answers, the routing is right, and the response parses."""
+    import respx
+    from httpx import Response
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    with respx.mock:
+        route = respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=Response(
+                200,
+                json={"choices": [{"message": {"content": "ready"}}], "usage": {}},
+            )
+        )
+        body = client.post(
+            "/admin/api/setup/llm/test",
+            json={"provider": "openai", "model": "gpt-4.1", "api_key": "sk-live"},
+        ).json()
+
+    assert route.called, "no completion was actually attempted"
+    assert body["ok"] is True
+    assert body["reply"] == "ready"
+    assert body["model"] == "gpt-4.1"
+    assert isinstance(body["latency_ms"], int)
+
+
+def test_llm_test_surfaces_a_model_that_does_not_answer(monkeypatch, tmp_path) -> None:
+    """A valid key with a bad model name is exactly the case model-listing
+    alone would have let through."""
+    import respx
+    from httpx import Response
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    with respx.mock:
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=Response(404, json={"error": {"message": "no such model"}})
+        )
+        response = client.post(
+            "/admin/api/setup/llm/test",
+            json={"provider": "openai", "model": "gpt-nonexistent", "api_key": "sk-live"},
+        )
+
+    assert response.status_code == 502
+    assert "sk-live" not in response.text
+
+
+def test_llm_test_routes_anthropic_to_the_native_provider(monkeypatch, tmp_path) -> None:
+    """The test call must go through the same routing a real request uses, or
+    it proves nothing about the provider that will actually serve traffic."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    captured: dict = {}
+
+    class _Client:
+        def __init__(self, **kwargs):
+            async def _create(**kw):
+                captured.update(kw)
+                return type(
+                    "_M",
+                    (),
+                    {
+                        "content": [type("_B", (), {"type": "text", "text": "hello"})()],
+                        "stop_reason": "end_turn",
+                        "usage": None,
+                    },
+                )()
+
+            self.messages = type("_Messages", (), {"create": staticmethod(_create)})()
+
+        async def close(self):
+            return None
+
+    import anthropic
+
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", _Client)
+    body = client.post(
+        "/admin/api/setup/llm/test",
+        json={"provider": "anthropic", "model": "claude-sonnet-5", "api_key": "sk-ant"},
+    ).json()
+
+    assert body["reply"] == "hello"
+    # Proof it went through AnthropicProvider: temperature is omitted, which is
+    # the whole reason that provider exists.
+    assert "temperature" not in captured
+    assert captured["model"] == "claude-sonnet-5"

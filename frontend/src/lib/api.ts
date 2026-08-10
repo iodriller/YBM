@@ -1030,6 +1030,31 @@ export function verifyLLMProvider(input: {
   })
 }
 
+const LLMTestSchema = z.object({
+  ok: z.boolean(),
+  model: z.string(),
+  reply: z.string(),
+  latency_ms: z.number(),
+})
+export type LLMTestResult = z.infer<typeof LLMTestSchema>
+
+/**
+ * One real completion, before anything is saved. Listing models proves the key
+ * is valid; only a round trip proves the chosen model answers and the response
+ * parses. Costs a token or two of the user's own quota, on an explicit click.
+ */
+export function testLLMModel(input: {
+  provider: string
+  model: string
+  api_key?: string | null
+  base_url?: string | null
+}) {
+  return apiFetch("/api/setup/llm/test", LLMTestSchema, {
+    method: "POST",
+    body: JSON.stringify(input),
+  })
+}
+
 const ConfigUpdateResponseSchema = z.object({ config_file: z.string() }).passthrough()
 
 export function updateLLMConfig(input: LLMConfigInput) {
