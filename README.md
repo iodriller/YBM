@@ -33,24 +33,41 @@ up visibility or control over what it just did.
 
 ## Quickstart
 
+**Nothing needs to be installed first — not git, not Python.** The installer brings its own:
+`uv` is a standalone binary, and it downloads the Python YBM runs on.
+
+Once you have the folder, double-click **`YBM-Setup.cmd`** (Windows). No terminal, no commands
+to paste. It installs whatever is missing and opens the console.
+
+<details>
+<summary>Prefer a terminal, or on Linux/macOS?</summary>
+
 ```bash
-# Linux/macOS
-curl -fsSL https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.sh | sh
+# Linux/macOS, from inside the folder
+./scripts/install.sh
 ```
 ```powershell
-# Windows
-iwr https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.ps1 -UseBasicParsing | iex
+# Windows, from inside the folder
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
 ```
 
-This clones the repo, installs dependencies, and runs an interactive wizard: it detects a local
-LLM (Ollama or an existing LocalDeploy checkout) or asks for a cloud API key, offers to set up
-Telegram (optional — the built-in web chat needs no setup), writes your config, checks the
-environment, and starts the stack. A couple of minutes on a machine with nothing installed but
-git and Python 3.12+.
+Useful flags on both: `--dry-run` shows what would happen and changes nothing, `--verify` proves
+the install works before returning, `--install-dir DIR` picks the location.
 
-That's the only time a terminal command is needed. After that, double-click **`YBM.bat`** in
-the repo folder — installs anything new, checks for an update, and opens the console. Nothing to
-remember, and running it again when everything's already current just starts the console.
+</details>
+
+> **Remote one-line install is not available yet.** This repository is private, so
+> `curl … raw.githubusercontent.com/…/install.sh | sh` returns 404 for anyone who is not
+> authenticated. Get the folder first (clone it with credentials, or copy it across), then run
+> the setup file above. Once the repository is public the same installer works as a one-liner
+> unchanged.
+
+The installer sets up dependencies, writes your config and tokens, and starts the stack. The
+model and Telegram choices happen in the browser wizard that opens — Telegram is optional, since
+the built-in web chat needs no setup.
+
+After that, double-click **`YBM.bat`** — installs anything new, checks for an update, and opens
+the console. Running it again when everything's current just starts the console.
 
 Already have it running? Talk to it at `http://127.0.0.1:8765/admin`.
 

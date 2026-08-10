@@ -113,7 +113,19 @@ Byte-identical in `channels/task_notify.py` and
 
 ## Installation
 
-See `docs/INSTALL_UX_PLAN.md`. Headline: `scripts/install.ps1` hard-fails
-without git and Python 3.12+, and the Python requirement is **spurious** — the
-script installs `uv` anyway, and `uv sync` builds the venv against a
-uv-managed interpreter, so no system Python is ever used.
+### G9 — Remote install is impossible while the repository is private
+
+A private GitHub repository answers **404**, not 403, to unauthenticated
+requests. So `raw.githubusercontent.com/.../install.sh`,
+`codeload.../zip/refs/heads/main` and `api.github.com/repos/.../commits/main`
+all 404, and the `curl … | sh` one-liner the README led with could never have
+worked on a fresh machine.
+
+The installers now detect this and explain it. The underlying choice — public
+repo, authenticated install, or publishing built artifacts separately — is a
+product decision, not a code one, and everything else in
+`docs/INSTALL_UX_PLAN.md` depends on it.
+
+The prerequisite problem noted here previously (git and Python 3.12+ demanded
+up front, with the Python requirement spurious) is **fixed**: `uv` provides the
+interpreter and git is optional.

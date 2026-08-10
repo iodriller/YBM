@@ -3,6 +3,38 @@
 Goal: get a person from "found YBM" to "talking to it" with the fewest steps
 that still leave a working, updatable install.
 
+## Status
+
+Phases 1, 2 (partly), 4 and 5 are **implemented**. What remains is listed at
+the bottom under "Still open".
+
+## Blocker found while implementing: the repository is private
+
+Every documented remote install URL returns **404** to anyone who is not
+authenticated, because a private GitHub repository answers 404 rather than 403:
+
+| URL | Result |
+|---|---|
+| `raw.githubusercontent.com/iodriller/YBM/main/scripts/install.ps1` | 404 |
+| `raw.githubusercontent.com/iodriller/YBM/main/scripts/install.sh` | 404 |
+| `codeload.github.com/iodriller/YBM/zip/refs/heads/main` | 404 |
+| `api.github.com/repos/iodriller/YBM/commits/main` | 404 |
+
+The README's `curl … | sh` one-liner therefore cannot work on a fresh machine
+today, and no amount of click-reduction changes that. **Distribution model is
+the real decision**, and it is upstream of everything else here:
+
+- **Make the repository public.** Everything in this document then works as
+  written, including the one-liner and a winget manifest.
+- **Keep it private.** Remote install must authenticate: `gh auth login` plus
+  `gh repo clone`, or a private release asset fetched with a token. Neither is
+  a "one command with nothing installed" story.
+- **Publish built artifacts** to a public location while the source stays
+  private.
+
+Until that is decided, the installer detects the 404 and says exactly this,
+rather than blaming the user's network.
+
 Measured against `scripts/install.ps1` / `scripts/install.sh` as they are, and
 against what current one-command installers do (OpenClaw's installer internals,
 `uv`'s bootstrap). Every claim below names the line that causes it.
@@ -129,12 +161,32 @@ should say what to do next:
 - No LLM reachable → the install still succeeded; say so, and point at the
   wizard rather than exiting non-zero.
 
-## Suggested order
+## What was implemented
 
-Phase 1 first — it is a handful of lines in one file and removes both
-prerequisites, which is most of the real-world friction. Phase 4's `--dry-run`
-next, because it makes the remaining phases testable without a clean VM each
-time. Then Phase 2, then 3, then 5.
+- **Phase 1, complete.** The Python gate is gone; `uv python install 3.12`
+  provides the interpreter. The uv installer URL is pinned to a version. uv is
+  resolved to an absolute path with `UV_NO_MODIFY_PATH=1`, so the "open a new
+  window and re-run" dead end cannot happen. git is optional, with an archive
+  fallback on both platforms.
+- **Phase 2, partly.** `YBM-Setup.cmd` at the repo root is the double-click
+  entry point; it forwards `--dry-run` / `--verify` / `--no-prompt` and always
+  pauses, so a failure message survives the window closing. A winget manifest
+  is blocked on the distribution decision above.
+- **Phase 4, complete.** `--dry-run`, `--verify`, `--no-prompt`,
+  `--install-dir`, plus `YBM_DRY_RUN` / `YBM_NO_PROMPT` / `YBM_INSTALL_DIR`.
+- **Phase 5, complete.** Every failure names a cause and a next step; the 404
+  case explains the private-repo situation instead of blaming the network.
+
+## Still open
+
+- **Phase 3** (fewer clicks after install): auto-select the sole local model,
+  offer to pull one when Ollama is present but empty, and defer every optional
+  channel until after the first successful message.
+- **winget manifest** and the remote one-liner, both blocked on distribution.
+- **Port-in-use handling**: offer the next free port instead of failing.
+- `install.ps1` and `install.sh` are maintained as parallel implementations and
+  have drifted before. They are in step as of this change; a shared contract
+  test would be better than vigilance.
 
 ## Verification
 

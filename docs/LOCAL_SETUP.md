@@ -2,20 +2,32 @@
 
 ## Quickstart (any OS)
 
+Nothing needs to be installed first - not git, not Python. `uv` is a standalone binary and it
+downloads the interpreter YBM runs on.
+
+From inside the folder:
+
 ```bash
 # Linux/macOS
-curl -fsSL https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.sh | sh
+./scripts/install.sh
 ```
 ```powershell
-# Windows
-iwr https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.ps1 -UseBasicParsing | iex
+# Windows - or just double-click YBM-Setup.cmd, no terminal needed
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
 ```
 
-Either clones the repo, installs dependencies via `uv`, and runs `ybm onboard` - an interactive
-wizard that detects a local LLM (Ollama, or an existing LocalDeploy checkout) or asks for a cloud
-API key, optionally sets up Telegram (the local web chat needs no setup and is on by default),
-writes `config/config.yaml` and `.env`, runs `ybm doctor`, and offers to start the stack. Already
-have the repo cloned? Run the same script from inside it and it skips straight to setup.
+Both accept `--dry-run` (show the plan, change nothing), `--verify` (prove the install works
+before returning), `--no-prompt`, and `--install-dir DIR`.
+
+> Remote one-line install (`curl … raw.githubusercontent.com/… | sh`) returns **404** while this
+> repository is private - GitHub answers 404 rather than 403 to unauthenticated requests. Get the
+> folder first, then run the above. See `docs/INSTALL_UX_PLAN.md`.
+
+The installer installs dependencies via `uv`, writes `config/config.yaml` and `.env`, generates
+admin and vault tokens, and starts the stack. The LLM and Telegram choices happen in the browser
+wizard that opens (the local web chat needs no setup and is on by default). The interactive
+`ybm onboard` CLI wizard still exists for headless/SSH-only installs with no browser to open.
+Already inside a checkout? The script detects that and skips straight to setup.
 
 Once installed, the cross-platform `ybm` command (from `backend/.venv`) covers day-to-day use:
 
