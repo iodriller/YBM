@@ -307,6 +307,63 @@ def start_all(*, open_browser: bool = False, **flags) -> int:
     return 0
 
 
+def run_foreground(*, poll_seconds: float = 5.0, **flags) -> int:
+    """Start everything, then stay in the foreground until it stops.
+
+    ``start_all`` spawns detached children and returns, which is right for an
+    interactive `ybm start` and wrong for anything that supervises this process
+    itself: a container whose PID 1 exits is a container that stopped, and
+    systemd Type=simple treats the same exit as the service dying.
+
+    Blocks until a required service exits or a signal arrives, then shuts the
+    rest down so nothing is orphaned. Exit code is non-zero when a service died
+    on its own, so a restart policy can act on it.
+    """
+    started = start_all(**flags)
+    if started != 0:
+        stop_all()
+        return started
+
+    stopping = False
+
+    def _request_stop(signum, _frame):  # noqa: ANN001 - signal handler signature
+        nonlocal stopping
+        stopping = True
+        print(f"\nReceived signal {signum} - stopping services...")
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _request_stop)
+        except (ValueError, OSError):
+            # No signal handling on this thread/platform; Ctrl+C still raises.
+            pass
+
+    print("Supervising services in the foreground. Send SIGTERM (or Ctrl+C) to stop.")
+    exit_code = 0
+    try:
+        while not stopping:
+            dead = _first_dead_service()
+            if dead is not None:
+                print(f"[FAIL] {dead} exited - shutting the rest down. Log: {_log_path(dead)}")
+                exit_code = 1
+                break
+            time.sleep(poll_seconds)
+    except KeyboardInterrupt:
+        pass
+
+    stop_all()
+    return exit_code
+
+
+def _first_dead_service() -> str | None:
+    for state_file in sorted(_run_dir().glob(f"*{_STATE_SUFFIX}")):
+        name = state_file.name.removesuffix(_STATE_SUFFIX)
+        state = _read_state(name)
+        if state and not _pid_alive(int(state["pid"])):
+            return name
+    return None
+
+
 def stop_all() -> int:
     stopped_any = False
     for state_file in sorted(_run_dir().glob(f"*{_STATE_SUFFIX}")):

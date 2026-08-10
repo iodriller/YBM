@@ -235,7 +235,15 @@ export function getBootstrap() {
 // CLI wizard make the same decisions from the same signals.
 
 export const SetupDetectResponseSchema = z.object({
-  ollama: z.object({ available: z.boolean(), models: z.array(z.string()) }),
+  ollama: z.object({
+    available: z.boolean(),
+    // Distinct from `available`: a reachable server with nothing pulled is the
+    // one onboarding step that otherwise sends the user away to find a model
+    // name. Optional so an older backend still validates.
+    reachable: z.boolean().optional(),
+    models: z.array(z.string()),
+    recommended: z.string().nullable().optional(),
+  }),
   localdeploy_root_present: z.boolean(),
   openai_key_present: z.boolean(),
   telegram_token_present: z.boolean(),

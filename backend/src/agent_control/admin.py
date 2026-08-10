@@ -304,6 +304,34 @@ def _serve_admin_app(request: Request, sub_path: str) -> FileResponse | HTMLResp
     return HTMLResponse(_ADMIN_HTML)
 
 
+# Ollama tags the wizard should prefer when several are installed, best first.
+# Matched as a prefix against the tag ("qwen3-vl:8b-instruct" matches
+# "qwen3-vl"), so a specific quantisation still counts. Vision-capable and
+# instruction-tuned models come first because the operator loop asks for
+# structured output and the desktop tools pass screenshots.
+_PREFERRED_OLLAMA_MODELS = (
+    "qwen3-vl", "qwen3vl", "qwen3", "qwen2.5", "gemma3", "llama3.1", "mistral",
+)
+
+
+def _recommended_ollama_model(models: list[str]) -> str | None:
+    """The model the wizard should preselect, or None when it should not guess.
+
+    A single installed model is the answer whatever it is - the user has
+    already made the choice by pulling it. With several, prefer the ones this
+    project is actually tuned against rather than whichever sorts first.
+    """
+    if not models:
+        return None
+    if len(models) == 1:
+        return models[0]
+    for preferred in _PREFERRED_OLLAMA_MODELS:
+        for model in models:
+            if model.casefold().startswith(preferred):
+                return model
+    return None
+
+
 LLM_PRESETS: dict[str, dict[str, Any]] = {
     "localdeploy_qwen3vl_8b": {
         "label": "LocalDeploy Qwen3-VL 8B (recommended)",
@@ -443,7 +471,17 @@ def create_admin_router(
         ollama = _http_json(OLLAMA_TAGS_URL, timeout=2.0)
         ollama_models = [str(m.get("name")) for m in (ollama or {}).get("models", []) if m.get("name")]
         return {
-            "ollama": {"available": bool(ollama_models), "models": ollama_models},
+            "ollama": {
+                # `available` conflated two very different states: a server that
+                # is not running, and one that is running with nothing pulled.
+                # The second is the only point in onboarding where the user has
+                # to leave YBM, find a model name, and come back - so the wizard
+                # needs to tell them apart to offer the pull.
+                "available": bool(ollama_models),
+                "reachable": ollama is not None,
+                "models": ollama_models,
+                "recommended": _recommended_ollama_model(ollama_models),
+            },
             "localdeploy_root_present": bool(read_env_value("YBM_LOCALDEPLOY_ROOT")),
             "openai_key_present": bool(read_env_value("OPENAI_API_KEY")),
             "telegram_token_present": bool(read_env_value("TELEGRAM_BOT_TOKEN")),

@@ -72,7 +72,11 @@ elif [ "$DRY_RUN" = "1" ]; then
   UV="uv"
 else
   log "Installing uv ${UV_VERSION} (standalone; no Python needed)"
-  export UV_NO_MODIFY_PATH=1
+  # uv is deliberately left on PATH (its installer's default). This script calls
+  # it by absolute path because a PATH entry written by a child process is
+  # invisible to the running one - but later tooling needs the name to resolve
+  # normally, .mcp.json included, which launches the MCP server with `uv run`
+  # precisely because that is the one spelling that works on every platform.
   curl -LsSf "$UV_INSTALLER" | sh \
     || fail "could not install uv from $UV_INSTALLER" \
             "Check your internet connection, then re-run. uv is the only thing YBM needs to bootstrap."

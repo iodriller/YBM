@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import secrets as secrets_module
 import shutil
 import socket
@@ -78,9 +79,34 @@ def _desktop_capability_requested(settings: AppSettings) -> bool:
     return bool(settings.adapters.computer_use.enabled)
 
 
+def is_headless_runtime() -> bool:
+    """Whether this process has no desktop to control.
+
+    Set explicitly by the container image (YBM_HEADLESS=1) and inferred from
+    the usual container markers otherwise. Desktop control, screenshots and the
+    VS Code bridge cannot work here - there is no session to attach to - so
+    doctor should say "unavailable" rather than reporting a missing module as a
+    failure the operator could fix by installing something.
+    """
+    if os.environ.get("YBM_HEADLESS", "").strip().lower() in {"1", "true", "yes"}:
+        return True
+    if Path("/.dockerenv").exists():
+        return True
+    try:
+        return "docker" in Path("/proc/1/cgroup").read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+
 def _check_desktop_modules(settings: AppSettings) -> list[Check]:
     if not _desktop_capability_requested(settings):
         return [Check("Desktop control modules", "ok", "not requested by config - skipped")]
+    if is_headless_runtime():
+        return [Check(
+            "Desktop control modules", "warn",
+            "unavailable in a headless runtime (container) - desktop control, screenshots and "
+            "the VS Code bridge need a real session; every other capability is unaffected",
+        )]
     missing = [mod for mod in DESKTOP_MODULES if importlib.util.find_spec(mod) is None]
     if not missing:
         return [Check("Desktop control modules", "ok", "installed")]

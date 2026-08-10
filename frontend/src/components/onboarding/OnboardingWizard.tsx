@@ -36,7 +36,7 @@ type Step = "brain" | "face" | "done"
  */
 export function OnboardingWizard({ onDone }: { onDone: () => void }) {
   const [step, setStep] = useState<Step>("brain")
-  const { data: detect, isPending: detectPending } = useSetupDetect(true)
+  const { data: detect, isPending: detectPending, refetch: refetchDetect } = useSetupDetect(true)
   const { data: settingsData } = useSettingsSummary()
   const selectPreset = useSelectLLMPreset()
   const updateLLM = useUpdateLLMConfig()
@@ -80,12 +80,19 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                   {detect.ollama.available && (
                     <div className="flex flex-col gap-2">
                       <p className="text-xs text-muted-foreground">
-                        Found a local Ollama server with {detect.ollama.models.length} model(s):
+                        {detect.ollama.recommended
+                          ? "Found a local Ollama server. The recommended model is first - pick it to continue."
+                          : `Found a local Ollama server with ${detect.ollama.models.length} model(s):`}
                       </p>
-                      {detect.ollama.models.slice(0, 8).map((model) => (
+                      {[...detect.ollama.models]
+                        .sort((a, b) =>
+                          a === detect.ollama.recommended ? -1 : b === detect.ollama.recommended ? 1 : 0,
+                        )
+                        .slice(0, 8)
+                        .map((model) => (
                         <Button
                           key={model}
-                          variant="outline"
+                          variant={model === detect.ollama.recommended ? "default" : "outline"}
                           className="justify-start font-mono"
                           disabled={updateLLM.isPending}
                           onClick={() => {
@@ -115,12 +122,36 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                           }}
                         >
                           {model}
+                          {model === detect.ollama.recommended && (
+                            <span className="ml-2 text-xs opacity-80">recommended</span>
+                          )}
                         </Button>
                       ))}
                     </div>
                   )}
 
-                  {!detect.ollama.available && detect.localdeploy_root_present && (
+                  {/* Ollama is running but nothing is pulled. Without this the
+                      wizard looked identical to "no Ollama at all", and the
+                      user had to leave, find a model name, and come back - the
+                      only such point in onboarding. */}
+                  {!detect.ollama.available && detect.ollama.reachable && (
+                    <div className="flex flex-col gap-2 rounded-md border border-border bg-muted/30 p-3">
+                      <Badge variant="secondary" className="w-fit">
+                        Ollama running, no models yet
+                      </Badge>
+                      <p className="text-xs text-muted-foreground">
+                        Pull one and reload this page - about 5 GB, a few minutes:
+                      </p>
+                      <code className="rounded bg-background px-2 py-1 font-mono text-xs">
+                        ollama pull qwen3:8b
+                      </code>
+                      <Button size="sm" variant="outline" className="self-start" onClick={() => refetchDetect()}>
+                        I've pulled a model - check again
+                      </Button>
+                    </div>
+                  )}
+
+                  {!detect.ollama.available && !detect.ollama.reachable && detect.localdeploy_root_present && (
                     <div className="flex flex-col gap-2 rounded-md border border-border bg-muted/30 p-3">
                       <Badge variant="secondary" className="w-fit">
                         LocalDeploy detected

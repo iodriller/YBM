@@ -96,9 +96,12 @@ if ($uv) {
     $uv = "uv"
 } else {
     Write-Step "Installing uv $UvVersion (standalone; no Python needed)"
-    # UV_NO_MODIFY_PATH: we call uv by absolute path, so there is no reason to
-    # rewrite the user's PATH during an install they may cancel.
-    $env:UV_NO_MODIFY_PATH = "1"
+    # uv is deliberately left on PATH (its installer's default). This script
+    # calls it by absolute path because a PATH entry written by a child process
+    # is invisible to the running one - but later tooling needs the name to
+    # resolve normally, .mcp.json included, which launches the MCP server with
+    # `uv run` precisely because that is the one spelling that works on every
+    # platform.
     try {
         Invoke-RestMethod $UvInstaller -UseBasicParsing | Invoke-Expression
     } catch {

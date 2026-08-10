@@ -12,6 +12,7 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from agent_control.channels.memory import ConversationMemoryService
+from agent_control.error_text import describe_exception
 from agent_control.logging_setup import bind_task_context
 from agent_control.orchestration.auditor import AuditorService
 from agent_control.orchestration.executor import ToolExecutor
@@ -401,13 +402,18 @@ class TaskWorker:
             latest = self._record_llm_usage(latest, "operator", getattr(self.operator, "last_usage", None))
             self._record_llm_call(latest.id, "operator", len(history), self.operator, step_id=step_id)
         except Exception as exc:
+            # describe_exception, not str(exc): an empty message here produced
+            # "operator_decide_failed: " with nothing after it, which is what a
+            # failed model call looked like while three fixture recordings were
+            # being retried as if they were flakes.
+            reason = describe_exception(exc)
             self.audit.append(
                 AuditEventType.ERROR, actor="operator", task_id=latest.id,
-                payload={"error": "operator_decide_failed", "reason": str(exc)},
+                payload={"error": "operator_decide_failed", "reason": reason},
             )
             return self._transition_operator(
                 latest, {**latest.metadata, "operator_history": history},
-                TaskStatus.FAILED, f"operator_decide_failed: {exc}"[:400],
+                TaskStatus.FAILED, f"operator_decide_failed: {reason}"[:400],
             )
 
         self.audit.append(

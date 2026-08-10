@@ -627,6 +627,11 @@ def main() -> None:
     parser.add_argument("--no-scheduler", action="store_true", help="for `start`: skip the scheduler")
     parser.add_argument("--no-localdeploy", action="store_true", help="for `start`: skip launching LocalDeploy")
     parser.add_argument("--open", action="store_true", help="for `start`: open the admin console in a browser once ready")
+    parser.add_argument(
+        "--foreground", action="store_true",
+        help="for `start`: stay in the foreground until a service exits or a signal arrives "
+             "(what a container or systemd Type=simple needs; a detached start would look like an immediate exit)",
+    )
     parser.add_argument("--out", default=None, help="output directory for `backup` (default: .agent_control/backups)")
     args = parser.parse_args()
 
@@ -639,8 +644,9 @@ def main() -> None:
     elif args.command == "onboard":
         raise SystemExit(run_onboard())
     elif args.command == "start":
-        from agent_control.supervisor import start_all
-        raise SystemExit(start_all(
+        from agent_control.supervisor import run_foreground, start_all
+        launch = run_foreground if args.foreground else start_all
+        raise SystemExit(launch(
             no_telegram=args.no_telegram, no_whatsapp=args.no_whatsapp, no_worker=args.no_worker,
             no_scheduler=args.no_scheduler,
             no_localdeploy=args.no_localdeploy,

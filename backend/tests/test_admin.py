@@ -255,7 +255,14 @@ def test_admin_setup_detect_reports_real_ollama_models_and_credential_presence(m
 
     assert response.status_code == 200
     body = response.json()
-    assert body["ollama"] == {"available": True, "models": ["qwen3:8b", "mistral:7b"]}
+    assert body["ollama"] == {
+        "available": True,
+        "reachable": True,
+        "models": ["qwen3:8b", "mistral:7b"],
+        # Preferred over mistral so the wizard can offer a default instead of
+        # an undifferentiated list.
+        "recommended": "qwen3:8b",
+    }
     assert body["localdeploy_root_present"] is False
     assert body["openai_key_present"] is False
     assert body["telegram_token_present"] is True
@@ -271,7 +278,41 @@ def test_admin_setup_detect_reports_no_ollama_when_unreachable(monkeypatch, tmp_
     response = client.get("/admin/api/setup/detect")
 
     assert response.status_code == 200
-    assert response.json()["ollama"] == {"available": False, "models": []}
+    assert response.json()["ollama"] == {
+        "available": False,
+        "reachable": False,
+        "models": [],
+        "recommended": None,
+    }
+
+
+def test_admin_setup_detect_separates_an_empty_ollama_from_a_missing_one(monkeypatch, tmp_path) -> None:
+    """A running server with nothing pulled used to look identical to no server
+    at all, which is why onboarding could only say "no local model" and send
+    the user off to find a model name."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    monkeypatch.setattr(admin_module, "_http_json", lambda url, timeout=2.0: {"models": []})
+    repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
+    client = _admin_client(repositories)
+
+    body = client.get("/admin/api/setup/detect").json()
+
+    assert body["ollama"]["reachable"] is True
+    assert body["ollama"]["available"] is False
+    assert body["ollama"]["recommended"] is None
+
+
+def test_recommended_ollama_model_prefers_a_known_good_tag() -> None:
+    recommend = admin_module._recommended_ollama_model
+
+    # One installed model is the answer whatever it is - pulling it was itself
+    # the choice.
+    assert recommend(["something-obscure:latest"]) == "something-obscure:latest"
+    assert recommend(["mistral:7b", "qwen3-vl:8b-instruct"]) == "qwen3-vl:8b-instruct"
+    assert recommend([]) is None
+    # Nothing recognised among several: do not guess on the user's behalf.
+    assert recommend(["obscure-a:latest", "obscure-b:latest"]) is None
 
 
 def test_admin_serves_built_index_html_when_a_build_exists(monkeypatch, tmp_path) -> None:

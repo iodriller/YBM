@@ -1,11 +1,8 @@
 {
   "mcpServers": {
     "ybm": {
-      "command": "python",
-      "args": ["-m", "agent_control.mcp_server"],
-      "env": {
-        "PYTHONPATH": "backend/src"
-      }
+      "command": "uv",
+      "args": ["run", "--project", "backend", "--frozen", "ybm-mcp"]
     }
   }
 }
