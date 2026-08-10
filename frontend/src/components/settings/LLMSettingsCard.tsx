@@ -7,6 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { ApiError, type LLMConfigInput, type SettingsSummary } from "@/lib/api"
 import { useServerForm } from "@/lib/use-server-form"
 import { useSelectLLMPreset, useSettingsSummary, useTestLLM, useUpdateLLMConfig } from "@/lib/queries"
+import { useAdvancedMode } from "@/lib/advanced-mode"
 
 type Draft = {
   profileName: string
@@ -49,6 +50,7 @@ export function LLMSettingsCard() {
   const updateLLM = useUpdateLLMConfig()
   const selectPreset = useSelectLLMPreset()
   const testLLM = useTestLLM()
+  const { advanced } = useAdvancedMode()
 
   const presets = data?.integrations.llm.presets ?? []
 
@@ -123,6 +125,20 @@ export function LLMSettingsCard() {
           {testLLM.isPending ? "Testing..." : "Test active LLM"}
         </Button>
 
+        {/* Profile name, provider, base URL, API key env, timeout, max tokens
+            and temperature were shown to everyone. For the audience the
+            installer now targets - no Python, no terminal - the preset row
+            above is the whole useful control, and the rest is expert surface
+            presented as if it needed attention. Advanced mode already exists
+            in the sidebar; this is what it is for. */}
+        {!advanced && (
+          <p className="border-t border-border pt-3 text-xs text-muted-foreground">
+            Pick a preset above, or turn on <span className="font-medium">Advanced mode</span> in the sidebar to edit the
+            profile directly.
+          </p>
+        )}
+
+        {advanced && (
         <form
           className="grid grid-cols-1 gap-3 border-t border-border pt-3 sm:grid-cols-2"
           onSubmit={(event) => {
@@ -186,6 +202,7 @@ export function LLMSettingsCard() {
             </Button>
           </div>
         </form>
+        )}
       </CardContent>
     </Card>
   )

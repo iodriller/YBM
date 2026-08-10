@@ -34,9 +34,10 @@ Measured at 1440px viewport:
 | Created | 170px | **30,525** |
 
 The table headers exist — `["Objective","Status","Outcome","Created"]` — but
-everything past ~1,390px is off-screen, and because the page itself does not
-scroll horizontally there is **no way to reach it**. Status, outcome, duration
-and timestamp are simply unavailable on desktop.
+everything past ~1,390px is off-screen. The `Table` primitive wraps itself in
+`overflow-x-auto`, so it is *technically* reachable by scrolling the container
+sideways — across roughly 21 screens per row. Status, outcome, duration and
+timestamp were effectively unavailable on desktop.
 
 Cause: no `max-width`, no truncation, and no `table-layout: fixed`, so a cell
 grows to its longest single-line content. One task's outcome text is 26,000
@@ -96,29 +97,37 @@ than something a person asked about.
 on click; keep the full card for tasks that actually touched a tool, sent a
 file, or spent real time.
 
-## F5 — Persistent banner
+## F5 — Persistent banner — WITHDRAWN, not a defect
 
-`Everything dangerous is off by default. Enable capabilities in Access.` sits
-above everything on every route. It is one line on desktop and two on a phone —
-roughly 55px of an 844px screen, permanently, for a message that is only news
-once. It is dismissible; it should also stay dismissed, and probably should not
-appear at all after the first successful task.
+Retracted after reading the code. `SafetyTourBanner` already persists its
+dismissal in localStorage (`lib/safety-tour.ts`) and is documented as "shown
+once ever". It appeared on all 16 screenshots only because Playwright starts
+each run with an empty profile, which is an artefact of how it was measured,
+not a bug in the console.
 
-## F6 — Truncation with no way back
+Left alone deliberately.
 
-Tools cards clip their operation lists (`promote_after_ap…`,
-`extract_page_stat…`). The information is gone rather than deferred — no
-tooltip, no expansion.
+## F6 — Truncation with no way back — WITHDRAWN, not a defect
+
+Also retracted. `ToolsPage` already sets `title={tool.operations.join(", ")}`
+on the truncated line, so the full list is available on hover. The visual
+ellipsis was mistaken for lost information.
+
+The genuine problem on that page was width, which is F2.
 
 ## Suggested order
 
-1. **F1** — data the user cannot reach at all, and the fix already exists at
-   another breakpoint.
-2. **F3** — smallest change, and aimed squarely at the audience the installer
-   work just widened.
-3. **F5**, then **F4** — both reduce permanent noise.
-4. **F2** — largest visual gain, most layout work.
-5. **F6** — small.
+All of F1-F4 are done; F5 and F6 were withdrawn as non-defects.
+
+| | Fix | Result |
+|---|---|---|
+| F1 | `table-fixed` with declared column widths; `whitespace-normal` on the text columns so `line-clamp-2` can reach a second line and ellipsise | Table width **30,525px -> 1,392px**, all four columns on screen at 1440px |
+| F2 | Tools moved `max-w-4xl` -> `max-w-6xl`, grid `sm:2` -> `xl:3` | Matches Tasks/Settings; single-tool groups no longer strand half a row |
+| F3 | The raw LLM profile form is behind the existing Advanced mode toggle | Settings fits one screen; presets remain the default control |
+| F4 | A completed receipt with no changes, no tools and no egress collapses to `duration · Receipt · Full trace`, expandable | The receipt no longer outweighs a one-line answer |
+
+Still open: the Agent hub's empty space, and the chat gutter. Both are layout
+judgement calls rather than defects, and neither hides information.
 
 ## Reproducing
 

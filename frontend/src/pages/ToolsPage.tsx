@@ -65,7 +65,10 @@ export function ToolsPage() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto flex max-w-4xl flex-col gap-6 p-4 sm:p-6 lg:p-8 [&>*]:shrink-0">
+      {/* max-w-6xl to match Tasks and Settings. At 4xl this inventory of 22
+          tools used about 58% of a 1440px window, and every single-tool group
+          left half a row empty (docs/UI_MEASURED_FINDINGS.md F2). */}
+      <div className="mx-auto flex max-w-6xl flex-col gap-6 p-4 sm:p-6 lg:p-8 [&>*]:shrink-0">
         <PageBreadcrumb items={[{ label: "Agent", to: "/agent" }, { label: "Tools" }]} />
         <PageHeader
           eyebrow="Agentic setup · read-only inventory"
@@ -115,7 +118,7 @@ export function ToolsPage() {
                 <h2 className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                   {GROUP_LABEL[group] ?? group.replace(/_/g, " ")} ({groupTools.length})
                 </h2>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
                   {groupTools.map((tool) => (
                     <ToolRow key={tool.name} tool={tool} />
                   ))}

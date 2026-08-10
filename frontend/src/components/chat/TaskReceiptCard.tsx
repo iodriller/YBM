@@ -1,3 +1,4 @@
+import { useState } from "react"
 import { Link } from "react-router"
 import { Download, ExternalLink, Globe, HardDrive, LoaderCircle } from "lucide-react"
 import type { TaskReceipt, TaskStatus } from "@/lib/api"
@@ -89,6 +90,8 @@ const DEFAULT_OUTCOME_STYLE = { border: "border-success/25", bg: "bg-success/5",
  */
 export function TaskReceiptCard({ taskId }: { taskId: string }) {
   const { data: receipt, isPending } = useTaskReceipt(taskId)
+  // Declared before the loading early-return: hooks cannot be conditional.
+  const [expanded, setExpanded] = useState(false)
 
   if (isPending || !receipt) {
     return (
@@ -104,6 +107,36 @@ export function TaskReceiptCard({ taskId }: { taskId: string }) {
   const contactedHosts = [...new Set(receipt.services_contacted.map((s) => s.host).filter(Boolean))] as string[]
   const style = OUTCOME_STYLE[receipt.status] ?? DEFAULT_OUTCOME_STYLE
   const partial = receipt.status !== "completed" && (changedItems.length > 0 || receipt.tools_used.length > 0)
+
+  // A plain answer that touched nothing carried a full card - status chip,
+  // "Receipt", "No external transfer was recorded", duration, and two actions -
+  // for a one-line reply, so the receipt outweighed the message it described
+  // (docs/UI_MEASURED_FINDINGS.md F4). Collapse exactly that case: completed,
+  // nothing changed, no tool used, nothing left the machine. Anything with
+  // real effects keeps the full card, which is the point of having one.
+  const unremarkable =
+    receipt.status === "completed" &&
+    changedItems.length === 0 &&
+    usedTools.length === 0 &&
+    !receipt.data_left_machine
+
+  if (unremarkable && !expanded) {
+    return (
+      <div className="mt-2.5 flex items-center gap-3 text-[11px] text-muted-foreground">
+        <span>{formatDuration(receipt.duration_seconds)}</span>
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="underline underline-offset-2 hover:text-foreground"
+        >
+          Receipt
+        </button>
+        <Link to={`/tasks/${taskId}`} className="hover:text-foreground">
+          Full trace
+        </Link>
+      </div>
+    )
+  }
 
   return (
     <div className={cn("mt-2.5 flex flex-col gap-2 rounded-lg border p-3 text-xs", style.border, style.bg)}>
