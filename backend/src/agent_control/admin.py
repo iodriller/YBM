@@ -17,7 +17,8 @@ from pydantic import Field
 from agent_control.bootstrap import OLLAMA_TAGS_URL, _http_json, check_llm_configured, collect_checks
 from agent_control.config_sync import CONFIG_FILE_PATH, ConfigManager, read_env_value
 from agent_control.config import AppSettings, backend_base_url, is_loopback_host
-from agent_control.llm.providers import OpenAICompatibleProvider
+from agent_control.llm import catalog as llm_catalog
+from agent_control.llm.providers import build_provider_for_profile
 from agent_control.observation.artifacts import ArtifactService
 from agent_control.orchestration.signals import apply_task_signal, requeue_after_approval_decision
 from agent_control.policy import apply_access_modes_to_config, summarize_access_modes
@@ -89,6 +90,14 @@ class AdminTelegramConfigRequest(StrictBaseModel):
     allowed_chat_ids: list[int] | None = None
     polling: bool | None = None
     bot_token: str | None = None
+
+
+class AdminLLMVerifyRequest(StrictBaseModel):
+    """Setup-time only: the key may not be saved to .env yet."""
+
+    provider: str = Field(min_length=1, max_length=60)
+    api_key: str | None = None
+    base_url: str | None = None
 
 
 class AdminTelegramVerifyRequest(StrictBaseModel):
@@ -1144,6 +1153,75 @@ def create_admin_router(
                 }
         return {"found": False}
 
+    @router.get("/api/llm/providers")
+    def admin_list_llm_providers(request: Request) -> dict[str, Any]:
+        """The provider catalog the console renders as a picker.
+
+        Data, not code - adding a provider is a row in llm/catalog.py.
+        """
+        require_admin(request)
+        return {
+            "providers": [
+                {
+                    "key": spec.key,
+                    "label": spec.label,
+                    "kind": spec.kind,
+                    "base_url": spec.base_url,
+                    "api_key_env": spec.api_key_env,
+                    "default_model": spec.default_model,
+                    "needs_key": spec.needs_key,
+                    "local": spec.local,
+                    "lists_models": spec.lists_models,
+                    "keys_url": spec.keys_url,
+                    "notes": spec.notes,
+                    "example_models": list(spec.example_models),
+                }
+                for spec in llm_catalog.PROVIDERS
+            ]
+        }
+
+    @router.post("/api/setup/llm/verify")
+    async def admin_verify_llm_provider(request: Request, payload: AdminLLMVerifyRequest) -> dict[str, Any]:
+        """Confirm a key works and report back what it can reach.
+
+        Same reason the Telegram step verifies its token: a pasted secret that
+        is silently accepted fails much later, somewhere the user will not
+        connect to this screen. Asking the provider for its model list proves
+        the key and populates the model picker in one call, so the list is
+        never a hardcoded one that rots.
+        """
+        require_admin(request)
+        spec = llm_catalog.get(payload.provider)
+        if spec is None:
+            raise HTTPException(status_code=400, detail=f"unknown provider: {payload.provider}")
+
+        key = (payload.api_key or "").strip() or (
+            read_env_value(spec.api_key_env) if spec.api_key_env else None
+        )
+        if spec.needs_key and not key:
+            raise HTTPException(status_code=400, detail=f"{spec.label} needs an API key")
+        base_url = (payload.base_url or spec.base_url or "").strip()
+        if not base_url and spec.kind != "anthropic":
+            raise HTTPException(status_code=400, detail=f"{spec.label} needs a base URL")
+
+        try:
+            models = await _list_provider_models(spec, key, base_url)
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001 - normalized for the UI
+            raise HTTPException(status_code=502, detail=_provider_error(spec, exc)) from None
+
+        return {
+            "ok": True,
+            "provider": spec.key,
+            "label": spec.label,
+            "models": models,
+            "default_model": spec.default_model,
+            # Only meaningful when a real list came back; the UI shows the
+            # count rather than claiming a number it did not verify.
+            "listed": bool(models),
+        }
+
     @router.post("/api/config/vscode")
     def admin_update_vscode_config(request: Request, payload: AdminVSCodeConfigRequest) -> dict[str, Any]:
         loaded = require_admin(request)
@@ -1466,10 +1544,10 @@ def create_admin_router(
         profile = loaded.llm.profiles.get(loaded.llm.default_profile)
         if profile is None:
             raise HTTPException(status_code=400, detail="default LLM profile is not configured")
-        if profile.provider != "openai_compatible":
-            raise HTTPException(status_code=400, detail=f"unsupported LLM provider: {profile.provider}")
         try:
-            provider = OpenAICompatibleProvider(profile)
+            # Routes by profile.provider, so the health check works for
+            # Anthropic and every catalog provider, not just the OpenAI shape.
+            provider = build_provider_for_profile(profile)
             output = await provider.generate_text(
                 render_prompt("base/llm_health_check_system.md"),
                 render_prompt("tasks/llm_health_check_user.md"),
@@ -1559,6 +1637,63 @@ def _legacy_default_llm_env_keys() -> list[str]:
 def _llm_profile_env_keys(profile_name: str) -> list[str]:
     fields = ("PROVIDER", "MODEL", "BASE_URL", "API_KEY_ENV", "TIMEOUT_SECONDS", "MAX_TOKENS", "TEMPERATURE")
     return [f"AGENT_LLM__PROFILES__{profile_name}__{field}" for field in fields]
+
+
+async def _list_provider_models(
+    spec: "llm_catalog.ProviderSpec", key: str | None, base_url: str
+) -> list[dict[str, str]]:
+    """Ask the provider what models it has. Never raises for "no list".
+
+    A provider that cannot enumerate models is not a failed key - `custom`
+    endpoints often have no /models route - so those return the spec's
+    examples and let the user type a name.
+    """
+    if spec.kind == "anthropic":
+        import anthropic
+
+        client = anthropic.AsyncAnthropic(api_key=key, timeout=20.0)
+        try:
+            page = await client.models.list(limit=100)
+        finally:
+            await client.close()
+        return [
+            {"id": m.id, "label": getattr(m, "display_name", None) or m.id}
+            for m in page.data
+        ]
+
+    if not spec.lists_models:
+        return [{"id": m, "label": m} for m in spec.example_models]
+
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.get(f"{base_url.rstrip('/')}/models", headers=headers)
+    if response.status_code in (401, 403):
+        raise HTTPException(status_code=400, detail=f"{spec.label} rejected that API key")
+    response.raise_for_status()
+    payload = response.json() or {}
+    entries = payload.get("data") if isinstance(payload, dict) else None
+    models: list[dict[str, str]] = []
+    for entry in entries or []:
+        model_id = (entry or {}).get("id") if isinstance(entry, dict) else None
+        if model_id:
+            models.append({"id": str(model_id), "label": str(model_id)})
+    return models
+
+
+def _provider_error(spec: "llm_catalog.ProviderSpec", exc: Exception) -> str:
+    """Describe a provider failure without echoing the key."""
+    status = getattr(exc, "status_code", None) or getattr(
+        getattr(exc, "response", None), "status_code", None
+    )
+    if status in (401, 403):
+        return f"{spec.label} rejected that API key"
+    if status == 429:
+        return f"{spec.label} rate limit reached - try again shortly"
+    if isinstance(status, int):
+        return f"{spec.label} returned HTTP {status}"
+    if spec.local:
+        return f"Could not reach {spec.label}. Is it running?"
+    return f"Could not reach {spec.label} ({type(exc).__name__})"
 
 
 def _telegram_config_env_keys() -> list[str]:

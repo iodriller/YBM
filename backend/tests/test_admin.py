@@ -2163,3 +2163,105 @@ def test_telegram_await_first_message_reports_nothing_arrived(monkeypatch, tmp_p
         ).json()
 
     assert body == {"found": False}
+
+
+def test_llm_provider_catalog_is_served_to_the_console(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    body = client.get("/admin/api/llm/providers").json()
+    keys = {p["key"] for p in body["providers"]}
+
+    assert {"anthropic", "openai", "ollama", "custom"} <= keys
+    anthropic = next(p for p in body["providers"] if p["key"] == "anthropic")
+    assert anthropic["kind"] == "anthropic"
+    assert anthropic["needs_key"] is True
+    assert anthropic["keys_url"]
+    ollama = next(p for p in body["providers"] if p["key"] == "ollama")
+    assert ollama["local"] is True and ollama["needs_key"] is False
+
+
+def test_llm_verify_lists_models_for_an_openai_compatible_provider(monkeypatch, tmp_path) -> None:
+    """Verifying proves the key and fills the model picker in one call, so the
+    list is never a hardcoded one that rots."""
+    import respx
+    from httpx import Response
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    with respx.mock:
+        respx.get("https://api.openai.com/v1/models").mock(
+            return_value=Response(200, json={"data": [{"id": "gpt-4.1"}, {"id": "gpt-4o"}]})
+        )
+        body = client.post(
+            "/admin/api/setup/llm/verify", json={"provider": "openai", "api_key": "sk-live"}
+        ).json()
+
+    assert body["ok"] is True
+    assert [m["id"] for m in body["models"]] == ["gpt-4.1", "gpt-4o"]
+    assert body["listed"] is True
+
+
+def test_llm_verify_reports_a_rejected_key_without_echoing_it(monkeypatch, tmp_path) -> None:
+    import respx
+    from httpx import Response
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    with respx.mock:
+        respx.get("https://api.groq.com/openai/v1/models").mock(return_value=Response(401))
+        response = client.post(
+            "/admin/api/setup/llm/verify", json={"provider": "groq", "api_key": "sk-wrong"}
+        )
+
+    assert response.status_code == 400
+    assert "rejected" in response.json()["detail"]
+    assert "sk-wrong" not in response.text
+
+
+def test_llm_verify_rejects_an_unknown_provider(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    response = client.post(
+        "/admin/api/setup/llm/verify", json={"provider": "nope", "api_key": "x"}
+    )
+    assert response.status_code == 400
+    assert "unknown provider" in response.json()["detail"]
+
+
+def test_llm_verify_requires_a_key_for_a_remote_provider(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    response = client.post("/admin/api/setup/llm/verify", json={"provider": "anthropic"})
+    assert response.status_code == 400
+    assert "needs an API key" in response.json()["detail"]
+
+
+def test_llm_verify_says_a_local_runtime_is_not_running(monkeypatch, tmp_path) -> None:
+    """The useful message for a local provider is 'is it running', not a
+    connection-error class name."""
+    import httpx
+    import respx
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    with respx.mock:
+        respx.get("http://127.0.0.1:11434/v1/models").mock(
+            side_effect=httpx.ConnectError("refused")
+        )
+        response = client.post("/admin/api/setup/llm/verify", json={"provider": "ollama"})
+
+    assert response.status_code == 502
+    assert "running" in response.json()["detail"]

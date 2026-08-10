@@ -22,6 +22,7 @@ import {
   useUpdateTelegramConfig,
 } from "@/lib/queries"
 import { ThemeToggle } from "@/components/layout/ThemeToggle"
+import { ProviderPicker } from "@/components/onboarding/ProviderPicker"
 
 type Step = "brain" | "face" | "done"
 
@@ -48,7 +49,6 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
   const updateLLM = useUpdateLLMConfig()
   const updateTelegram = useUpdateTelegramConfig()
 
-  const [customModel, setCustomModel] = useState({ apiKeyEnv: "OPENAI_API_KEY", apiKeyValue: "", model: "gpt-4.1" })
   const [telegramEnabled, setTelegramEnabled] = useState(false)
   const [telegramToken, setTelegramToken] = useState("")
   // The guided Telegram sequence. Enabling used to save a token and nothing
@@ -262,56 +262,17 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                     </div>
                   )}
 
-                  <details className="text-sm">
-                    <summary className="cursor-pointer text-muted-foreground">Or paste an API key</summary>
-                    <div className="mt-2 flex flex-col gap-2">
-                      <Label className="text-xs text-muted-foreground">Model</Label>
-                      <Input
-                        value={customModel.model}
-                        onChange={(e) => setCustomModel({ ...customModel, model: e.target.value })}
-                      />
-                      <Label className="text-xs text-muted-foreground">API key env var name</Label>
-                      <Input
-                        value={customModel.apiKeyEnv}
-                        onChange={(e) => setCustomModel({ ...customModel, apiKeyEnv: e.target.value })}
-                      />
-                      <Label className="text-xs text-muted-foreground">API key</Label>
-                      <Input
-                        type="password"
-                        value={customModel.apiKeyValue}
-                        onChange={(e) => setCustomModel({ ...customModel, apiKeyValue: e.target.value })}
-                      />
-                      <Button
-                        size="sm"
-                        disabled={updateLLM.isPending || !customModel.model.trim() || !customModel.apiKeyValue.trim()}
-                        onClick={() => {
-                          updateLLM.mutate(
-                            {
-                              profile_name: "onboard",
-                              default_profile: "onboard",
-                              provider: "openai_compatible",
-                              model: customModel.model.trim(),
-                              base_url: null,
-                              api_key_env: customModel.apiKeyEnv.trim() || null,
-                              timeout_seconds: 60,
-                              max_tokens: 4096,
-                              temperature: 0.2,
-                              api_key_value: customModel.apiKeyValue,
-                            },
-                            {
-                              onSuccess: () => {
-                                toast.success("LLM configured.")
-                                setStep("face")
-                              },
-                              onError: (err) => {
-                                toast.error(err instanceof ApiError ? err.message : "Could not save the LLM config.")
-                              },
-                            },
-                          )
-                        }}
-                      >
-                        Save and continue
-                      </Button>
+                  {/* Bring your own key. The old version of this block sent
+                      base_url: null, so it could never actually reach a cloud
+                      provider - and it offered no provider choice at all.
+                      ProviderPicker verifies the key and asks the provider
+                      what models it has before saving anything. */}
+                  <details className="text-sm" open={!detect.ollama.available}>
+                    <summary className="cursor-pointer text-muted-foreground">
+                      Or use an API key (Anthropic, OpenAI, and others)
+                    </summary>
+                    <div className="mt-2">
+                      <ProviderPicker onConfigured={() => setStep("face")} />
                     </div>
                   </details>
                 </>

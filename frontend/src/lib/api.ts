@@ -966,6 +966,53 @@ export type LLMConfigInput = {
   api_key_value: string | null
 }
 
+/** The provider catalog. Adding a provider is a backend table row, not a UI change. */
+const LLMProviderSchema = z.object({
+  key: z.string(),
+  label: z.string(),
+  kind: z.string(),
+  base_url: z.string().nullable(),
+  api_key_env: z.string().nullable(),
+  default_model: z.string(),
+  needs_key: z.boolean(),
+  local: z.boolean(),
+  lists_models: z.boolean(),
+  keys_url: z.string().nullable(),
+  notes: z.string(),
+  example_models: z.array(z.string()),
+})
+export type LLMProviderSpec = z.infer<typeof LLMProviderSchema>
+
+export function fetchLLMProviders() {
+  return apiFetch("/api/llm/providers", z.object({ providers: z.array(LLMProviderSchema) }))
+}
+
+const LLMVerifySchema = z.object({
+  ok: z.boolean(),
+  provider: z.string(),
+  label: z.string(),
+  models: z.array(z.object({ id: z.string(), label: z.string() })),
+  default_model: z.string(),
+  listed: z.boolean(),
+})
+export type LLMVerifyResult = z.infer<typeof LLMVerifySchema>
+
+/**
+ * Proves a key works and returns what it can reach. Same reason the Telegram
+ * step verifies its token: a silently accepted secret fails much later,
+ * somewhere the user will not connect back to this screen.
+ */
+export function verifyLLMProvider(input: {
+  provider: string
+  api_key?: string | null
+  base_url?: string | null
+}) {
+  return apiFetch("/api/setup/llm/verify", LLMVerifySchema, {
+    method: "POST",
+    body: JSON.stringify(input),
+  })
+}
+
 const ConfigUpdateResponseSchema = z.object({ config_file: z.string() }).passthrough()
 
 export function updateLLMConfig(input: LLMConfigInput) {

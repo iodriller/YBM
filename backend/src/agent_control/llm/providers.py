@@ -260,15 +260,31 @@ def _is_unavailability(exc: Exception) -> bool:
     return False
 
 
+def build_provider_for_profile(profile: LLMProfileConfig, *, role: str = "llm") -> LLMProvider:
+    """Map a profile's `provider` field to a provider implementation.
+
+    The only place that mapping lives. `openai_compatible` covers every
+    provider in the catalog that speaks the OpenAI chat-completions shape -
+    they differ by base_url and key, which are profile data, not code.
+    Anthropic is native because its API is not OpenAI-compatible (see
+    llm/anthropic_provider.py).
+    """
+    if profile.provider == "anthropic":
+        from agent_control.llm.anthropic_provider import AnthropicProvider
+
+        return AnthropicProvider(profile)
+    if profile.provider == "openai_compatible":
+        return OpenAICompatibleProvider(profile)
+    raise ValueError(f"unsupported {role} LLM provider: {profile.provider}")
+
+
 def _build_profile_provider(settings: AppSettings, profile_name: str | None, role: str) -> LLMProvider | None:
     if not profile_name:
         return None
     profile = settings.llm.profiles.get(profile_name)
     if profile is None:
         return None
-    if profile.provider != "openai_compatible":
-        raise ValueError(f"unsupported {role} LLM provider: {profile.provider}")
-    return OpenAICompatibleProvider(profile)
+    return build_provider_for_profile(profile, role=role)
 
 
 def _with_fallback(settings: AppSettings, provider: LLMProvider | None, primary_name: str | None) -> LLMProvider | None:
