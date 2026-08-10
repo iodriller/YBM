@@ -304,6 +304,36 @@ async def run_task_to_completion(
 _REPLAY_MISS_MARKERS = ("No recorded", "closest fixture")
 
 
+def assert_completed(task: TaskRecord) -> None:
+    """Assert a task completed, and say why it did not when it fails.
+
+    A bare ``assert task.status == TaskStatus.COMPLETED`` reports only that the
+    status was FAILED, which on CI - a platform the recording machine cannot
+    reproduce locally - leaves nothing to work from. The reason is already in
+    the task; this puts it in the assertion message.
+    """
+    if task.status == TaskStatus.COMPLETED:
+        return
+
+    error = str(task.metadata.get("last_worker_error") or "").strip()
+    history = task.metadata.get("operator_history")
+    if isinstance(history, list):
+        steps = "\n".join(
+            f"    {index}. {entry.get('tool_name', '?')} ({entry.get('status', '?')})"
+            f"{' error=' + str(entry.get('error'))[:200] if entry.get('error') else ''}"
+            for index, entry in enumerate(history, start=1)
+            if isinstance(entry, dict)
+        ) or "    (empty)"
+    else:
+        steps = "    (no operator history)"
+
+    raise AssertionError(
+        f"expected COMPLETED, got {task.status.value}\n"
+        f"  last_worker_error: {error or '(none recorded)'}\n"
+        f"  operator history:\n{steps}"
+    )
+
+
 def assert_rejected(task: TaskRecord, *, because: str | None = None) -> None:
     """Assert a task was refused by the behaviour under test, not by the harness.
 

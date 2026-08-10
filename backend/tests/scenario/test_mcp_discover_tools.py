@@ -23,10 +23,10 @@ from __future__ import annotations
 import sys
 
 from agent_control.config import MCPConfig, MCPServerConfig
-from agent_control.schemas import TaskStatus
 import pytest
 
 from .harness import (
+    assert_completed,
     MCP_HANDSHAKE_TIMEOUT_SECONDS,
     assert_rejected,
     build_scenario,
@@ -64,7 +64,7 @@ async def test_mcp_discover_tools_lists_configured_tools(tmp_path, monkeypatch) 
         assert call["request"].get("input", {}).get("operation") == "list_tools"
         assert call["result"]["status"] == "succeeded"
         assert any(tool.get("name") == "echo" for tool in call["result"]["output"].get("tools", []))
-    assert task.status == TaskStatus.COMPLETED
+    assert_completed(task)
 
 
 @pytest.mark.asyncio

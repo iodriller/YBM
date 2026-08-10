@@ -269,7 +269,7 @@ class FilesystemManageAdapter:
         include_ocr = bool(request.input.get("include_ocr", True))
         max_files = int(request.input.get("max_files") or 50)
         max_chars = int(request.input.get("max_chars_per_file") or 4000)
-        iterator = root.rglob("*") if recursive else root.iterdir()
+        iterator = _ordered_children(root, recursive=recursive)
         files: list[dict[str, Any]] = []
         for path in iterator:
             if len(files) >= max_files:
@@ -340,7 +340,7 @@ class FilesystemManageAdapter:
         recursive = bool(request.input.get("recursive", False))
         max_files = int(request.input.get("max_files") or 1000)
         manifest = []
-        iterator = root.rglob("*") if recursive else root.iterdir()
+        iterator = _ordered_children(root, recursive=recursive)
         for path in iterator:
             if len(manifest) >= max_files:
                 break
@@ -373,7 +373,7 @@ class FilesystemManageAdapter:
         max_files = int(request.input.get("max_files") or 1000)
         manifest = []
         rename_manifest = []
-        iterator = root.rglob("*") if recursive else root.iterdir()
+        iterator = _ordered_children(root, recursive=recursive)
         for path in iterator:
             if len(manifest) >= max_files:
                 break
@@ -566,6 +566,26 @@ def _rewrite_placeholder_user_path(value: str) -> str:
 
 def _resolve_root(value: str) -> Path:
     return Path(value).expanduser().resolve()
+
+
+def _ordered_children(root: Path, *, recursive: bool):
+    """Directory entries in a stable order, on every platform.
+
+    `Path.iterdir()` and `rglob()` yield in whatever order the filesystem
+    returns. NTFS keeps a sorted index so Windows looks alphabetical; ext4
+    hashes names, so Linux order is arbitrary and can differ between two
+    machines listing the same directory.
+
+    That matters twice over. Every one of these callers truncates at
+    `max_files`, so an unstable order changes *which* files the model is shown,
+    not merely their sequence. And a recorded scenario replays the prompt built
+    from that listing, so an unsorted listing cannot replay across platforms.
+
+    `_walk_limited` (used by inspect_folder and search) already sorted with
+    this key; these four callers did not.
+    """
+    iterator = root.rglob("*") if recursive else root.iterdir()
+    return sorted(iterator, key=lambda path: (str(path).casefold(), str(path)))
 
 
 def _walk_limited(root: Path, *, max_depth: int):

@@ -8,10 +8,10 @@ recorded against a live LLM. Fixture re-recorded 2026-07-28
 from __future__ import annotations
 
 from agent_control.config import CapabilityPolicy, default_capability_policies
-from agent_control.schemas import Capability, RiskLevel, TaskStatus
+from agent_control.schemas import Capability, RiskLevel
 import pytest
 
-from .harness import assert_rejected, build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
+from .harness import assert_completed, assert_rejected, build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
 
 
 @pytest.mark.asyncio
@@ -52,7 +52,7 @@ async def test_code_interpreter_computes_fibonacci(tmp_path, monkeypatch) -> Non
         auto_approve=True,
     )
 
-    assert task.status == TaskStatus.COMPLETED
+    assert_completed(task)
     assert "6765" in task.metadata.get("synthesized_answer", "")
     tool_calls = scenario.repositories.tool_invocations.list_for_task(task.id)
     assert any(call["tool_name"] == "code.interpreter" for call in tool_calls)

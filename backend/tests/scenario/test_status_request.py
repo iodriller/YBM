@@ -16,10 +16,9 @@ localdeploy_qwen3vl_8b).
 
 from __future__ import annotations
 
-from agent_control.schemas import TaskStatus
 import pytest
 
-from .harness import build_scenario, isolated_settings, run_task_to_completion
+from .harness import assert_completed, build_scenario, isolated_settings, run_task_to_completion
 
 
 @pytest.mark.asyncio
@@ -29,7 +28,7 @@ async def test_status_request_calls_task_status_tool_then_completes(tmp_path, mo
 
     task = await run_task_to_completion(scenario, "give me the current status")
 
-    assert task.status == TaskStatus.COMPLETED
+    assert_completed(task)
     # decide() x2 (call_tool task.status, then done) - not zero; see module docstring.
     assert len(scenario.provider.calls) == 2
     tool_calls = scenario.repositories.tool_invocations.list_for_task(task.id)
@@ -52,6 +51,6 @@ async def test_status_request_reports_recent_tasks(tmp_path, monkeypatch) -> Non
     # covered.
     task = await run_task_to_completion(scenario, "what's the current task status?")
 
-    assert task.status == TaskStatus.COMPLETED
+    assert_completed(task)
     tool_calls = scenario.repositories.tool_invocations.list_for_task(task.id)
     assert any(call["tool_name"] == "task.status" for call in tool_calls)

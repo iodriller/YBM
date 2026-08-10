@@ -44,11 +44,12 @@ from __future__ import annotations
 import sys
 
 from agent_control.config import MCPConfig, MCPServerConfig
-from agent_control.schemas import Capability, RiskLevel, TaskStatus
+from agent_control.schemas import Capability, RiskLevel
 from agent_control.tools.mcp_client import write_mcp_catalog
 import pytest
 
 from .harness import (
+    assert_completed,
     MCP_HANDSHAKE_TIMEOUT_SECONDS,
     assert_rejected,
     build_scenario,
@@ -121,7 +122,7 @@ async def test_mcp_call_fake_echo_tool_call_succeeds(tmp_path, monkeypatch) -> N
         assert call_input.get("tool") == "echo"
         assert call["result"]["status"] == "succeeded"
         assert "hello from E2E" in str(call["result"]["output"].get("result", ""))
-    assert task.status == TaskStatus.COMPLETED
+    assert_completed(task)
 
 
 @pytest.mark.asyncio

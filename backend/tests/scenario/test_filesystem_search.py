@@ -11,10 +11,10 @@ case specifically.
 from __future__ import annotations
 
 from agent_control.config import AppSettings, CapabilityPolicy, default_capability_policies
-from agent_control.schemas import Capability, RiskLevel, TaskStatus
+from agent_control.schemas import Capability, RiskLevel
 import pytest
 
-from .harness import assert_rejected, build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
+from .harness import assert_completed, assert_rejected, build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
 
 
 def _settings(monkeypatch, tmp_path, allowed_root: str) -> AppSettings:
@@ -42,7 +42,7 @@ async def test_filesystem_search_finds_resume_file(tmp_path, monkeypatch) -> Non
         scenario, f"look in the folder {docs_dir} and find which file mentions a resume"
     )
 
-    assert task.status == TaskStatus.COMPLETED
+    assert_completed(task)
     assert "resume.txt" in task.metadata.get("synthesized_answer", "")
     tool_calls = scenario.repositories.tool_invocations.list_for_task(task.id)
     assert any(call["tool_name"] == "filesystem.manage" for call in tool_calls)

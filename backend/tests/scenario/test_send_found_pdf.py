@@ -12,10 +12,9 @@ localdeploy_qwen3vl_8b).
 
 from __future__ import annotations
 
-from agent_control.schemas import TaskStatus
 import pytest
 
-from .harness import assert_rejected, build_scenario, filesystem_settings, isolated_settings, run_task_to_completion, scenario_scratch_dir
+from .harness import assert_completed, assert_rejected, build_scenario, filesystem_settings, isolated_settings, run_task_to_completion, scenario_scratch_dir
 
 
 def _write_minimal_pdf(path, text: str) -> None:
@@ -68,7 +67,7 @@ async def test_send_found_pdf_delivers_the_file(tmp_path, monkeypatch) -> None:
 
     task = await run_task_to_completion(scenario, f"Send me the PDF file at {pdf_path}.")
 
-    assert task.status == TaskStatus.COMPLETED
+    assert_completed(task)
     tool_calls = scenario.repositories.tool_invocations.list_for_task(task.id)
     assert any(call["tool_name"] == "artifact.deliver" for call in tool_calls)
     assert scenario.telegram.documents

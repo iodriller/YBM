@@ -14,10 +14,10 @@ implicit_code_interpreter_numbers_report`, localdeploy_qwen3vl_8b).
 from __future__ import annotations
 
 from agent_control.config import CapabilityPolicy, default_capability_policies
-from agent_control.schemas import Capability, RiskLevel, TaskStatus
+from agent_control.schemas import Capability, RiskLevel
 import pytest
 
-from .harness import assert_rejected, build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
+from .harness import assert_completed, assert_rejected, build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
 
 
 @pytest.mark.asyncio
@@ -55,7 +55,7 @@ async def test_implicit_routing_selects_code_interpreter_not_coding_agent(tmp_pa
         auto_approve=True,
     )
 
-    assert task.status == TaskStatus.COMPLETED
+    assert_completed(task)
     tool_calls = scenario.repositories.tool_invocations.list_for_task(task.id)
     tool_names = {call["tool_name"] for call in tool_calls}
     assert "code.interpreter" in tool_names

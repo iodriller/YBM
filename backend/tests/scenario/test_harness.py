@@ -26,7 +26,7 @@ from agent_control.schemas import (
 from agent_control.storage import AuditLogger, Database, Repositories
 import pytest
 
-from .harness import Scenario, isolated_settings, run_task_to_completion
+from .harness import Scenario, assert_completed, isolated_settings, run_task_to_completion
 
 
 class _ApprovalThenCompleteWorker:
@@ -104,7 +104,7 @@ async def test_auto_approve_true_approves_pending_and_continues_to_completion(tm
 
     task = await run_task_to_completion(scenario, "do a gated thing", auto_approve=True)
 
-    assert task.status == TaskStatus.COMPLETED
+    assert_completed(task)
     # First call filed the approval and returned AWAITING_APPROVAL; the
     # mechanism approved it and ticked the worker again for COMPLETED.
     assert worker.calls == 2

@@ -45,10 +45,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from agent_control.config import CapabilityPolicy, default_capability_policies
-from agent_control.schemas import Capability, RiskLevel, TaskStatus
+from agent_control.schemas import Capability, RiskLevel
 import pytest
 
-from .harness import assert_rejected, build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
+from .harness import assert_completed, assert_rejected, build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
 
 
 @pytest.mark.asyncio
@@ -90,7 +90,7 @@ async def test_code_interpreter_csv_summary_writes_json_totals(tmp_path, monkeyp
         auto_approve=True,
     )
 
-    assert task.status == TaskStatus.COMPLETED
+    assert_completed(task)
     tool_calls = scenario.repositories.tool_invocations.list_for_task(task.id)
     interpreter_calls = [call for call in tool_calls if call["tool_name"] == "code.interpreter"]
     assert interpreter_calls
