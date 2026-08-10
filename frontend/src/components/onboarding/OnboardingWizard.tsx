@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -10,6 +10,8 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import {
   ApiError,
   awaitFirstTelegramMessage,
+  fetchChannels,
+  type ChannelSpec,
   verifyTelegramToken,
   type TelegramFirstMessage,
   type TelegramVerifyResult,
@@ -23,6 +25,7 @@ import {
 } from "@/lib/queries"
 import { ThemeToggle } from "@/components/layout/ThemeToggle"
 import { ProviderPicker } from "@/components/onboarding/ProviderPicker"
+import { ChannelGrid } from "@/components/onboarding/ChannelGrid"
 
 type Step = "brain" | "face" | "done"
 
@@ -49,6 +52,7 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
   const updateLLM = useUpdateLLMConfig()
   const updateTelegram = useUpdateTelegramConfig()
 
+  const [channels, setChannels] = useState<ChannelSpec[]>([])
   const [telegramEnabled, setTelegramEnabled] = useState(false)
   const [telegramToken, setTelegramToken] = useState("")
   // The guided Telegram sequence. Enabling used to save a token and nothing
@@ -89,17 +93,41 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
     }
   }
 
+  useEffect(() => {
+    fetchChannels()
+      .then((data) => setChannels(data.channels))
+      // The grid is additive: if the catalog cannot be read the step still
+      // works, it just shows no cards.
+      .catch(() => setChannels([]))
+  }, [])
+
   const presets = settingsData?.integrations.llm.presets ?? []
 
   return (
     <div className="relative flex h-svh w-full items-center justify-center bg-background p-6">
       <div className="absolute top-4 right-4"><ThemeToggle /></div>
-      <Card className="w-full max-w-md">
+      <Card className="w-full max-w-xl shadow-lg">
         <CardHeader>
-          <CardTitle>Welcome to YBM Control</CardTitle>
-          <CardDescription>
-            A few quick choices - skippable at every step, re-runnable later from Settings.
-          </CardDescription>
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-sm font-semibold text-primary-foreground">
+              Y
+            </div>
+            <div>
+              <CardTitle>Welcome to YBM Control</CardTitle>
+              <CardDescription>
+                Two quick questions. Skippable, and re-runnable later from Settings.
+              </CardDescription>
+            </div>
+          </div>
+          {/* A dot per step beats "Step 1 of 2" buried in the body text. */}
+          {step !== "done" && (
+            <div className="mt-3 flex items-center gap-1.5" aria-hidden>
+              <span className="h-1.5 w-10 rounded-full bg-primary" />
+              <span
+                className={`h-1.5 w-10 rounded-full ${step === "face" ? "bg-primary" : "bg-border"}`}
+              />
+            </div>
+          )}
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           {detectPending && <Skeleton className="h-32 w-full" />}
@@ -299,10 +327,22 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
 
           {!detectPending && detect && step === "face" && (
             <>
-              <p className="text-sm font-medium">Step 2 of 2 &middot; Pick a face</p>
+              <p className="text-sm font-medium">Step 2 of 2 &middot; Where can you reach it?</p>
               <p className="text-sm text-muted-foreground">
-                Web chat works with zero setup — you&apos;re using it right now.
+                Web chat already works. Connect a messaging app to reach YBM from your phone.
               </p>
+
+              {/* The catalog, not a hardcoded toggle - a single "Also enable
+                  Telegram" switch implied Telegram was the only thing that
+                  would ever exist. */}
+              {channels.length > 0 && (
+                <ChannelGrid
+                  channels={channels}
+                  onConnect={(key) => {
+                    if (key === "telegram") setTelegramEnabled(true)
+                  }}
+                />
+              )}
 
               {detect.telegram_token_present ? (
                 <div className="flex flex-col gap-2 rounded-md border border-border bg-muted/30 p-3">
@@ -312,15 +352,11 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                   </div>
                   <div className="flex items-center gap-2">
                     <Switch checked={telegramEnabled} onCheckedChange={setTelegramEnabled} />
-                    <Label className="text-sm">Enable Telegram with it</Label>
+                    <Label className="text-sm">Use it for Telegram</Label>
                   </div>
                 </div>
               ) : (
                 <>
-                  <div className="flex items-center gap-2">
-                    <Switch checked={telegramEnabled} onCheckedChange={setTelegramEnabled} />
-                    <Label className="text-sm">Also enable Telegram</Label>
-                  </div>
                   {telegramEnabled && (
                     <div className="flex flex-col gap-3 rounded-md border border-border bg-muted/30 p-3">
                       {/* Three steps, each confirmed before the next. A bare

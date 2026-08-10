@@ -2265,3 +2265,45 @@ def test_llm_verify_says_a_local_runtime_is_not_running(monkeypatch, tmp_path) -
 
     assert response.status_code == 502
     assert "running" in response.json()["detail"]
+
+
+def test_channel_catalog_reports_live_connection_state(monkeypatch, tmp_path) -> None:
+    """Adding a way to reach YBM is a catalog row, but `connected` must come
+    from real config - the console must never claim a channel is live when it
+    is not."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    body = client.get("/admin/api/channels").json()
+    by_key = {c["key"]: c for c in body["channels"]}
+
+    # Web chat is the one thing that always works.
+    assert by_key["web"]["connected"] is True
+    assert by_key["web"]["zero_setup"] is True
+    # Telegram is unconfigured on a fresh install, so it must not claim to be.
+    assert by_key["telegram"]["connected"] is False
+    assert by_key["telegram"]["guided"] is True
+    # Planned channels are listed, so the shape of the product is visible.
+    assert by_key["discord"]["status"] == "planned"
+    assert by_key["discord"]["note"]
+
+
+def test_channel_catalog_does_not_call_telegram_connected_on_a_token_alone(
+    monkeypatch, tmp_path
+) -> None:
+    """A token with an empty allowlist produces a bot that ignores every
+    message, so that state is not 'connected'."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:AA-token")
+    settings = AppSettings(_env_file=None)
+    settings.channels.telegram.enabled = True
+    settings.channels.telegram.allowed_user_ids = []
+    settings.channels.telegram.allowed_chat_ids = []
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"), settings=settings)
+
+    body = client.get("/admin/api/channels").json()
+    telegram = next(c for c in body["channels"] if c["key"] == "telegram")
+    assert telegram["connected"] is False

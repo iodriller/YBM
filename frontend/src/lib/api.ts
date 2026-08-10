@@ -966,6 +966,23 @@ export type LLMConfigInput = {
   api_key_value: string | null
 }
 
+/** The channel catalog. Adding a way to reach YBM is a backend table row. */
+const ChannelSchema = z.object({
+  key: z.string(),
+  label: z.string(),
+  status: z.enum(["ready", "manual", "planned"]),
+  blurb: z.string(),
+  note: z.string(),
+  guided: z.boolean(),
+  zero_setup: z.boolean(),
+  connected: z.boolean(),
+})
+export type ChannelSpec = z.infer<typeof ChannelSchema>
+
+export function fetchChannels() {
+  return apiFetch("/api/channels", z.object({ channels: z.array(ChannelSchema) }))
+}
+
 /** The provider catalog. Adding a provider is a backend table row, not a UI change. */
 const LLMProviderSchema = z.object({
   key: z.string(),

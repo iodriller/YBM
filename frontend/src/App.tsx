@@ -28,10 +28,20 @@ const OnboardingWizard = lazy(() =>
   import("@/components/onboarding/OnboardingWizard").then((m) => ({ default: m.OnboardingWizard })),
 )
 
+const SETUP_DISMISSED_KEY = "ybm.setup.dismissed"
+
 // Route table matches docs/UI_REWRITE_PLAN.md §10's page table exactly.
 function App() {
   const { data: bootstrap, isPending } = useBootstrap()
   const [manualWizard, setManualWizard] = useState(false)
+  // The wizard calls itself "skippable at every step" but `showWizard` used to
+  // be driven purely by `onboarding_complete`, which stays false when you skip
+  // - so skipping re-rendered the wizard forever and the console was
+  // unreachable. Dismissal is remembered per install so a skip actually skips;
+  // the console then carries a persistent banner until setup is finished.
+  const [dismissedSetup, setDismissedSetup] = useState(
+    () => localStorage.getItem(SETUP_DISMISSED_KEY) === "1",
+  )
   // Bumped after TokenEntryScreen verifies a manually-typed token, to force
   // this component to re-render past the token gate below (the token itself
   // lives outside React state in lib/api.ts, so setting it alone wouldn't
@@ -52,11 +62,20 @@ function App() {
     return <TokenEntryScreen key={tokenVersion} onVerified={() => setTokenVersion((v) => v + 1)} />
   }
 
-  const showWizard = manualWizard || (bootstrap ? !bootstrap.onboarding_complete : false)
+  const setupIncomplete = bootstrap ? !bootstrap.onboarding_complete : false
+  const showWizard = manualWizard || (setupIncomplete && !dismissedSetup)
   if (showWizard) {
     return (
       <Suspense fallback={<PageFallback />}>
-        <OnboardingWizard onDone={() => setManualWizard(false)} />
+        <OnboardingWizard
+          onDone={() => {
+            setManualWizard(false)
+            // Remember the dismissal even when setup is unfinished, or the
+            // next render puts the wizard straight back.
+            localStorage.setItem(SETUP_DISMISSED_KEY, "1")
+            setDismissedSetup(true)
+          }}
+        />
       </Suspense>
     )
   }

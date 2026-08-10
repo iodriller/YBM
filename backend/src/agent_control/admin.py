@@ -17,6 +17,7 @@ from pydantic import Field
 from agent_control.bootstrap import OLLAMA_TAGS_URL, _http_json, check_llm_configured, collect_checks
 from agent_control.config_sync import CONFIG_FILE_PATH, ConfigManager, read_env_value
 from agent_control.config import AppSettings, backend_base_url, is_loopback_host
+from agent_control.channels import catalog as channel_catalog
 from agent_control.llm import catalog as llm_catalog
 from agent_control.llm.providers import build_provider_for_profile
 from agent_control.observation.artifacts import ArtifactService
@@ -1152,6 +1153,42 @@ def create_admin_router(
                     "first_name": sender.get("first_name"),
                 }
         return {"found": False}
+
+    @router.get("/api/channels")
+    def admin_list_channels(request: Request) -> dict[str, Any]:
+        """The channel catalog, with each entry's live connection state.
+
+        Data, not code: adding a way to reach YBM is a row in
+        channels/catalog.py. `connected` is resolved per request from real
+        config rather than stored in the catalog, so the console never claims
+        a channel is live when it is not.
+        """
+        loaded = require_admin(request)
+        telegram_connected = bool(
+            loaded.channels.telegram.enabled
+            and read_env_value(loaded.channels.telegram.token_env)
+            and (
+                loaded.channels.telegram.allowed_user_ids
+                or loaded.channels.telegram.allowed_chat_ids
+            )
+        )
+        whatsapp_connected = bool(getattr(loaded.channels, "whatsapp", None) and loaded.channels.whatsapp.enabled)
+        live = {"web": True, "telegram": telegram_connected, "whatsapp": whatsapp_connected}
+        return {
+            "channels": [
+                {
+                    "key": spec.key,
+                    "label": spec.label,
+                    "status": spec.status,
+                    "blurb": spec.blurb,
+                    "note": spec.note,
+                    "guided": spec.guided,
+                    "zero_setup": spec.zero_setup,
+                    "connected": live.get(spec.key, False),
+                }
+                for spec in channel_catalog.CHANNELS
+            ]
+        }
 
     @router.get("/api/llm/providers")
     def admin_list_llm_providers(request: Request) -> dict[str, Any]:
