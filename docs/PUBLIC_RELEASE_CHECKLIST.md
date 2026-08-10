@@ -29,7 +29,7 @@ Recorded because these are the usual fears, and they do not apply here:
 
 ## Blockers
 
-### B1 — The secret scan has never actually scanned history
+### B1 — The secret scan had never scanned history — FIXED
 
 `.github/workflows/ci.yml`'s `secrets` job is named "Scan Git history for
 leaked secrets" and sets `fetch-depth: 0`, but `gitleaks-action` on a `push`
@@ -40,42 +40,52 @@ The sweep above is a good signal and is *not* a substitute: it matches known
 shapes, and generic high-entropy secrets are exactly what pattern matching
 misses.
 
-**Do:** run gitleaks once over the whole history before flipping visibility —
-`gitleaks detect --log-opts=--all --redact -v` locally, or add
-`--log-opts=--all` to the workflow. Fix anything it finds *before* the repo is
-public, because rewriting history afterwards does not un-publish anything.
+Run over all 175 commits, it found **four** hits - all in `test_redaction.py`,
+the fake values added this week for the quoted-key and multi-word-value cases.
+Nothing real, but they would have failed CI the moment the scan was fixed.
 
-### B2 — Your Windows username is in 19 tracked files
+New canaries now carry a `NOTAREALKEY` marker allowlisted once, so a future
+redaction test needs no allowlist change; the pre-marker literals are
+allowlisted explicitly, because a commit already made cannot be un-made.
+History now scans clean.
 
-`oneye` appears in recorded scenario fixtures (13 files), three tests, a doc,
-and one source file, almost always as
-`C:\Users\oneye\AppData\Local\Temp\ybm_scenario_scratch\…`.
+The job runs a pinned, checksum-verified gitleaks binary with an explicit
+`--log-opts=--all` rather than the action, so the scope is visible in the diff.
 
-Mild as disclosures go, but it is permanent and it links the repo to a personal
-account. The fixtures are regenerable, so this is cheap to clear:
+Worth knowing: scanning the working tree rather than git finds 702 hits - 671 in
+`.agent_control/`, **six real ones in `.env`**, two in `__pycache__`. All
+gitignored. `.gitignore` is what stands between those and a public repository.
 
-- Extend `scripted_llm._normalize` to collapse the user segment of a Windows
-  temp path the way it already collapses `pytest-of-<user>` and the scenario
-  scratch root, then re-record. The keys become user-independent too, which is
-  worth having on its own.
-- Or accept it, deliberately, and note that decision here.
+### B2 — Account name in tracked files — FIXED, with one residual
 
-### B3 — `mcp_client.py` hardcodes that path in a model-facing example
+Was 19 files. The cause was that the recorder stored **raw** prompts, so every
+recording carried the recording machine's absolute paths. It now stores
+normalized ones, `_normalize` collapses a Windows user directory, and responses
+are stored with a `<scenario_scratch_root>` placeholder that
+`_rebase_scenario_paths` expands again at replay.
 
-`tools/mcp_client.py:444`:
+**One residual, deliberately left:** `code_interpreter_generate_file.json`
+still contains it inside a `tool_input.code` value — source code the model
+generated, which embedded the absolute path it had been given. Re-recording
+reproduces it; the model writes that path every time.
 
-```python
-{"operation": "install_server", "name": "filesystem", "command": "npx",
- "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\\\Users\\\\oneye"]},
-```
+`_placeholder_scenario_paths` and `_rebase_scenario_paths` both skip `code` on
+purpose ("source code is replay input, not a returned path"), and
+`test_replay_does_not_rewrite_recorded_source_code` pins that. Narrowing the
+carve-out to rebase only the scratch root inside `code` would clear it and
+would arguably fix a latent problem — generated code currently replays with a
+path that does not exist on any other machine — but it changes replay semantics
+for generated code, and that is a poor trade against one account name already
+discoverable from the repository owner's public profile.
 
-This sits in a `ToolDefinition`'s `examples=`, so it is both public source and
-part of what the model is shown. A placeholder (`C:\\Users\\you` or the
-platform-appropriate home) is strictly better on both counts.
+**If you want it gone:** narrow the carve-out and update that test, or hand-edit
+the single fixture value. Both are deliberate acts; neither should happen by
+accident.
 
-**Note the cost:** tool examples feed the operator's tool catalog, so changing
-this is a prompt change and invalidates the scenario fixtures. Bundle it with
-B2's re-record rather than paying that twice.
+### B3 — `mcp_client.py` model-facing example — FIXED
+
+The `install_server` example no longer names a home directory. It is shown to
+the model in the tool catalog, so it was both public source and prompt content.
 
 ### B4 — CI is red — cause now known
 

@@ -114,6 +114,20 @@ _PYTEST_TMP_PATH = re.compile(
     _PYTEST_TMP_ROOT.pattern + r"(?:[\\/][^\s'\"),\]}]+)*",
     re.IGNORECASE,
 )
+
+# A pydantic validation message's rendered value, up to the closing brace. Kept
+# non-greedy and newline-free so one span cannot swallow the rest of a prompt.
+_INPUT_VALUE_SPAN = re.compile(r"input_value=\{[^}\n]*\}")
+
+# `C:\Users\<name>` / `C:/Users/<name>`, capturing the separator style so the
+# replacement does not itself change one.
+_WINDOWS_USER_DIR = re.compile(r"([A-Za-z]:[\\/]Users[\\/])[^\\/\s'\"),\]}]+", re.IGNORECASE)
+SCRATCH_PLACEHOLDER = "<scenario_scratch_root>"
+
+# A stored placeholder path, with whatever suffix followed the scratch root.
+_PLACEHOLDER_PATH = re.compile(re.escape(SCRATCH_PLACEHOLDER) + r"(?:/[^\s'\"),\]}]+)*")
+
+
 def _normalize(text: str) -> str:
     # Tool output uses the host platform's native line endings. Recordings
     # made on Windows therefore contain CRLF while Linux CI produces LF for
@@ -131,7 +145,7 @@ def _normalize(text: str) -> str:
         root_match = _SCENARIO_SCRATCH_ROOT.match(matched_path)
         suffix = matched_path[root_match.end():] if root_match else ""
         normalized_suffix = suffix.replace("\\", "/")
-        return f"<scenario_scratch_root>{normalized_suffix}"
+        return f"{SCRATCH_PLACEHOLDER}{normalized_suffix}"
 
     text = _SCENARIO_SCRATCH_PATH.sub(replace_path, text)
 
@@ -142,6 +156,23 @@ def _normalize(text: str) -> str:
         return f"<pytest_tmp>{suffix.replace(chr(92), '/')}"
 
     text = _PYTEST_TMP_PATH.sub(replace_pytest_tmp, text)
+
+    # Pydantic renders the offending value into its validation message as
+    # `input_value={...}`, and truncates the middle of that repr with a literal
+    # "...". The truncation throws away the scenario-scratch prefix the
+    # substitutions above match on, leaving only a tail - which still carries
+    # the platform's path separator. So a recording made on Windows ends
+    # "...ch\file_find_and_read'}" and the same run on Linux ends
+    # "...tch/file_find_and_read'}", the prompts differ, and the fixture cannot
+    # replay. Separators inside that span are normalized to "/", which is safe
+    # because this text is only ever hashed and diffed, never executed.
+    text = _INPUT_VALUE_SPAN.sub(lambda m: m.group(0).replace("\\", "/"), text)
+
+    # Any remaining Windows user directory: the recording machine's account
+    # name is not part of the behaviour under test, and committing it to a
+    # public repository is a disclosure with no upside.
+    text = _WINDOWS_USER_DIR.sub(r"\1<user>", text)
+
     return _HEX_RUN.sub("<id>", _TEMPDIR_RUN.sub("<tmpdir>", text))
 
 
@@ -173,6 +204,34 @@ def _reindex(entries: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return indexed
 
 
+def _placeholder_scenario_paths(value: Any) -> Any:
+    """Replace the recording machine's scratch root with a placeholder.
+
+    Prompts are normalized before being stored, but a response echoes the path
+    back - a tool_input root, a final answer naming the folder - and that is
+    how a Windows "Users/<account>" path reached thirteen committed fixtures. The
+    placeholder is expanded again by `_rebase_scenario_paths` at replay, so the
+    behaviour is unchanged and the fixture no longer names anyone.
+    """
+    if isinstance(value, str):
+        def replace_path(match: re.Match[str]) -> str:
+            matched_path = match.group(0)
+            root_match = _SCENARIO_SCRATCH_ROOT.match(matched_path)
+            suffix = matched_path[root_match.end():] if root_match else ""
+            return f"{SCRATCH_PLACEHOLDER}{suffix.replace(chr(92), '/')}"
+
+        return _SCENARIO_SCRATCH_PATH.sub(replace_path, value)
+    if isinstance(value, list):
+        return [_placeholder_scenario_paths(item) for item in value]
+    if isinstance(value, dict):
+        # Same carve-out as the rebase below: source code is replay input.
+        return {
+            key: item if key == "code" else _placeholder_scenario_paths(item)
+            for key, item in value.items()
+        }
+    return value
+
+
 def _rebase_scenario_paths(value: Any) -> Any:
     if isinstance(value, str):
         def replace_path(match: re.Match[str]) -> str:
@@ -182,6 +241,14 @@ def _rebase_scenario_paths(value: Any) -> Any:
             parts = [part for part in re.split(r"[\\/]", suffix) if part]
             return str(Path(_CURRENT_SCENARIO_SCRATCH_ROOT, *parts))
 
+        def expand_placeholder(match: re.Match[str]) -> str:
+            suffix = match.group(0)[len(SCRATCH_PLACEHOLDER):]
+            parts = [part for part in suffix.split("/") if part]
+            return str(Path(_CURRENT_SCENARIO_SCRATCH_ROOT, *parts))
+
+        # Placeholder first; fixtures recorded before it still hold a real
+        # absolute path, which the substitution after this one handles.
+        value = _PLACEHOLDER_PATH.sub(expand_placeholder, value)
         return _SCENARIO_SCRATCH_PATH.sub(replace_path, value)
     if isinstance(value, list):
         return [_rebase_scenario_paths(item) for item in value]
@@ -319,11 +386,18 @@ class RecordingLLMProvider:
 
     def _store(self, method: str, system_prompt: str, user_prompt: str, response: Any) -> None:
         key = fixture_key(method, system_prompt, user_prompt)
+        # The *normalized* prompts are stored, not the raw ones. Raw prompts
+        # carry the recording machine's absolute paths - which is how the
+        # recording user's Windows account name ended up committed in thirteen
+        # fixtures. Normalizing first keeps them host-independent, and loses
+        # nothing: the only consumer is _closest_fixture_hint, which normalizes
+        # before comparing anyway. _normalize is idempotent, so normalizing an
+        # already-normalized prompt is a no-op.
         self._entries[key] = {
             "method": method,
-            "system_prompt": system_prompt,
-            "user_prompt": user_prompt,
-            "response": response,
+            "system_prompt": _normalize(system_prompt),
+            "user_prompt": _normalize(user_prompt),
+            "response": _placeholder_scenario_paths(response),
         }
         _save(self.fixture_path, self._entries)
         self.calls.append({"method": method, "key": key})

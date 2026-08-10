@@ -166,6 +166,85 @@ def test_fixture_key_still_separates_different_pytest_test_directories() -> None
     )
 
 
+def test_fixture_key_normalizes_a_truncated_pydantic_input_value() -> None:
+    """Pydantic renders the offending value into its message as
+    `input_value={...}` and truncates the middle with a literal "...", which
+    discards the scenario-scratch prefix every other rule here matches on. What
+    survives is a tail still carrying the platform separator, so a fixture
+    recorded on Windows could not replay on Linux - the third distinct
+    host-dependency found this way, after the pytest tmp_path counter and
+    sort_keys reordering the recorded payload.
+    """
+    windows = (
+        "1 validation error for FilesystemSearchInput\nquery\n  Field required "
+        r"[type=missing, input_value={'operation': 'search', '...ch\file_find_and_read'}, input_type=dict]"
+    )
+    posix = (
+        "1 validation error for FilesystemSearchInput\nquery\n  Field required "
+        "[type=missing, input_value={'operation': 'search', '...ch/file_find_and_read'}, input_type=dict]"
+    )
+
+    assert fixture_key("generate_structured", "sys", windows) == fixture_key(
+        "generate_structured", "sys", posix
+    )
+
+
+def test_fixture_key_is_independent_of_the_recording_account() -> None:
+    """A recorded prompt keeps the recording machine's absolute paths, which is
+    how one Windows account name reached thirteen committed fixtures."""
+    mine = r"reading C:\Users\alice\Documents\notes.txt"
+    yours = r"reading C:\Users\bob\Documents\notes.txt"
+
+    assert fixture_key("generate_text", "sys", mine) == fixture_key("generate_text", "sys", yours)
+
+
+def test_recorded_response_stores_a_placeholder_and_replays_as_a_real_path() -> None:
+    """A response echoes back the path it was given - a tool_input root, a final
+    answer naming the folder - so storing it verbatim committed the recording
+    machine's account name. It is stored as a placeholder and expanded again on
+    replay, so behaviour is unchanged and the fixture names nobody.
+    """
+    from agent_control.testing.scripted_llm import (
+        _CURRENT_SCENARIO_SCRATCH_ROOT,
+        _placeholder_scenario_paths,
+        _rebase_scenario_paths,
+    )
+
+    recorded_on_windows = {
+        "tool_input": {"root": r"C:\Users\somebody\AppData\Local\Temp\ybm_scenario_scratch\demo"},
+        "code": r"open(r'C:\Users\somebody\AppData\Local\Temp\ybm_scenario_scratch\demo\x.py')",
+    }
+
+    stored = _placeholder_scenario_paths(recorded_on_windows)
+
+    assert stored["tool_input"]["root"] == "<scenario_scratch_root>/demo"
+    assert "somebody" not in stored["tool_input"]["root"]
+    # Source code is replay input, not a returned path - rewriting it can send
+    # platforms down different recorded control flow.
+    assert stored["code"] == recorded_on_windows["code"]
+
+    replayed = _rebase_scenario_paths(stored)
+
+    assert replayed["tool_input"]["root"] == str(
+        Path(_CURRENT_SCENARIO_SCRATCH_ROOT, "demo")
+    )
+
+
+def test_normalize_is_idempotent() -> None:
+    """The recorder stores normalized prompts now, and the closest-fixture hint
+    normalizes again before comparing - so a second pass must be a no-op."""
+    from agent_control.testing.scripted_llm import _normalize
+
+    raw = (
+        r"root C:\Users\carol\AppData\Local\Temp\pytest-of-carol\pytest-31\test_x0\somewhere "
+        r"and input_value={'path': 'C:\Users\carol\a\b.txt'} and tmpab12cd34"
+    )
+    once = _normalize(raw)
+
+    assert _normalize(once) == once
+    assert "carol" not in once
+
+
 def test_fixture_key_normalizes_macos_scenario_scratch_aliases() -> None:
     windows = (
         r"search C:\Users\recording-user\AppData\Local\Temp"

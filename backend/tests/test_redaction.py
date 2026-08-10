@@ -67,15 +67,15 @@ def test_quoted_key_forms_are_redacted() -> None:
     used to be anchored to the key name, so `"api_key": "..."` slipped through
     while `API_KEY=...` was caught."""
     samples = (
-        '{"api_key": "abc123def456ghi", "port": 8080}',
-        '"secret" : "hunter2hunter2"',
-        'api_key: abc123def456ghi',
-        '<config apiKey="abc123def456"/>',
+        '{"api_key": "NOTAREALKEY-abc123def456ghi", "port": 8080}',
+        '"secret" : "NOTAREALKEY-hunter2hunter2"',
+        'api_key: NOTAREALKEY-abc123def456ghi',
+        '<config apiKey="NOTAREALKEY-abc123def456"/>',
     )
     for sample in samples:
         redacted = redact_text(sample)
         assert "***" in redacted, sample
-        for leaked in ("abc123def456ghi", "hunter2hunter2", "abc123def456"):
+        for leaked in ("NOTAREALKEY-abc123def456ghi", "NOTAREALKEY-hunter2hunter2", "NOTAREALKEY-abc123def456"):
             assert leaked not in redacted, sample
 
 
@@ -84,7 +84,7 @@ def test_json_stays_parseable_after_redaction() -> None:
     be read by whatever consumes it."""
     import json
 
-    redacted = redact_text('{"api_key": "abc123def456ghi", "port": 8080}')
+    redacted = redact_text('{"api_key": "NOTAREALKEY-abc123def456ghi", "port": 8080}')
 
     assert json.loads(redacted) == {"api_key": "***", "port": 8080}
 

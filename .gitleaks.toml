@@ -11,10 +11,22 @@ useDefault = true
 description = "Deliberate credential canaries in redaction/e2e-runner tests"
 regexTarget = "line"
 regexes = [
+  # The marker every new test canary should carry. Allowlisting one token
+  # rather than each literal means a future redaction test does not need a
+  # matching change here to keep the history scan green.
+  '''NOTAREALKEY''',
   # sk-live-EVOLEAK-9931-DO-NOT-ECHO and friends (docs/E2E_FINDINGS.md P0-1).
   '''EVOLEAK''',
+  '''CONFIGCANARY''',
   # The RFC 7519 example JWT, used to prove the jwt shape is redacted.
   '''eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.''',
+  # Historical only. These same canaries were committed in 94b7dab before they
+  # carried the NOTAREALKEY marker, and a commit already made cannot be
+  # un-made, so a full-history scan needs them named explicitly. Nothing new
+  # should match these - use the marker instead.
+  '''abc123def456ghi''',
+  '''hunter2hunter2''',
+  '''apiKey="abc123def456"''',
 ]
 
 [[rules]]

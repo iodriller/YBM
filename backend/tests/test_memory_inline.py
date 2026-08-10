@@ -16,7 +16,7 @@ def test_strips_forward_slash_user_path():
 
 
 def test_leaves_real_path_alone():
-    text = r"the real path C:\Users\oneye\Desktop\foo.pdf"
+    text = r"the real path C:\Users\alex\Desktop\foo.pdf"
     assert _strip_placeholder_paths(text) == text
 
 
