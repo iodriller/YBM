@@ -7,7 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { ArtifactCard } from "@/components/chat/ArtifactCard"
 import { ChatMarkdown } from "@/components/chat/ChatMarkdown"
-import { ComposerModeChips, ComposerTools, COMPOSER_MODES } from "@/components/chat/ComposerTools"
+import { ComposerModeChips, ComposerTools } from "@/components/chat/ComposerTools"
 import { VoiceRecorder } from "@/components/chat/VoiceRecorder"
 import { FolderPicker } from "@/components/chat/FolderPicker"
 import { InlineApproval } from "@/components/chat/InlineApproval"
@@ -23,6 +23,7 @@ import {
 } from "@/lib/queries"
 import { cn } from "@/lib/utils"
 import { ApiError, type TaskRecord } from "@/lib/api"
+import { COMPOSER_MODES } from "@/lib/composer-modes"
 
 const WIDTH_OPTIONS: { value: ChatWidth; label: string; icon: typeof Minimize2 }[] = [
   { value: "comfortable", label: "Comfortable", icon: Minimize2 },

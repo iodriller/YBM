@@ -54,6 +54,8 @@ whatever is missing — Python included — and opens the console.
 **Docker:**
 
 ```bash
+cp .env.example .env
+# edit .env and set AGENT_ADMIN_TOKEN to a long random value
 docker compose up -d
 # then open http://127.0.0.1:8765/admin
 ```

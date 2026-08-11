@@ -200,7 +200,12 @@ def _http_ok(url: str, timeout: float = 6.0) -> bool:
 def check_localdeploy(settings: AppSettings) -> Check:
     profile = settings.llm.profiles.get(settings.llm.default_profile)
     base_url = profile.base_url if profile else None
-    if not base_url or not any(host in base_url for host in ("127.0.0.1", "localhost")):
+    # Same gap as check_llm_configured: from inside a container the local
+    # runtime is host.docker.internal, and omitting it made doctor report a
+    # working LocalDeploy as "not a local profile".
+    if not base_url or not any(
+        host in base_url for host in ("127.0.0.1", "localhost", "host.docker.internal")
+    ):
         return Check("LocalDeploy", "ok", "default LLM profile is not local - skipped")
     health_url = base_url.rsplit("/v1", 1)[0].rstrip("/") + "/health"
     if _http_ok(health_url):
@@ -235,7 +240,11 @@ def check_llm_configured(settings: AppSettings) -> bool:
     base_url = (profile.base_url or "").rstrip("/")
     if base_url.startswith("http://127.0.0.1:11434") or base_url.startswith("http://localhost:11434"):
         return bool(_http_json(OLLAMA_TAGS_URL, timeout=2.0))
-    if any(host in base_url for host in ("127.0.0.1", "localhost")):
+    # host.docker.internal is a local runtime seen from inside a container.
+    # Leaving it out meant a working containerised LocalDeploy fell through to
+    # the API-key branch below, returned False, and the console declared "no
+    # model configured" while the model was answering questions.
+    if any(host in base_url for host in ("127.0.0.1", "localhost", "host.docker.internal")):
         return check_localdeploy(settings).status == "ok"
     return bool(profile.api_key) or bool(profile.api_key_env and read_env_value(profile.api_key_env))
 

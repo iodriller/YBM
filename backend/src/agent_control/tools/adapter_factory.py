@@ -24,6 +24,7 @@ from agent_control.tools.contracts import (
     AdapterFactoryScaffoldOutput,
     AdapterFactoryTestConnectorInput,
 )
+from agent_control.tools.path_utils import safe_path_segment
 from agent_control.tools.spec import Adapters, Definitions, RegistryDeps, ToolDefinition, capability_enabled, failed_result
 
 
@@ -84,7 +85,7 @@ class AdapterFactoryAdapter:
         capability = str(request.input.get("capability") or "filesystem.write").strip()
         tool_name = str(request.input.get("tool_name") or _adapter_name(request)).strip()
         root = Path(self.config.root_dir).expanduser().resolve()
-        adapter_dir = (root / _safe_segment(tool_name)).resolve()
+        adapter_dir = (root / safe_path_segment(tool_name, fallback="generated_adapter")).resolve()
         if root != adapter_dir and root not in adapter_dir.parents:
             raise ValueError("adapter path escaped configured root")
         adapter_dir.mkdir(parents=True, exist_ok=True)
@@ -215,11 +216,6 @@ def _adapter_name(request: ToolCallRequest) -> str:
     return "_".join(useful[:5]) or f"generated_{request.task_id}"
 
 
-def _safe_segment(value: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._")
-    return cleaned or "generated_adapter"
-
-
 def _safe_identifier_segment(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_]+", "_", value).strip("_")
     return cleaned or "generated_adapter"
@@ -309,7 +305,8 @@ def _run_python(args: list[str], *, cwd: Path, timeout_seconds: int) -> _Sandbox
 
 def _load_promotable_adapter(adapter_dir: Path) -> tuple[Any, object]:
     manifest = _load_manifest(adapter_dir)
-    module_name = f"_ybm_dynamic_{_safe_segment(str(manifest.get('name') or adapter_dir.name))}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+    safe_name = safe_path_segment(str(manifest.get("name") or adapter_dir.name), fallback="generated_adapter")
+    module_name = f"_ybm_dynamic_{safe_name}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
     adapter_path = adapter_dir / "adapter.py"
     spec = importlib.util.spec_from_file_location(module_name, adapter_path)
     if spec is None or spec.loader is None:
@@ -337,7 +334,7 @@ def _find_adapter_class(module: object) -> type | None:
 
 
 def _definition_from_manifest(manifest: dict[str, Any], adapter_dir: Path) -> Any:
-    name = _safe_segment(str(manifest.get("name") or adapter_dir.name))
+    name = safe_path_segment(str(manifest.get("name") or adapter_dir.name), fallback="generated_adapter")
     capability = Capability(str(manifest.get("capability") or Capability.FILESYSTEM_WRITE.value))
     operations = tuple(str(item) for item in manifest.get("operations") or [] if str(item).strip())
     examples = tuple(item for item in manifest.get("examples") or [] if isinstance(item, dict))
@@ -444,7 +441,7 @@ def test_{_safe_identifier_segment(name).lower()}_adapter_succeeds() -> None:
         adapter.execute(
             ToolCallRequest(
                 task_id="test_task",
-                tool_name="{_safe_segment(name)}",
+                tool_name="{safe_path_segment(name, fallback='generated_adapter')}",
                 capability=Capability.FILESYSTEM_WRITE,
                 input={{"operation": "test"}},
             )

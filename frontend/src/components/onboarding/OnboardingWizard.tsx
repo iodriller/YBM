@@ -342,9 +342,14 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
               )}
 
               <div className="flex justify-between">
-                <Button variant="ghost" size="sm" onClick={() => setStep("done")}>
-                  Skip
-                </Button>
+                <div className="flex gap-1">
+                  <Button variant="ghost" size="sm" onClick={() => setStep("brain")}>
+                    Back
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => setStep("done")}>
+                    Skip
+                  </Button>
+                </div>
                 <Button
                   size="sm"
                   disabled={
@@ -397,17 +402,22 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
             <>
               <p className="text-sm font-medium">You&apos;re set.</p>
               <p className="text-sm text-muted-foreground">
-                Everything dangerous is off by default - YBM will ask before it touches anything. You can turn
-                capabilities on in Access whenever you need them.
+                High-impact capabilities are off by default - YBM will ask before it touches anything. You can
+                turn capabilities on in Access whenever you need them.
               </p>
               {/* Ending on an empty chat box leaves the user to invent a first
                   request. Suggesting one makes the first act a working round
                   trip instead. */}
               <p className="text-xs text-muted-foreground">Try asking it something like:</p>
               <code className="rounded bg-muted px-2 py-1 text-xs">What can you do?</code>
-              <Button size="sm" onClick={onDone}>
-                Start chatting
-              </Button>
+              <div className="flex justify-between">
+                <Button variant="ghost" size="sm" onClick={() => setStep("face")}>
+                  Back
+                </Button>
+                <Button size="sm" onClick={onDone}>
+                  Start chatting
+                </Button>
+              </div>
             </>
           )}
         </CardContent>

@@ -18,7 +18,7 @@
 # ybm ui-build" placeholder, and that instruction cannot be followed inside a
 # container: there is no frontend/ directory and no node. The whole UI was
 # missing until this stage existed.
-FROM node:22.22.0-bookworm-slim AS frontend
+FROM node:22.22.0-bookworm-slim@sha256:dd9d21971ec4395903fa6143c2b9267d048ae01ca6d3ea96f16cb30df6187d94 AS frontend
 
 WORKDIR /build/frontend
 COPY frontend/package.json frontend/package-lock.json ./
@@ -34,7 +34,7 @@ RUN mkdir -p /build/backend/src/agent_control/static \
 # it must contain both Node and its production dependencies when an operator
 # enables the channel later. Keeping npm in this build stage leaves only the
 # Node runtime and resolved module tree in the final image.
-FROM node:22.22.0-bookworm-slim AS whatsapp
+FROM node:22.22.0-bookworm-slim@sha256:dd9d21971ec4395903fa6143c2b9267d048ae01ca6d3ea96f16cb30df6187d94 AS whatsapp
 
 WORKDIR /build/whatsapp-bridge
 COPY whatsapp-bridge/package.json whatsapp-bridge/package-lock.json ./
@@ -42,7 +42,7 @@ RUN npm ci --omit=dev
 COPY whatsapp-bridge/src/ ./src/
 
 # --- builder: resolve and install dependencies -----------------------------
-FROM ghcr.io/astral-sh/uv:0.9.7-python3.12-bookworm-slim AS builder
+FROM ghcr.io/astral-sh/uv:0.9.7-python3.12-bookworm-slim@sha256:4f52717de41541452f5318571b05da783d2ddf346a94b4d5c6512a4b51e986bd AS builder
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -62,7 +62,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --extra voice --extra tray
 
 # --- runtime ---------------------------------------------------------------
-FROM python:3.12-slim-bookworm AS runtime
+FROM python:3.12-slim-bookworm@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2 AS runtime
 
 # curl is used by the HEALTHCHECK below; git lets the coding-agent tools work
 # against a mounted repository. Both are small and deliberate - nothing else is

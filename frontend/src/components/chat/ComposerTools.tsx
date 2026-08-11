@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react"
-import { Globe, Plus, Telescope, TerminalSquare, X } from "lucide-react"
+import { Plus, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { COMPOSER_MODES } from "@/lib/composer-modes"
 
 /**
  * A tools menu for the composer, following the pattern ChatGPT settled on: one
@@ -16,51 +17,6 @@ import { Button } from "@/components/ui/button"
  * first version let it sit in normal flow, which pushed the "+" onto its own
  * row and dropped the panel on top of the textarea and the send button.
  */
-
-export type ComposerMode = {
-  key: string
-  label: string
-  hint: string
-  icon: typeof Globe
-  /** The capability this needs, so a blocked one can say where to enable it. */
-  capability: string
-  /**
-   * What gets prepended to the message. Naming the operation is the point
-   * here - a mode chip means "use this one", which is exactly the case where
-   * being explicit is correct rather than hand-holding.
-   */
-  instruction: string
-}
-
-export const COMPOSER_MODES: ComposerMode[] = [
-  {
-    key: "web_search",
-    label: "Search the web",
-    hint: "Look things up online before answering",
-    icon: Globe,
-    capability: "browser.open",
-    instruction: "Search the web before answering.",
-  },
-  {
-    key: "deep_research",
-    label: "Deep research",
-    hint: "Reads many sources and writes up findings — takes several minutes",
-    icon: Telescope,
-    capability: "browser.open",
-    // browser.research_pages searches, then visits and summarizes up to ten
-    // external results - the multi-source behaviour this mode promises.
-    instruction:
-      "Research this thoroughly across multiple sources using browser research_pages, then write up what you found with links.",
-  },
-  {
-    key: "code",
-    label: "Run code",
-    hint: "Compute, transform data, or check a result by running it",
-    icon: TerminalSquare,
-    capability: "code.execute",
-    instruction: "Work this out by running code rather than answering from memory.",
-  },
-]
 
 /** The chips, rendered above the input row so they never overlap it. */
 export function ComposerModeChips({

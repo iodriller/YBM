@@ -22,7 +22,8 @@ releases exist it should compare against the latest tag instead — see
 - `YBM-Setup.cmd`, a double-click first-run entry point.
 - `--dry-run`, `--verify`, `--no-prompt` and `--install-dir` on both installers.
 - Scheduled daily dependency audit (`.github/workflows/security-audit.yml`)
-  that opens an issue rather than a pull request.
+  covering the Python and all Node lockfiles; it opens an issue rather than a
+  pull request.
 - Optional `.pre-commit-config.yaml` running the same ruff and gitleaks checks
   CI runs.
 - CI coverage for the frontend, WhatsApp sidecar, packaged container assets,
@@ -46,6 +47,8 @@ releases exist it should compare against the latest tag instead — see
   roughly 4,500 lines of unreachable keys.
 - The headless image now packages the WhatsApp Node runtime, production
   dependencies, bundled starter skills, and project license.
+- Container base images and the optional Ollama service are pinned to reviewed
+  manifest digests.
 
 ### Fixed
 
@@ -73,7 +76,11 @@ releases exist it should compare against the latest tag instead — see
 - Artifact downloads no longer put the long-lived admin token in a URL. They
   use short-lived artifact-scoped grants, and active HTML/SVG content is forced
   to download instead of executing on the admin origin.
+- Browser responses now carry a restrictive content security policy and
+  framing, referrer, permissions, opener, resource, and MIME-sniffing headers.
 - Frontend `nanoid` was updated past GHSA-2v37-7h3g-55p8.
+- Onboarding now supports backward navigation, describes the default capability
+  policy accurately, and avoids duplicated setup/safety banners on small screens.
 
 ### Known issues
 

@@ -1,4 +1,4 @@
-from fastapi import Depends, FastAPI, Header
+from fastapi import Depends, FastAPI, Header, Request, Response
 
 from agent_control.admin import create_admin_router
 from agent_control.config import load_settings
@@ -14,6 +14,29 @@ from agent_control.tools.vscode_bridge import (
 
 app = FastAPI(title="YBM Control Backend")
 vscode_store = VSCodeBridgeStore()
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next) -> Response:
+    response = await call_next(request)
+    # The console is same-origin and ships no inline scripts. Inline styles
+    # remain necessary for graph/layout measurements; everything else is
+    # restricted to the local origin. Artifact responses set an even tighter
+    # sandbox policy and are preserved by setdefault.
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; "
+        "media-src 'self' blob:; object-src 'none'; base-uri 'self'; "
+        "form-action 'self'; frame-ancestors 'none'",
+    )
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), geolocation=(), microphone=(self)")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    return response
 
 
 def get_repositories() -> Repositories:

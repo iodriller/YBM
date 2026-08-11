@@ -247,3 +247,31 @@ def test_an_unrelated_host_is_not_treated_as_localdeploy() -> None:
     assert _looks_like_localdeploy(
         _profile(provider="openai_compatible", model="gpt-4.1", base_url="https://api.openai.com/v1")
     ) is False
+
+
+def test_a_containerised_local_runtime_counts_as_configured() -> None:
+    """A working containerised LocalDeploy fell through to the API-key branch
+    and returned False, so the console said "no model configured" while the
+    model was answering questions."""
+    from agent_control.bootstrap import check_llm_configured
+    from agent_control.config import AppSettings
+
+    settings = AppSettings(_env_file=None)
+    settings.llm.default_profile = "container"
+    settings.llm.profiles["container"] = _profile(
+        provider="openai_compatible",
+        model="gemma3_4b_ollama_safe",
+        base_url="http://host.docker.internal:8000/v1",
+        api_key=None,
+    )
+    # Reachability is probed over HTTP, so the assertion here is only that it
+    # takes the local branch rather than the "needs an API key" one - which
+    # returned False unconditionally for a keyless local profile.
+    from agent_control import bootstrap
+
+    original = bootstrap.check_localdeploy
+    bootstrap.check_localdeploy = lambda s: type("C", (), {"status": "ok"})()
+    try:
+        assert check_llm_configured(settings) is True
+    finally:
+        bootstrap.check_localdeploy = original

@@ -17,6 +17,7 @@ from agent_control.schemas import (
     ToolResultStatus,
     channel_chat_id,
 )
+from agent_control.text import trim_text as _trim
 from agent_control.storage.repositories import ArtifactRepository, TaskRepository
 from agent_control.tools.contracts import ArtifactDeliverInput, ArtifactDeliveryOutput
 from agent_control.tools.spec import (
@@ -420,12 +421,6 @@ def _artifact_type_for_path(path: Path, operation: str) -> ArtifactType:
     if operation == "send_screenshot" or path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
         return ArtifactType.SCREENSHOT
     return ArtifactType.DOCUMENT
-
-
-def _trim(value: str, limit: int) -> str:
-    return value if len(value) <= limit else f"{value[: limit - 3]}..."
-
-
 
 
 def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -> None:

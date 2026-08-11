@@ -15,6 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from agent_control.error_text import explain_for_user
+from agent_control.text import trim_text as _trim
 from agent_control.schemas import TaskRecord, TaskStatus
 from agent_control.storage.redaction import redact_text
 from agent_control.tools.mcp_client import mcp_output_text
@@ -440,9 +441,3 @@ def _last_error(task: TaskRecord) -> str | None:
     # trace, unreadable in a chat message. Anything already written for a
     # person passes through untouched.
     return explain_for_user(str(value))
-
-
-def _trim(value: str, limit: int) -> str:
-    if len(value) <= limit:
-        return value
-    return f"{value[: limit - 3]}..."

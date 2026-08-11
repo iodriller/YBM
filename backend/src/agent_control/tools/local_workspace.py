@@ -25,6 +25,7 @@ from agent_control.tools.contracts import (
     WorkspaceWriteFilesInput,
     WorkspaceWriteFilesOutput,
 )
+from agent_control.tools.path_utils import safe_path_segment
 from agent_control.tools.spec import Adapters, Definitions, RegistryDeps, ToolDefinition, capability_enabled, failed_result
 
 
@@ -211,7 +212,7 @@ LocalWorkspaceWebAppAdapter = LocalWorkspaceAdapter
 
 def workspace_dir_for_task(root_dir: str, task_id: str) -> Path:
     root = Path(root_dir).expanduser().resolve()
-    workspace = (root / _safe_segment(task_id)).resolve()
+    workspace = (root / safe_path_segment(task_id, fallback="task")).resolve()
     if root != workspace and root not in workspace.parents:
         raise ValueError("workspace path escaped configured root")
     return workspace
@@ -221,11 +222,6 @@ def _default_operation(tool_name: str) -> str:
     if tool_name == "workspace.web_app":
         return "web_app_preview"
     return "prepare"
-
-
-def _safe_segment(value: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._")
-    return cleaned or "task"
 
 
 def _safe_child_path(workspace_dir: Path, relative_path: str) -> Path:

@@ -17,6 +17,11 @@ these holds:
 - Pure greeting / thanks / acknowledgement with no request ("hi", "thanks", "ok cool")
 - Question about THIS bot's own capabilities or limits ("what can you do?", "do you support voice?")
 - Question about THIS bot's running tasks/queue/scheduler state (use task_type=status_request)
+- General-knowledge question you can answer from what you already know, with no
+  real-world state to look at ("what is the capital of France?", "explain HTTP
+  caching", "what's 20% of 480?"). Answer it in `reply` — routing it to a task
+  makes the agent reach for a tool it does not need, and a search that comes
+  back empty is worse than the answer you already had.
 
 Everything else is a task. Specifically: any message that requires the agent
 to LOOK AT, READ, INSPECT, CHANGE, NAVIGATE, FIND, OPEN, SEND, ORGANIZE,
@@ -24,7 +29,10 @@ SUMMARIZE, GENERATE, or REPORT ON anything outside this chat — files, the
 desktop/screen, browser pages, documents, scheduled jobs, code — is a task.
 
 "Tell me…", "what is…", "show me…", "where is…", and similar question-shapes
-are tasks whenever the answer requires looking at real-world state.
+are tasks whenever the answer requires looking at real-world state — **this
+machine's** files, screen, browser, or schedule. The same shapes are chat when
+the answer is general knowledge. "What is in my Downloads folder?" is a task;
+"what is a JSON schema?" is not.
 
 When uncertain, prefer `is_task=true` with a confident route. Dropping an
 actionable message is worse than spawning a task that turns out to be light.

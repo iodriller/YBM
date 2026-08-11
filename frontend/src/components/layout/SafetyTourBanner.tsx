@@ -16,7 +16,7 @@ export function SafetyTourBanner() {
   return (
     <div className="flex w-full items-center justify-between gap-2 border-b border-info/20 bg-info/7 px-4 py-2 text-sm">
       <span>
-        Everything dangerous is off by default. Enable capabilities in{" "}
+        High-impact capabilities are off by default. Enable them in{" "}
         <Link to="/access" className="underline underline-offset-2 hover:text-foreground">
           Access
         </Link>

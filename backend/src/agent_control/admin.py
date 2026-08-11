@@ -4,6 +4,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 import importlib.util
+import logging
 import mimetypes
 import os
 from functools import lru_cache
@@ -1684,7 +1685,7 @@ def create_admin_router(
         }
 
     @router.post("/api/chat/messages")
-    def admin_send_chat_message(request: Request, payload: AdminChatMessageRequest) -> dict[str, Any]:
+    async def admin_send_chat_message(request: Request, payload: AdminChatMessageRequest) -> dict[str, Any]:
         """A reply while a task sits in CLARIFYING resumes that task instead
         of spawning an unrelated new one - same behavior Telegram already
         had (clarification.py, shared with channels/telegram.py), just
@@ -1731,6 +1732,14 @@ def create_admin_router(
             remembered_facts=repositories.memory_facts.list_all(),
             objective=objective,
         )
+        # Web chat had no classifier at all: every message became a task,
+        # including "hi" and questions the model could simply answer. Asking
+        # "what is the capital of France?" sent the Operator to knowledge.search,
+        # which returned no matches, three times, until the no-progress guard
+        # blocked it (docs/GAPS.md G8). Telegram has always classified first;
+        # web chat is a channel too and should behave like one.
+        chat_reply = await _web_chat_reply(loaded, objective) if not attached else None
+
         task = repositories.tasks.create(
             objective,
             conversation_id=conversation_id,
@@ -1739,8 +1748,13 @@ def create_admin_router(
                 "source_channel": ChannelType.WEB.value,
                 "attachment_ids": [a.id for a in attached],
                 "memory_context": memory_ctx,
+                # Present only when the Concierge answered directly, so the
+                # worker never picks this up.
+                **({"synthesized_answer": chat_reply} if chat_reply else {}),
             },
         )
+        if chat_reply:
+            task = repositories.tasks.update_status(task.id, TaskStatus.COMPLETED)
         for artifact in attached:
             repositories.artifacts.link_to_task(artifact.id, task.id)
         audit.append(
@@ -2031,6 +2045,44 @@ def _presets_that_can_work() -> dict[str, dict[str, Any]]:
         for key, preset in LLM_PRESETS.items()
         if key.endswith("_container") == containerised
     }
+
+
+async def _web_chat_reply(settings: AppSettings, objective: str) -> str | None:
+    """Let the Concierge answer plain chat instead of spawning a task.
+
+    Returns the reply when the message is not work, None when it is - in which
+    case the caller creates a task exactly as before. Any failure returns None
+    too: classification is an optimisation, and a broken classifier must not
+    stop a real request from running.
+    """
+    from agent_control.channels.base import ChannelType as _ChannelType
+    from agent_control.llm.classifier import LLMMessageClassifier
+    from agent_control.llm.providers import build_default_llm_provider
+    from agent_control.schemas import InboundMessage, MessageKind
+
+    try:
+        provider = build_default_llm_provider(settings)
+        if provider is None:
+            return None
+        message = InboundMessage(
+            id="web_chat",
+            channel=_ChannelType.WEB,
+            chat_id=WEB_CHAT_ID,
+            sender_id="admin",
+            kind=MessageKind.TEXT,
+            text=objective,
+            received_at=utc_now(),
+        )
+        classification = await LLMMessageClassifier(provider).classify(message)
+    except Exception:  # noqa: BLE001 - never block a real request on this
+        logging.getLogger(__name__).warning(
+            "web chat classification failed; treating as a task", exc_info=True
+        )
+        return None
+    if classification.is_task:
+        return None
+    reply = (classification.reply or "").strip()
+    return reply or None
 
 
 def _telegram_config_env_keys() -> list[str]:

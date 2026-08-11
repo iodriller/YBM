@@ -98,7 +98,7 @@ test("an incomplete 390px setup uses one compact banner without horizontal overf
   await page.goto("./")
 
   await expect(page.getByText("No model configured yet.")).toBeVisible()
-  await expect(page.getByText("Everything dangerous is off by default.")).toHaveCount(0)
+  await expect(page.getByText("High-impact capabilities are off by default.")).toHaveCount(0)
   await expect(page.getByRole("button", { name: "Finish setup" })).toBeVisible()
 
   const dimensions = await page.evaluate(() => ({
