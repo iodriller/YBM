@@ -1173,6 +1173,52 @@ def test_admin_artifact_download_inline_uses_inline_disposition(tmp_path) -> Non
 
     assert response.status_code == 200
     assert "inline" in response.headers["content-disposition"]
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert "sandbox" in response.headers["content-security-policy"]
+
+
+def test_admin_artifact_download_uses_scoped_grant_not_admin_token_query(monkeypatch, tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    file_path = artifact_root / "report.txt"
+    file_path.write_text("safe report", encoding="utf-8")
+    artifact = repositories.artifacts.create(Artifact(type=ArtifactType.DOCUMENT, uri=str(file_path)))
+    monkeypatch.setenv("AGENT_ADMIN_TOKEN", "secret-token")
+    client = _admin_client(repositories, settings=_settings_with_artifact_root(artifact_root))
+
+    leaked_token = client.get(f"/admin/api/artifacts/{artifact.id}/download?token=secret-token")
+    grant_response = client.post(
+        f"/admin/api/artifacts/{artifact.id}/download-grant",
+        headers={"X-Agent-Control-Admin-Token": "secret-token"},
+    )
+    granted_download = client.get(grant_response.json()["url"])
+
+    assert leaked_token.status_code == 401
+    assert grant_response.status_code == 200
+    assert "secret-token" not in grant_response.json()["url"]
+    assert granted_download.status_code == 200
+    assert granted_download.content == b"safe report"
+
+
+def test_admin_artifact_download_forces_active_content_to_attachment(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    file_path = artifact_root / "generated.html"
+    file_path.write_text("<script>document.body.textContent = localStorage.length</script>", encoding="utf-8")
+    artifact = repositories.artifacts.create(Artifact(type=ArtifactType.GENERATED_FILE, uri=str(file_path)))
+    client = _admin_client(repositories, settings=_settings_with_artifact_root(artifact_root))
+
+    response = client.get(f"/admin/api/artifacts/{artifact.id}/download?inline=true")
+
+    assert response.status_code == 200
+    assert "attachment" in response.headers["content-disposition"]
+    assert response.headers["content-type"].startswith("text/html")
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["content-security-policy"] == "sandbox; default-src 'none'"
 
 
 def test_admin_artifact_download_404s_for_an_unknown_artifact(tmp_path) -> None:

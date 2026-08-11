@@ -56,7 +56,7 @@ reporting success without checking the process was still alive, so a crashing wo
 restarted silently forever; a script referencing a test file that didn't exist.
 
 **Findings, load-bearing for later phases:**
-- **Config drift.** `config/config.yaml` is gitignored and every capability starts disabled
+- **Config drift.** `config/config.yaml` is gitignored and high-impact capabilities start disabled
   by default — the dominant real-world failure mode. `ybm setup` bootstraps a file now, but
   capabilities still start off by design.
 - **No test tier between unit and live.** Nothing deterministic exercised the worker loop end

@@ -4,6 +4,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 import importlib.util
+import mimetypes
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -277,6 +278,29 @@ _STATIC_ADMIN_DIR = Path(__file__).parent / "static" / "admin"
 # backend/src/agent_control/admin.py to the repo root.
 _STARTER_SKILLS_DIR = Path(__file__).resolve().parents[3] / "skills" / "starter"
 
+# Browser-renderable formats that do not execute script. Active content such
+# as HTML and SVG is always served as an attachment, even when the caller asks
+# for an inline preview. The response also gets a sandbox CSP below as a second
+# boundary in case a browser sniffs or a MIME database misclassifies a file.
+_SAFE_INLINE_MEDIA_TYPES = frozenset(
+    {
+        "application/json",
+        "application/pdf",
+        "audio/mpeg",
+        "audio/ogg",
+        "audio/wav",
+        "image/gif",
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "text/plain",
+        "video/mp4",
+        "video/ogg",
+        "video/webm",
+    }
+)
+_ARTIFACT_GRANT_TTL_SECONDS = 60
+
 
 SettingsLoader = Callable[[], AppSettings]
 RepositoriesLoader = Callable[[], Repositories]
@@ -418,6 +442,21 @@ LLM_PRESETS: dict[str, dict[str, Any]] = {
     # Inside a container, 127.0.0.1 is the container - so every preset above is
     # unreachable there, including the recommended one. compose already maps
     # host.docker.internal, so this is the same local model seen from inside.
+    # A container install that could only be offered the 8B had nothing to
+    # choose when the card was busy: the filter hides loopback presets, and the
+    # 8B needs ~7 GB. A small model has to be reachable from a container too.
+    "localdeploy_gemma3_4b_container": {
+        "label": "Gemma 3 4B on your computer - free and private (~3 GB download)",
+        "profile_name": "localdeploy_gemma3_4b_container",
+        "provider": "openai_compatible",
+        "model": "gemma3_4b_ollama_safe",
+        "base_url": "http://host.docker.internal:8000/v1",
+        "api_key_env": None,
+        "timeout_seconds": 180,
+        "max_tokens": 9000,
+        "temperature": 0.2,
+        "context_limit": 32768,
+    },
     "localdeploy_qwen3vl_8b_container": {
         "label": "Qwen3-VL 8B on your computer - free and private (~6 GB download)",
         "profile_name": "localdeploy_qwen3vl_8b_container",
@@ -440,6 +479,7 @@ def create_admin_router(
 ) -> APIRouter:
     router = APIRouter(prefix="/admin", tags=["admin"])
     config_manager = ConfigManager()
+    artifact_download_grants: dict[str, tuple[str, bool, float]] = {}
 
     def settings() -> AppSettings:
         loaded = settings_loader()
@@ -455,7 +495,11 @@ def create_admin_router(
                 detail="admin API refused: cross-origin request (Origin header does not match Host)",
             )
         expected = read_env_value(loaded.server.admin_token_env)
-        provided = request.headers.get("X-Agent-Control-Admin-Token") or request.query_params.get("token")
+        # Never accept the long-lived admin token from a query string. URLs
+        # leak into browser history, referrers, screenshots, and proxy logs.
+        # The SPA captures its one-time launch URL token into an auth header
+        # before making API calls; artifact navigation uses a scoped grant.
+        provided = request.headers.get("X-Agent-Control-Admin-Token")
         if not expected:
             if not is_loopback_host(loaded.server.host):
                 raise HTTPException(
@@ -676,20 +720,7 @@ def create_admin_router(
             raise HTTPException(status_code=404, detail="task not found")
         return _redact_admin_output(receipt, loaded)
 
-    @router.get("/api/artifacts/{artifact_id}/download", response_model=None)
-    def admin_artifact_download(request: Request, artifact_id: str, inline: bool = False) -> FileResponse:
-        """A generated file previously showed only its path in Chat - not
-        actionable from a browser (docs/UI_UX_AUDIT.md Phase 8: "generated
-        files still are not conveniently usable"). Serves only artifacts
-        registered in the database whose resolved path stays inside the
-        same allowed roots artifact.deliver itself enforces - reuses that
-        exact check rather than re-deriving a second path-safety rule.
-        ``?inline=1`` renders in a new tab (PDFs, images) instead of forcing
-        a Save As dialog; ``?token=`` (require_admin's existing fallback) is
-        what lets a plain ``<a href>`` navigation authenticate at all, since
-        a browser-initiated download can't attach the admin token header.
-        """
-        loaded = require_admin(request)
+    def resolve_artifact_file(artifact_id: str, loaded: AppSettings) -> Path:
         repositories = repositories_loader()
         artifact = repositories.artifacts.get(artifact_id)
         if artifact is None or not artifact.uri:
@@ -702,9 +733,86 @@ def create_admin_router(
             raise HTTPException(status_code=403, detail="artifact path is outside configured delivery roots")
         if not path.is_file():
             raise HTTPException(status_code=404, detail="artifact file no longer exists on disk")
-        return FileResponse(
-            path, filename=path.name, content_disposition_type="inline" if inline else "attachment"
+        return path
+
+    @router.post("/api/artifacts/{artifact_id}/download-grant")
+    def admin_artifact_download_grant(
+        request: Request,
+        artifact_id: str,
+        inline: bool = False,
+    ) -> dict[str, Any]:
+        """Mint a short-lived grant for a single artifact and disposition.
+
+        A normal browser navigation cannot attach the admin-token header. A
+        scoped grant keeps that long-lived credential out of URLs and cannot
+        be reused against any other admin endpoint or artifact.
+        """
+        loaded = require_admin(request)
+        resolve_artifact_file(artifact_id, loaded)
+        now = time.monotonic()
+        expired = [token for token, (_, _, expires_at) in artifact_download_grants.items() if expires_at <= now]
+        for token in expired:
+            artifact_download_grants.pop(token, None)
+        grant = secrets.token_urlsafe(32)
+        artifact_download_grants[grant] = (artifact_id, inline, now + _ARTIFACT_GRANT_TTL_SECONDS)
+        inline_query = "true" if inline else "false"
+        return {
+            "url": f"/admin/api/artifacts/{artifact_id}/download?grant={grant}&inline={inline_query}",
+            "expires_in_seconds": _ARTIFACT_GRANT_TTL_SECONDS,
+        }
+
+    @router.get("/api/artifacts/{artifact_id}/download", response_model=None)
+    def admin_artifact_download(
+        request: Request,
+        artifact_id: str,
+        inline: bool = False,
+        grant: str | None = None,
+    ) -> FileResponse:
+        """A generated file previously showed only its path in Chat - not
+        actionable from a browser (docs/UI_UX_AUDIT.md Phase 8: "generated
+        files still are not conveniently usable"). Serves only artifacts
+        registered in the database whose resolved path stays inside the
+        same allowed roots artifact.deliver itself enforces - reuses that
+        exact check rather than re-deriving a second path-safety rule.
+        ``?inline=1`` renders only a conservative safe-type allowlist in a
+        new tab. Active formats such as HTML and SVG remain attachments.
+        Browser navigations authenticate with the short-lived, artifact-
+        scoped grant above rather than putting the admin token in the URL.
+        """
+        loaded = settings()
+        if not _origin_is_trusted(request):
+            raise HTTPException(
+                status_code=403,
+                detail="admin API refused: cross-origin request (Origin header does not match Host)",
+            )
+        if grant:
+            granted = artifact_download_grants.get(grant)
+            if granted is None:
+                raise HTTPException(status_code=401, detail="invalid artifact download grant")
+            granted_artifact_id, granted_inline, expires_at = granted
+            if expires_at <= time.monotonic():
+                artifact_download_grants.pop(grant, None)
+                raise HTTPException(status_code=401, detail="artifact download grant expired")
+            if granted_artifact_id != artifact_id or granted_inline is not inline:
+                raise HTTPException(status_code=401, detail="artifact download grant does not match this request")
+        else:
+            loaded = require_admin(request)
+
+        path = resolve_artifact_file(artifact_id, loaded)
+        media_type, _ = mimetypes.guess_type(path.name)
+        allow_inline = inline and media_type in _SAFE_INLINE_MEDIA_TYPES
+        response = FileResponse(
+            path,
+            filename=path.name,
+            content_disposition_type="inline" if allow_inline else "attachment",
+            media_type=media_type,
         )
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Content-Security-Policy"] = "sandbox; default-src 'none'"
+        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
 
     @router.get("/api/approvals")
     def admin_pending_approvals(request: Request) -> dict[str, Any]:

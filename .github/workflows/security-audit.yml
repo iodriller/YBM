@@ -63,15 +63,17 @@ jobs:
       - name: Open an issue when something is vulnerable
         if: steps.pip_audit.outputs.exit_code != '0'
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.0.1
+        env:
+          AUDIT_REPORT: ${{ steps.pip_audit.outputs.report }}
         with:
           script: |
-            const report = `${{ steps.pip_audit.outputs.report }}`;
+            const report = process.env.AUDIT_REPORT || '';
             const title = 'Dependency audit: known vulnerability in the lockfile';
             const { data: existing } = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
               state: 'open',
-              labels: 'security',
+              per_page: 100,
             });
             const body = [
               'The scheduled `pip-audit` run found a known vulnerability.',
@@ -95,7 +97,7 @@ jobs:
             } else {
               await github.rest.issues.create({
                 owner: context.repo.owner, repo: context.repo.repo,
-                title, body, labels: ['security'],
+                title, body,
               });
             }
 

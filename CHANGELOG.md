@@ -5,7 +5,7 @@ versions follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 `ybm check-updates` currently compares against the default branch. Once tagged
 releases exist it should compare against the latest tag instead — see
-`docs/archive/KNOWN_GAPS.md`.
+`docs/GAPS.md`.
 
 ## [Unreleased]
 
@@ -25,6 +25,8 @@ releases exist it should compare against the latest tag instead — see
   that opens an issue rather than a pull request.
 - Optional `.pre-commit-config.yaml` running the same ruff and gitleaks checks
   CI runs.
+- CI coverage for the frontend, WhatsApp sidecar, packaged container assets,
+  and Node dependency audits.
 - `error_text.describe_exception`, so an error a human reads is never empty.
 - `harness.assert_rejected`, which refuses to let a replay miss pass as a
   policy refusal.
@@ -42,6 +44,8 @@ releases exist it should compare against the latest tag instead — see
   states, and the only point in onboarding that sent the user elsewhere.
 - Scenario fixtures are rebuilt rather than merged when re-recording, dropping
   roughly 4,500 lines of unreachable keys.
+- The headless image now packages the WhatsApp Node runtime, production
+  dependencies, bundled starter skills, and project license.
 
 ### Fixed
 
@@ -66,10 +70,12 @@ releases exist it should compare against the latest tag instead — see
   segment; three type-narrowing `assert`s that `python -O` strips became real
   raises.
 - `pypdf` 6.14.2 → 6.15.0 (CVE-2026-71852, CVE-2026-71870).
+- Artifact downloads no longer put the long-lived admin token in a URL. They
+  use short-lived artifact-scoped grants, and active HTML/SVG content is forced
+  to download instead of executing on the admin origin.
+- Frontend `nanoid` was updated past GHSA-2v37-7h3g-55p8.
 
 ### Known issues
 
-See `docs/archive/KNOWN_GAPS.md`. The largest: remote one-line install is impossible
-while the repository is private (GitHub answers 404, not 403, to
-unauthenticated requests), and tool output is not marked as untrusted in the
-operator prompt.
+See `docs/GAPS.md`. Release-time GitHub and clean-machine checks are tracked in
+`docs/PUBLIC_RELEASE.md`.

@@ -413,33 +413,13 @@ HISTORY.md §6 and HISTORY.md P3 item 1's disclosed regression on the other 16 c
   its text). Task COMPLETED; `metadata.synthesized_answer` is the operator's own answer, and
   `metadata.operator_history` has exactly these two tool-call entries.
 
-## Known Gaps
+## Known gaps
 
-What's actually still open, as of 2026-07-30 (everything else this document could plausibly
-be missing has already been closed — see [HISTORY.md](HISTORY.md) for the full evidence
-trail and how each item was fixed):
+The maintained limitation list is [GAPS.md](GAPS.md). In architectural terms,
+the important boundaries are: YBM is a single-trusted-operator local system;
+untrusted tool and document content can still attempt prompt injection; the
+Auditor checks grounding more reliably than numerical plausibility; and live
+model, voice, Telegram, and WhatsApp flows sit outside deterministic CI.
 
-- **The Auditor checks presence, not correctness, of generated content.** A code-interpreter
-  file's content now reaches the Auditor (fixed — see HISTORY.md Part 3 W1), so an empty file
-  or a missing expected field is caught. Whether a computed number is *right* — 16 instead of
-  the correct 42 — is not checked; that would need either arithmetic reasoning in the Auditor
-  prompt or giving it code execution, both materially bigger changes than closing the
-  structural blindness was.
-- **The live E2E suite (11 cases) hasn't been re-run** since being trimmed from 72; the last
-  real pass-rate measurement (49%) predates P3 entirely. The deterministic scenario tier is
-  the trustworthy signal in the meantime: **33/33 green, zero skips**, runs in seconds, no
-  live LLM cost.
-- **Status requests cost two LLM calls.** The deleted plan path had an LLM-free shortcut for
-  status-shaped objectives via hardcoded keyword matching; rebuilding that was considered and
-  declined — it would reintroduce exactly the brittle, silently-misroutable pattern the
-  Operator loop redesign moved away from, to save one cheap call on a rare request type. See
-  HISTORY.md Part 3 W5 for the full reasoning.
-
-Secret vault UI and generated-content grounding (the two items this list used to carry as
-open) were closed 2026-07-29 — see [HISTORY.md](HISTORY.md)'s **Part 3 — The way forward**
-for what changed, what was verified, and what was deliberately left out of scope. The
-multi-agent/feature-parity build (parallel calls, delegation, skills, persona, knowledge base,
-cost tracking, model tiering, local web chat) landed 2026-07-30 — see **Part 4**. The
-NEEDS_APPROVAL reason-text regression Part 4 introduced was closed the same way it started -
-`ToolDefinition.approval_reasons` restores a tool-specific "why" on the `ApprovalRequest` a
-human actually sees, without reintroducing the bypassable adapter-level exception it replaced.
+[HISTORY.md](HISTORY.md) records why earlier gaps were closed or deliberately
+deferred. Archived plans must not be used as evidence that behavior exists.

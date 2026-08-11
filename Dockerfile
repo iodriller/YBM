@@ -18,7 +18,7 @@
 # ybm ui-build" placeholder, and that instruction cannot be followed inside a
 # container: there is no frontend/ directory and no node. The whole UI was
 # missing until this stage existed.
-FROM node:22-bookworm-slim AS frontend
+FROM node:22.22.0-bookworm-slim AS frontend
 
 WORKDIR /build/frontend
 COPY frontend/package.json frontend/package-lock.json ./
@@ -28,6 +28,18 @@ COPY frontend/ ./
 # it that path to write into.
 RUN mkdir -p /build/backend/src/agent_control/static \
     && npm run build
+
+# --- WhatsApp: install the optional Node sidecar ---------------------------
+# The bridge is disabled by default, but a container advertised as supporting
+# it must contain both Node and its production dependencies when an operator
+# enables the channel later. Keeping npm in this build stage leaves only the
+# Node runtime and resolved module tree in the final image.
+FROM node:22.22.0-bookworm-slim AS whatsapp
+
+WORKDIR /build/whatsapp-bridge
+COPY whatsapp-bridge/package.json whatsapp-bridge/package-lock.json ./
+RUN npm ci --omit=dev
+COPY whatsapp-bridge/src/ ./src/
 
 # --- builder: resolve and install dependencies -----------------------------
 FROM ghcr.io/astral-sh/uv:0.9.7-python3.12-bookworm-slim AS builder
@@ -57,7 +69,7 @@ FROM python:3.12-slim-bookworm AS runtime
 # installed, because every extra package is attack surface for a process that
 # runs model-chosen tool calls.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git tini \
+    && apt-get install -y --no-install-recommends ca-certificates curl git libstdc++6 tini \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root. The code interpreter's own Docker backend already runs sandboxed
@@ -71,10 +83,16 @@ COPY --chown=ybm:ybm backend/ /app/backend/
 # clobbered by it.
 COPY --from=frontend --chown=ybm:ybm \
      /build/backend/src/agent_control/static/admin /app/backend/src/agent_control/static/admin
+# The bridge process resolves `whatsapp-bridge/` relative to /app and invokes
+# `node` from PATH. Node's official bookworm build is compatible with this
+# bookworm runtime, while npm itself is intentionally not copied.
+COPY --from=whatsapp /usr/local/bin/node /usr/local/bin/node
+COPY --from=whatsapp --chown=ybm:ybm /build/whatsapp-bridge /app/whatsapp-bridge
 COPY --chown=ybm:ybm config/config.example.yaml /app/config/config.example.yaml
 COPY --chown=ybm:ybm scripts/ /app/scripts/
 COPY --chown=ybm:ybm docs/ /app/docs/
-COPY --chown=ybm:ybm AGENTS.md README.md /app/
+COPY --chown=ybm:ybm skills/ /app/skills/
+COPY --chown=ybm:ybm AGENTS.md CHANGELOG.md LICENSE README.md SECURITY.md /app/
 
 # AGENT_ is the settings env prefix and __ the nesting delimiter (config.py's
 # SettingsConfigDict), so AGENT_SERVER__HOST maps to server.host. YBM_HEADLESS

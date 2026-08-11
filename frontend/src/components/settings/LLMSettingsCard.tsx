@@ -238,9 +238,9 @@ export function LLMSettingsCard() {
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex flex-col gap-1">
-      <Label className="text-xs text-muted-foreground">{label}</Label>
+    <Label className="flex flex-col gap-1">
+      <span className="text-xs text-muted-foreground">{label}</span>
       {children}
-    </div>
+    </Label>
   )
 }

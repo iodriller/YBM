@@ -1,20 +1,13 @@
 import { useEffect, useState } from "react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import {
   ApiError,
-  awaitFirstTelegramMessage,
   fetchChannels,
   type ChannelSpec,
-  verifyTelegramToken,
-  type TelegramFirstMessage,
-  type TelegramVerifyResult,
 } from "@/lib/api"
 import {
   useSelectLLMPreset,
@@ -26,6 +19,10 @@ import {
 import { ThemeToggle } from "@/components/layout/ThemeToggle"
 import { ProviderPicker } from "@/components/onboarding/ProviderPicker"
 import { ChannelGrid } from "@/components/onboarding/ChannelGrid"
+import {
+  TelegramConnectionGuide,
+  type TelegramConnection,
+} from "@/components/onboarding/TelegramConnectionGuide"
 
 type Step = "brain" | "face" | "done"
 
@@ -54,44 +51,12 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
 
   const [channels, setChannels] = useState<ChannelSpec[]>([])
   const [telegramEnabled, setTelegramEnabled] = useState(false)
-  const [telegramToken, setTelegramToken] = useState("")
   // The guided Telegram sequence. Enabling used to save a token and nothing
   // else, which produced a bot that ignored every message: the allowlist is
   // what makes it answer, and _authorization_decision fails closed on an empty
   // one. `linked` is the id learned from the user's own first message, so
   // nobody has to go and find a numeric id.
-  const [botIdentity, setBotIdentity] = useState<TelegramVerifyResult | null>(null)
-  const [verifying, setVerifying] = useState(false)
-  const [listening, setListening] = useState(false)
-  const [linked, setLinked] = useState<TelegramFirstMessage | null>(null)
-  const [telegramError, setTelegramError] = useState<string | null>(null)
-
-  async function verifyToken() {
-    setTelegramError(null)
-    setVerifying(true)
-    try {
-      setBotIdentity(await verifyTelegramToken(telegramToken.trim() || null))
-    } catch (err) {
-      setBotIdentity(null)
-      setTelegramError(err instanceof ApiError ? err.message : "Could not check that token.")
-    } finally {
-      setVerifying(false)
-    }
-  }
-
-  async function listenForFirstMessage() {
-    setTelegramError(null)
-    setListening(true)
-    try {
-      const result = await awaitFirstTelegramMessage(telegramToken.trim() || null)
-      if (result.found) setLinked(result)
-      else setTelegramError("No message arrived yet. Send your bot any message, then try again.")
-    } catch (err) {
-      setTelegramError(err instanceof ApiError ? err.message : "Could not check for a message.")
-    } finally {
-      setListening(false)
-    }
-  }
+  const [telegramConnection, setTelegramConnection] = useState<TelegramConnection | null>(null)
 
   useEffect(() => {
     fetchChannels()
@@ -369,108 +334,11 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                 />
               )}
 
-              {detect.telegram_token_present ? (
-                <div className="flex flex-col gap-2 rounded-md border border-border bg-muted/30 p-3">
-                  <div className="flex items-center gap-2">
-                    <Badge variant="secondary">Token found</Badge>
-                    <span className="text-xs text-muted-foreground">TELEGRAM_BOT_TOKEN is already set</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Switch checked={telegramEnabled} onCheckedChange={setTelegramEnabled} />
-                    <Label className="text-sm">Use it for Telegram</Label>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  {telegramEnabled && (
-                    <div className="flex flex-col gap-3 rounded-md border border-border bg-muted/30 p-3">
-                      {/* Three steps, each confirmed before the next. A bare
-                          token field asked for something most people have never
-                          made, then failed silently later if the allowlist was
-                          empty - which it always was, because nothing collected
-                          it. */}
-                      <div className="flex flex-col gap-1">
-                        <p className="text-xs font-medium">1. Create a bot</p>
-                        <p className="text-xs text-muted-foreground">
-                          Message{" "}
-                          <a
-                            href="https://t.me/BotFather"
-                            target="_blank"
-                            rel="noreferrer"
-                            className="underline underline-offset-2"
-                          >
-                            @BotFather
-                          </a>{" "}
-                          on Telegram and send <code className="rounded bg-background px-1">/newbot</code>. He replies
-                          with a token.
-                        </p>
-                      </div>
-
-                      <div className="flex flex-col gap-1">
-                        <p className="text-xs font-medium">2. Paste the token</p>
-                        <div className="flex gap-2">
-                          <Input
-                            type="password"
-                            placeholder="123456789:AA..."
-                            value={telegramToken}
-                            onChange={(e) => {
-                              setTelegramToken(e.target.value)
-                              setBotIdentity(null)
-                              setLinked(null)
-                            }}
-                          />
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={verifying || !telegramToken.trim()}
-                            onClick={verifyToken}
-                          >
-                            {verifying ? "Checking..." : "Check"}
-                          </Button>
-                        </div>
-                        {botIdentity?.username && (
-                          <p className="text-xs text-success">Connected to @{botIdentity.username}.</p>
-                        )}
-                      </div>
-
-                      {botIdentity?.username && (
-                        <div className="flex flex-col gap-1">
-                          <p className="text-xs font-medium">3. Say hello to your bot</p>
-                          <p className="text-xs text-muted-foreground">
-                            Open{" "}
-                            <a
-                              href={botIdentity.link ?? "https://telegram.org"}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="underline underline-offset-2"
-                            >
-                              @{botIdentity.username}
-                            </a>{" "}
-                            and send it any message. That is how YBM learns it is you - only you will be able to talk
-                            to it.
-                          </p>
-                          {linked ? (
-                            <p className="text-xs text-success">
-                              Linked to {linked.username ? `@${linked.username}` : linked.first_name ?? "you"}.
-                            </p>
-                          ) : (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="self-start"
-                              disabled={listening}
-                              onClick={listenForFirstMessage}
-                            >
-                              {listening ? "Waiting for your message..." : "I've sent a message"}
-                            </Button>
-                          )}
-                        </div>
-                      )}
-
-                      {telegramError && <p className="text-xs text-destructive">{telegramError}</p>}
-                    </div>
-                  )}
-                </>
+              {telegramEnabled && (
+                <TelegramConnectionGuide
+                  tokenPresent={detect.telegram_token_present}
+                  onLinked={setTelegramConnection}
+                />
               )}
 
               <div className="flex justify-between">
@@ -484,7 +352,7 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                     // Requiring the link is the point: enabling Telegram
                     // without an allowlist produces a bot that silently
                     // ignores its owner.
-                    (telegramEnabled && !linked)
+                    (telegramEnabled && !telegramConnection)
                   }
                   onClick={() => {
                     if (!telegramEnabled) {
@@ -495,13 +363,17 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                       {
                         enabled: true,
                         token_env: "TELEGRAM_BOT_TOKEN",
-                        bot_token: detect.telegram_token_present ? null : telegramToken,
+                        bot_token: telegramConnection?.botToken ?? null,
                         // Without these the bot ignores every message:
                         // _authorization_decision fails closed on an empty
                         // allowlist. Learned from the user's own first message
                         // rather than asking them to find a numeric id.
-                        ...(linked?.user_id ? { allowed_user_ids: [linked.user_id] } : {}),
-                        ...(linked?.chat_id ? { allowed_chat_ids: [linked.chat_id] } : {}),
+                        ...(telegramConnection?.message.user_id
+                          ? { allowed_user_ids: [telegramConnection.message.user_id] }
+                          : {}),
+                        ...(telegramConnection?.message.chat_id
+                          ? { allowed_chat_ids: [telegramConnection.message.chat_id] }
+                          : {}),
                       },
                       {
                         onSuccess: () => {

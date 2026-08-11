@@ -32,9 +32,9 @@ trace you can open: which tool ran, what it returned, what was approved, what wa
 
 - **It reaches your real machine.** Filesystem, terminal, Chrome, VS Code, desktop control, a
   scheduler, MCP tools. Not a sandbox in someone else's cloud.
-- **It comes to you.** Telegram, WhatsApp, or the built-in web console. Send a voice note if
-  typing is inconvenient.
-- **Nothing dangerous happens by default.** Every capability starts **off**. Anything risky needs
+- **It comes to you.** Telegram, WhatsApp, or the built-in web console. With optional local voice
+  transcription enabled, you can send a voice note when typing is inconvenient.
+- **Nothing dangerous happens by default.** High-impact capabilities start **off**. Anything risky needs
   a one-shot, expiring approval the *runtime* enforces — not the model, not a config flag, and not
   bypassable by an "allow everything" mode.
 - **It's yours.** Runs local models for free with nothing leaving the machine, or your own API
@@ -149,6 +149,7 @@ GPU, and no API spend.
 | [Threat model](docs/THREAT_MODEL.md) | What it protects against, and what it does not |
 | [Local setup](docs/LOCAL_SETUP.md) | Manual setup and every runtime option |
 | [Gaps](docs/GAPS.md) | Known bugs and missing pieces, kept honest |
+| [Public release](docs/PUBLIC_RELEASE.md) | External checks to perform when visibility changes |
 | [History](docs/HISTORY.md) | Why things are the way they are |
 
 ## Honest limitations

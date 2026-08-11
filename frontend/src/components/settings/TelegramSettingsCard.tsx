@@ -1,3 +1,4 @@
+import { useState } from "react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -8,6 +9,11 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { ApiError, type SettingsSummary } from "@/lib/api"
 import { useServerForm } from "@/lib/use-server-form"
 import { useSettingsSummary, useUpdateTelegramConfig } from "@/lib/queries"
+import { useAdvancedMode } from "@/lib/advanced-mode"
+import {
+  TelegramConnectionGuide,
+  type TelegramConnection,
+} from "@/components/onboarding/TelegramConnectionGuide"
 
 type Draft = {
   enabled: boolean
@@ -44,6 +50,9 @@ export function TelegramSettingsCard() {
   const { data, isPending } = useSettingsSummary()
   const [draft, setDraft, resetDraft] = useServerForm(data, deriveDraft)
   const updateTelegram = useUpdateTelegramConfig()
+  const { advanced } = useAdvancedMode()
+  const [showGuide, setShowGuide] = useState(false)
+  const [connection, setConnection] = useState<TelegramConnection | null>(null)
 
   if (isPending || !draft || !data) {
     return (
@@ -53,6 +62,91 @@ export function TelegramSettingsCard() {
         </CardHeader>
         <CardContent>
           <Skeleton className="h-32 w-full" />
+        </CardContent>
+      </Card>
+    )
+  }
+
+  const telegram = data.config.channels.telegram
+  const configured = telegram.enabled && telegram.token_present && telegram.allowed_user_ids.length > 0
+
+  if (!advanced) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Telegram</CardTitle>
+          <CardDescription>
+            {configured
+              ? `Connected and restricted to ${telegram.allowed_user_ids.length} allowed user${telegram.allowed_user_ids.length === 1 ? "" : "s"}.`
+              : "Connect a bot without looking up numeric user or chat IDs."}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          {(showGuide || !configured) && (
+            <TelegramConnectionGuide tokenPresent={telegram.token_present} onLinked={setConnection} />
+          )}
+          {connection && (
+            <Button
+              type="button"
+              size="sm"
+              className="self-start"
+              disabled={updateTelegram.isPending}
+              onClick={() => {
+                const userIds = connection.message.user_id
+                  ? [...new Set([...telegram.allowed_user_ids, connection.message.user_id])]
+                  : telegram.allowed_user_ids
+                const chatIds = connection.message.chat_id
+                  ? [...new Set([...telegram.allowed_chat_ids, connection.message.chat_id])]
+                  : telegram.allowed_chat_ids
+                updateTelegram.mutate(
+                  {
+                    enabled: true,
+                    polling: true,
+                    token_env: telegram.token_env,
+                    bot_token: connection.botToken,
+                    allowed_user_ids: userIds,
+                    allowed_chat_ids: chatIds,
+                  },
+                  {
+                    onSuccess: () => {
+                      toast.success("Telegram connected. Restart polling to reload it.")
+                      setConnection(null)
+                      setShowGuide(false)
+                    },
+                    onError: (err) =>
+                      toast.error(err instanceof ApiError ? err.message : "Could not save Telegram config."),
+                  },
+                )
+              }}
+            >
+              Save and enable Telegram
+            </Button>
+          )}
+          {configured && !showGuide && (
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" size="sm" variant="outline" onClick={() => setShowGuide(true)}>
+                Reconnect or add me
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                disabled={updateTelegram.isPending}
+                onClick={() =>
+                  updateTelegram.mutate(
+                    { enabled: false },
+                    {
+                      onSuccess: () => toast.success("Telegram disabled. Restart polling to reload it."),
+                      onError: (err) =>
+                        toast.error(err instanceof ApiError ? err.message : "Could not disable Telegram."),
+                    },
+                  )
+                }
+              >
+                Disable Telegram
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
     )
@@ -91,8 +185,8 @@ export function TelegramSettingsCard() {
           }}
         >
           <div className="flex items-center gap-2">
-            <Switch checked={draft.enabled} onCheckedChange={(v) => setDraft({ ...draft, enabled: v })} />
-            <Label className="text-sm">Enabled</Label>
+            <Switch id="telegram-enabled" checked={draft.enabled} onCheckedChange={(v) => setDraft({ ...draft, enabled: v })} />
+            <Label htmlFor="telegram-enabled" className="text-sm">Enabled</Label>
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field label="Token env">
@@ -109,8 +203,8 @@ export function TelegramSettingsCard() {
             </Field>
           </div>
           <div className="flex items-center gap-2">
-            <Switch checked={draft.polling} onCheckedChange={(v) => setDraft({ ...draft, polling: v })} />
-            <Label className="text-sm">Polling</Label>
+            <Switch id="telegram-polling" checked={draft.polling} onCheckedChange={(v) => setDraft({ ...draft, polling: v })} />
+            <Label htmlFor="telegram-polling" className="text-sm">Polling</Label>
           </div>
           <div className="flex justify-end">
             <Button type="submit" size="sm" disabled={updateTelegram.isPending}>
@@ -125,9 +219,9 @@ export function TelegramSettingsCard() {
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex flex-col gap-1">
-      <Label className="text-xs text-muted-foreground">{label}</Label>
+    <Label className="flex flex-col gap-1">
+      <span className="text-xs text-muted-foreground">{label}</span>
       {children}
-    </div>
+    </Label>
   )
 }

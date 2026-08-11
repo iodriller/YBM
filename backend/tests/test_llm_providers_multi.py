@@ -219,3 +219,31 @@ def test_anthropic_errors_never_echo_the_key() -> None:
     message = _safe_error(_Status(401))
     assert "sk-" not in message
     assert "rejected" in message
+
+
+def test_localdeploy_is_recognized_through_the_container_gateway() -> None:
+    """host.docker.internal is the same LocalDeploy seen from a container.
+    Without it, allow_clamp is never sent and the first message fails with a
+    400 about context_limit."""
+    from agent_control.llm.providers import _looks_like_localdeploy
+
+    container = _profile(
+        provider="openai_compatible",
+        model="gemma3_4b_ollama_safe",
+        base_url="http://host.docker.internal:8000/v1",
+    )
+    loopback = _profile(
+        provider="openai_compatible",
+        model="gemma3_4b_ollama_safe",
+        base_url="http://127.0.0.1:8000/v1",
+    )
+    assert _looks_like_localdeploy(container) is True
+    assert _looks_like_localdeploy(loopback) is True
+
+
+def test_an_unrelated_host_is_not_treated_as_localdeploy() -> None:
+    from agent_control.llm.providers import _looks_like_localdeploy
+
+    assert _looks_like_localdeploy(
+        _profile(provider="openai_compatible", model="gpt-4.1", base_url="https://api.openai.com/v1")
+    ) is False

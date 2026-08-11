@@ -4,10 +4,9 @@
 # Install once:
 #   uv tool install pre-commit && pre-commit install
 #
-# Everything here already runs in CI (.github/workflows/ci.yml). The point is
-# latency: this week ruff was clean locally but gitleaks failed the push on two
-# deliberate test canaries, which is a red build for something a commit-time
-# check catches in a second.
+# This mirrors the low-cost checks that are useful before CI. Formatting is not
+# enforced repository-wide yet, so this file does not claim or run a formatter
+# baseline that the existing source cannot pass.
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.0
@@ -16,11 +15,6 @@ repos:
         name: ruff (backend)
         args: [--fix]
         files: ^backend/
-      - id: ruff-format
-        name: ruff format check (backend)
-        args: [--check]
-        files: ^backend/
-
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.24.3
     hooks:

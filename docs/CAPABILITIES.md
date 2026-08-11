@@ -27,7 +27,8 @@ positioning and quickstart, and [docs/ARCHITECTURE.md](ARCHITECTURE.md) for how 
 - Basic FastAPI health endpoint
 - React admin console (served by the backend at `/admin`) for chat, task monitoring, trace graphs, access/capability controls, and settings, backed by the same FastAPI admin APIs
 - A small pointer page served at `/admin` if the console hasn't been built yet at this checkout
-- Admin configuration writes for Telegram and the default OpenAI-compatible orchestrator LLM profile
+- Admin configuration and verification flows for Telegram, native Anthropic, and the supported
+  OpenAI-compatible provider catalog
 - LLM-based Telegram task classification with readable audit events
 - Admin audit filters, capability access modes, and database summary
 - One-command local stack launcher for LocalDeploy, backend, Telegram polling, worker, and scheduler
@@ -61,8 +62,9 @@ positioning and quickstart, and [docs/ARCHITECTURE.md](ARCHITECTURE.md) for how 
 
 ## Detailed runtime behavior
 
-- The active default profile targets a local OpenAI-compatible endpoint (LocalDeploy or Ollama);
-  keep a cloud API key saved in `.env` as a fallback if you want one.
+- The active default profile can use native Anthropic, a supported cloud provider, or a local
+  OpenAI-compatible endpoint such as LocalDeploy, Ollama, or LM Studio; keep any cloud keys in
+  `.env` or the encrypted vault, never in committed configuration.
 - Non-task Telegram/web-chat messages get a direct LLM answer with concise runtime context.
 - The gateway keeps an LLM-updated per-chat memory summary plus a small recent-turn window, not the full conversation.
 - Plain `status` and `/status` return deterministic task state.

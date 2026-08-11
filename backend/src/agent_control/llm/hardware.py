@@ -129,7 +129,10 @@ def _from_localdeploy(payload: dict) -> Hardware | None:
     if not payload.get("success"):
         return None
     gpus = [g for g in (payload.get("gpus") or []) if isinstance(g, dict)]
-    ram_mb = ((payload.get("system") or {}).get("memory_total_mb")) if isinstance(payload.get("system"), dict) else None
+    # LocalDeploy calls it ram_total_mb; memory_total_mb was a guess and it
+    # silently produced ram_gb=None against the real server.
+    system = payload.get("system") if isinstance(payload.get("system"), dict) else {}
+    ram_mb = system.get("ram_total_mb") or system.get("memory_total_mb")
     ram_gb = round(ram_mb / 1024, 1) if isinstance(ram_mb, (int, float)) and ram_mb else None
 
     if not gpus:
@@ -229,6 +232,7 @@ PRESET_VRAM_GB: dict[str, float] = {
     "localdeploy_qwen3vl_8b_container": 7.0,
     "localdeploy_gemma3_12b": 10.0,
     "localdeploy_gemma3_4b": 4.0,
+    "localdeploy_gemma3_4b_container": 4.0,
 }
 
 

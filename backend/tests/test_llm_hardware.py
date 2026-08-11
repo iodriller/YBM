@@ -6,7 +6,16 @@ without anyone having looked at the machine.
 
 from __future__ import annotations
 
+import pytest
+
 from agent_control.llm import hardware as hw
+
+
+@pytest.fixture(autouse=True)
+def _no_localdeploy(monkeypatch):
+    """probe() asks LocalDeploy first, so a developer who happens to have it
+    running would otherwise get different results from CI."""
+    monkeypatch.setattr(hw, "probe_localdeploy", lambda timeout=2.5: None)
 
 
 def test_container_refuses_to_report_the_hosts_hardware(monkeypatch) -> None:

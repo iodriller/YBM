@@ -55,6 +55,49 @@ jobs:
       - run: uv sync --frozen --extra test --extra dev
       - run: uv run --frozen ruff check .
       - run: uv run --frozen --with pip-audit pip-audit
+      - run: uv run --frozen python ../scripts/check_markdown_links.py
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22.22.0"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npx tsc -b --noEmit
+      - run: npm run lint
+      - run: npm run build
+      - run: npm audit --audit-level=high
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+
+  whatsapp-bridge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: whatsapp-bridge
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22.22.0"
+          cache: npm
+          cache-dependency-path: whatsapp-bridge/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - run: npm audit --audit-level=high
 
   vscode-extension:
     runs-on: ubuntu-latest
@@ -68,12 +111,32 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: "22"
+          node-version: "22.22.0"
           cache: npm
           cache-dependency-path: vscode-extension/package-lock.json
       - run: npm ci
       - run: npm run compile
       - run: npm audit --audit-level=high
+
+  container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build the headless image
+        run: docker build --tag ybm-control:ci .
+      - name: Check packaged runtime assets
+        run: |
+          docker run --rm --entrypoint sh ybm-control:ci -c '
+            node --version &&
+            test -f /app/whatsapp-bridge/src/index.js &&
+            test -d /app/whatsapp-bridge/node_modules &&
+            test -f /app/skills/starter/repo-review.md &&
+            test -f /app/LICENSE &&
+            ybm --help >/dev/null
+          '
 
   secrets:
     runs-on: ubuntu-latest

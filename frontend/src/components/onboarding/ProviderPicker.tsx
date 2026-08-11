@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useId, useState } from "react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -31,6 +31,7 @@ import { useUpdateLLMConfig } from "@/lib/queries"
  *   one. Endpoints are stable; model names rot.
  */
 export function ProviderPicker({ onConfigured }: { onConfigured: () => void }) {
+  const fieldId = useId()
   const [providers, setProviders] = useState<LLMProviderSpec[] | null>(null)
   const [selectedKey, setSelectedKey] = useState<string>("anthropic")
   const [apiKey, setApiKey] = useState("")
@@ -144,8 +145,9 @@ export function ProviderPicker({ onConfigured }: { onConfigured: () => void }) {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-1">
-        <Label className="text-xs text-muted-foreground">Provider</Label>
+        <Label htmlFor={`${fieldId}-provider`} className="text-xs text-muted-foreground">Provider</Label>
         <select
+          id={`${fieldId}-provider`}
           className="h-9 rounded-md border border-input bg-transparent px-2 text-sm"
           value={selectedKey}
           onChange={(e) => selectProvider(e.target.value)}
@@ -162,7 +164,7 @@ export function ProviderPicker({ onConfigured }: { onConfigured: () => void }) {
       {spec?.needs_key && (
         <div className="flex flex-col gap-1">
           <div className="flex items-center justify-between">
-            <Label className="text-xs text-muted-foreground">API key</Label>
+            <Label htmlFor={`${fieldId}-api-key`} className="text-xs text-muted-foreground">API key</Label>
             {spec.keys_url && (
               <a
                 href={spec.keys_url}
@@ -175,6 +177,7 @@ export function ProviderPicker({ onConfigured }: { onConfigured: () => void }) {
             )}
           </div>
           <Input
+            id={`${fieldId}-api-key`}
             type="password"
             placeholder="sk-…"
             value={apiKey}
@@ -191,8 +194,9 @@ export function ProviderPicker({ onConfigured }: { onConfigured: () => void }) {
           supplies the default - asking for it there would be a trap. */}
       {spec && spec.kind !== "anthropic" && !spec.base_url && (
         <div className="flex flex-col gap-1">
-          <Label className="text-xs text-muted-foreground">Base URL</Label>
+          <Label htmlFor={`${fieldId}-base-url`} className="text-xs text-muted-foreground">Base URL</Label>
           <Input
+            id={`${fieldId}-base-url`}
             placeholder="https://example.com/v1"
             value={baseUrl}
             onChange={(e) => {
@@ -225,9 +229,10 @@ export function ProviderPicker({ onConfigured }: { onConfigured: () => void }) {
                 : `${verified.label} — enter a model name`}
             </span>
           </div>
-          <Label className="text-xs text-muted-foreground">Model</Label>
+          <Label htmlFor={`${fieldId}-model`} className="text-xs text-muted-foreground">Model</Label>
           {verified.models.length > 0 ? (
             <select
+              id={`${fieldId}-model`}
               className="h-9 rounded-md border border-input bg-transparent px-2 text-sm"
               value={model}
               onChange={(e) => {
@@ -242,7 +247,7 @@ export function ProviderPicker({ onConfigured }: { onConfigured: () => void }) {
               ))}
             </select>
           ) : (
-            <Input value={model} onChange={(e) => setModel(e.target.value)} />
+            <Input id={`${fieldId}-model`} value={model} onChange={(e) => setModel(e.target.value)} />
           )}
           {tested ? (
             <div className="flex flex-col gap-2 rounded-md border border-success/40 bg-success/5 p-2">

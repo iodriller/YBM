@@ -66,7 +66,10 @@ export function AppShell() {
             }}
           />
         )}
-        <SafetyTourBanner />
+        {/* Setup already explains the blocking condition and route back. Do
+            not stack a second banner above every mobile screen until setup is
+            complete. */}
+        {bootstrap?.onboarding_complete && <SafetyTourBanner />}
         <header className="flex h-14 shrink-0 items-center justify-between border-b border-sidebar-border bg-sidebar px-4 md:hidden">
           <Brand />
           <ThemeToggle />

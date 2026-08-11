@@ -5,6 +5,10 @@ Audited 2026-08-01 against the live local console, the React source, FastAPI adm
 This document separates current behavior from recommendations; roadmap items are not implemented
 unless explicitly marked **shipped**.
 
+> Historical implementation record: current limitations and release priorities live in
+> [GAPS.md](GAPS.md) and [PUBLIC_RELEASE.md](PUBLIC_RELEASE.md). Statements below such as
+> “nothing is currently open” describe the audit at that time, not the current release state.
+
 ## Outcome
 
 YBM's strongest product idea is not generic chat. It is governed local agency: powerful tools,

@@ -1,122 +1,63 @@
-# Bugs and gaps
+# Known gaps
 
-From tracing the voice report you filed, then looking for the same shapes
-elsewhere. Fixed items are marked; the rest are ordered by how likely they are
-to bite a real user.
+This is the current list of product and engineering limitations. Completed
+plans and earlier review snapshots live under [`archive/`](archive/); they are
+useful design history, not current status.
 
----
+## Security boundaries
 
-## The voice bug — fixed
+- **Indirect prompt injection remains possible.** Tool results, web pages,
+  documents, and MCP output are untrusted. Runtime capability policy,
+  allowlists, workspace boundaries, and one-shot approvals limit impact, but
+  the Operator prompt does not yet spotlight tool output with per-run
+  delimiters. That prompt change requires review and re-recording affected
+  scenario fixtures; see [THREAT_MODEL.md](THREAT_MODEL.md).
+- **Redaction is pattern-based.** Known secret fields, configured secret
+  values, and provider-token shapes are redacted. A novel high-entropy secret
+  with no recognizable name or prefix may pass through. Entropy scanning has
+  not been enabled because it would also hide hashes, UUIDs, and generated
+  identifiers in user-facing results.
+- **YBM is single-operator software.** It is not a hardened multi-tenant or
+  Internet-facing control plane. Keep the backend and preview servers on
+  loopback and use an admin token when the bind host is broader.
 
-**What you saw:** you sent a voice note to Telegram and it did not work.
+## Behavior still needing live validation
 
-**What was happening.** The pipeline was fully implemented — Telegram
-normalizes voice into `MessageKind.VOICE`, downloads the file, and transcribes
-it. Two things went wrong on top of that:
+- The Auditor checks grounding and objective completion, but it does not
+  reliably challenge an implausible value such as a zero total for a non-empty
+  expense file. Improving that prompt requires a reviewed live fixture
+  re-record.
+- The built-in starter suggestions have deterministic UI and worker coverage,
+  but the current wording has not been exercised against a configured live
+  model profile.
+- Voice failure paths and transcription APIs are tested with simulated audio
+  and adapters. A real microphone recording and Telegram voice note have not
+  been transcribed end to end in the release environment.
+- WhatsApp's sidecar imports and health behavior are checked, but live QR
+  pairing and send/receive need a real account. WhatsApp remains text-only:
+  there are no buttons, voice messages, or artifact delivery.
+- The credentialed live E2E suite is intentionally separate from deterministic
+  CI and has not been run as part of this pre-public pass.
 
-1. **Speech-to-text is off by default** (`STTAdapterConfig.enabled = False`),
-   so `DisabledSTTAdapter.transcribe` raised.
-2. **The reply was the exception.** You got
-   `Voice transcription failed: RuntimeError: STT adapter is disabled` —
-   a class name and an internal component, calling a switched-off feature a
-   failure, with nothing to do about it.
+## Product limitations
 
-**Now:** *"I can't listen to voice messages yet — speech-to-text is turned off
-in this setup. Send it as text and I'll get straight on it, or turn on voice
-under Settings."* The diagnostic stays in the audit trail.
+- Desktop observation/control and computer-use actions are Windows-only.
+- GitHub Copilot Chat panel responses cannot be captured directly through the
+  VS Code API; the bridge and CLI-based coding-agent flow are supported.
+- The Windows PowerShell supervisor and cross-platform `ybm` supervisor are
+  separate implementations.
+- `mcp.client` supports configured servers, but the console does not yet offer
+  a full add/edit/test form for MCP server definitions.
 
-### The same leak, two more places — fixed
+## Maintainability
 
-- `telegram.py` replied `Screenshot capture failed: {exc}`.
-- `telegram_notifications.py` sent `Error: {str(exc)}` when a screenshot could
-  not be delivered.
+- `orchestration/worker.py`, `admin.py`, and the frontend API client remain
+  large coordination modules. Shared path/text helpers have been extracted,
+  but decomposing these files should be incremental and contract-tested rather
+  than a release-blocking rewrite.
 
-Both now go through `explain_for_user()`, which maps known failure shapes —
-401, 429, 5xx, connection refused, timeout, empty allowlist, missing base URL,
-refusal — to a sentence on what happened and a sentence on what to do.
+## Release-state items
 
----
-
-## Closed since
-
-- **G1** voice recording in the console — mic button, `POST /api/chat/transcribe`.
-- **G2** voice toggle in Settings, so the failure reply's advice is real.
-- **G3** `doctor` checks the voice extra before first use.
-- **G4** worker failures go through `explain_for_user`.
-- **G7** phone and tablet checked: no horizontal overflow; fixed a clipped composer placeholder.
-
-Still open: **G5** (plausibility) and **G6** (starter prompts) — both need live model spend.
-
-## Open gaps
-
-### G1 — Voice in web chat does not exist
-
-Confirmed: no microphone, no recorder, nothing in `ChatPage.tsx`. Voice works
-on Telegram only, which is backwards — the console is where someone would try
-it first.
-
-The backend half is done: `tools/stt.py` has the adapter protocol and
-`/api/chat/attachments` already accepts uploads. What is missing is a record
-button that captures audio and posts it to a transcription endpoint.
-
-**Worth saying:** this is a *speech-to-text* feature, not a model capability.
-Local models served through LocalDeploy do not take audio; transcription is a
-separate step that turns a recording into text before the model ever sees it.
-So the honest message when it is off is *"speech-to-text is turned off in this
-setup"* — not *"the model can't hear you"*.
-
-### G2 — Turning voice on is not possible from the console
-
-`STTAdapterConfig` is `enabled: False` and there is no UI for it, so the reply
-above tells the user to "turn on voice under Settings" — where there is nothing
-to turn on. Either add the toggle or change the wording; the current pair is a
-promise the console cannot keep.
-
-### G3 — The `voice` extra is optional and silent about it
-
-`faster-whisper` lives under `[voice]` in `pyproject.toml`. Enabling STT
-without installing the extra fails at first use rather than at startup, and
-nothing checks. `doctor` should say so.
-
-### G4 — Nothing tells the user a task failed, in general
-
-`explain_for_user` now exists but is only wired into the three places above.
-The general worker-failure path still surfaces `last_worker_error`, which is a
-`describe_exception` string. That is the largest remaining source of
-computer-speak.
-
-### G5 — Results that look wrong are reported as if fine
-
-From `docs/VOICE_PLAN.md`, repeated because it is the highest-value item here:
-a recorded run reported *"a total of 0"* for a file of expenses without
-comment. The Auditor already checks whether the objective was met; it should
-also ask whether the answer is plausible.
-
-### G6 — The starter prompts have never been run
-
-The three chat suggestions ship untested. A suggestion that fails on click is
-worse than no suggestion. They need a configured model to verify.
-
-### G7 — Nothing below 1280px has been checked
-
-Carried over from the UI plan. "Message YBM from your phone" is a headline
-feature and the console's own phone behaviour is unverified.
-
----
-
-## Order
-
-| | Item | Cost |
-|---|---|---|
-| 1 | **G4** — route worker failures through `explain_for_user` | Small; the function exists |
-| 2 | **G2** — a voice toggle in Settings, or honest wording | Small |
-| 3 | **G1** — record button in web chat | Medium |
-| 4 | **G5** — plausibility in the Auditor | Medium, and needs a re-record |
-| 5 | **G3** — `doctor` check for the voice extra | Small |
-| 6 | **G6, G7** — verification passes | Needs a model / a phone |
-
-## Not verified
-
-- The voice fix is covered by tests against a simulated STT failure. I have not
-  sent a real voice note through a real bot — that needs your token.
-- G4–G7 are diagnosed from code, not reproduced at runtime.
+Repository visibility, GitHub Actions billing/availability, release tags, and
+clean-machine anonymous installation are external release steps, not code
+gaps. They are tracked in [PUBLIC_RELEASE.md](PUBLIC_RELEASE.md).

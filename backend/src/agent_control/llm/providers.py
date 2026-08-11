@@ -327,7 +327,12 @@ def _looks_like_localdeploy(profile: LLMProfileConfig) -> bool:
         return False
     hostname = (parsed.hostname or "").lower()
     return (
-        hostname in {"127.0.0.1", "localhost", "::1"}
+        # host.docker.internal is the same LocalDeploy seen from inside a
+        # container. Leaving it out meant allow_clamp was never sent there, so
+        # a containerised install failed its first message with a 400 about
+        # context_limit - the preset's own values exceeding what the profile
+        # allows, with nothing telling the server it may clamp them.
+        hostname in {"127.0.0.1", "localhost", "::1", "host.docker.internal"}
         and parsed.port == 8000
         and (model.startswith("gemma3_") or model.startswith("qwen3vl_") or model.startswith("qwen25vl_") or "localdeploy" in model or "ollama_safe" in model)
     )

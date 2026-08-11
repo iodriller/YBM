@@ -19,10 +19,6 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
 Both accept `--dry-run` (show the plan, change nothing), `--verify` (prove the install works
 before returning), `--no-prompt`, and `--install-dir DIR`.
 
-> Remote one-line install (`curl … raw.githubusercontent.com/… | sh`) returns **404** while this
-> repository is private - GitHub answers 404 rather than 403 to unauthenticated requests. Get the
-> folder first, then run the above. See `docs/archive/INSTALL_UX_PLAN.md`.
-
 The installer installs dependencies via `uv`, writes `config/config.yaml` and `.env`, generates
 admin and vault tokens, and starts the stack. The LLM and Telegram choices happen in the browser
 wizard that opens (the local web chat needs no setup and is on by default). The interactive
@@ -48,7 +44,7 @@ The sections below cover the same setup manually, plus Windows-specific tooling
 ```
 
 This creates `backend\.venv` via `uv`, installs dependencies, copies `config/config.example.yaml`
-to `config/config.yaml` if missing (every capability starts disabled), and generates
+to `config/config.yaml` if missing (high-impact capabilities start disabled), and generates
 `AGENT_ADMIN_TOKEN` / `AGENT_SECRET_VAULT_KEY` into `.env`. Pass `--telegram-token <token>` to
 save `TELEGRAM_BOT_TOKEN` at the same time, or add it to `.env` yourself.
 
@@ -58,8 +54,8 @@ If you run a local LocalDeploy checkout, add its path to `.env`:
 YBM_LOCALDEPLOY_ROOT=C:\path\to\LocalDeploy
 ```
 
-Otherwise point `llm.profiles` in `config/config.yaml` at whatever OpenAI-compatible endpoint
-you use.
+Otherwise choose any provider in the browser wizard, or configure a native Anthropic or
+OpenAI-compatible profile under `llm.profiles` in `config/config.yaml`.
 
 Optional, for the VS Code bridge:
 
@@ -132,6 +128,9 @@ that you link as a linked device (the same mechanism as WhatsApp Web/Desktop). I
 Node.js sidecar (`whatsapp-bridge/`) that the backend spawns and owns; `ybm setup` installs its
 dependencies automatically if Node.js 20+ is on `PATH` (`node_path` in config to point at a
 specific binary otherwise).
+
+Building the React admin console from source requires Node.js 22.22 or newer. The Docker image
+uses that version and already contains both the built console and WhatsApp production dependencies.
 
 1. In `config/config.yaml`, set `channels.whatsapp.enabled: true`.
 2. Start (or restart) the stack: `.\scripts\ybm.ps1 start`.

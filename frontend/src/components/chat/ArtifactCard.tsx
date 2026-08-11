@@ -2,7 +2,7 @@ import { useState } from "react"
 import { toast } from "sonner"
 import { Check, Copy, Download, ExternalLink, File, FileJson, FileText, Image, Mic } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { artifactDownloadUrl, type Artifact } from "@/lib/api"
+import { createArtifactDownloadGrant, type Artifact } from "@/lib/api"
 
 const TYPE_ICON: Record<string, typeof File> = {
   text_log: FileText,
@@ -81,6 +81,7 @@ export function ArtifactCard({ artifact }: { artifact: Artifact }) {
 
 function ArtifactActions({ artifact }: { artifact: Artifact }) {
   const [copied, setCopied] = useState(false)
+  const [loadingAction, setLoadingAction] = useState<"open" | "download" | null>(null)
 
   async function copyPath() {
     if (!artifact.uri) return
@@ -93,24 +94,64 @@ function ArtifactActions({ artifact }: { artifact: Artifact }) {
     }
   }
 
+  async function openArtifact() {
+    const preview = window.open("", "_blank")
+    if (preview) preview.opener = null
+    setLoadingAction("open")
+    try {
+      const { url } = await createArtifactDownloadGrant(artifact.id, { inline: true })
+      if (preview) {
+        preview.location.replace(url)
+      } else {
+        window.location.assign(url)
+      }
+    } catch {
+      preview?.close()
+      toast.error("Could not open this artifact.")
+    } finally {
+      setLoadingAction(null)
+    }
+  }
+
+  async function downloadArtifact() {
+    setLoadingAction("download")
+    try {
+      const { url } = await createArtifactDownloadGrant(artifact.id)
+      const link = document.createElement("a")
+      link.href = url
+      link.download = artifact.uri ? basename(artifact.uri) : "artifact"
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+    } catch {
+      toast.error("Could not download this artifact.")
+    } finally {
+      setLoadingAction(null)
+    }
+  }
+
   return (
     <div className="mt-1 flex items-center gap-2">
       <Button
         variant="ghost"
         size="sm"
         className="h-5 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
-        onClick={() => window.open(artifactDownloadUrl(artifact.id, { inline: true }), "_blank", "noopener,noreferrer")}
+        onClick={openArtifact}
+        disabled={loadingAction !== null}
       >
         <ExternalLink className="size-3" />
-        Open
+        {loadingAction === "open" ? "Opening..." : "Open"}
       </Button>
-      <a
-        href={artifactDownloadUrl(artifact.id)}
-        className="flex h-5 items-center gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-5 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+        onClick={downloadArtifact}
+        disabled={loadingAction !== null}
       >
         <Download className="size-3" />
-        Download
-      </a>
+        {loadingAction === "download" ? "Downloading..." : "Download"}
+      </Button>
       <Button
         variant="ghost"
         size="sm"

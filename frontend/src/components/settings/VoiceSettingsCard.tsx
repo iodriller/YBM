@@ -68,11 +68,12 @@ export function VoiceSettingsCard() {
       <CardContent className="flex flex-col gap-2">
         <div className="flex items-center gap-2">
           <Switch
+            id="voice-enabled"
             checked={config.enabled}
             disabled={saving || !config.available}
             onCheckedChange={toggle}
           />
-          <Label className="text-sm">Understand voice messages</Label>
+          <Label htmlFor="voice-enabled" className="text-sm">Understand voice messages</Label>
         </div>
         {!config.available ? (
           // Flipping the switch without the package fails at the first

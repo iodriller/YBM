@@ -13,14 +13,14 @@ import { Button } from "@/components/ui/button"
  */
 export function SetupIncompleteBanner({ onResume }: { onResume: () => void }) {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2">
-      <p className="text-sm">
+    <div className="flex items-center justify-between gap-2 border-b border-amber-500/30 bg-amber-500/10 px-3 py-2 sm:px-4">
+      <p className="min-w-0 text-sm">
         <span className="font-medium">No model configured yet.</span>{" "}
-        <span className="text-muted-foreground">
+        <span className="hidden text-muted-foreground sm:inline">
           YBM has nothing to think with, so it cannot answer messages.
         </span>
       </p>
-      <Button size="sm" variant="outline" onClick={onResume}>
+      <Button size="sm" variant="outline" className="shrink-0" onClick={onResume}>
         Finish setup
       </Button>
     </div>

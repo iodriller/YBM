@@ -35,6 +35,7 @@ REQUIRED_MODULES = [
 ]
 DESKTOP_MODULES = ["mss", "pyautogui", "pygetwindow", "pywinauto"]
 STATUS_SYMBOL = {"ok": "[OK]  ", "warn": "[WARN]", "fail": "[FAIL]"}
+MIN_NODE_VERSION = (22, 22, 0)
 
 
 @dataclass
@@ -260,12 +261,39 @@ def _check_telegram(settings: AppSettings) -> Check:
 def _check_node() -> Check:
     node = shutil.which("node")
     if node:
-        return Check("Node.js", "ok", node)
+        version = _node_version(node)
+        if version is not None and version < MIN_NODE_VERSION:
+            actual = ".".join(str(part) for part in version)
+            return Check(
+                "Node.js",
+                "warn",
+                f"{node} is v{actual}; the admin console requires Node.js 22.22+",
+            )
+        detail = f"{node} (v{'.'.join(str(part) for part in version)})" if version else node
+        return Check("Node.js", "ok", detail)
     return Check(
         "Node.js", "warn",
         "not found on PATH - only needed for the WhatsApp channel and building the admin "
-        "console; install Node.js 20+ (https://nodejs.org) if you need either",
+        "console; install Node.js 22.22+ (https://nodejs.org) if you need either",
     )
+
+
+def _node_version(node: str) -> tuple[int, int, int] | None:
+    try:
+        result = subprocess.run(
+            [node, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = str(getattr(result, "stdout", "")).strip().removeprefix("v")
+    parts = value.split(".")
+    if result.returncode != 0 or len(parts) < 3 or not all(part.isdigit() for part in parts[:3]):
+        return None
+    return tuple(int(part) for part in parts[:3])
 
 
 def _check_whatsapp(settings: AppSettings) -> Check:
@@ -421,7 +449,7 @@ def _install_whatsapp_bridge_deps() -> None:
     npm = shutil.which("npm")
     if npm is None:
         print("\nNOTE: npm not found - skipping whatsapp-bridge dependency install. Install "
-              "Node.js 20+ (https://nodejs.org), then run `npm install` in whatsapp-bridge/ "
+              "Node.js 22.22+ (https://nodejs.org), then run `npm install` in whatsapp-bridge/ "
               "if you plan to use the WhatsApp channel.")
         return
     print("\n-- Installing whatsapp-bridge dependencies --")
@@ -484,9 +512,19 @@ def _build_admin_console() -> None:
     print("\n-- Building the admin console --")
     npm = shutil.which("npm")
     if npm is None:
-        print("WARN: npm not found - skipping the admin console build. Install Node.js 20+ "
+        print("WARN: npm not found - skipping the admin console build. Install Node.js 22.22+ "
               "(https://nodejs.org), then run `ybm ui-build`. Until then, /admin shows a "
               "build-instructions page instead of the real console.")
+        return
+
+    node = shutil.which("node")
+    node_version = _node_version(node) if node else None
+    if node_version is not None and node_version < MIN_NODE_VERSION:
+        actual = ".".join(str(part) for part in node_version)
+        print(
+            f"WARN: Node.js v{actual} is too old to build the admin console; install "
+            "Node.js 22.22+ (https://nodejs.org), then run `ybm ui-build`."
+        )
         return
 
     use_shell = sys.platform == "win32"

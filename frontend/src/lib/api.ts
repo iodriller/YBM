@@ -141,20 +141,24 @@ export const ArtifactSchema = z.object({
 })
 export type Artifact = z.infer<typeof ArtifactSchema>
 
+const ArtifactDownloadGrantSchema = z.object({
+  url: z.string().startsWith("/admin/api/artifacts/"),
+  expires_in_seconds: z.number().int().positive(),
+})
+
 /**
- * A plain <a href>/window.open navigation can't attach the
- * X-Agent-Control-Admin-Token header apiFetch normally sends - the admin
- * token has to ride in the URL instead, which require_admin's own
- * query_params.get("token") fallback already accepts (docs/UI_UX_AUDIT.md
- * Phase 8: artifact download).
+ * Browser navigations cannot attach the normal admin-token header. Ask the
+ * authenticated API for a short-lived URL that is valid only for this one
+ * artifact and requested disposition; the long-lived token never enters a
+ * URL, browser history, or referrer.
  */
-export function artifactDownloadUrl(artifactId: string, options: { inline?: boolean } = {}): string {
-  const params = new URLSearchParams()
-  const token = getAdminToken()
-  if (token) params.set("token", token)
-  if (options.inline) params.set("inline", "true")
-  const query = params.toString()
-  return `/admin/api/artifacts/${encodeURIComponent(artifactId)}/download${query ? `?${query}` : ""}`
+export function createArtifactDownloadGrant(artifactId: string, options: { inline?: boolean } = {}) {
+  const query = options.inline ? "?inline=true" : ""
+  return apiFetch(
+    `/api/artifacts/${encodeURIComponent(artifactId)}/download-grant${query}`,
+    ArtifactDownloadGrantSchema,
+    { method: "POST" },
+  )
 }
 
 export const TaskRecordSchema = z.object({

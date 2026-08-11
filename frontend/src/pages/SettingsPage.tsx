@@ -50,7 +50,7 @@ export function SettingsPage({ onRerunWizard }: { onRerunWizard: () => void }) {
       <Card>
         <CardHeader>
           <CardTitle>Setup wizard</CardTitle>
-          <CardDescription>Re-run the first-run wizard (pick a brain, pick a face).</CardDescription>
+          <CardDescription>Re-run guided model and channel setup.</CardDescription>
         </CardHeader>
         <CardContent>
           <Button variant="outline" size="sm" onClick={onRerunWizard}>

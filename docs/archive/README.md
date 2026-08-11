@@ -18,7 +18,10 @@ For that, see `docs/ARCHITECTURE.md`, `docs/HISTORY.md`, `README.md`, and
 | `LLM_SETUP_PROPOSAL.md` | Two doors: bring your own key, or set one up for you | Key half implemented — 13 providers, native Anthropic. Contains a correction: LocalDeploy's control endpoints already existed |
 | `UI_MEASURED_FINDINGS.md` | First screenshot pass over the console | Folded into `PRODUCT_PLAN.md` |
 | `UI_UX_IMPROVEMENT_PLAN.md` | Second UI pass | Superseded by `PRODUCT_PLAN.md`, which says so in its first line |
-| `PUBLIC_RELEASE_CHECKLIST.md` | First pre-publication sweep | Superseded by `docs/PRE_PUBLIC_REVIEW.md` |
+| `PUBLIC_RELEASE_CHECKLIST.md` | First pre-publication sweep | Superseded by `docs/PUBLIC_RELEASE.md` |
+| `PRE_PUBLIC_REVIEW.md` | Second pre-publication review | Superseded by the current `docs/PUBLIC_RELEASE.md` and `docs/GAPS.md` |
+| `PRODUCT_PLAN.md` | Setup, chat, settings, and naming proposal | Shipped portions are in code/history; remaining limitations moved to `docs/GAPS.md` |
+| `VOICE_PLAN.md` | Response-style and error-language proposal | User-facing error work shipped; plausibility work remains in `docs/GAPS.md` |
 
 Three documents that *look* like plans deliberately stayed out of here:
 `UI_REWRITE_PLAN.md`, `UI_UX_AUDIT.md`, and `E2E_FINDINGS.md` are cited from
