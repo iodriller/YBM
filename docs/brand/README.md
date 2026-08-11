@@ -1,6 +1,6 @@
-# YBM Control brand mark
+# YBM brand mark
 
-`ybm-mark.svg` is the canonical source for the chunky Y used by YBM Control.
+`ybm-mark.svg` is the canonical source for the chunky Y used by YBM.
 `ybm-mark.png` is the transparent 1024 px raster export.
 
 - Primary color: `#6274E8`

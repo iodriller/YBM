@@ -35,7 +35,7 @@ admin UI, VS Code bridge, model endpoints, and generated preview servers bound
 to loopback unless you have added an authenticated network boundary.
 
 Start from `config/config.example.yaml`. It disables high-impact capabilities
-by default. Treat `.env`, `config/config.yaml`, `agent_control.db`, logs,
+by default. Treat `.env`, `config/config.yaml`, `.agent_control/agent_control.db`, logs,
 screenshots, workspaces, and all of `.agent_control/` as private runtime data.
 
 The detailed security boundaries, guarantees, and known limitations are in

@@ -78,7 +78,7 @@ Do not treat "Full Access" as a safe mode for browsing or processing untrusted c
 
 ## Keep private
 
-`.env`, `config/config.yaml`, `agent_control.db`, logs, screenshots, generated workspaces, and
+`.env`, `config/config.yaml`, `.agent_control/agent_control.db`, logs, screenshots, generated workspaces, and
 everything under `.agent_control/`.
 
 A Gitleaks finding requires **credential revocation and history cleanup** - not just deleting the

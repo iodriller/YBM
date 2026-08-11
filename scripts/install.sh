@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# One-command bootstrap for YBM Control on Linux/macOS:
-#   curl -fsSL https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.sh | sh
+# One-command bootstrap for YBM on Linux/macOS:
+#   curl -fsSL https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.sh | bash
 #
-# Requires nothing preinstalled. Not git, not Python.
+# Git and Python do not need to be preinstalled. This script requires Bash and
+# curl; its no-git source fallback also uses tar. Node.js 22.22+ is required to
+# build the admin console; the optional WhatsApp bridge also needs Node.js.
 #
 #   - uv is a standalone binary that needs no Python, and `uv python install`
 #     provides the interpreter. An earlier version of this script hunted for
@@ -135,7 +137,7 @@ else
 "The repository is private, so anonymous download cannot work. Either:
   - make the repository public, or
   - install git and authenticate (gh auth login, or a credential helper), then re-run, or
-  - copy an existing checkout onto this machine and run ./scripts/ybm.ps1 run inside it."
+  - copy an existing checkout onto this machine and run bash ./scripts/install.sh inside it."
   fi
   [ "$status" = "200" ] || { rm -rf "$tmp"; fail "download failed (HTTP $status)" "Check your internet connection and re-run."; }
   tar -xzf "$tmp/src.tar.gz" -C "$tmp"
@@ -170,7 +172,7 @@ YBM_BIN="$REPO_DIR/backend/.venv/bin/ybm"
 log "Setting up config, tokens, and the admin console"
 "$YBM_BIN" setup
 
-log "Starting YBM Control"
+log "Starting YBM"
 "$YBM_BIN" start --open \
   || fail "startup failed" "Run '$YBM_BIN doctor' to diagnose. Logs: $REPO_DIR/.agent_control/logs"
 

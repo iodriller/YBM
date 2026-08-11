@@ -3,7 +3,7 @@
 Storage is a single SQLite file - durable, easy to back up, and inspectable without running
 another service.
 
-Default path: `agent_control.db`
+Default path: `.agent_control/agent_control.db`
 
 ## Inspect
 
@@ -55,4 +55,4 @@ For a single task, `ybm trace-task <task_id>` is faster than reading tables by h
 ## Browse in VS Code
 
 Install `qwtel.sqlite-viewer` (VS Code suggests it from `.vscode/extensions.json`), then open
-`agent_control.db` directly.
+`.agent_control/agent_control.db` directly.

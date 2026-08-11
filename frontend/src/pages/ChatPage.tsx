@@ -20,6 +20,7 @@ import {
   useSendChatMessage,
   useTaskSignal,
   useUploadChatAttachment,
+  useVoiceConfig,
 } from "@/lib/queries"
 import { cn } from "@/lib/utils"
 import { ApiError, type TaskRecord } from "@/lib/api"
@@ -44,17 +45,24 @@ interface PendingAttachment {
 // true it would be a routing bug to fix, not a prompt to ship. Deciding which
 // capability to reach for is the agent's job.
 //
-// One of these deliberately routes through an approval, so a first-time user
+// Every one of these is work on this machine. The set used to open with "What
+// can you help me with?" and "What's the 20th Fibonacci number?", which framed
+// the product as a chat window that answers questions - the one thing that is
+// not the point. Each now names a different capability (files, documents,
+// disk) so the range is visible without reading any docs.
+//
+// The first deliberately routes through an approval, so a first-time user
 // meets the approval gate in their first minute rather than discovering it
 // later (docs/UI_REWRITE_PLAN.md §10).
 const STARTER_PROMPTS = [
-  "What can you help me with?",
+  "Organize my Downloads folder by type",
   "Summarize the PDFs on my desktop",
-  "What's the 20th Fibonacci number?",
+  "Find the largest files filling up my disk",
 ]
 
 export function ChatPage() {
   const { data, isPending, isError, error } = useChatMessages()
+  const { data: voice } = useVoiceConfig()
   const sendMessage = useSendChatMessage()
   const uploadAttachment = useUploadChatAttachment()
   const [draft, setDraft] = useState("")
@@ -72,6 +80,10 @@ export function ChatPage() {
 
   const tasks = data?.tasks ?? []
   const attachmentsUploading = attachments.some((a) => a.uploading)
+  // Both halves matter: `enabled` is the Settings toggle (off by default) and
+  // `available` is whether the transcription package is actually installed.
+  // Offering a microphone without both records audio and then apologises.
+  const voiceReady = Boolean(voice?.enabled && voice.available)
 
   useEffect(() => {
     scrollAnchorRef.current?.scrollIntoView({ block: "end" })
@@ -178,15 +190,19 @@ ${instructions}` : trimmed
                 <Sparkles className="size-5" />
               </span>
               <h2 className="text-xl font-semibold tracking-tight">What can I help you do?</h2>
-              <p className="mt-2 max-w-md text-sm leading-6 text-muted-foreground">
-                YBM can answer questions or carry out policy-gated work on this machine.
+              <p className="mt-2 max-w-sm text-balance text-sm leading-6 text-muted-foreground">
+                YBM works on this machine - your files, your browser, your terminal - and asks
+                before anything risky.
               </p>
+              {/* Stretched grid cells with h-full: the cards keep one shared
+                  height and one shared left edge whether a suggestion runs to
+                  one line or two, instead of each sizing to its own text. */}
               <div className="mt-7 grid w-full gap-2 sm:grid-cols-3">
                 {STARTER_PROMPTS.map((prompt) => (
                   <Button
                     key={prompt}
                     variant="outline"
-                    className="h-auto min-h-14 justify-start whitespace-normal px-3 py-2.5 text-left text-xs leading-5"
+                    className="h-full min-h-16 w-full justify-start whitespace-normal px-3.5 py-3 text-left text-xs font-normal leading-5 text-foreground/90"
                     onClick={() => handleSend(prompt)}
                   >
                     {prompt}
@@ -242,7 +258,13 @@ ${instructions}` : trimmed
               setModes((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]))
             }
           />
-          <div className="flex items-end gap-2 rounded-2xl border border-input bg-card p-2 shadow-sm focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/20">
+          {/* Message on its own row, controls on the next one.
+              Everything used to share a single row: five controls of two
+              different heights, bottom-aligned, with the textarea squeezed
+              between them. Nothing lined up (the placeholder sat above the
+              icon row rather than on it), and on a phone the field that
+              matters most was the narrowest thing in the composer. */}
+          <div className="rounded-2xl border border-input bg-card shadow-sm focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/20">
             <input
               ref={fileInputRef}
               type="file"
@@ -253,30 +275,6 @@ ${instructions}` : trimmed
                 event.target.value = ""
               }}
             />
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="size-9 shrink-0 rounded-xl text-muted-foreground"
-              aria-label="Attach a file"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <Paperclip className="size-4" />
-            </Button>
-            <FolderPicker onSelect={handleFolderSelect} />
-            <VoiceRecorder
-              disabled={sendMessage.isPending}
-              // Into the composer, not straight out - the user gets to read
-              // what was heard and fix it before sending.
-              onTranscript={(text) => setDraft((prev) => (prev ? `${prev} ${text}` : text))}
-              onError={(message) => toast.error(message)}
-            />
-            <ComposerTools
-              selected={modes}
-              onToggle={(key) =>
-                setModes((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]))
-              }
-            />
             <textarea
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
@@ -286,25 +284,55 @@ ${instructions}` : trimmed
                   handleSend(draft)
                 }
               }}
-              placeholder="Ask YBM anything..."
-              // At 390px the composer buttons leave the textarea narrow
-              // enough to wrap the placeholder, and rows={1} clipped it.
-              style={{ minHeight: "2.75rem" }}
+              placeholder="Ask YBM to do something on this machine..."
               disabled={sendMessage.isPending}
               autoFocus
               rows={1}
               aria-label="Message YBM"
-              className="max-h-36 min-h-10 min-w-0 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-5 outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              className="block max-h-40 min-h-11 w-full resize-none bg-transparent px-3.5 pb-1 pt-3 text-sm leading-6 outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50"
             />
-            <Button
-              type="submit"
-              size="icon"
-              className="size-9 shrink-0 rounded-xl"
-              aria-label="Send message"
-              disabled={sendMessage.isPending || !draft.trim() || attachmentsUploading}
-            >
-              {sendMessage.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Send className="size-4" />}
-            </Button>
+            <div className="flex items-center gap-1 px-2 pb-2">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-9 shrink-0 rounded-xl text-muted-foreground"
+                aria-label="Attach a file"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <Paperclip className="size-4" />
+              </Button>
+              <FolderPicker onSelect={handleFolderSelect} />
+              <ComposerTools
+                selected={modes}
+                onToggle={(key) =>
+                  setModes((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]))
+                }
+              />
+              {/* Send sits at the end of the row, and the microphone - when
+                  there is one - directly beside it, since dictating is a way
+                  of composing the message rather than another attachment. */}
+              <div className="ml-auto flex items-center gap-1">
+                {voiceReady && (
+                  <VoiceRecorder
+                    disabled={sendMessage.isPending}
+                    // Into the composer, not straight out - the user gets to read
+                    // what was heard and fix it before sending.
+                    onTranscript={(text) => setDraft((prev) => (prev ? `${prev} ${text}` : text))}
+                    onError={(message) => toast.error(message)}
+                  />
+                )}
+                <Button
+                  type="submit"
+                  size="icon"
+                  className="size-9 shrink-0 rounded-xl"
+                  aria-label="Send message"
+                  disabled={sendMessage.isPending || !draft.trim() || attachmentsUploading}
+                >
+                  {sendMessage.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Send className="size-4" />}
+                </Button>
+              </div>
+            </div>
           </div>
         </div>
         <p className={cn("mx-auto mt-1.5 hidden px-2 text-[11px] text-muted-foreground sm:block", widthClass)}>

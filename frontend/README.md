@@ -11,16 +11,17 @@ npm install
 npm run dev      # Vite dev server with hot reload, proxying /admin/api/* to the backend
 ```
 
-Or from the repo root: `ybm ui-dev`.
+Or from the repo root on Windows: `.\scripts\ybm.ps1 ui-dev`.
 
-Requires the backend running separately (`ybm start` or `ybm start --no-telegram --no-whatsapp
---no-worker --no-scheduler --no-localdeploy` for a minimal footprint) - the dev server proxies API
-calls to `http://127.0.0.1:8765`, it does not serve them itself.
+Requires the backend running separately. On Windows use `.\scripts\ybm.ps1 start`, or use
+`./backend/.venv/bin/ybm start --no-telegram --no-whatsapp --no-worker --no-scheduler
+--no-localdeploy` for a minimal cross-platform process set. The dev server proxies API calls to
+`http://127.0.0.1:8765`; it does not serve them itself.
 
 ## Build
 
 ```powershell
-npm run build     # or `ybm ui-build` from the repo root
+npm run build     # or `.\scripts\ybm.ps1 ui-build` from the repo root on Windows
 ```
 
 Output lands in `backend/src/agent_control/static/admin/` (see `vite.config.ts`'s

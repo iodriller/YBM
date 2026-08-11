@@ -12,7 +12,7 @@ from agent_control.tools.vscode_bridge import (
     require_vscode_bridge_token,
 )
 
-app = FastAPI(title="YBM Control Backend")
+app = FastAPI(title="YBM Backend")
 vscode_store = VSCodeBridgeStore()
 
 

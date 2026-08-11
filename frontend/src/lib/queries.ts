@@ -6,6 +6,7 @@ import {
   decideApproval,
   deleteMemoryFact,
   deleteSecret,
+  fetchVoiceConfig,
   getBootstrap,
   getEffectiveConfig,
   getServiceLog,
@@ -274,6 +275,27 @@ export function useSettingsSummary() {
     // Same reasoning as useEffectiveConfig - only this console's own
     // mutations change it, and each of those invalidates this key.
     staleTime: 30_000,
+  })
+}
+
+/** Shared so the Settings toggle can invalidate exactly what the composer reads. */
+export const VOICE_CONFIG_KEY = ["config", "voice"] as const
+
+/**
+ * Whether speech-to-text can actually transcribe right now.
+ *
+ * The composer uses this to decide whether to offer a microphone at all.
+ * Transcription is off by default and additionally needs the `voice` extra, so
+ * an always-visible mic button was a control that recorded audio and then
+ * reported a failure - worse than not offering it.
+ */
+export function useVoiceConfig() {
+  return useQuery({
+    queryKey: VOICE_CONFIG_KEY,
+    queryFn: fetchVoiceConfig,
+    // Only the Settings toggle changes this, and it invalidates the key on
+    // save; nothing else on the machine flips it mid-conversation.
+    staleTime: 60_000,
   })
 }
 

@@ -94,7 +94,7 @@ def _run_npm_script(script: str) -> int:
     if shutil.which("npm") is None:
         print("npm was not found on PATH.")
         print()
-        print("The admin console is a React app, so building it needs Node.js 20 or newer:")
+        print("The admin console is a React app, so building it needs Node.js 22.22 or newer:")
         print("  https://nodejs.org   (or: winget install OpenJS.NodeJS.LTS)")
         print()
         print("Open a NEW terminal after installing, then re-run this command.")

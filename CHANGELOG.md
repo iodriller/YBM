@@ -1,6 +1,6 @@
 # Changelog
 
-Notable changes to YBM Control. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
+Notable changes to YBM. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 `ybm check-updates` currently compares against the default branch. Once tagged

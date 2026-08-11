@@ -1,8 +1,9 @@
 @echo off
-rem YBM Control - first-time setup, no terminal required.
+rem YBM - first-time setup, no terminal required.
 rem
-rem Double-click this file. It installs whatever is missing (nothing needs to
-rem be preinstalled - not git, not Python) and opens the console.
+rem Keep this file inside the fully extracted YBM folder, then double-click it.
+rem It provides Python through uv, installs project dependencies, and opens YBM.
+rem Node.js 22.22+ is needed to build the web console from source.
 rem
 rem After this, use YBM.bat instead: same idempotent behaviour, and it is what
 rem the repo root is for. This file exists because a first-time user should not
@@ -28,7 +29,7 @@ goto parse
 
 :run
 echo.
-echo   YBM Control - setup
+echo   YBM - setup
 echo   ===================
 echo.
 

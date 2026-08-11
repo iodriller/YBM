@@ -12,6 +12,12 @@ dist
 dist-ssr
 *.local
 
+# Intermediate frames from e2e/demo.spec.ts; only the assembled
+# docs/screenshots/demo.gif is committed.
+.demo-frames
+playwright-report
+test-results
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

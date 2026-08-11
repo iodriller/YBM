@@ -168,7 +168,7 @@ function Brand() {
   return (
     <div className="flex items-center gap-2.5">
       <img src={`${import.meta.env.BASE_URL}favicon.svg`} alt="" className="size-8" />
-      <span className="text-base font-semibold tracking-tight text-sidebar-foreground">YBM Control</span>
+      <span className="text-base font-semibold tracking-tight text-sidebar-foreground">YBM</span>
     </div>
   )
 }

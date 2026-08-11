@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react"
+import { useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { ApiError, fetchVoiceConfig, updateVoiceConfig, type VoiceConfig } from "@/lib/api"
+import { VOICE_CONFIG_KEY } from "@/lib/queries"
 
 /**
  * Turn speech-to-text on or off.
@@ -20,6 +22,7 @@ export function VoiceSettingsCard() {
   const [config, setConfig] = useState<VoiceConfig | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const queryClient = useQueryClient()
 
   useEffect(() => {
     fetchVoiceConfig()
@@ -35,6 +38,9 @@ export function VoiceSettingsCard() {
     try {
       await updateVoiceConfig(enabled)
       setConfig((prev) => (prev ? { ...prev, enabled } : prev))
+      // The composer only shows a microphone while transcription can actually
+      // run, so it has to hear about this without a page reload.
+      void queryClient.invalidateQueries({ queryKey: VOICE_CONFIG_KEY })
       toast.success(enabled ? "Voice messages turned on." : "Voice messages turned off.")
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Could not change that.")

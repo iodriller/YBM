@@ -14,7 +14,7 @@ import { EFFECT_DISPLAY } from "@/lib/evidence"
  * so there's nothing new to ask the backend for. */
 function formatReceiptAsText(receipt: TaskReceipt): string {
   const lines: string[] = []
-  lines.push(`YBM Control - Task Receipt`)
+  lines.push(`YBM - Task Receipt`)
   lines.push(`Task: ${receipt.task_id}`)
   lines.push(`Objective: ${receipt.objective}`)
   lines.push(`Status: ${receipt.status}`)

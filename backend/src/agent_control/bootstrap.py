@@ -335,7 +335,7 @@ def _check_whatsapp(settings: AppSettings) -> Check:
         return Check(
             "WhatsApp", "fail",
             "enabled but node was not found on PATH (or channels.whatsapp.node_path) - "
-            "install Node.js 20+ (https://nodejs.org)",
+            "install Node.js 22.22+ (https://nodejs.org)",
         )
     if not (BRIDGE_DIR / "node_modules").is_dir():
         return Check(

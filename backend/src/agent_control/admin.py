@@ -2832,7 +2832,7 @@ _ADMIN_HTML = """
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>YBM Control</title>
+  <title>YBM</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1.5rem; color: #1a1a1a; }
     a { color: #2563eb; }
@@ -2840,9 +2840,9 @@ _ADMIN_HTML = """
   </style>
 </head>
 <body>
-  <h1>YBM Control</h1>
+  <h1>YBM</h1>
   <p>No admin console build was found yet.</p>
-  <p><b>1. Install Node.js 20 or newer</b> if you don't have it -
+  <p><b>1. Install Node.js 22.22 or newer</b> if you don't have it -
      <a href="https://nodejs.org">nodejs.org</a>, or <code>winget install OpenJS.NodeJS.LTS</code>.
      The console is a React app, so it cannot be built without it. Open a new terminal afterwards.</p>
   <p><b>2. Build it:</b> <code>.\\scripts\\ybm.ps1 ui-build</code>
@@ -2851,5 +2851,4 @@ _ADMIN_HTML = """
 </body>
 </html>
 """
-
 

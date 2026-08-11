@@ -1,4 +1,4 @@
-"""System tray icon for YBM Control (docs/UI_UX_AUDIT.md Phase 6).
+"""System tray icon for YBM (docs/UI_UX_AUDIT.md Phase 6).
 
 A thin GUI shell around the existing, tested scripts/ybm.ps1 - this file
 has no process-supervision logic of its own (AGENTS.md: "scripts/ybm.ps1
@@ -35,7 +35,7 @@ except ImportError:
 REPO_ROOT = Path(__file__).resolve().parent.parent
 YBM_PS1 = REPO_ROOT / "scripts" / "ybm.ps1"
 LOGO_PATH = Path(__file__).resolve().parent / "assets" / "logo_256.png"
-APP_NAME = "YBM Control"
+APP_NAME = "YBM"
 
 
 def _admin_port() -> int:
@@ -95,17 +95,17 @@ def _run_ybm_async(icon: "pystray.Icon", verb: str, *args: str) -> None:
     (LocalDeploy model load) - never block the tray's event loop on it."""
 
     def worker() -> None:
-        icon.notify(f"{verb.capitalize()}ing YBM Control...", APP_NAME)
+        icon.notify(f"{verb.capitalize()}ing YBM...", APP_NAME)
         try:
             result = _run_ybm(*args)
         except subprocess.TimeoutExpired:
             icon.notify(f"{verb.capitalize()} timed out after 3 minutes.", APP_NAME)
             return
         if result.returncode == 0:
-            icon.notify(f"YBM Control: {verb} completed.", APP_NAME)
+            icon.notify(f"YBM: {verb} completed.", APP_NAME)
         else:
             tail = (result.stderr or result.stdout or "").strip().splitlines()[-1:] or ["unknown error"]
-            icon.notify(f"YBM Control: {verb} failed - {tail[0]}", APP_NAME)
+            icon.notify(f"YBM: {verb} failed - {tail[0]}", APP_NAME)
 
     threading.Thread(target=worker, daemon=True).start()
 

@@ -1,4 +1,4 @@
-# YBM Control, headless profile.
+# YBM, headless profile.
 #
 #   cp .env.example .env      # set AGENT_ADMIN_TOKEN at minimum
 #   docker compose up -d

@@ -1,168 +1,229 @@
 <div align="center">
 
-<img src="docs/brand/ybm-mark.svg" alt="YBM Control logo" width="112" />
+<img src="docs/brand/ybm-mark.svg" alt="YBM logo" width="112" />
 
-# YBM Control
+# YBM
 
-**Your own AI agent, running on your machine - reachable from the apps you already use.**
+**A local AI agent you can reach from the web, Telegram, and WhatsApp.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](backend/pyproject.toml)
 [![Docker ready](https://img.shields.io/badge/docker-ready-2496ED.svg)](docker-compose.yml)
-[![Works with Claude, GPT, Gemini, Ollama](https://img.shields.io/badge/models-13%20providers-6E56CF.svg)](#bring-your-own-model)
+[![13 model providers](https://img.shields.io/badge/models-13%20providers-6E56CF.svg)](#choose-a-model)
 
-![YBM Control - setup, channels, tools, and policy](docs/screenshots/demo.gif)
+![Asking YBM to organize a Downloads folder: it plans the work, asks for approval before moving any file, then reports exactly what it moved](docs/screenshots/demo.gif)
 
 </div>
 
----
+YBM runs on your machine and turns a message into either a direct reply or a traceable task. Tasks
+can use the tools you enable, including files, terminal commands, Chrome, VS Code, desktop control,
+scheduled work, MCP servers, and coding agents. Every tool call passes through policy before it runs.
 
-Text it from your phone. It works on your actual computer - your files, your browser, your
-editor, your terminal - and reports back.
+> YBM is alpha software. Start with a test directory, review the access settings, and keep the admin
+> console bound to localhost unless you understand the authentication and network implications.
 
+## Install
+
+Source installs do not require a system Python or Git. The installers bootstrap `uv`, use it to
+provide Python 3.12, create the project environment, initialize local config and tokens, and start
+YBM.
+
+Node.js 22.22 or newer is required to build the admin console from source. The optional WhatsApp
+bridge also needs Node.js, so 22.22 satisfies both. Without Node.js, the backend can still run, but
+`/admin` shows build instructions instead of the console. Docker includes Node.js and a prebuilt
+console in the image.
+
+### Windows
+
+1. Download the repository as a ZIP and extract the entire folder.
+2. Double-click [`YBM-Setup.cmd`](YBM-Setup.cmd).
+3. Complete the two-step browser wizard to choose a model and optionally connect Telegram.
+
+The setup launcher must remain beside the repository's `scripts` folder. Downloading only
+`YBM-Setup.cmd` is not enough.
+
+For a visible, verifiable PowerShell install from the extracted folder:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Verify
 ```
-You:  organize my Downloads folder by file type, then tell me what you moved
-YBM:  Sorted 41 files into 6 folders (Images, Documents, Archives, Installers,
-      Code, Other). Nothing was deleted. Full list and every file path touched
-      are in this task's trace.
-```
 
-That is not a chat window pretending to do things. Every request becomes a **task** with a full
-trace you can open: which tool ran, what it returned, what was approved, what was refused.
+After the first install, double-click [`YBM.bat`](YBM.bat). It checks the environment, syncs changed
+runtime dependencies, starts the services, and opens the console. Repeated launches are safe.
 
-## Why you might want this
+### macOS and Linux
 
-- **It reaches your real machine.** Filesystem, terminal, Chrome, VS Code, desktop control, a
-  scheduler, MCP tools. Not a sandbox in someone else's cloud.
-- **It comes to you.** Telegram, WhatsApp, or the built-in web console. With optional local voice
-  transcription enabled, you can send a voice note when typing is inconvenient.
-- **Nothing dangerous happens by default.** High-impact capabilities start **off**. Anything risky needs
-  a one-shot, expiring approval the *runtime* enforces - not the model, not a config flag, and not
-  bypassable by an "allow everything" mode.
-- **It's yours.** Runs local models for free with nothing leaving the machine, or your own API
-  key. MIT licensed.
-
-## Try it in five minutes
-
-**Windows, no terminal:** download the folder, double-click **`YBM-Setup.cmd`**. It installs
-whatever is missing - Python included - and opens the console.
-
-**macOS / Linux:**
+From an extracted checkout:
 
 ```bash
-./scripts/install.sh
+bash ./scripts/install.sh --verify
 ```
 
-**Docker:**
+The script requires Bash and `curl`. It uses Git when available and can download a source archive
+when Git is absent. After installation, start YBM from the checkout with:
+
+```bash
+./backend/.venv/bin/ybm start --open
+```
+
+If the machine has no browser, configure the model and Telegram interactively with:
+
+```bash
+./backend/.venv/bin/ybm onboard
+```
+
+### Docker
+
+Docker is the headless profile. It includes the admin console and WhatsApp runtime, but it cannot
+control the host desktop, attach to the host VS Code session, or use display-dependent browser
+automation.
 
 ```bash
 cp .env.example .env
-# edit .env and set AGENT_ADMIN_TOKEN to a long random value
-docker compose up -d
-# then open http://127.0.0.1:8765/admin
+# Edit .env and set AGENT_ADMIN_TOKEN to a long random value.
+docker compose up -d --build
+# Open http://127.0.0.1:8765/admin and enter the token when prompted.
 ```
 
-A browser wizard asks two questions - which model, and where you want to reach it - and both are
-skippable. After that, **`YBM.bat`** (or `ybm run`) starts everything and opens the console.
+The compose file stores runtime state in the `ybm-state` volume, writes settings to
+`config/config.yaml`, and exposes only `./workspace` to filesystem tools. Put durable cloud API keys
+in the host `.env` file. To run an Ollama container too:
 
-## Bring your own model
+```bash
+docker compose --profile ollama up -d --build
+docker compose exec ollama ollama pull qwen3:8b
+```
 
-| Free, on your hardware | With an API key |
+## First run
+
+The browser wizard has two steps:
+
+1. Choose a local model or configure a cloud provider. YBM verifies access, lists models when the
+   provider supports it, and makes one small completion before saving the choice.
+2. Use the built-in web chat immediately, or optionally connect Telegram. WhatsApp is configured
+   later under Settings.
+
+Both wizard steps can be skipped. A skipped model means chat and task classification will not work
+until a model is configured under Settings. See [Local setup](docs/LOCAL_SETUP.md) for manual and
+headless configuration.
+
+## Choose a model
+
+| Local, no API key | Cloud API key |
 |---|---|
-| Ollama · LM Studio · LocalDeploy | Anthropic (Claude) · OpenAI · Google Gemini · OpenRouter · Groq · DeepSeek · Mistral · xAI · Together |
+| Ollama, LM Studio, LocalDeploy | Anthropic, OpenAI, OpenRouter, Google Gemini, Groq, DeepSeek, Mistral, xAI, Together AI |
 
-Paste a key and YBM checks it, lists the models that key can actually reach, and **makes one real
-call before saving** - so a model that cannot answer never silently becomes your default. Local
-models cost nothing and nothing you type leaves the machine.
+The provider picker also accepts a custom OpenAI-compatible endpoint. Anthropic uses its native
+SDK; the remaining cloud providers and local runtimes use their OpenAI-compatible APIs.
 
-Anthropic gets a native provider rather than an OpenAI-compatible shim, because current Claude
-models reject `temperature` outright and a shim would fail every request while looking like an
-auth problem.
+Using a local model keeps model prompts and completions on the configured local endpoint. Other
+enabled tools, such as web search or HTTP requests, can still contact external services.
 
-## What it can actually do
+## Channels
 
-Search and organize files inside allowed roots · run coding agents (Codex, Claude Code, Copilot
-CLI) or a bounded Python interpreter · drive Chrome, including multi-source research · bridge to
-VS Code · take and act on screenshots (Windows) · schedule recurring work · speak MCP as both
-client and server · generate PDFs and documents · track cost per task · run tools in parallel and
-delegate to sub-agents · remember facts you tell it, with provenance · search your own documents.
+- **Web chat:** available in the admin console after a model is configured.
+- **Telegram:** optional bot integration with user and chat allowlists. Text, commands, approvals,
+  voice transcription, and artifact delivery are supported.
+- **WhatsApp:** optional, text-only integration through the unofficial Baileys WhatsApp Web client.
+  It requires Node.js, QR linking, and an explicit phone-number allowlist.
 
-All of it policy-gated, on every channel. Full list in [docs/CAPABILITIES.md](docs/CAPABILITIES.md).
+An empty Telegram or WhatsApp allowlist denies every incoming message.
 
-## How it fits together
+## What it can do
 
-A message arrives on any channel. The **Concierge** decides whether it is chat or work. Work goes
-to the **Operator**, a tool-calling loop where every call passes the policy engine first - allowed,
-needs your approval, or refused with a reason. The **Auditor** checks the result against what you
-asked before it is reported as done.
+- Search, read, and organize files inside configured roots.
+- Run bounded terminal commands, Python code, and supported coding agents.
+- Use Chrome, screenshots, and Windows desktop control when enabled.
+- Schedule recurring work and continue long-running tasks.
+- Connect to MCP servers and expose its own MCP entry point.
+- Work with VS Code through the optional bridge extension.
+- Store attributed memory and search an indexed local knowledge base.
+- Produce task traces with tool results, approvals, LLM receipts, timing, and cost data.
 
+Capabilities and adapters are separate controls. Enabling an adapter does not bypass its capability
+policy. See [Capabilities](docs/CAPABILITIES.md) for the implemented tool catalog.
+
+## Safety model
+
+High-impact capabilities start disabled. Filesystem access is restricted to configured roots.
+Terminal, browser, desktop control, dependency installation, and Git pushes are separately gated.
+Risky operations require short-lived approvals enforced by the runtime. Secrets are redacted from
+logs and task output, and each task retains an audit trail.
+
+Read the [Threat model](docs/THREAT_MODEL.md) before granting access to important files or accounts.
+See [SECURITY.md](SECURITY.md) for vulnerability reporting.
+
+## How it works
+
+```text
+Telegram  \
+WhatsApp  +--> Concierge --> Operator <--> Policy <--> Tools
+Web chat  /         |            |
+                    +--> reply    +--> Auditor --> result and trace
 ```
-Telegram ─┐
-WhatsApp ─┼─▶ Concierge ─▶ Operator ⇄ Policy ⇄ Tools
-Web chat ─┘       │            │
-                  └── reply    └──▶ Auditor ─▶ result + full trace
-```
 
-Diagrams and the detail: [docs/ROLES.md](docs/ROLES.md) and
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
-## Is this safe to run?
-
-It is designed to be, and the design is written down rather than asserted.
-
-Capabilities are off until you turn them on. Filesystem access is confined to roots you choose.
-Terminal, browser, desktop control, dependency installation, and git push are each separately
-gated. Approvals expire and are single-use. Secrets are redacted from logs and task output.
-Everything is auditable after the fact.
-
-Read [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) before pointing it at anything you care about,
-and [SECURITY.md](SECURITY.md) to report a problem.
+The FastAPI backend owns orchestration, policy, persistence, and adapters. The React console talks
+to it through `/admin/api/*`. Telegram and WhatsApp are channel adapters over the same task pipeline,
+and the VS Code extension is an editor bridge rather than a second agent runtime. See
+[Architecture](docs/ARCHITECTURE.md) and [Roles](docs/ROLES.md) for details.
 
 ## Everyday commands
 
-```bash
-ybm doctor            # is this machine set up correctly?
-ybm start             # start everything
-ybm status            # what is running
-ybm logs worker -f    # follow a service
-ybm stop              # stop everything
+On Windows, use the repository lifecycle wrapper:
+
+```powershell
+.\scripts\ybm.ps1 doctor
+.\scripts\ybm.ps1 start -Open
+.\scripts\ybm.ps1 status
+.\scripts\ybm.ps1 logs worker -Follow
+.\scripts\ybm.ps1 stop
 ```
 
-`ybm autostart enable` adds a tray icon and starts YBM at login. Windows also has the fuller
-`scripts\ybm.ps1` interface - `.\scripts\ybm.ps1 help` lists it.
-
-## Contributing
-
-Issues and pull requests are welcome - see [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and
-[docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md) for manual setup.
+On macOS and Linux, use the installed console script:
 
 ```bash
-cd backend && uv run --frozen pytest
+./backend/.venv/bin/ybm doctor
+./backend/.venv/bin/ybm start --open
+./backend/.venv/bin/ybm status
+./backend/.venv/bin/ybm logs worker --follow
+./backend/.venv/bin/ybm stop
 ```
 
-`backend/tests/scenario/` replays recorded LLM responses, so the suite runs with no network, no
-GPU, and no API spend.
+Run `.\scripts\ybm.ps1 help` or `./backend/.venv/bin/ybm --help` for the command available on that
+interface. Windows-only conveniences include the tray app, login autostart, test runner, scenario
+tools, and extension packaging.
 
-## Docs
+## Development
 
-| | |
+```powershell
+.\scripts\ybm.ps1 setup
+.\scripts\ybm.ps1 doctor
+.\scripts\ybm.ps1 test
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for focused verification commands. Deterministic backend tests
+do not need a network connection, GPU, Telegram account, or paid model call. Live E2E and scenario
+recording have separate prerequisites and can make external calls.
+
+## Documentation
+
+| Guide | Contents |
 |---|---|
-| [Architecture](docs/ARCHITECTURE.md) | How the system works today |
-| [Roles](docs/ROLES.md) | Concierge, Operator, Auditor, with diagrams |
-| [Capabilities](docs/CAPABILITIES.md) | Everything it can be allowed to do |
-| [Threat model](docs/THREAT_MODEL.md) | What it protects against, and what it does not |
-| [Local setup](docs/LOCAL_SETUP.md) | Manual setup and every runtime option |
-| [Gaps](docs/GAPS.md) | Known bugs and missing pieces, kept honest |
-| [Public release](docs/PUBLIC_RELEASE.md) | External checks to perform when visibility changes |
-| [History](docs/HISTORY.md) | Why things are the way they are |
+| [Local setup](docs/LOCAL_SETUP.md) | Installers, manual setup, runtime commands, and local data |
+| [Architecture](docs/ARCHITECTURE.md) | Current components and message flow |
+| [Roles](docs/ROLES.md) | Concierge, Operator, and Auditor responsibilities |
+| [Capabilities](docs/CAPABILITIES.md) | Implemented tools and their policy gates |
+| [Threat model](docs/THREAT_MODEL.md) | Trust boundaries, protections, and residual risk |
+| [Database inspection](docs/DATABASE_INSPECTION.md) | Inspect, prune, reset, and trace local state |
+| [Known gaps](docs/GAPS.md) | Current limitations and unimplemented behavior |
+| [History](docs/HISTORY.md) | Design rationale and completed phases |
 
-## Honest limitations
+## Current limitations
 
-- WhatsApp is plain text only - no buttons, voice, or file delivery yet, unlike Telegram.
-- Desktop control is Windows-only.
-- Voice transcription is off by default and needs the `voice` extra installed.
-- More in [docs/GAPS.md](docs/GAPS.md), which is kept current rather than flattering.
+- The project is alpha and is tested most heavily on Windows.
+- Desktop observation and control are Windows-only.
+- WhatsApp is text-only and uses an unofficial client, which carries account risk.
+- Voice transcription is disabled by default and needs the `voice` dependency extra.
+- Docker cannot access host desktop or editor sessions, and only mounted paths are visible.
 
----
-
-MIT licensed. Built to run on your own hardware, on your own terms.
+MIT licensed.

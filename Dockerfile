@@ -1,4 +1,4 @@
-# YBM Control - headless profile.
+# YBM - headless profile.
 #
 # What runs here: Telegram/WhatsApp intake, the operator loop, filesystem tools
 # scoped to mounted volumes, the code interpreter, MCP, and the admin console.

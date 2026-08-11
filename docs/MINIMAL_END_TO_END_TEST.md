@@ -26,7 +26,7 @@ Prerequisites: `ybm setup` has run once, and an LLM endpoint is reachable.
    `task.status` and replies.
 6. **Confirm:**
    - Tasks page shows the task reaching `completed`
-   - `ybm trace-task <task_id>` lists the tool call and its result
+   - `.\scripts\ybm.ps1 trace <task_id>` lists the tool call and its result
    - Audit page shows the classification and task-created events
 
 That exercises every layer except channel-specific intake.
@@ -80,7 +80,7 @@ Look for `tasks[0].objective`, `integrations.telegram.enabled`, and
 | Symptom | Check |
 |---|---|
 | Message ignored | Allowlist - an empty one denies everything |
-| Task stuck `received` | Is the worker running? `ybm status` |
+| Task stuck `received` | Is the worker running? `.\scripts\ybm.ps1 status` |
 | Task `awaiting_approval` | Approve it in the console, or on Telegram |
 | Tool "denied" | Capability is off - see [CAPABILITIES.md](CAPABILITIES.md) |
-| Anything else | `ybm trace-task <task_id>` and `ybm logs worker -f` |
+| Anything else | `.\scripts\ybm.ps1 trace <task_id>` and `.\scripts\ybm.ps1 logs worker -Follow` |

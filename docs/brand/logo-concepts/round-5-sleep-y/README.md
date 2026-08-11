@@ -1,6 +1,6 @@
 # Round 5: Sleep Y
 
-Four standalone Y logo directions for YBM Control:
+Four standalone Y logo directions for YBM:
 
 1. `01-crescent-y.png` - crescent-moon silhouette and negative space.
 2. `02-closed-eye-y.png` - a calm closed-eyelid curve flowing into the stem.

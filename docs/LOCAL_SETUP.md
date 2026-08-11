@@ -1,150 +1,256 @@
-# Local Setup
+# Local setup
 
-## Fastest path
+## Before you start
 
-Nothing needs to be installed first - not git, not Python. `uv` is a standalone binary and it
-downloads the interpreter YBM runs on.
+YBM source installs use `uv` to provide Python 3.12 and create an isolated environment. You do not
+need to install Python or Git first.
 
-From inside the folder:
+You do need:
 
-```bash
-# Linux/macOS
-./scripts/install.sh
+- An internet connection for the first dependency install.
+- Node.js 22.22 or newer to build the React admin console from source.
+- Bash and `curl` for the macOS/Linux installer.
+- Docker Desktop or Docker Engine with Compose only if you choose the container path.
+
+The optional WhatsApp bridge also needs Node.js, so version 22.22 satisfies both requirements. If
+Node.js is missing, setup continues and the backend can run, but `/admin` shows instructions instead
+of the built console. Install Node.js, then run the `ui-build` command for your platform.
+
+## Recommended install
+
+### Windows, no terminal
+
+1. Download the repository as a ZIP and extract the entire folder.
+2. Double-click `YBM-Setup.cmd` in that folder.
+3. Finish the browser wizard that opens.
+
+`YBM-Setup.cmd` is a launcher for the adjacent `scripts/install.ps1`. It cannot be downloaded and
+run by itself. It accepts these optional command-line flags:
+
+```text
+YBM-Setup.cmd --dry-run
+YBM-Setup.cmd --verify
+YBM-Setup.cmd --no-prompt
 ```
+
+`--no-prompt` is accepted for automation parity, but the installer itself currently has no terminal
+prompts. Model and Telegram setup happen in the browser.
+
+For visible PowerShell output and the complete installer option set:
+
 ```powershell
-# Windows - or just double-click YBM-Setup.cmd, no terminal needed
-powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Verify
 ```
 
-Both accept `--dry-run` (show the plan, change nothing), `--verify` (prove the install works
-before returning), `--no-prompt`, and `--install-dir DIR`.
+Available PowerShell parameters are `-DryRun`, `-Verify`, `-NoPrompt`, and
+`-InstallDir C:\path\to\ybm`. `YBM_INSTALL_DIR`, `YBM_DRY_RUN`, and `YBM_NO_PROMPT` provide the
+corresponding environment settings.
 
-The installer installs dependencies via `uv`, writes `config/config.yaml` and `.env`, generates
-admin and vault tokens, and starts the stack. The LLM and Telegram choices happen in the browser
-wizard that opens (the local web chat needs no setup and is on by default). The interactive
-`ybm onboard` CLI wizard still exists for headless/SSH-only installs with no browser to open.
-Already inside a checkout? The script detects that and skips straight to setup.
+After setup, double-click `YBM.bat`. It runs the idempotent Windows lifecycle command, syncs runtime
+dependencies when the lock files change, starts YBM, and opens the console.
 
-```mermaid
-flowchart LR
-    I["install script"] --> S["ybm setup<br/>venv · config.yaml · .env tokens"]
-    S --> O["ybm onboard<br/>pick an LLM, optional Telegram"]
-    O --> D["ybm doctor<br/>one line per check"]
-    D --> R["ybm start"]
-    R --> A["http://127.0.0.1:8765/admin"]
-```
+### macOS and Linux
 
-After that, `YBM.bat` (double-click) or `ybm start` is all you need.
-
-## Two interfaces, both supported
-
-| | Cross-platform | Windows |
-|---|---|---|
-| Command | `ybm` (from `backend/.venv`) | `scripts\ybm.ps1` |
-| Style | hyphenated: `ybm trace-task <id>` | two-word: `.\scripts\ybm.ps1 trace <id>` |
-
-Day to day:
+From an extracted checkout:
 
 ```bash
-ybm start            # start the stack
-ybm status           # what's running
-ybm logs worker -f   # follow one service
-ybm doctor           # check the environment
-ybm stop             # stop everything
+bash ./scripts/install.sh --verify
 ```
 
-## Manual setup
+Available options:
 
-### 1. Install
+```text
+--dry-run
+--verify
+--no-prompt
+--install-dir DIR
+```
+
+The script uses Git when it is available. If Git is absent and the script needs to fetch the code,
+it downloads a source archive instead. `YBM_INSTALL_DIR` changes the default install path, and
+`YBM_DRY_RUN=1` enables the dry run.
+
+After setup, run the installed CLI from the repository root:
+
+```bash
+./backend/.venv/bin/ybm start --open
+```
+
+The installer does not add that virtual-environment directory to your shell `PATH`. The full path
+above works without activating the environment. If you do activate `backend/.venv`, the shorter
+`ybm start --open` form is available.
+
+### Docker
+
+Docker runs the headless profile. It bundles the admin console and WhatsApp dependencies, but it
+cannot attach to the host desktop, Chrome display, or VS Code session.
+
+```bash
+cp .env.example .env
+# Edit .env and set AGENT_ADMIN_TOKEN to a long random value.
+docker compose up -d --build
+```
+
+Open `http://127.0.0.1:8765/admin` and enter the admin token. The first-run wizard writes settings
+to the host's ignored `config/config.yaml`. Store cloud API keys in the host `.env` so they survive
+container recreation.
+
+Compose publishes the console only on host loopback, keeps runtime state in the `ybm-state` volume,
+and exposes `./workspace` as the allowed host workspace. To add the optional Ollama service:
+
+```bash
+docker compose --profile ollama up -d --build
+docker compose exec ollama ollama pull qwen3:8b
+```
+
+## What setup creates
+
+The source installers:
+
+1. Locate or install the pinned `uv` release.
+2. Ask `uv` to provide Python 3.12.
+3. Create `backend/.venv` and install YBM dependencies.
+4. Copy `config/config.example.yaml` to ignored `config/config.yaml` if it is missing.
+5. Generate `AGENT_ADMIN_TOKEN` and `AGENT_SECRET_VAULT_KEY` in ignored `.env` if they are missing.
+6. Initialize `.agent_control/agent_control.db`.
+7. Build the admin console and install WhatsApp dependencies when Node.js is available.
+8. Start the stack and open the local console.
+
+Existing config, tokens, and local state are retained. On Windows, `YBM.bat` also checks whether
+Python dependency inputs changed before syncing again. It checks for updates but does not apply
+source updates automatically.
+
+## First-run configuration
+
+The browser wizard is shown when no reachable model has been configured. It lets you:
+
+1. Select Ollama, LM Studio, LocalDeploy, a cloud provider, or another OpenAI-compatible endpoint.
+2. Verify the key or endpoint, select a model, and run one small completion before saving.
+3. Use web chat immediately or optionally verify and connect a Telegram bot.
+
+The wizard can be skipped. Without a working model, chat replies and task classification remain
+unavailable until you configure one under Settings.
+
+For a headless source install with no browser:
+
+```bash
+./backend/.venv/bin/ybm onboard
+```
+
+The Windows equivalent is:
+
+```powershell
+& .\backend\.venv\Scripts\ybm.exe onboard
+```
+
+## Runtime interfaces
+
+The Windows wrapper and installed Python CLI share the main runtime operations, but they are not
+identical.
+
+| Operation | Windows wrapper | Installed CLI on macOS/Linux |
+|---|---|---|
+| Start and open | `YBM.bat` or `.\scripts\ybm.ps1 run` | `./backend/.venv/bin/ybm start --open` |
+| Diagnose | `.\scripts\ybm.ps1 doctor` | `./backend/.venv/bin/ybm doctor` |
+| Status | `.\scripts\ybm.ps1 status` | `./backend/.venv/bin/ybm status` |
+| Follow worker log | `.\scripts\ybm.ps1 logs worker -Follow` | `./backend/.venv/bin/ybm logs worker --follow` |
+| Stop | `.\scripts\ybm.ps1 stop` | `./backend/.venv/bin/ybm stop` |
+| Trace a task | `.\scripts\ybm.ps1 trace <task_id>` | `./backend/.venv/bin/ybm trace-task <task_id>` |
+| Change config | `.\scripts\ybm.ps1 config set <path> <value>` | `./backend/.venv/bin/ybm config-set <path> <value>` |
+| Build UI | `.\scripts\ybm.ps1 ui-build` | `./backend/.venv/bin/ybm ui-build` |
+
+Run `.\scripts\ybm.ps1 help` or `./backend/.venv/bin/ybm --help` for the authoritative command list.
+The PowerShell wrapper also includes development tests, live E2E helpers, scenarios, cleanup,
+extension packaging, tray, autostart, and restart workflows.
+
+## Manual Windows setup
+
+For development or recovery after the bootstrap installer has provided `uv`:
 
 ```powershell
 .\scripts\ybm.ps1 setup
+.\scripts\ybm.ps1 doctor
+.\scripts\ybm.ps1 start -Open
 ```
 
-This creates `backend\.venv` via `uv`, installs dependencies, copies `config/config.example.yaml`
-to `config/config.yaml` if missing (high-impact capabilities start disabled), and generates
-`AGENT_ADMIN_TOKEN` / `AGENT_SECRET_VAULT_KEY` into `.env`. Pass `--telegram-token <token>` to
-save `TELEGRAM_BOT_TOKEN` at the same time, or add it to `.env` yourself.
+The developer setup installs the test, E2E, lint, voice, tray, and desktop extras. The normal
+`YBM.bat` path installs runtime extras only.
 
-### 2. Point at an LLM
-
-Either add a local [LocalDeploy](https://github.com/iodriller/LocalDeploy) checkout to `.env`:
+To save a Telegram token during setup:
 
 ```powershell
+.\scripts\ybm.ps1 setup --telegram-token <token>
+```
+
+To point YBM at a local [LocalDeploy](https://github.com/iodriller/LocalDeploy) checkout, add this to
+`.env` before starting:
+
+```text
 YBM_LOCALDEPLOY_ROOT=C:\path\to\LocalDeploy
 ```
 
-Otherwise choose any provider in the browser wizard, or configure a native Anthropic or
-OpenAI-compatible profile under `llm.profiles` in `config/config.yaml`.
+You can instead configure any catalog provider or custom OpenAI-compatible endpoint in the browser.
 
-Optional, for the VS Code bridge: `VSCODE_BRIDGE_TOKEN=...`
+## Access and approvals
 
-### 3. Enable what you need
-
-Everything invasive starts **off**. Turn capabilities on from the admin console's Access page, or:
+High-impact capabilities start disabled. Enable only the access needed for the current workflow
+from the console's Access page, or change a specific value on Windows:
 
 ```powershell
 .\scripts\ybm.ps1 config set <dotted.path> <value>
 ```
 
-See [CAPABILITIES.md](CAPABILITIES.md) for what each capability unlocks.
+An enabled adapter does not override capability policy. Approval gates, risk ceilings, allowlists,
+and allowed roots still apply. See [CAPABILITIES.md](CAPABILITIES.md) and
+[THREAT_MODEL.md](THREAT_MODEL.md).
 
-### 4. Check and start
+## Link WhatsApp
 
-```powershell
-.\scripts\ybm.ps1 doctor    # Python, deps, config, DB, LLM, tokens, ports
-.\scripts\ybm.ps1 start     # runs doctor first; -SkipDoctor to skip
-```
+WhatsApp is disabled by default. It uses [Baileys](https://github.com/WhiskeySockets/Baileys), an
+unofficial WhatsApp Web client. It does not need a Meta developer account or public webhook, but it
+does carry a small account-flagging risk.
 
-`start` launches LocalDeploy, backend, Telegram polling, WhatsApp polling, worker, scheduler, and
-the coding-session watcher. Skip any with `-NoTelegram`, `-NoWhatsApp`, `-NoWorker`,
-`-NoScheduler`, `-NoLocalDeploy`. The admin console is served by the backend, not a separate
-process.
+1. Set `channels.whatsapp.enabled: true` in `config/config.yaml` or use Settings.
+2. Start or restart YBM.
+3. Follow the bridge log: `.\scripts\ybm.ps1 logs whatsapp -Follow` on Windows, or
+   `./backend/.venv/bin/ybm logs whatsapp --follow` on macOS/Linux.
+4. Scan the QR code from WhatsApp under Settings, Linked Devices.
+5. Add your number to `channels.whatsapp.allowed_numbers` as E.164 digits without `+`, such as
+   `"15551234567"`, then restart.
 
-Open **http://127.0.0.1:8765/admin**. If the React console hasn't been built at this checkout
-(`ybm ui-build`), you get a pointer page instead - the JSON API under `/admin/api/*` works either way.
+The linked session persists under `.agent_control/whatsapp_auth/`. An empty allowed-number list
+denies every message. Consider testing with a secondary number, and never commit a real number or
+session data.
 
-### 5. Link WhatsApp (optional)
-
-WhatsApp is off by default and uses [Baileys](https://github.com/WhiskeySockets/Baileys), an
-unofficial WhatsApp Web client - no Meta developer account or public webhook, just a phone you
-link as a device. `ybm setup` installs the sidecar's dependencies if Node.js 20+ is on `PATH`.
-
-1. Set `channels.whatsapp.enabled: true` in `config/config.yaml`.
-2. Restart: `.\scripts\ybm.ps1 start`
-3. Watch for the QR code: `.\scripts\ybm.ps1 logs whatsapp -Follow`
-4. Scan it (phone → Settings → Linked Devices). The session persists in `.agent_control/whatsapp_auth/`.
-5. Add the number to `channels.whatsapp.allowed_numbers` - E.164 digits, no `+`
-   (e.g. `"15551234567"`). **An empty list denies everything.** Restart to apply.
-
-> Consider linking a secondary number. Baileys is unofficial, so there's a small
-> account-flagging risk. Never commit a real number to a shared checkout.
-
-## Daily commands
+## Common Windows operations
 
 ```powershell
 .\scripts\ybm.ps1 status
+.\scripts\ybm.ps1 logs backend -Follow
 .\scripts\ybm.ps1 logs worker -Follow
+.\scripts\ybm.ps1 backup
+.\scripts\ybm.ps1 check-updates
+.\scripts\ybm.ps1 package-extension
 .\scripts\ybm.ps1 stop
-.\scripts\ybm.ps1 test
 Invoke-RestMethod http://127.0.0.1:8765/health
 ```
 
-Package the VS Code extension: `.\scripts\package_vscode_extension.ps1`
+Use service scripts under `scripts/services/` directly only when debugging one process in isolation.
 
-The per-service launchers under `scripts/services/` are what `start` actually runs - use them
-directly only to debug one process in isolation.
-
-## Where things land
+## Local data
 
 | Path | Contents |
 |---|---|
+| `.env` | Local tokens and provider keys |
+| `config/config.yaml` | Local settings and access policy |
+| `.agent_control/agent_control.db` | SQLite task, message, approval, and audit state |
 | `.agent_control/workspaces/task_<id>` | Per-task generated files |
-| `.agent_control/logs/<service>.jsonl` | Structured logs, secrets redacted |
+| `.agent_control/logs/<service>.jsonl` | Structured logs with secret redaction |
 | `.agent_control/browser/screenshots` | Browser screenshots |
 | `.agent_control/computer_use/screenshots` | Desktop screenshots |
-| `.agent_control/coding_sessions` | Codex / Claude Code / Copilot session state |
-| `.agent_control/adapters` | Generated adapter proposals (never auto-loaded) |
-| `agent_control.db` | SQLite database - see [DATABASE_INSPECTION.md](DATABASE_INSPECTION.md) |
+| `.agent_control/coding_sessions` | Coding-agent session state |
+| `.agent_control/adapters` | Generated adapter proposals, never auto-loaded |
+| `.agent_control/whatsapp_auth` | WhatsApp linked-device credentials |
 
-Keep all of it private - see [THREAT_MODEL.md](THREAT_MODEL.md).
+All of these paths are private and ignored by Git. Use
+[DATABASE_INSPECTION.md](DATABASE_INSPECTION.md) to inspect or prune database state.

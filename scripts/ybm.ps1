@@ -63,8 +63,8 @@ YBM - local agentic control stack
                                 run the tray icon automatically at login (per-user Startup folder shortcut)
   ybm backup [--out <dir>]     zip the database, config.yaml, .env, and secret vault (default: .agent_control/backups)
   ybm check-updates            compare the installed version against the latest GitHub release (read-only)
-  ybm ui-build                 build the admin console into the backend's static dir (needs Node.js 20+)
-  ybm ui-dev                   run the admin console with hot reload (needs Node.js 20+)
+  ybm ui-build                 build the admin console into the backend's static dir (needs Node.js 22.22+)
+  ybm ui-dev                   run the admin console with hot reload (needs Node.js 22.22+)
 "@ | Write-Host
 }
 
@@ -83,7 +83,7 @@ function Invoke-YbmUi {
 }
 
 function Get-YbmAutostartShortcutPath {
-  Join-Path ([Environment]::GetFolderPath("Startup")) "YBM Control.lnk"
+  Join-Path ([Environment]::GetFolderPath("Startup")) "YBM.lnk"
 }
 
 function Invoke-YbmAutostart {
@@ -96,7 +96,7 @@ function Invoke-YbmAutostart {
       $shortcut.TargetPath = Get-YbmPythonW
       $shortcut.Arguments = "`"$Script:YbmRoot\scripts\tray_app.py`""
       $shortcut.WorkingDirectory = $Script:YbmRoot
-      $shortcut.Description = "YBM Control tray icon"
+      $shortcut.Description = "YBM tray icon"
       $shortcut.Save()
       Write-Host "Autostart enabled - $shortcutPath will launch the tray icon at login."
       Write-Host "Launching it now too, so you don't have to log out and back in..."
@@ -235,7 +235,7 @@ function Invoke-YbmRun {
   # "double-click, then wait while a dependency manager evaluates the
   # complete developer environment." Wrapped by the double-clickable
   # YBM.bat at the repo root, so "run this file" is the entire instruction.
-  Write-Host "YBM Control" -ForegroundColor Cyan
+  Write-Host "YBM" -ForegroundColor Cyan
   Write-Host "==========="
   Write-Host ""
 

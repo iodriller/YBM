@@ -102,7 +102,7 @@ def prepare_fixtures(*, start_web_server: bool) -> Fixtures:
     career_root.mkdir(parents=True)
     career_output.mkdir(parents=True)
     (career_root / "profile.md").write_text(
-        "# Current profile\n\nBuilder of YBM Control, a policy-bound local assistant with Telegram intake, "
+        "# Current profile\n\nBuilder of YBM, a policy-bound local assistant with Telegram intake, "
         "durable task state, audit trails, and recoverable tool execution.\n",
         encoding="utf-8",
     )

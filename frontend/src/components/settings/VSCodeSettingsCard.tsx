@@ -61,7 +61,7 @@ export function VSCodeSettingsCard() {
               <p className="text-xs text-muted-foreground">Last seen {formatRelativeTime(vscodeStatus.last_seen_at)}</p>
             ) : (
               <p className="text-xs text-muted-foreground">
-                No heartbeat yet - open VS Code with the YBM Control Bridge extension enabled.
+                No heartbeat yet - open VS Code with the YBM Bridge extension enabled.
               </p>
             )}
             {vscodeStatus.state?.workspace_folders?.[0] && (

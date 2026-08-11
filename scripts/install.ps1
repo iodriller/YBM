@@ -1,10 +1,12 @@
-# One-command bootstrap for YBM Control on Windows:
+# One-command bootstrap for YBM on Windows:
 #   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.ps1 | iex"
 #
-# Or, with no terminal at all: download YBM-Setup.cmd from the repo root and
-# double-click it. That is the recommended path for a desktop install.
+# Or, with no terminal at all: download and extract the complete repository,
+# then double-click YBM-Setup.cmd at its root. The CMD file needs the adjacent
+# scripts directory and cannot bootstrap from a standalone download.
 #
-# Requires nothing preinstalled. Not git, not Python.
+# Git and Python do not need to be preinstalled. Node.js 22.22+ is required to
+# build the admin console; the optional WhatsApp bridge also needs Node.js.
 #
 #   - uv is a standalone binary that needs no Python, and `uv python install`
 #     provides the interpreter. An earlier version of this script demanded
@@ -215,7 +217,7 @@ if ($DryRun) {
 }
 
 Set-Location $RepoDir
-Write-Step "Installing dependencies and starting YBM Control"
+Write-Step "Installing dependencies and starting YBM"
 # `run` is already non-interactive - it is the double-click path - so -NoPrompt
 # has nothing to suppress here and is not forwarded.
 & "$RepoDir\scripts\ybm.ps1" run

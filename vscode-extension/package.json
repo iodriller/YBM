@@ -1,7 +1,7 @@
 {
   "name": "ybm-control-bridge",
-  "displayName": "YBM Control Bridge",
-  "description": "Companion VS Code bridge for YBM Control.",
+  "displayName": "YBM Bridge",
+  "description": "Companion VS Code bridge for YBM.",
   "version": "0.1.0",
   "icon": "images/icon.png",
   "license": "MIT",
@@ -35,34 +35,34 @@
     "commands": [
       {
         "command": "agentControl.showStatus",
-        "title": "YBM Control: Show Status"
+        "title": "YBM: Show Status"
       },
       {
         "command": "agentControl.syncState",
-        "title": "YBM Control: Sync State"
+        "title": "YBM: Sync State"
       },
       {
         "command": "agentControl.createTerminal",
-        "title": "YBM Control: Create Terminal"
+        "title": "YBM: Create Terminal"
       }
     ],
     "configuration": {
-      "title": "YBM Control Bridge",
+      "title": "YBM Bridge",
       "properties": {
         "agentControl.bridgeUrl": {
           "type": "string",
           "default": "http://127.0.0.1:8765",
-          "description": "Local backend URL for the YBM Control bridge."
+          "description": "Local backend URL for the YBM bridge."
         },
         "agentControl.bridgeTokenEnv": {
           "type": "string",
           "default": "VSCODE_BRIDGE_TOKEN",
-          "description": "Environment variable name that stores the YBM Control bridge token. The extension also checks the workspace .env file."
+          "description": "Environment variable name that stores the YBM bridge token. The extension also checks the workspace .env file."
         },
         "agentControl.bridgeToken": {
           "type": "string",
           "default": "",
-          "description": "Optional YBM Control bridge token override. Prefer using the workspace .env file or environment variable."
+          "description": "Optional YBM bridge token override. Prefer using the workspace .env file or environment variable."
         }
       }
     }

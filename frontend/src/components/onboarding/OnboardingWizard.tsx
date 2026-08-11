@@ -78,7 +78,7 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
               Y
             </div>
             <div>
-              <CardTitle>Welcome to YBM Control</CardTitle>
+              <CardTitle>Welcome to YBM</CardTitle>
               <CardDescription>
                 Two quick questions. Skippable, and re-runnable later from Settings.
               </CardDescription>

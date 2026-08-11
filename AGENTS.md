@@ -2,7 +2,7 @@
 
 ## Project
 
-YBM (product name: "YBM Control") is a configurable local agent-control system. A FastAPI/Python backend accepts
+YBM (product name: "YBM") is a configurable local agent-control system. A FastAPI/Python backend accepts
 Telegram and local requests, applies policy, schedules work, invokes configured tools
 or coding agents, and serves a React admin console at `/admin`. A VS Code extension
 provides the editor bridge.
@@ -19,9 +19,12 @@ configuration examples aligned with the code that exists.
 
 ## Supported Commands
 
-The end-user entry point is `YBM.bat` at the repo root (double-click, no terminal) or
-`ybm run` - installs/updates whatever's missing, then starts and opens the console.
-Idempotent: run it again with nothing changed and it just starts.
+The Windows end-user entry point is `YBM.bat` at the repo root (double-click, no
+terminal) or `scripts\ybm.ps1 run`. It installs or updates missing runtime
+dependencies, then starts and opens the console. It is idempotent: run it again
+with nothing changed and it just starts. On macOS/Linux, use
+`./backend/.venv/bin/ybm start --open` after `scripts/install.sh`; the installed
+Python CLI does not have a `run` command.
 
 For development, use `scripts/ybm.ps1` instead of assembling service commands by hand:
 
