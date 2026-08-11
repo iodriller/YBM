@@ -141,20 +141,24 @@ export const ArtifactSchema = z.object({
 })
 export type Artifact = z.infer<typeof ArtifactSchema>
 
+const ArtifactDownloadGrantSchema = z.object({
+  url: z.string().startsWith("/admin/api/artifacts/"),
+  expires_in_seconds: z.number().int().positive(),
+})
+
 /**
- * A plain <a href>/window.open navigation can't attach the
- * X-Agent-Control-Admin-Token header apiFetch normally sends - the admin
- * token has to ride in the URL instead, which require_admin's own
- * query_params.get("token") fallback already accepts (docs/UI_UX_AUDIT.md
- * Phase 8: artifact download).
+ * Browser navigations cannot attach the normal admin-token header. Ask the
+ * authenticated API for a short-lived URL that is valid only for this one
+ * artifact and requested disposition; the long-lived token never enters a
+ * URL, browser history, or referrer.
  */
-export function artifactDownloadUrl(artifactId: string, options: { inline?: boolean } = {}): string {
-  const params = new URLSearchParams()
-  const token = getAdminToken()
-  if (token) params.set("token", token)
-  if (options.inline) params.set("inline", "true")
-  const query = params.toString()
-  return `/admin/api/artifacts/${encodeURIComponent(artifactId)}/download${query ? `?${query}` : ""}`
+export function createArtifactDownloadGrant(artifactId: string, options: { inline?: boolean } = {}) {
+  const query = options.inline ? "?inline=true" : ""
+  return apiFetch(
+    `/api/artifacts/${encodeURIComponent(artifactId)}/download-grant${query}`,
+    ArtifactDownloadGrantSchema,
+    { method: "POST" },
+  )
 }
 
 export const TaskRecordSchema = z.object({
@@ -235,7 +239,15 @@ export function getBootstrap() {
 // CLI wizard make the same decisions from the same signals.
 
 export const SetupDetectResponseSchema = z.object({
-  ollama: z.object({ available: z.boolean(), models: z.array(z.string()) }),
+  ollama: z.object({
+    available: z.boolean(),
+    // Distinct from `available`: a reachable server with nothing pulled is the
+    // one onboarding step that otherwise sends the user away to find a model
+    // name. Optional so an older backend still validates.
+    reachable: z.boolean().optional(),
+    models: z.array(z.string()),
+    recommended: z.string().nullable().optional(),
+  }),
   localdeploy_root_present: z.boolean(),
   openai_key_present: z.boolean(),
   telegram_token_present: z.boolean(),
@@ -847,6 +859,15 @@ const LLMPresetSchema = z.object({
   key: z.string(),
   label: z.string().optional(),
   active: z.boolean(),
+  // An earned verdict from real hardware detection, or "unknown" when the
+  // machine could not be inspected. Optional so an older backend still parses.
+  fit: z
+    .object({
+      status: z.enum(["fits", "too_big", "unknown"]),
+      needed_gb: z.number().nullable(),
+      reason: z.string().nullable(),
+    })
+    .optional(),
 }).passthrough()
 
 /** Messages the bot refused. Always recorded with the sender's id and an
@@ -975,6 +996,116 @@ export type LLMConfigInput = {
   api_key_value: string | null
 }
 
+const VoiceConfigSchema = z.object({
+  enabled: z.boolean(),
+  provider: z.string(),
+  model: z.string(),
+  installed: z.boolean(),
+  available: z.boolean(),
+  install_hint: z.string(),
+})
+export type VoiceConfig = z.infer<typeof VoiceConfigSchema>
+
+export function fetchVoiceConfig() {
+  return apiFetch("/api/config/voice", VoiceConfigSchema)
+}
+
+export function updateVoiceConfig(enabled: boolean) {
+  return apiFetch("/api/config/voice", ConfigUpdateResponseSchema, {
+    method: "POST",
+    body: JSON.stringify({ enabled }),
+  })
+}
+
+/** The channel catalog. Adding a way to reach YBM is a backend table row. */
+const ChannelSchema = z.object({
+  key: z.string(),
+  label: z.string(),
+  status: z.enum(["ready", "manual", "planned"]),
+  blurb: z.string(),
+  note: z.string(),
+  guided: z.boolean(),
+  zero_setup: z.boolean(),
+  connected: z.boolean(),
+})
+export type ChannelSpec = z.infer<typeof ChannelSchema>
+
+export function fetchChannels() {
+  return apiFetch("/api/channels", z.object({ channels: z.array(ChannelSchema) }))
+}
+
+/** The provider catalog. Adding a provider is a backend table row, not a UI change. */
+const LLMProviderSchema = z.object({
+  key: z.string(),
+  label: z.string(),
+  kind: z.string(),
+  base_url: z.string().nullable(),
+  api_key_env: z.string().nullable(),
+  default_model: z.string(),
+  needs_key: z.boolean(),
+  local: z.boolean(),
+  lists_models: z.boolean(),
+  keys_url: z.string().nullable(),
+  notes: z.string(),
+  example_models: z.array(z.string()),
+})
+export type LLMProviderSpec = z.infer<typeof LLMProviderSchema>
+
+export function fetchLLMProviders() {
+  return apiFetch("/api/llm/providers", z.object({ providers: z.array(LLMProviderSchema) }))
+}
+
+const LLMVerifySchema = z.object({
+  ok: z.boolean(),
+  provider: z.string(),
+  label: z.string(),
+  models: z.array(z.object({ id: z.string(), label: z.string() })),
+  default_model: z.string(),
+  listed: z.boolean(),
+})
+export type LLMVerifyResult = z.infer<typeof LLMVerifySchema>
+
+/**
+ * Proves a key works and returns what it can reach. Same reason the Telegram
+ * step verifies its token: a silently accepted secret fails much later,
+ * somewhere the user will not connect back to this screen.
+ */
+export function verifyLLMProvider(input: {
+  provider: string
+  api_key?: string | null
+  base_url?: string | null
+}) {
+  return apiFetch("/api/setup/llm/verify", LLMVerifySchema, {
+    method: "POST",
+    body: JSON.stringify(input),
+  })
+}
+
+const LLMTestSchema = z.object({
+  ok: z.boolean(),
+  model: z.string(),
+  reply: z.string(),
+  latency_ms: z.number(),
+})
+export type LLMTestResult = z.infer<typeof LLMTestSchema>
+
+/**
+ * One real completion, before anything is saved. Listing models proves the key
+ * is valid; only a round trip proves the chosen model answers and the response
+ * parses. Costs a token or two of the user's own quota, on an explicit click.
+ */
+export function testLLMModel(input: {
+  provider: string
+  model: string
+  api_key?: string | null
+  base_url?: string | null
+}) {
+  return apiFetch("/api/setup/llm/test", LLMTestSchema, {
+    method: "POST",
+    body: JSON.stringify(input),
+  })
+}
+
 const ConfigUpdateResponseSchema = z.object({ config_file: z.string() }).passthrough()
 
 export function updateLLMConfig(input: LLMConfigInput) {
@@ -1032,6 +1163,22 @@ export function testTelegram(botToken: string | null) {
   })
 }
 
+/** Setup-time only: the token may not be saved to .env yet, so it is passed in. */
+const TelegramVerifySchema = z.object({
+  ok: z.boolean(),
+  username: z.string().nullable(),
+  display_name: z.string().nullable(),
+  link: z.string().nullable(),
+})
+export type TelegramVerifyResult = z.infer<typeof TelegramVerifySchema>
+
+export function verifyTelegramToken(botToken: string | null) {
+  return apiFetch("/api/setup/telegram/verify", TelegramVerifySchema, {
+    method: "POST",
+    body: JSON.stringify({ bot_token: botToken }),
+  })
+}
+
 const TelegramOperatorSchema = z.object({
   user_id: z.number().int(),
   chat_id: z.number().int().nullable().optional(),
@@ -1053,6 +1200,27 @@ export function detectTelegramOperator(botToken: string | null) {
   return apiFetch("/api/config/telegram/detect-operator", TelegramDetectResponseSchema, {
     method: "POST",
     body: JSON.stringify({ bot_token: botToken }),
+  })
+}
+
+const TelegramFirstMessageSchema = z.object({
+  found: z.boolean(),
+  user_id: z.number().optional(),
+  chat_id: z.number().optional(),
+  username: z.string().nullable().optional(),
+  first_name: z.string().nullable().optional(),
+})
+export type TelegramFirstMessage = z.infer<typeof TelegramFirstMessageSchema>
+
+/**
+ * Learns the operator's Telegram id from a message they send. The allowlist is
+ * what makes the bot answer at all, and asking anyone to find their own numeric
+ * id is the worst way to fill it.
+ */
+export function awaitFirstTelegramMessage(botToken: string | null, waitSeconds = 45) {
+  return apiFetch("/api/setup/telegram/await-first-message", TelegramFirstMessageSchema, {
+    method: "POST",
+    body: JSON.stringify({ bot_token: botToken, wait_seconds: waitSeconds }),
   })
 }
 
@@ -1111,7 +1279,7 @@ const AuditEventTypeSchema = z.enum([
   "channel_access_decision", "message_classified", "task_spawn_failed", "task_created",
   "task_state_changed", "plan_created", "policy_decision", "approval_requested",
   "approval_decided", "tool_requested", "tool_completed", "artifact_created",
-  "egress_contacted", "error", "task_cancelled",
+  "memory_updated", "egress_contacted", "error", "task_cancelled",
 ])
 
 // Mirrors storage/audit_view.py's CATEGORY_BY_TYPE value set - a small,
@@ -1121,7 +1289,7 @@ const AuditEventTypeSchema = z.enum([
 export const AUDIT_CATEGORIES = [
   "raw_message", "telegram_access", "channel_access", "classification", "failed_classification",
   "spawned_task", "policy", "config", "tool", "approval", "task_state", "artifact",
-  "egress", "error", "system",
+  "memory", "egress", "error", "system",
 ] as const
 
 const FormattedAuditEventSchema = z.object({

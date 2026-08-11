@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import secrets as secrets_module
 import shutil
 import socket
@@ -34,6 +35,7 @@ REQUIRED_MODULES = [
 ]
 DESKTOP_MODULES = ["mss", "pyautogui", "pygetwindow", "pywinauto"]
 STATUS_SYMBOL = {"ok": "[OK]  ", "warn": "[WARN]", "fail": "[FAIL]"}
+MIN_NODE_VERSION = (22, 22, 0)
 
 
 @dataclass
@@ -78,9 +80,55 @@ def _desktop_capability_requested(settings: AppSettings) -> bool:
     return bool(settings.adapters.computer_use.enabled)
 
 
+def is_headless_runtime() -> bool:
+    """Whether this process has no desktop to control.
+
+    Set explicitly by the container image (YBM_HEADLESS=1) and inferred from
+    the usual container markers otherwise. Desktop control, screenshots and the
+    VS Code bridge cannot work here - there is no session to attach to - so
+    doctor should say "unavailable" rather than reporting a missing module as a
+    failure the operator could fix by installing something.
+    """
+    if os.environ.get("YBM_HEADLESS", "").strip().lower() in {"1", "true", "yes"}:
+        return True
+    if Path("/.dockerenv").exists():
+        return True
+    try:
+        return "docker" in Path("/proc/1/cgroup").read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+
+def _check_voice_modules(settings: AppSettings) -> Check:
+    """Speech-to-text needs an optional extra that nothing checked for.
+
+    Enabling STT without installing it failed at first use - a user sends a
+    voice note and gets an error instead of an answer. Startup is a better
+    place to find out than the first voice message.
+    """
+    stt = settings.adapters.stt
+    if not stt.enabled:
+        return Check("Voice transcription", "ok", "off - voice messages are answered with a note saying so")
+    if stt.provider != "faster_whisper":
+        return Check("Voice transcription", "ok", f"on, using {stt.provider}")
+    if importlib.util.find_spec("faster_whisper") is None:
+        return Check(
+            "Voice transcription",
+            "fail",
+            "enabled but faster-whisper is not installed - run `uv sync --extra voice`, or turn voice off",
+        )
+    return Check("Voice transcription", "ok", f"on, faster-whisper model '{stt.model}'")
+
+
 def _check_desktop_modules(settings: AppSettings) -> list[Check]:
     if not _desktop_capability_requested(settings):
         return [Check("Desktop control modules", "ok", "not requested by config - skipped")]
+    if is_headless_runtime():
+        return [Check(
+            "Desktop control modules", "warn",
+            "unavailable in a headless runtime (container) - desktop control, screenshots and "
+            "the VS Code bridge need a real session; every other capability is unaffected",
+        )]
     missing = [mod for mod in DESKTOP_MODULES if importlib.util.find_spec(mod) is None]
     if not missing:
         return [Check("Desktop control modules", "ok", "installed")]
@@ -152,7 +200,12 @@ def _http_ok(url: str, timeout: float = 6.0) -> bool:
 def check_localdeploy(settings: AppSettings) -> Check:
     profile = settings.llm.profiles.get(settings.llm.default_profile)
     base_url = profile.base_url if profile else None
-    if not base_url or not any(host in base_url for host in ("127.0.0.1", "localhost")):
+    # Same gap as check_llm_configured: from inside a container the local
+    # runtime is host.docker.internal, and omitting it made doctor report a
+    # working LocalDeploy as "not a local profile".
+    if not base_url or not any(
+        host in base_url for host in ("127.0.0.1", "localhost", "host.docker.internal")
+    ):
         return Check("LocalDeploy", "ok", "default LLM profile is not local - skipped")
     health_url = base_url.rsplit("/v1", 1)[0].rstrip("/") + "/health"
     if _http_ok(health_url):
@@ -187,7 +240,11 @@ def check_llm_configured(settings: AppSettings) -> bool:
     base_url = (profile.base_url or "").rstrip("/")
     if base_url.startswith("http://127.0.0.1:11434") or base_url.startswith("http://localhost:11434"):
         return bool(_http_json(OLLAMA_TAGS_URL, timeout=2.0))
-    if any(host in base_url for host in ("127.0.0.1", "localhost")):
+    # host.docker.internal is a local runtime seen from inside a container.
+    # Leaving it out meant a working containerised LocalDeploy fell through to
+    # the API-key branch below, returned False, and the console declared "no
+    # model configured" while the model was answering questions.
+    if any(host in base_url for host in ("127.0.0.1", "localhost", "host.docker.internal")):
         return check_localdeploy(settings).status == "ok"
     return bool(profile.api_key) or bool(profile.api_key_env and read_env_value(profile.api_key_env))
 
@@ -213,13 +270,39 @@ def _check_telegram(settings: AppSettings) -> Check:
 def _check_node() -> Check:
     node = shutil.which("node")
     if node:
-        return Check("Node.js", "ok", node)
+        version = _node_version(node)
+        if version is not None and version < MIN_NODE_VERSION:
+            actual = ".".join(str(part) for part in version)
+            return Check(
+                "Node.js",
+                "warn",
+                f"{node} is v{actual}; the admin console requires Node.js 22.22+",
+            )
+        detail = f"{node} (v{'.'.join(str(part) for part in version)})" if version else node
+        return Check("Node.js", "ok", detail)
     return Check(
         "Node.js", "warn",
-        "not found on PATH - needed to build the admin console and for the WhatsApp "
-        "channel; install Node.js 20+ (https://nodejs.org) or `winget install "
-        "OpenJS.NodeJS.LTS`",
+        "not found on PATH - only needed for the WhatsApp channel and building the admin "
+        "console; install Node.js 22.22+ (https://nodejs.org) if you need either",
     )
+
+
+def _node_version(node: str) -> tuple[int, int, int] | None:
+    try:
+        result = subprocess.run(
+            [node, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = str(getattr(result, "stdout", "")).strip().removeprefix("v")
+    parts = value.split(".")
+    if result.returncode != 0 or len(parts) < 3 or not all(part.isdigit() for part in parts[:3]):
+        return None
+    return tuple(int(part) for part in parts[:3])
 
 
 def _check_admin_console() -> Check:
@@ -237,7 +320,7 @@ def _check_admin_console() -> Check:
         return Check(
             "Admin console", "warn",
             "NOT BUILT and npm is missing, so /admin has no console at all - install "
-            "Node.js 20+ then run `ybm ui-build` (the JSON API at /admin/api/* still works)",
+            "Node.js 22.22+ then run `ybm ui-build` (the JSON API at /admin/api/* still works)",
         )
     return Check("Admin console", "warn", "not built yet - run `ybm ui-build`")
 
@@ -297,6 +380,7 @@ def collect_checks() -> list[Check]:
     checks.append(config_check)
     if settings is not None:
         checks.extend(_check_desktop_modules(settings))
+        checks.append(_check_voice_modules(settings))
         checks.append(_check_db(settings))
         checks.append(check_localdeploy(settings))
         checks.append(_check_telegram(settings))
@@ -396,7 +480,7 @@ def _install_whatsapp_bridge_deps() -> None:
     npm = shutil.which("npm")
     if npm is None:
         print("\nNOTE: npm not found - skipping whatsapp-bridge dependency install. Install "
-              "Node.js 20+ (https://nodejs.org), then run `npm install` in whatsapp-bridge/ "
+              "Node.js 22.22+ (https://nodejs.org), then run `npm install` in whatsapp-bridge/ "
               "if you plan to use the WhatsApp channel.")
         return
     print("\n-- Installing whatsapp-bridge dependencies --")
@@ -459,13 +543,19 @@ def _build_admin_console() -> None:
     print("\n-- Building the admin console --")
     npm = shutil.which("npm")
     if npm is None:
-        print("WARN: npm not found - skipping the admin console build.")
-        print("      There will be NO admin console until this is fixed: /admin serves a")
-        print("      build-instructions page, so every setting below has to be edited by hand")
-        print("      in config/config.yaml instead.")
-        print("      Fix: install Node.js 20+ (https://nodejs.org, or")
-        print("      `winget install OpenJS.NodeJS.LTS`), open a new terminal, then run")
-        print("      `.\\scripts\\ybm.ps1 ui-build`.")
+        print("WARN: npm not found - skipping the admin console build. Install Node.js 22.22+ "
+              "(https://nodejs.org), then run `ybm ui-build`. Until then, /admin shows a "
+              "build-instructions page instead of the real console.")
+        return
+
+    node = shutil.which("node")
+    node_version = _node_version(node) if node else None
+    if node_version is not None and node_version < MIN_NODE_VERSION:
+        actual = ".".join(str(part) for part in node_version)
+        print(
+            f"WARN: Node.js v{actual} is too old to build the admin console; install "
+            "Node.js 22.22+ (https://nodejs.org), then run `ybm ui-build`."
+        )
         return
 
     use_shell = sys.platform == "win32"

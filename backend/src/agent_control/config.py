@@ -4,7 +4,7 @@ import ipaddress
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, ValidationError, field_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict, YamlConfigSettingsSource
 
 from agent_control.config_sync import read_env_value
@@ -197,7 +197,7 @@ class OperatorConfig(StrictBaseModel):
     # The observe/decide/act agent loop (docs/HISTORY.md P3 §2.2) - the sole
     # execution path as of 2026-07-28 (the old plan-once-then-replan path and
     # its keyword-driven recovery were deleted, not just defaulted off).
-    max_steps: int = Field(default=8, ge=1, le=50)
+    max_steps: int = Field(default=12, ge=1, le=50)
     # Who decides whether a `done` actually delivered what was asked.
     #
     # "auditor"   - the Auditor judges it, reading the user's own words and a
@@ -319,6 +319,10 @@ class CodingAgentAdapterConfig(StrictBaseModel):
     # How long `start` waits inline before handing the run to the background
     # watcher. Quick runs return their final result immediately.
     start_wait_seconds: int = Field(default=20, ge=0)
+    # Keep the source chat informed while a coding CLI is still running. The
+    # watcher persists each heartbeat in the session file, so restarts do not
+    # reset the cadence or produce duplicate updates.
+    progress_interval_seconds: int = Field(default=300, ge=30, le=3600)
     output_limit_chars: int = Field(default=20000, ge=100)
     rate_limit_patterns: list[str] = Field(default_factory=lambda: ["rate limit", "too many requests"])
     usage_limit_patterns: list[str] = Field(
@@ -741,17 +745,50 @@ def backend_base_url(settings: AppSettings) -> str:
     return f"http://{host}:{settings.server.port}"
 
 
+class ConfigValidationError(ValueError):
+    """A settings load failed, described without echoing any offending value.
+
+    Subclasses ``ValueError`` so it stays catchable everywhere pydantic's own
+    ``ValidationError`` (also a ``ValueError``) already was.
+    """
+
+
+def _redacted_validation_message(exc: ValidationError) -> str:
+    """Describe a config failure by location and reason, never by value.
+
+    Settings are populated from `.env`, so the values pydantic echoes as
+    ``input_value=`` are exactly the API keys, bot tokens, and vault keys the
+    project promises never to log. `ybm doctor` formats this text straight into
+    its output (`bootstrap._load_settings_checked`), which users paste into bug
+    reports, so the field path and error type have to be enough on their own.
+    """
+    lines = [f"{exc.error_count()} configuration error(s) in {exc.title}:"]
+    for error in exc.errors(include_url=False, include_input=False, include_context=False):
+        location = ".".join(str(part) for part in error.get("loc") or ()) or "(root)"
+        lines.append(f"  {location}: {error.get('msg') or 'invalid'} [{error.get('type') or 'unknown'}]")
+    return "\n".join(lines)
+
+
 def load_settings(config_path: str | Path | None = None, **overrides: Any) -> AppSettings:
-    if config_path is not None:
-        config_file = str(Path(config_path))
+    try:
+        if config_path is not None:
+            config_file = str(Path(config_path))
 
-        class RuntimePathSettings(AppSettings):
-            model_config = SettingsConfigDict(
-                **{
-                    **AppSettings.model_config,
-                    "yaml_file": config_file,
-                }
-            )
+            class RuntimePathSettings(AppSettings):
+                model_config = SettingsConfigDict(
+                    **{
+                        **AppSettings.model_config,
+                        "yaml_file": config_file,
+                    }
+                )
 
-        return RuntimePathSettings(**overrides)
-    return AppSettings(**overrides)
+            return RuntimePathSettings(**overrides)
+        return AppSettings(**overrides)
+    except ValidationError as exc:
+        redacted = _redacted_validation_message(exc)
+    # Raised outside the handler on purpose. `raise ... from None` inside it
+    # only sets __suppress_context__, which hides the original unredacted
+    # ValidationError from a printed traceback while leaving it reachable on
+    # __context__ — where exception reporters that walk the chain still find
+    # the secret. Raising here leaves no chain at all.
+    raise ConfigValidationError(redacted)

@@ -5,6 +5,7 @@ from urllib.parse import unquote, urlparse
 from pathlib import Path
 
 from agent_control.channels.task_notify import format_task_message
+from agent_control.text import trim_text as _trim
 from agent_control.channels.telegram import TelegramBotApi
 from agent_control.schemas import ApprovalStatus, ChannelType, TaskRecord, TaskStatus, channel_chat_id
 from agent_control.storage.repositories import ApprovalRepository
@@ -101,9 +102,3 @@ def _path_from_screenshot_value(value: object) -> Path | None:
     else:
         path = Path(text)
     return path if path.exists() and path.is_file() else None
-
-
-def _trim(value: str, limit: int) -> str:
-    if len(value) <= limit:
-        return value
-    return f"{value[: limit - 3]}..."

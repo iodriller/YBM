@@ -60,6 +60,29 @@ async def test_local_workspace_prepare_and_write_files(tmp_path) -> None:
     assert (workspace / "TASK.md").exists()
     assert (workspace / "src" / "app.py").read_text(encoding="utf-8") == "print('hello')\n"
 
+
+@pytest.mark.asyncio
+async def test_local_workspace_rejects_a_different_explicit_workspace_instead_of_ignoring_it(tmp_path) -> None:
+    managed_root = tmp_path / "workspaces"
+    requested = tmp_path / "external-project"
+    adapter = LocalWorkspaceAdapter(
+        WorkspaceAdapterConfig(root_dir=str(managed_root), web_port_start=8890, open_browser=False)
+    )
+    request = ToolCallRequest(
+        task_id="task_explicit_elsewhere",
+        tool_name="workspace.manage",
+        capability=Capability.FILESYSTEM_WRITE,
+        input={"operation": "prepare", "workspace_path": str(requested)},
+        timeout_seconds=30,
+    )
+
+    result = await adapter.execute(request)
+
+    assert result.status == ToolResultStatus.FAILED
+    assert "does not match this task's managed workspace" in (result.error_message or "")
+    assert not requested.exists()
+    assert not (managed_root / "task_explicit_elsewhere").exists()
+
 @pytest.mark.asyncio
 async def test_local_workspace_materializes_static_app_from_assistant_output(tmp_path) -> None:
     adapter = LocalWorkspaceAdapter(

@@ -1,4 +1,3 @@
-import { useId, cloneElement } from "react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -142,8 +141,8 @@ export function ComputerUseSettingsCard() {
           }}
         >
           <div className="flex items-center gap-2">
-            <Switch checked={draft.enabled} onCheckedChange={(v) => setDraft({ ...draft, enabled: v })} />
-            <Label className="text-sm">Enabled</Label>
+            <Switch id="computer-use-enabled" checked={draft.enabled} onCheckedChange={(v) => setDraft({ ...draft, enabled: v })} />
+            <Label htmlFor="computer-use-enabled" className="text-sm">Enabled</Label>
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field label="Max steps">
@@ -176,10 +175,11 @@ export function ComputerUseSettingsCard() {
           </div>
           <div className="flex items-center gap-2">
             <Switch
+              id="computer-use-session-approval"
               checked={draft.requireSessionApproval}
               onCheckedChange={(v) => setDraft({ ...draft, requireSessionApproval: v })}
             />
-            <Label className="text-sm">Require session approval</Label>
+            <Label htmlFor="computer-use-session-approval" className="text-sm">Require session approval</Label>
           </div>
           <div className="flex justify-end">
             <Button type="submit" size="sm" disabled={updateComputerUse.isPending}>
@@ -192,17 +192,11 @@ export function ComputerUseSettingsCard() {
   )
 }
 
-function Field({ label, children }: { label: string; children: React.ReactElement<{ id?: string }> }) {
-  // Every call site passes exactly one form control as children - id/htmlFor
-  // pairing via useId() associates the visible label with it for screen
-  // readers, without changing the sibling Label-then-control DOM structure
-  // (cloneElement, not wrapping children inside <label>, so the existing
-  // flex-col layout is untouched).
-  const id = useId()
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex flex-col gap-1">
-      <Label htmlFor={id} className="text-xs text-muted-foreground">{label}</Label>
-      {cloneElement(children, { id })}
-    </div>
+    <Label className="flex flex-col gap-1">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      {children}
+    </Label>
   )
 }

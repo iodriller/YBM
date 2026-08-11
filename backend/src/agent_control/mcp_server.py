@@ -84,6 +84,7 @@ def answer_task_question(task_id: str, answer: str) -> dict:
         "clarification_answer": answer,
         "clarification_answers": answers,
         "answered_clarifying_question": task.metadata.get("clarifying_question"),
+        "operator_history_offset_after_clarification": len(task.metadata.get("operator_history") or []),
         "retry_count": 0,
         "replan_count": 0,
         "evaluator_repair_count": 0,

@@ -10,6 +10,28 @@ from agent_control.tools.adapter_factory import AdapterFactoryAdapter
 
 
 @pytest.mark.asyncio
+async def test_adapter_factory_honors_explicit_name_alias(tmp_path) -> None:
+    factory = AdapterFactoryAdapter(AdapterFactoryConfig(root_dir=str(tmp_path / "adapters")))
+
+    result = await factory.execute(
+        ToolCallRequest(
+            task_id="task_adapter",
+            tool_name="adapter.factory",
+            capability=Capability.FILESYSTEM_WRITE,
+            input={
+                "operation": "scaffold",
+                "name": "linkedin_evidence_compare",
+                "objective": "Compare two local evidence paths.",
+            },
+        )
+    )
+
+    assert result.status == ToolResultStatus.SUCCEEDED
+    assert result.output["adapter_name"] == "linkedin_evidence_compare"
+    assert result.output["adapter_dir"] == str((tmp_path / "adapters" / "linkedin_evidence_compare").resolve())
+
+
+@pytest.mark.asyncio
 async def test_adapter_factory_promotes_passing_adapter(tmp_path) -> None:
     root = tmp_path / "adapters"
     adapter_dir = root / "echo_tool"

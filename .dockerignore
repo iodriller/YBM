@@ -1,0 +1,47 @@
+# Keep the build context small and, more importantly, keep secrets and local
+# state out of the image. .env and .agent_control both contain live credentials
+# (bot token, admin token, secret vault) and would otherwise be baked into a
+# layer that survives deletion.
+
+# Secrets and private runtime state
+.env
+.env.*
+!.env.example
+config/config.yaml
+.agent_control/
+**/secrets.json
+
+# Version control and CI
+.git/
+.github/
+.gitleaks.toml
+
+# Virtualenvs and caches - the image builds its own
+**/.venv/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+**/node_modules/
+
+# Generated artefacts
+backend/agent_control.db
+backend/src/agent_control/static/
+frontend/dist/
+vscode-extension/out/
+vscode-extension/*.vsix
+**/*.log
+
+# Not needed at runtime. Tests are deliberately excluded: the image is a
+# runtime artefact, and shipping the scenario fixtures would add megabytes of
+# recorded prompts to every pull.
+backend/tests/
+e2e/
+vscode-extension/
+whatsapp-bridge/node_modules/
+**/.DS_Store
+
+# frontend/ is NOT excluded: the image builds the admin console from it in its
+# own stage. Only its install and build outputs are, since the stage produces
+# them itself (the **/node_modules and frontend/dist rules above).

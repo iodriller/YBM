@@ -41,6 +41,7 @@ from agent_control.tools.contracts import (
     CodeInterpreterRunPythonInput,
     CodeInterpreterSolveOnceInput,
 )
+from agent_control.tools.path_utils import safe_path_segment
 from agent_control.tools.spec import Adapters, Definitions, RegistryDeps, ToolDefinition, capability_enabled, failed_result
 
 
@@ -811,7 +812,7 @@ class CodeInterpreterAdapter:
         if request.input.get("workspace_dir"):
             workspace = Path(str(request.input["workspace_dir"])).expanduser().resolve()
         else:
-            workspace = root / f"task_{_safe_segment(request.task_id)}"
+            workspace = root / f"task_{safe_path_segment(request.task_id, fallback='task')}"
         if root != workspace and root not in workspace.parents:
             raise ValueError(f"workspace is outside configured code interpreter root: {workspace}")
         return workspace
@@ -1184,11 +1185,6 @@ def _file_snapshot(workspace: Path, *, max_files: int) -> dict[str, tuple[int, i
         if len(snapshot) >= max_files:
             break
     return snapshot
-
-
-def _safe_segment(value: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._")
-    return cleaned or "task"
 
 
 def _summary(returncode: int, stdout: str, stderr: str, created: list[str]) -> str:

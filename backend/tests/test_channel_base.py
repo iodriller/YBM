@@ -10,8 +10,21 @@ from __future__ import annotations
 
 import pytest
 
-from agent_control.channels.base import classify_and_spawn_task, resume_clarifying_reply, status_summary
-from agent_control.schemas import ChannelType, InboundMessage, MessageClassification, MessageKind, TaskType
+from agent_control.channels.base import (
+    _standing_instruction,
+    classify_and_spawn_task,
+    resume_clarifying_reply,
+    status_summary,
+)
+from agent_control.channels.memory import memory_context
+from agent_control.schemas import (
+    AuditEventType,
+    ChannelType,
+    InboundMessage,
+    MessageClassification,
+    MessageKind,
+    TaskType,
+)
 from helpers import make_repos
 
 
@@ -72,6 +85,93 @@ async def test_classify_and_spawn_task_chat_only_reply_uses_the_inbound_channel(
     assert result.outbound_message is not None
     assert result.outbound_message.channel == ChannelType.SLACK
     assert result.outbound_message.text == "Hello from the Slack path"
+
+
+def test_standing_instruction_detects_a_durable_rule_not_a_one_off_request() -> None:
+    for instruction in (
+        "Remember this for the future: always answer summaries with three bullet points.",
+        "From now on, reply in British English.",
+        "Whenever you send me a file, put it in a zip.",
+        "I prefer metric units.",
+    ):
+        assert _standing_instruction(instruction) is not None, instruction
+
+    for ordinary in (
+        "What is on my desktop?",
+        "Summarize quarterly-ops-report.md for me.",
+        # "always" mid-sentence describes the user, it does not instruct.
+        "I always get lost in that folder, can you find the invoice?",
+        # Reminiscence, not a rule to keep.
+        "Remember when we fixed the worker bug?",
+    ):
+        assert _standing_instruction(ordinary) is None, ordinary
+
+
+@pytest.mark.asyncio
+async def test_chat_route_persists_a_stated_preference_and_says_so(tmp_path) -> None:
+    """The chat route composed "Understood, all future summaries will be…" and
+    persisted nothing, so the next task had no fact to read and silently ignored
+    the rule (docs/E2E_FINDINGS.md P1-3). Claiming to have learned while
+    learning nothing is worse than declining - the user gets no signal."""
+    repos, audit = make_repos(tmp_path)
+    conversation_id = repos.conversations.get_or_create(ChannelType.SLACK, "chat-1")
+    classifier = _StaticClassifier(
+        MessageClassification(is_task=False, reason="preference", reply="Understood.")
+    )
+    inbound = _message(
+        text="Remember this for the future: always answer summaries with exactly three bullet points.",
+        channel=ChannelType.SLACK,
+    )
+
+    result = await classify_and_spawn_task(
+        inbound, conversation_id,
+        repositories=repos, audit=audit, classifier=classifier, send_progress=_noop_progress,
+    )
+
+    facts = repos.memory_facts.list_all()
+    assert len(facts) == 1
+    assert "three bullet points" in facts[0].content
+    assert facts[0].category == "preference"
+    # The acknowledgment must reflect what was actually stored.
+    assert "Remembered:" in result.outbound_message.text
+    assert any(event.type == AuditEventType.MEMORY_UPDATED for event in repos.audit.list_recent(limit=20))
+
+
+@pytest.mark.asyncio
+async def test_stored_preference_reaches_a_later_task_context(tmp_path) -> None:
+    """The end of the chain that matters: a rule stated in chat has to arrive in
+    the operator context of a *separate* task, or persisting it changed nothing."""
+    repos, audit = make_repos(tmp_path)
+    conversation_id = repos.conversations.get_or_create(ChannelType.SLACK, "chat-1")
+    await classify_and_spawn_task(
+        _message(text="From now on, always end summaries with a Confidence: line.", channel=ChannelType.SLACK),
+        conversation_id,
+        repositories=repos, audit=audit,
+        classifier=_StaticClassifier(MessageClassification(is_task=False, reason="preference", reply="Understood.")),
+        send_progress=_noop_progress,
+    )
+
+    later_task = await classify_and_spawn_task(
+        _message(text="Summarize the ops report.", channel=ChannelType.SLACK),
+        conversation_id,
+        repositories=repos, audit=audit,
+        classifier=_StaticClassifier(
+            MessageClassification(
+                is_task=True, task_type=TaskType.OTHER,
+                normalized_objective="Summarize the ops report.", reason="work",
+            )
+        ),
+        send_progress=_noop_progress,
+    )
+
+    assert later_task.task is not None
+    assert "Confidence:" in later_task.task.metadata["memory_context"]
+    # And the same context builder the chat path uses sees it too.
+    assert "Confidence:" in memory_context(
+        repos.conversation_memory.get(conversation_id),
+        remembered_facts=repos.memory_facts.list_all(),
+        objective="Summarize the ops report.",
+    )
 
 
 @pytest.mark.asyncio

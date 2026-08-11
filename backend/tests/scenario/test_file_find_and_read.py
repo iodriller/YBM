@@ -9,10 +9,9 @@ Fixture re-recorded 2026-07-28 against the Operator loop
 
 from __future__ import annotations
 
-from agent_control.schemas import TaskStatus
 import pytest
 
-from .harness import build_scenario, filesystem_settings, run_task_to_completion, scenario_scratch_dir
+from .harness import assert_completed, assert_rejected, build_scenario, filesystem_settings, run_task_to_completion, scenario_scratch_dir
 
 
 
@@ -33,7 +32,7 @@ async def test_file_find_and_read_returns_file_contents(tmp_path, monkeypatch) -
         scenario, f"Find a .txt file in {desktop_dir} and read me its contents"
     )
 
-    assert task.status == TaskStatus.COMPLETED
+    assert_completed(task)
     answer = task.metadata.get("synthesized_answer", "")
     assert "resume-notes.txt" in answer
     assert "Python automation" in answer
@@ -43,7 +42,9 @@ async def test_file_find_and_read_returns_file_contents(tmp_path, monkeypatch) -
         for call in tool_calls
         if call["tool_name"] == "filesystem.manage"
     ]
-    assert "search" in operations
+    # Either operation is a grounded discovery step for a known folder: the
+    # operator may list it directly or search it before selecting the file.
+    assert {"inspect_folder", "search"} & set(operations)
     assert "read_file" in operations
 
 
@@ -63,4 +64,4 @@ async def test_file_find_and_read_rejects_path_outside_allowed_roots(tmp_path, m
         scenario, f"Find a .txt file in {desktop_dir} and read me its contents"
     )
 
-    assert task.status != TaskStatus.COMPLETED
+    assert_rejected(task)

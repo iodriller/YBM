@@ -131,6 +131,14 @@ class PolicyEngine:
         if not request.scope_target:
             return False
         normalized = request.scope_target.replace("\\", "/").lower()
+        # Scope matching is a string prefix test, so "allowed/../../elsewhere"
+        # would satisfy an "allowed" scope. The filesystem adapter resolves
+        # paths before its own allowed-roots check, which is what actually
+        # stops traversal today; refusing a traversal segment here keeps this
+        # layer from silently depending on that. Fail closed rather than
+        # resolving, because scope_target is not necessarily a filesystem path.
+        if any(segment == ".." for segment in normalized.split("/")):
+            return False
         return any(PolicyEngine._matches_scope(normalized, scope) for scope in policy.scopes)
 
     @staticmethod

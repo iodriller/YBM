@@ -19,10 +19,10 @@ model's (correct) behavior.
 from __future__ import annotations
 
 from agent_control.config import CapabilityPolicy, default_capability_policies
-from agent_control.schemas import Capability, RiskLevel, TaskStatus
+from agent_control.schemas import Capability, RiskLevel
 import pytest
 
-from .harness import build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
+from .harness import assert_completed, assert_rejected, build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
 
 
 @pytest.mark.asyncio
@@ -60,7 +60,7 @@ async def test_code_interpreter_generate_file_writes_report(tmp_path, monkeypatc
         auto_approve=True,
     )
 
-    assert task.status == TaskStatus.COMPLETED
+    assert_completed(task)
     tool_calls = scenario.repositories.tool_invocations.list_for_task(task.id)
     interpreter_calls = [call for call in tool_calls if call["tool_name"] == "code.interpreter"]
     assert interpreter_calls
@@ -92,4 +92,4 @@ async def test_code_interpreter_generate_file_disabled_by_capability_policy(tmp_
         "two-line summary of this test, run the script, and tell me where the file is.",
     )
 
-    assert task.status != TaskStatus.COMPLETED
+    assert_rejected(task)

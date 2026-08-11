@@ -36,6 +36,7 @@ from agent_control.schemas import (
     TaskSignal,
     VoiceAttachment,
 )
+from agent_control.error_text import explain_for_user, explain_voice_failure
 from agent_control.storage.audit import AuditLogger
 from agent_control.storage.repositories import Repositories
 from agent_control.observation.screenshot import ScreenshotService
@@ -492,7 +493,10 @@ class TelegramIntakeService:
                     return ChannelUpdateResult(
                         authorized=True,
                         inbound_message=inbound,
-                        outbound_message=self._out(inbound.chat_id, f"Voice transcription failed: {exc}"),
+                        # Was f"Voice transcription failed: {exc}", which sent
+                        # "RuntimeError: STT adapter is disabled" to a person -
+                        # and called a feature being switched off a failure.
+                        outbound_message=self._out(inbound.chat_id, explain_voice_failure(exc)),
                     )
             if not self.repositories.messages.try_create(inbound, conversation_id):
                 return ChannelUpdateResult(authorized=True, inbound_message=inbound)
@@ -670,7 +674,8 @@ class TelegramIntakeService:
             try:
                 artifact = self.screenshot_service.capture()
             except Exception as exc:
-                return self._out(chat_id, f"Screenshot capture failed: {exc}")
+                # Same class of leak as the voice reply above.
+                return self._out(chat_id, f"I couldn't take the screenshot. {explain_for_user(exc)}")
             return OutboundMessage(
                 channel=ChannelType.TELEGRAM,
                 chat_id=chat_id,
@@ -844,6 +849,23 @@ class TelegramVoiceIntakeService:
         self.repositories = repositories
         self.audit = audit
 
+    async def _tell_user(self, result: "ChannelUpdateResult", text: str) -> None:
+        """Say something back when a voice note cannot be handled.
+
+        Every failure path here used to write an audit event and return, so a
+        voice message that could not be transcribed produced complete silence -
+        no reply, no error, nothing. That is indistinguishable from the bot
+        being offline, and it is what "I sent a voice message and it didn't
+        work" looks like from the outside.
+        """
+        message = result.inbound_message
+        if message is None:
+            return
+        try:
+            await self.bot_api.send_message(message.chat_id, text)
+        except Exception:  # noqa: BLE001 - never let the reply mask the cause
+            logger.warning("failed to tell the user why a voice note failed", exc_info=True)
+
     async def handle_update(self, update: dict[str, Any]) -> ChannelUpdateResult:
         result = self.adapter.normalize_update(update)
         if not result.authorized or not result.inbound_message:
@@ -869,6 +891,9 @@ class TelegramVoiceIntakeService:
                 correlation_id=result.inbound_message.correlation_id,
                 payload={"error": "voice_file_id_missing", "message_id": result.inbound_message.id},
             )
+            await self._tell_user(
+                result, "That voice message arrived without any audio I could download. Could you send it again?"
+            )
             return result
 
         file_info = await self.bot_api.get_file(voice.file_id)
@@ -879,6 +904,9 @@ class TelegramVoiceIntakeService:
                 actor=f"telegram:{result.inbound_message.sender_id}",
                 correlation_id=result.inbound_message.correlation_id,
                 payload={"error": "telegram_file_path_missing", "file_id": voice.file_id},
+            )
+            await self._tell_user(
+                result, "Telegram would not give me that audio file. Could you send the voice message again?"
             )
             return result
 
@@ -894,6 +922,9 @@ class TelegramVoiceIntakeService:
                 actor=f"telegram:{result.inbound_message.sender_id}",
                 correlation_id=result.inbound_message.correlation_id,
                 payload={"error": "empty_transcript", "file_id": voice.file_id},
+            )
+            await self._tell_user(
+                result, "I could not make out any words in that recording. Could you try again, or send it as text?"
             )
             return result
 

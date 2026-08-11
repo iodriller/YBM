@@ -30,6 +30,7 @@ from agent_control.schemas import (
     utc_now,
 )
 from agent_control.storage.database import Database
+from agent_control.storage.redaction import redact_text
 
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,37 @@ def _load(value: str | None, default: Any) -> Any:
 
 def _dt(value: datetime) -> str:
     return value.isoformat()
+
+
+# The answer a task settles on is free text the model composed out of tool
+# output, so a credential read from a user's file lands in it (docs/
+# E2E_FINDINGS.md P0-1). The audit sink and the outbound channel message both
+# scan for that now; the task row itself did not, leaving the raw value in
+# tasks.metadata_json for anything reading metadata directly - the admin API,
+# a trace export, a database backup.
+#
+# Scoped to answer-bearing keys and to the *content* scan on purpose. Running
+# key-name redaction across all metadata would blank unrelated fields whose
+# names merely contain "token", and the operator history is deliberately left
+# alone: it is the model's working context, and blanking it mid-task would
+# change what the next step can reason about.
+_ANSWER_METADATA_KEYS = ("synthesized_answer", "final_answer", "clarifying_question")
+
+
+def _redact_answer_fields(metadata: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(metadata, dict):
+        return metadata
+    redacted: dict[str, Any] | None = None
+    for key in _ANSWER_METADATA_KEYS:
+        value = metadata.get(key)
+        if not isinstance(value, str) or not value:
+            continue
+        scrubbed = redact_text(value)
+        if scrubbed != value:
+            if redacted is None:
+                redacted = dict(metadata)
+            redacted[key] = scrubbed
+    return redacted if redacted is not None else metadata
 
 
 class ConversationRepository:
@@ -373,17 +405,27 @@ class TaskRepository:
         metadata: dict[str, Any],
         status: TaskStatus | None = None,
     ) -> TaskRecord:
+        """Update task state without reviving a cooperatively cancelled task.
+
+        Worker model/tool calls run outside the SQLite transaction.  A user can
+        cancel while one of those calls is in flight, so the worker may return
+        with a stale pre-cancellation ``TaskRecord`` and try to persist it as
+        RUNNING.  Keep cancellation authoritative at the repository boundary;
+        the conditional write is atomic and protects every worker/callback
+        path, including metadata-only writes.
+        """
         now = utc_now()
+        metadata = _redact_answer_fields(metadata)
         with self.database.connect() as connection:
             if status is None:
                 connection.execute(
-                    "UPDATE tasks SET metadata_json = ?, updated_at = ? WHERE id = ?",
-                    (_dump(metadata), _dt(now), task_id),
+                    "UPDATE tasks SET metadata_json = ?, updated_at = ? WHERE id = ? AND status != ?",
+                    (_dump(metadata), _dt(now), task_id, TaskStatus.CANCELLED.value),
                 )
             else:
                 connection.execute(
-                    "UPDATE tasks SET metadata_json = ?, status = ?, updated_at = ? WHERE id = ?",
-                    (_dump(metadata), status.value, _dt(now), task_id),
+                    "UPDATE tasks SET metadata_json = ?, status = ?, updated_at = ? WHERE id = ? AND status != ?",
+                    (_dump(metadata), status.value, _dt(now), task_id, TaskStatus.CANCELLED.value),
                 )
             row = connection.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
         if row is None:

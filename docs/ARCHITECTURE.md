@@ -103,7 +103,7 @@ gap) or fails.
 
 | Counter | Max | Triggered by | On exhaustion |
 |---|---|---|---|
-| `operator_max_steps` | 8 (config) | Every `call_tool`. Audit/fulfillment gap entries do **not** count. | Task **failed** |
+| `operator_max_steps` | 12 (config) | Every `call_tool`. Audit/fulfillment gap entries do **not** count. | Task **failed** |
 | `operator_audit_gap_count` | 2 | Auditor judges output insufficient after `done` | Completes with the Operator's own answer |
 | `operator_fulfillment_gap_count` | 2 | Postcondition check fails after `done` | Completes with `metadata.fulfillment_gap` set |
 | `clarify_count` | 2 | `ask_user`, or usage-limit backoff | Task **failed** |
@@ -181,6 +181,11 @@ Node.js sidecar over loopback HTTP with a per-run shared secret. See
 | Persona | `persona.py` | One global preference doc injected into every Operator prompt |
 | Knowledge base | `knowledge_base.py` | Local keyword-overlap search over your documents — not embeddings |
 | Logging | `logging_setup.py` | structlog → JSON, `task_id` bound as a contextvar |
+| LLM provider catalog | `llm/catalog.py` | The 13 providers the console offers, as data - adding one is a row, not a code path |
+| Anthropic provider | `llm/anthropic_provider.py` | Native, since Anthropic's API is not OpenAI-compatible; omits `temperature` on models that reject it |
+| Hardware probe | `llm/hardware.py` | Asks LocalDeploy for free VRAM first, falls back to nvidia-smi; drives each local preset's fit verdict |
+| Channel catalog | `channels/catalog.py` | Every way to reach YBM with an honest, per-request-resolved connection status |
+| User-facing errors | `error_text.py` | `describe_exception()` for logs, `explain_for_user()` for a person - never the same string |
 
 ## Tools
 
@@ -242,7 +247,14 @@ object per line, secrets redacted, `task_id` on every line written during that t
 
 ## Known gaps
 
-- **The Auditor checks presence, not correctness.** An empty file or missing field is caught;
+The maintained limitation list is [GAPS.md](GAPS.md). In architectural terms,
+the important boundaries are: YBM is a single-trusted-operator local system;
+untrusted tool and document content can still attempt prompt injection; the
+Auditor checks grounding more reliably than numerical plausibility; and live
+model, voice, Telegram, and WhatsApp flows sit outside deterministic CI.
+
+[HISTORY.md](HISTORY.md) records why earlier gaps were closed or deliberately
+deferred. Archived plans must not be used as evidence that behavior exists.
   whether a computed number is *right* is not.
 - **The live E2E suite hasn't been re-run** since being trimmed to 11 cases; the last pass-rate
   measurement predates the current architecture. The deterministic scenario tier is the

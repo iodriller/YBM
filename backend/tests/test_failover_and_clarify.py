@@ -116,7 +116,12 @@ async def test_clarifying_reply_resumes_the_same_task(tmp_path) -> None:
     task = repos.tasks.create(
         "Summarize the report",
         conversation_id=repos.conversations.get_or_create(ChannelType.TELEGRAM, "100"),
-        metadata={"source_chat_id": "100", "clarifying_question": "Which report?", "clarify_count": 1},
+        metadata={
+            "source_chat_id": "100",
+            "clarifying_question": "Which report?",
+            "clarify_count": 1,
+            "operator_history": [{"tool_name": "knowledge.search", "status": "succeeded"}],
+        },
     )
     repos.tasks.update_status(task.id, TaskStatus.CLARIFYING)
 
@@ -135,6 +140,7 @@ async def test_clarifying_reply_resumes_the_same_task(tmp_path) -> None:
     assert resumed.status == TaskStatus.RECEIVED
     assert "Q3 sales report" in resumed.objective
     assert resumed.metadata["clarification_answer"] == "The Q3 sales report on my desktop"
+    assert resumed.metadata["operator_history_offset_after_clarification"] == 1
     assert resumed.metadata["retry_count"] == 0
     assert result.outbound_message is not None
     assert "resuming" in result.outbound_message.text.lower()

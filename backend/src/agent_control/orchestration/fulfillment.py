@@ -24,15 +24,28 @@ class FulfillmentValidation:
 
 
 def expected_postconditions(task: TaskRecord) -> tuple[PlanPostcondition, ...]:
-    """Objective-text inference is the only source of expected postconditions.
+    """Infer expected postconditions from what the user asked *and* the objective.
 
     There used to be a plan-derived path here that took priority (the LLM's own
     declared `plan.postconditions`, then tool-name-derived rules). Both are gone
     with the plan-once execution path (docs/HISTORY.md P3) - nothing creates a
     PlanModel anymore, so `plan` was always None and those branches were
     unreachable. See docs/HISTORY.md §1.1.
+
+    `task.objective` is the classifier's *paraphrase* of the request, so relying
+    on it alone made this safety net depend on the wording a model happened to
+    choose: "Create the real files" yields a WORKSPACE_DIR obligation, the
+    paraphrase "creating package.json" yielded none, and a run that wrote
+    nothing while claiming otherwise completed unchallenged (docs/E2E_FINDINGS.md
+    P0-2). The user's own message is the stable source of intent, so both are
+    read and the results unioned - a paraphrase can add an obligation it makes
+    explicit, but can no longer drop one the request already established.
     """
-    return tuple(_dedupe(_postconditions_from_objective(task.objective)))
+    expected: list[PlanPostcondition] = list(_postconditions_from_objective(task.objective))
+    original_message = task.metadata.get("original_message_text") if isinstance(task.metadata, dict) else None
+    if isinstance(original_message, str) and original_message.strip():
+        expected.extend(_postconditions_from_objective(original_message))
+    return tuple(_dedupe(expected))
 
 
 def validate_fulfillment(task: TaskRecord) -> FulfillmentValidation:
@@ -67,14 +80,100 @@ def _strip_embedded_paths(text: str) -> str:
     return _EMBEDDED_PATH.sub(" ", text)
 
 
+# Verbs whose past/participle form is not a suffix of the base, so the
+# generated-inflection rule below cannot reach them.
+_IRREGULAR_FORMS: dict[str, tuple[str, ...]] = {
+    "build": ("built",),
+    "make": ("made",),
+    "write": ("wrote", "written"),
+    "find": ("found",),
+    "run": ("ran",),
+    "send": ("sent",),
+    "set": (),
+    "sort": (),
+}
+
+
+def _inflections(word: str) -> set[str]:
+    """Ordinary English inflections of one trigger word.
+
+    Forms are generated from the known trigger vocabulary rather than by
+    stemming arbitrary input, so an unrelated word can never collapse onto a
+    trigger. That direction matters: a false positive here invents a
+    postcondition nothing in the run can satisfy, which makes a genuinely
+    finished task loop on a gap it can never close (see `_strip_embedded_paths`).
+    """
+    forms = {word, f"{word}s", f"{word}ed", f"{word}ing", f"{word}es"}
+    if word.endswith("e"):
+        stem = word[:-1]
+        forms.update({f"{stem}ing", f"{stem}ed", f"{stem}es"})
+    if word.endswith("y"):
+        stem = word[:-1]
+        forms.update({f"{stem}ies", f"{stem}ied"})
+    forms.update(_IRREGULAR_FORMS.get(word, ()))
+    return forms
+
+
+def _expand(*words: str) -> set[str]:
+    expanded: set[str] = set()
+    for word in words:
+        expanded |= _inflections(word)
+    return expanded
+
+
 def _postconditions_from_objective(objective: str) -> list[PlanPostcondition]:
     lowered = _strip_embedded_paths(objective).lower()
     words = set(re.findall(r"[a-z0-9]+", lowered))
-    visible_action = bool(words & {"launch", "start", "serve", "open", "preview"}) or "show me" in lowered or "url" in words
-    app_request = bool(words & {"app", "application", "website", "webpage", "html"}) or "web page" in lowered
-    create_action = bool(words & {"create", "build", "write", "make", "add", "implement", "generate", "update", "edit"})
-    workspace_subject = bool(words & {"code", "script", "app", "application", "project", "file", "files", "website", "webpage", "html"})
+    # "Start a small app" ordinarily means begin/build the project, especially
+    # when delegated to a coding agent. It does not promise a running local
+    # server. Reserve PREVIEW_URL for explicit visible-runtime language.
+    visible_action = bool(words & _expand("launch", "serve", "open", "preview")) or "show me" in lowered or "url" in words
+    app_request = bool(words & _expand("app", "application", "website", "webpage", "html")) or "web page" in lowered
+    # "scaffold" belongs here with the other construction verbs: it is the word
+    # models reach for when asked to lay down a project skeleton, and without it
+    # a scaffolding request carried no completion obligation at all.
+    create_action = bool(
+        words
+        & _expand(
+            "create", "build", "write", "make", "add", "implement",
+            "generate", "update", "edit", "scaffold", "start",
+        )
+    )
+    # A named output file is fulfilled by its changed/artifact path; it does
+    # not imply that a task workspace must also exist. Reserve WORKSPACE_DIR
+    # for code/project/app construction where a workspace is itself useful
+    # completion evidence.
+    workspace_subject = bool(
+        words
+        & _expand(
+            "code", "script", "app", "application", "project", "website",
+            "webpage", "html", "plugin", "extension", "addon",
+        )
+    )
+    has_adapter_word = bool(words & _expand("adapter", "tool", "capability", "connector"))
     expected: list[PlanPostcondition] = []
+    source_actions = r"read|review|analy(?:ze|se)|summari(?:ze|se)"
+    source_subjects = r"files?|documents?|evidence|reports?|resumes?|notes?"
+    # Require the content verb and its source to live in the same local
+    # phrase. A global word-set cross product made "career evidence ... tell
+    # me what review is still required" look like a request to read evidence,
+    # leaving a completed adapter scaffold with an impossible SOURCE_CONTENT
+    # obligation. Bidirectional proximity still covers "read the file" and
+    # "the file ... read it" without joining unrelated clauses.
+    source_content_request = bool(
+        re.search(rf"\b(?:{source_actions})\w*\b[^.\n]{{0,80}}\b(?:{source_subjects})\b", lowered)
+        or re.search(rf"\b(?:{source_subjects})\b[^.\n]{{0,80}}\b(?:{source_actions})\w*\b", lowered)
+    )
+    inspect_every_file = bool(re.search(r"\b(?:inspect|review|analyze)\s+(?:all|every)\b", lowered)) and bool(
+        words & _expand("file", "document", "evidence")
+    )
+    if source_content_request or inspect_every_file:
+        expected.append(
+            PlanPostcondition(
+                type=PostconditionType.SOURCE_CONTENT,
+                description="Requested source-file contents were actually inspected.",
+            )
+        )
     if visible_action and app_request:
         expected.extend(
             [
@@ -88,15 +187,36 @@ def _postconditions_from_objective(objective: str) -> list[PlanPostcondition]:
                 ),
             ]
         )
-    elif create_action and workspace_subject:
+    elif create_action and workspace_subject and not has_adapter_word:
+        expected.extend(
+            [
+                PlanPostcondition(
+                    type=PostconditionType.WORKSPACE_DIR,
+                    description="A task workspace directory is reported.",
+                ),
+                PlanPostcondition(
+                    type=PostconditionType.WORKSPACE_FILES,
+                    description="One or more requested project files were actually produced.",
+                ),
+            ]
+        )
+
+    coding_provider = bool(words & {"codex", "claude", "copilot"})
+    coding_action = bool(
+        words
+        & _expand(
+            "use", "ask", "tell", "run", "start", "build", "create", "write",
+            "make", "implement", "scaffold", "fix",
+        )
+    )
+    if coding_provider and coding_action:
         expected.append(
             PlanPostcondition(
-                type=PostconditionType.WORKSPACE_DIR,
-                description="A task workspace directory is reported.",
+                type=PostconditionType.CODING_AGENT_STEP,
+                description="The requested external coding provider reached a reported terminal or resumable state.",
             )
         )
 
-    has_adapter_word = bool(words & {"adapter", "tool", "capability", "connector"})
     if has_adapter_word and create_action:
         expected.append(
             PlanPostcondition(
@@ -104,9 +224,30 @@ def _postconditions_from_objective(objective: str) -> list[PlanPostcondition]:
                 description="A generated adapter proposal directory is reported.",
             )
         )
-    if bool(words & {"browser", "browse", "search", "website", "page"}) and bool(
-        words & {"open", "search", "visit", "look", "find"}
-    ):
+    delivery_action = bool(words & _expand("send", "share", "deliver", "upload", "email"))
+    delivery_subject = bool(
+        words & _expand("file", "artifact", "document", "report", "brief", "attachment")
+    )
+    # Keep chat replies distinct from file delivery. "Send me an update" does
+    # not need an artifact, while "send me that exact file" does. The latter
+    # previously had no durable obligation, so the operator could write a
+    # report, move on to scheduling, and finish without attaching it.
+    if delivery_action and delivery_subject:
+        expected.append(
+            PlanPostcondition(
+                type=PostconditionType.ARTIFACT_DELIVERED,
+                description="The requested file or artifact was delivered to the user.",
+            )
+        )
+    # Search/find/look are transport-neutral actions. Requiring browser state
+    # merely because a local-file request says "search" traps a successfully
+    # completed filesystem task in an impossible recovery loop. Demand an
+    # explicit web surface as well as an action.
+    browser_surface = bool(words & _expand("browser", "website", "webpage", "site")) or bool(
+        words & {"http", "https", "url", "online", "internet"}
+    ) or "web page" in lowered
+    browser_action = bool(words & _expand("open", "search", "visit", "look", "find", "browse"))
+    if browser_surface and browser_action:
         expected.append(
             PlanPostcondition(
                 type=PostconditionType.BROWSER_STATE,
@@ -122,9 +263,9 @@ def _postconditions_from_objective(objective: str) -> list[PlanPostcondition]:
                 description="A desktop observation or screenshot is reported.",
             )
         )
-    delivery_action = bool(words & {"send", "share", "deliver", "upload", "email"})
+    delivery_action = bool(words & _expand("send", "share", "deliver", "upload", "email"))
     delivery_subject = bool(
-        words & {"artifact", "document", "file", "image", "photo", "pdf", "report", "screenshot"}
+        words & _expand("artifact", "document", "file", "image", "photo", "pdf", "report", "screenshot")
     )
     if delivery_action and delivery_subject:
         expected.append(
@@ -137,8 +278,8 @@ def _postconditions_from_objective(objective: str) -> list[PlanPostcondition]:
                 description="The requested file or screenshot is delivered to the source channel.",
             )
         )
-    if bool(words & {"organize", "move", "rename", "sort"}) and bool(
-        words & {"file", "files", "folder", "folders", "directory", "directories"}
+    if bool(words & _expand("organize", "move", "rename", "sort")) and bool(
+        words & _expand("file", "folder", "directory")
     ):
         expected.append(
             PlanPostcondition(
@@ -147,7 +288,7 @@ def _postconditions_from_objective(objective: str) -> list[PlanPostcondition]:
             )
         )
     if ("pull request" in lowered or " pr " in f" {lowered} " or "github" in words) and bool(
-        words & {"create", "open", "make", "submit"}
+        words & _expand("create", "open", "make", "submit")
     ):
         expected.append(
             PlanPostcondition(
@@ -155,14 +296,20 @@ def _postconditions_from_objective(objective: str) -> list[PlanPostcondition]:
                 description="A GitHub pull request URL or number is reported.",
             )
         )
-    if bool(words & {"run", "execute", "launch"}) and bool(words & {"command", "terminal", "script"}):
+    if bool(words & _expand("run", "execute", "launch")) and bool(words & _expand("command", "terminal", "script")):
         expected.append(
             PlanPostcondition(
                 type=PostconditionType.EXTERNAL_COMMAND,
                 description="External command completion is reported.",
             )
         )
-    schedule_subject = bool(words & {"schedule", "scheduled", "recurring"}) or bool(
+    # Precise on purpose: a bare "daily" or "weekly" anywhere in an unrelated
+    # sentence must not trigger this on its own (see _inflections' docstring
+    # on why a false-positive postcondition is worse than a missed one) - it
+    # has to sit next to a schedule-ish noun. The cadence regex accepts
+    # spelled-out one/two/three alongside a bare digit, and an optional count
+    # so "every day" matches without requiring "every 1 day".
+    schedule_subject = bool(words & _expand("schedule", "recurring")) or bool(
         re.search(r"\b(?:daily|weekly)\s+(?:schedule|job|task|check)\b", lowered)
     )
     cadence = bool(
@@ -171,7 +318,7 @@ def _postconditions_from_objective(objective: str) -> list[PlanPostcondition]:
             lowered,
         )
     )
-    if (schedule_subject or cadence) and bool(words & {"create", "add", "set", "run", "check", "search"}):
+    if (schedule_subject or cadence) and bool(words & _expand("create", "add", "set", "run", "check", "search")):
         expected.append(
             PlanPostcondition(
                 type=PostconditionType.SCHEDULE_CREATED,
@@ -210,7 +357,16 @@ def deliverable_evidence(task: TaskRecord) -> str:
 
 def _postcondition_satisfied(task: TaskRecord, expected: PostconditionType) -> bool:
     if expected == PostconditionType.WORKSPACE_DIR:
-        return bool(_value(task, "workspace_dir", "workspace_dir"))
+        # Direct filesystem writes to an explicit project folder may not emit
+        # a separate workspace_dir field. Concrete produced paths prove both
+        # that project files exist and that they have a parent directory; do
+        # not force the operator to manufacture a second, unrelated YBM task
+        # workspace just to satisfy metadata.
+        return bool(_value(task, "workspace_dir", "workspace_dir") or _reported_project_files(task))
+    if expected == PostconditionType.WORKSPACE_FILES:
+        return bool(_reported_project_files(task))
+    if expected == PostconditionType.SOURCE_CONTENT:
+        return _source_content_satisfied(task)
     if expected == PostconditionType.PREVIEW_URL:
         value = _value(task, "preview_url", "url")
         return isinstance(value, str) and value.startswith(("http://", "https://"))
@@ -238,10 +394,11 @@ def _postcondition_satisfied(task: TaskRecord, expected: PostconditionType) -> b
         return isinstance(value, str) and value.lower().endswith(".pptx")
     if expected == PostconditionType.CODING_AGENT_STEP:
         output = _last_output_dict(task)
-        if output.get("provider") not in {"codex", "github_copilot", "claude_code"}:
-            return False
         session = task.metadata.get("coding_agent_session")
         session_status = session.get("status") if isinstance(session, dict) else None
+        provider = output.get("provider") or (session.get("provider") if isinstance(session, dict) else None)
+        if provider not in {"codex", "github_copilot", "claude_code"}:
+            return False
         return (
             output.get("returncode") == 0
             or output.get("status") == "completed"
@@ -339,6 +496,77 @@ def _last_output_dict(task: TaskRecord) -> dict[str, Any]:
     return output if isinstance(output, dict) else {}
 
 
+def _reported_project_files(task: TaskRecord) -> list[str]:
+    """Return produced project paths, excluding YBM's own workspace marker.
+
+    A prepared workspace always contains ``TASK.md``. Counting that control
+    file as project output let an empty directory satisfy a request to build
+    an extension. Only paths reported by a successful write/coding operation
+    are considered, and the marker is explicitly excluded.
+    """
+    candidates: list[Any] = []
+    for key in ("changed_paths", "changed_files", "files", "files_created", "files_modified"):
+        value = task.metadata.get(key)
+        if isinstance(value, list):
+            candidates.extend(value)
+    output = _last_output_dict(task)
+    for key in ("changed_paths", "changed_files", "files", "files_created", "files_modified"):
+        value = output.get(key)
+        if isinstance(value, list):
+            candidates.extend(value)
+    return [
+        str(value)
+        for value in candidates
+        if str(value).strip()
+        and str(value).replace("\\", "/").rsplit("/", 1)[-1].lower() != "task.md"
+    ]
+
+
+def _source_content_satisfied(task: TaskRecord) -> bool:
+    history = task.metadata.get("operator_history")
+    if not isinstance(history, list):
+        return False
+    read_paths: set[str] = set()
+    listed_file_count = 0
+    for entry in history:
+        if not isinstance(entry, dict) or entry.get("status") != "succeeded":
+            continue
+        tool_name = entry.get("tool_name")
+        tool_input = entry.get("input") if isinstance(entry.get("input"), dict) else {}
+        operation = str(tool_input.get("operation") or "")
+        if tool_name == "filesystem.manage" and operation == "describe_folder":
+            return True
+        if tool_name == "filesystem.manage" and operation == "read_file":
+            path = str(tool_input.get("path") or "").strip()
+            if path:
+                read_paths.add(path.casefold())
+        if tool_name == "document.manage" and operation in {
+            "inspect_document",
+            "extract_text",
+            "summarize_pdf",
+        }:
+            return True
+        if tool_name == "filesystem.manage" and operation in {
+            "inspect_folder",
+            "collect_folder_snapshot",
+        }:
+            listed_file_count = max(
+                listed_file_count,
+                str(entry.get("output_summary") or "").count("- [file]"),
+            )
+
+    request_text = " ".join(
+        str(value or "")
+        for value in (task.metadata.get("original_message_text"), task.objective)
+    ).lower()
+    requires_every_file = bool(
+        re.search(r"\b(?:all|every)\b[^.\n]{0,40}\b(?:file|files|document|documents|evidence)\b", request_text)
+    )
+    if requires_every_file and listed_file_count:
+        return len(read_paths) >= listed_file_count
+    return bool(read_paths)
+
+
 def _dedupe(values: list[PlanPostcondition]) -> tuple[PlanPostcondition, ...]:
     result: list[PlanPostcondition] = []
     seen: set[PostconditionType] = set()
@@ -353,10 +581,16 @@ def _dedupe(values: list[PlanPostcondition]) -> tuple[PlanPostcondition, ...]:
 def _gap_reason(value: PostconditionType) -> str:
     if value == PostconditionType.WORKSPACE_DIR:
         return "expected_workspace_dir_missing"
+    if value == PostconditionType.WORKSPACE_FILES:
+        return "expected_workspace_files_missing"
+    if value == PostconditionType.SOURCE_CONTENT:
+        return "expected_source_content_missing"
     if value == PostconditionType.PREVIEW_URL:
         return "expected_preview_url_missing"
     if value == PostconditionType.ADAPTER_PROPOSAL:
         return "expected_adapter_proposal_missing"
+    if value == PostconditionType.ARTIFACT_DELIVERED:
+        return "expected_artifact_delivery_missing"
     if value == PostconditionType.SCHEDULE_CREATED:
         return "expected_schedule_created_missing"
     return f"expected_{value.value}_missing"

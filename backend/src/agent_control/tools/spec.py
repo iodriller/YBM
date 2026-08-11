@@ -161,7 +161,10 @@ class ToolRegistry:
             self.definition_index = {definition.name: definition for definition in self.definitions}
 
     def register_dynamic_tool(self, definition: ToolDefinition, adapter: object) -> None:
-        assert self.definition_index is not None
+        # __post_init__ builds the index, but an `assert` for that vanishes
+        # under `python -O` and leaves an AttributeError on None instead.
+        if self.definition_index is None:
+            self.definition_index = {existing.name: existing for existing in self.definitions}
         if definition.name in self.definition_index:
             raise ValueError(f"tool already registered: {definition.name}")
         self.adapters[definition.name] = adapter

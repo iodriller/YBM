@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 
 from pydantic import ValidationError
 
@@ -16,6 +17,15 @@ from agent_control.schemas import OperatorDecision
 OPERATOR_SYSTEM_PROMPT = prompt_text("base/operator_system.md")
 
 _MAX_HISTORY_ENTRIES = 12  # bound the prompt; older entries are summarized away
+_MAX_HISTORY_PROMPT_CHARS = 5_000
+_MAX_HISTORY_FIELD_CHARS = 1_000
+_MAX_OBJECTIVE_PROMPT_CHARS = 3_000
+_MAX_MEMORY_PROMPT_CHARS = 2_000
+_MAX_CONFIG_PROMPT_CHARS = 9_500
+# LocalDeploy's default request limit is 30,000 characters. Keep a real
+# margin for provider framing and future prompt-template growth instead of
+# merely capping history and hoping the tool catalog never grows.
+_MAX_OPERATOR_REQUEST_CHARS = 27_000
 
 
 class OperatorLoopService:
@@ -91,12 +101,14 @@ class OperatorLoopService:
                 # than guessing complexity from objective text up front.
                 if self.major_provider is not None and provider is not self.major_provider:
                     provider = self.major_provider
-        assert last_error is not None
+        # Not an `assert`: that is stripped under `python -O`, turning a
+        # never-should-happen into `raise None` -> TypeError with no context.
+        if last_error is None:
+            raise RuntimeError("operator retry loop ended without a decision or an error")
         raise last_error
 
     @staticmethod
     def _prompt(objective: str, config_context: str, history: list[dict], memory_context: str) -> str:
-        memory_section = f"## Conversation context\n{memory_context}\n\n" if memory_context.strip() else ""
         # tasks/operator_user.md orders its sections most-stable-first, and
         # that ordering is load-bearing rather than cosmetic.
         #
@@ -113,13 +125,54 @@ class OperatorLoopService:
         # task; the objective extends it within one task; history, which only
         # grows at the end, extends it per step. Anything added to that
         # template must go BELOW history, never above it.
-        return render_prompt(
-            "tasks/operator_user.md",
-            objective=objective,
-            config_context=config_context,
-            memory_context=memory_section,
-            history=_format_history(history),
+        bounded_objective = _bounded_text(objective, _MAX_OBJECTIVE_PROMPT_CHARS)
+        bounded_memory = _bounded_text(
+            memory_context,
+            _MAX_MEMORY_PROMPT_CHARS,
+            keep_tail=True,
         )
+        memory_section = f"## Conversation context\n{bounded_memory}\n\n" if bounded_memory.strip() else ""
+        bounded_config = _format_config_context(config_context, _MAX_CONFIG_PROMPT_CHARS)
+        bounded_history = _format_history(history)
+        user_prompt = render_prompt(
+            "tasks/operator_user.md",
+            objective=bounded_objective,
+            config_context=bounded_config,
+            memory_context=memory_section,
+            history=bounded_history,
+        )
+        # The component limits above should normally be sufficient. This
+        # dynamic pass makes the boundary robust if the static system/user
+        # templates grow: first shrink the catalog, then history, while
+        # keeping the objective and recent conversation intact.
+        overflow = len(OPERATOR_SYSTEM_PROMPT) + len(user_prompt) - _MAX_OPERATOR_REQUEST_CHARS
+        if overflow > 0:
+            bounded_config = _format_config_context(
+                config_context,
+                max(2_000, len(bounded_config) - overflow - 200),
+            )
+            user_prompt = render_prompt(
+                "tasks/operator_user.md",
+                objective=bounded_objective,
+                config_context=bounded_config,
+                memory_context=memory_section,
+                history=bounded_history,
+            )
+        overflow = len(OPERATOR_SYSTEM_PROMPT) + len(user_prompt) - _MAX_OPERATOR_REQUEST_CHARS
+        if overflow > 0:
+            bounded_history = _bounded_text(
+                bounded_history,
+                max(1_000, len(bounded_history) - overflow - 200),
+                keep_tail=True,
+            )
+            user_prompt = render_prompt(
+                "tasks/operator_user.md",
+                objective=bounded_objective,
+                config_context=bounded_config,
+                memory_context=memory_section,
+                history=bounded_history,
+            )
+        return user_prompt
 
 
 def _format_history(history: list[dict]) -> str:
@@ -135,10 +188,91 @@ def _format_history(history: list[dict]) -> str:
         line = f"{index}. {tool_name} ({status})"
         tool_input = entry.get("input")
         if tool_input:
-            line += f"\n   input: {tool_input}"
+            line += f"\n   input: {_history_field(tool_input)}"
         if entry.get("error"):
-            line += f"\n   error: {entry['error']}"
+            line += f"\n   error: {_history_field(entry['error'])}"
         elif entry.get("output_summary"):
-            line += f"\n   output: {entry['output_summary']}"
+            line += f"\n   output: {_history_field(entry['output_summary'])}"
         lines.append(line)
-    return "\n".join(lines)
+    formatted = "\n".join(lines)
+    if len(formatted) <= _MAX_HISTORY_PROMPT_CHARS:
+        return formatted
+    prefix = "[earlier history detail truncated to fit the operator prompt]\n"
+    return prefix + formatted[-(_MAX_HISTORY_PROMPT_CHARS - len(prefix)) :]
+
+
+def _history_field(value: object) -> str:
+    if isinstance(value, dict):
+        compact = {}
+        for key, item in value.items():
+            if isinstance(item, str) and len(item) > 400 and key in {
+                "content", "text", "prompt", "objective",
+            }:
+                compact[key] = f"<{len(item)} chars>"
+            else:
+                compact[key] = item
+        rendered = json.dumps(compact, ensure_ascii=False, default=str)
+    else:
+        rendered = str(value)
+    if len(rendered) <= _MAX_HISTORY_FIELD_CHARS:
+        return rendered
+    return f"{rendered[:_MAX_HISTORY_FIELD_CHARS]}...[truncated]"
+
+
+def _format_config_context(value: str, max_chars: int) -> str:
+    """Bound the live tool catalog without dropping tool identities.
+
+    Worked examples are the first detail sacrificed because every tool's
+    operation names remain on its definition line. If the catalog is still
+    too large, compact each definition to its routing fields rather than
+    slicing the middle out and making an arbitrary subset of tools invisible.
+    """
+    if len(value) <= max_chars:
+        return value
+    lines = [line for line in value.splitlines() if not line.lstrip().startswith("example tool_input:")]
+    rendered = "\n".join(lines)
+    if len(rendered) <= max_chars:
+        return rendered
+
+    compacted: list[str] = []
+    for line in lines:
+        if not line.startswith("- "):
+            compacted.append(_bounded_text(line, 400))
+            continue
+        name, separator, detail = line.partition(":")
+        if not separator:
+            compacted.append(_bounded_text(line, 400))
+            continue
+        status = detail.split(";", 1)[0].strip()
+        capability = _context_field(detail, "capability")
+        lifecycle = _context_field(detail, "lifecycle")
+        operations = detail.rsplit(" operations=", 1)[1].strip() if " operations=" in detail else ""
+        parts = [f"{name}: {status}"]
+        if capability:
+            parts.append(f"capability={capability}")
+        if lifecycle:
+            parts.append(f"lifecycle={lifecycle}")
+        if operations:
+            parts.append(f"operations={operations}")
+        compacted.append("; ".join(parts))
+    rendered = "\n".join(compacted)
+    return _bounded_text(rendered, max_chars)
+
+
+def _context_field(value: str, name: str) -> str:
+    marker = f"{name}="
+    if marker not in value:
+        return ""
+    return value.split(marker, 1)[1].split(";", 1)[0].strip()
+
+
+def _bounded_text(value: str, max_chars: int, *, keep_tail: bool = False) -> str:
+    if len(value) <= max_chars:
+        return value
+    marker = "[truncated to fit operator prompt]\n"
+    room = max(0, max_chars - len(marker))
+    if keep_tail:
+        return marker + value[-room:]
+    head = room // 2
+    tail = room - head
+    return value[:head] + "\n" + marker + value[-tail:]

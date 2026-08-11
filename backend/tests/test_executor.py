@@ -102,6 +102,36 @@ async def test_executor_records_request_and_completion_in_audit(tmp_path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_executor_redacts_free_text_secrets_before_persistence_and_return(tmp_path) -> None:
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("read a config safely")
+    settings = _settings_with(Capability.LLM_GENERATE)
+    secret = "sk-live-EVOLEAK-9931-DO-NOT-ECHO"
+    adapter = StaticToolAdapter(
+        output={"text": f"SERVICE=billing ACME_API_KEY={secret}", "summary": f"token={secret}"}
+    )
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"llm": adapter},
+    )
+
+    result = await executor.execute(
+        _request(task.id).model_copy(update={"input": {"prompt": f"authorization={secret}"}})
+    )
+    invocation = repos.tool_invocations.list_for_task(task.id)[0]
+    persisted = str(invocation)
+
+    assert secret not in str(result.model_dump())
+    assert secret not in persisted
+    assert "***" in str(result.output)
+    # Execution still received the real value; redaction is a persistence and
+    # downstream-context boundary, not mutation of the adapter call.
+    assert secret in adapter.requests[0].input["prompt"]
+
+
+@pytest.mark.asyncio
 async def test_executor_denies_when_policy_blocks(tmp_path) -> None:
     repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("t")

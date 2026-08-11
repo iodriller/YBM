@@ -41,6 +41,7 @@ From `backend/`:
 uv sync --frozen --extra test --extra dev   # first time only (skip if `ybm setup` already ran)
 uv run --frozen pytest
 uv run --frozen ruff check .
+uv run --frozen python ../scripts/check_markdown_links.py
 ```
 
 From `vscode-extension/`, if you touched the extension:
@@ -48,6 +49,28 @@ From `vscode-extension/`, if you touched the extension:
 ```powershell
 npm run compile
 ```
+
+From `frontend/`, if you touched the admin console:
+
+```powershell
+npm ci
+npx tsc -b --noEmit
+npm run lint
+npm run build
+npx playwright install chromium
+npm run test:e2e
+```
+
+From `whatsapp-bridge/`, if you touched the sidecar:
+
+```powershell
+npm ci
+npm run check
+```
+
+Run `npm audit --audit-level=high` in every changed Node package. Container
+changes must also pass `docker build -t ybm-control:local .`; CI verifies that
+the resulting image contains the WhatsApp runtime and bundled starter skills.
 
 If your change touches prompt text, tool schemas, or workspace layout, the
 affected deterministic scenario fixtures under `backend/tests/scenario/fixtures/`

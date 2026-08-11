@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from agent_control.config import AppSettings, is_loopback_host
+from agent_control.config import AppSettings, ConfigValidationError, is_loopback_host, load_settings
 from agent_control.schemas import Capability
 
 
@@ -42,6 +42,54 @@ def test_invalid_capability_name_fails() -> None:
             _env_file=None,
             capabilities={"not.a.capability": {"enabled": True}},
         )
+
+
+def test_load_settings_error_never_echoes_the_offending_value(tmp_path) -> None:
+    """Settings come from `.env`, so pydantic's ``input_value=`` in a failure is
+    the API key / bot token / vault key itself — and `ybm doctor` prints that
+    text verbatim. The failure must stay debuggable without carrying the value."""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text("server:\n  host: 127.0.0.1\n", encoding="utf-8")
+    canary = "sk-live-CONFIGCANARY-4471"
+
+    with pytest.raises(ConfigValidationError) as caught:
+        load_settings(config_path=config_file, _env_file=None, server={"port": canary})
+
+    rendered = f"{caught.value}\n{repr(caught.value)}"
+    assert canary not in rendered
+    # Still points at the exact field and reason, or it is useless in doctor.
+    assert "server.port" in rendered
+    # A chained cause would put the unredacted ValidationError back into any
+    # rendered traceback.
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+
+def test_config_validation_error_stays_catchable_as_value_error(tmp_path) -> None:
+    """pydantic's ValidationError is a ValueError; callers that already caught
+    that must keep working."""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text("server:\n  host: 127.0.0.1\n", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        load_settings(config_path=config_file, _env_file=None, unknown_section={})
+
+
+def test_doctor_config_check_reports_redacted_failure(tmp_path, monkeypatch) -> None:
+    """The concrete leak path: doctor formats the raised exception into output
+    users routinely paste into bug reports."""
+    from agent_control import bootstrap
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "config.yaml").write_text("server:\n  port: not-a-port\n", encoding="utf-8")
+
+    check, settings = bootstrap._load_settings_checked()
+
+    assert settings is None
+    assert check.status == "fail"
+    assert "not-a-port" not in check.detail
+    assert "server.port" in check.detail
 
 
 def test_minimal_llm_profile_validates() -> None:

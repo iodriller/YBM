@@ -17,7 +17,7 @@ def test_rewrites_user_placeholder_with_forward_slashes():
 
 
 def test_leaves_real_username_untouched():
-    assert _rewrite_placeholder_user_path(r"C:\Users\oneye\Desktop") == r"C:\Users\oneye\Desktop"
+    assert _rewrite_placeholder_user_path(r"C:\Users\alex\Desktop") == r"C:\Users\alex\Desktop"
 
 
 def test_leaves_alias_untouched():

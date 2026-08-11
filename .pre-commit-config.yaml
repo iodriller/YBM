@@ -1,0 +1,41 @@
+# Optional, and not installed by the installer - a contributor convenience, not
+# a requirement. CI remains the authority.
+#
+# Install once:
+#   uv tool install pre-commit && pre-commit install
+#
+# This mirrors the low-cost checks that are useful before CI. Formatting is not
+# enforced repository-wide yet, so this file does not claim or run a formatter
+# baseline that the existing source cannot pass.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.0
+    hooks:
+      - id: ruff
+        name: ruff (backend)
+        args: [--fix]
+        files: ^backend/
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.24.3
+    hooks:
+      - id: gitleaks
+        # Honours .gitleaks.toml, so the deliberate redaction-test canaries stay
+        # allowlisted by their marker text rather than by file path.
+        name: gitleaks (staged changes)
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
+        # config.example.yaml and the workflows are the ones that actually break
+        # something when malformed.
+      - id: check-json
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: end-of-file-fixer
+        # Recorded fixtures are machine-written; reformatting them would show up
+        # as noise in a diff that is meant to be reviewable.
+        exclude: ^backend/tests/scenario/fixtures/
+      - id: trailing-whitespace
+        exclude: ^backend/tests/scenario/fixtures/
+        args: [--markdown-linebreak-ext=md]

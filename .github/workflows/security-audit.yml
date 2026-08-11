@@ -1,0 +1,142 @@
+# Scheduled dependency audit.
+#
+# Dependabot was switched off deliberately (commit 2e422d2, with THREAT_MODEL.md
+# updated to say dependency updates are reviewed and tested manually), so this
+# does not reintroduce a weekly pile of version-bump PRs.
+#
+# It closes the gap that choice leaves: pip-audit already runs in CI, but only
+# on a push. A CVE published for a dependency already in the lockfile is
+# therefore invisible until the next commit - which is exactly how two pypdf
+# advisories (CVE-2026-71852, CVE-2026-71870) were first seen by a CI run for an
+# unrelated change, after the affected version had been in use for days.
+#
+# Running the same audit on a schedule turns that into "found the next morning"
+# without proposing a single upgrade. It opens an issue rather than a PR: the
+# fix stays a human decision, which is the documented policy.
+name: Security audit
+
+on:
+  schedule:
+    # 07:00 UTC daily. Advisories publish at all hours; a day is the useful
+    # granularity for a single-operator project.
+    - cron: "0 7 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: security-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          working-directory: backend
+          cache-suffix: security-audit
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22.22.0"
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            vscode-extension/package-lock.json
+            whatsapp-bridge/package-lock.json
+
+      - name: Audit Python dependencies
+        id: pip_audit
+        working-directory: backend
+        run: |
+          set +e
+          uv sync --frozen --extra test --extra dev
+          uv run --frozen --with pip-audit pip-audit > audit.txt 2>&1
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          cat audit.txt
+          {
+            echo 'report<<AUDIT_EOF'
+            cat audit.txt
+            echo 'AUDIT_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Audit Node dependency locks
+        id: npm_audit
+        run: |
+          set +e
+          exit_code=0
+          : > npm-audit.txt
+          for package in frontend vscode-extension whatsapp-bridge; do
+            echo "## ${package}" >> npm-audit.txt
+            (cd "${package}" && npm audit --audit-level=high) >> npm-audit.txt 2>&1 || exit_code=1
+            echo >> npm-audit.txt
+          done
+          echo "exit_code=${exit_code}" >> "$GITHUB_OUTPUT"
+          cat npm-audit.txt
+          {
+            echo 'report<<AUDIT_EOF'
+            cat npm-audit.txt
+            echo 'AUDIT_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Open an issue when something is vulnerable
+        if: steps.pip_audit.outputs.exit_code != '0' || steps.npm_audit.outputs.exit_code != '0'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.0.1
+        env:
+          AUDIT_REPORT: ${{ steps.pip_audit.outputs.report }}
+          NPM_AUDIT_REPORT: ${{ steps.npm_audit.outputs.report }}
+        with:
+          script: |
+            const report = process.env.AUDIT_REPORT || '';
+            const npmReport = process.env.NPM_AUDIT_REPORT || '';
+            const title = 'Dependency audit: known vulnerability in the lockfile';
+            const { data: existing } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+            const body = [
+              'The scheduled Python/Node dependency audit found a known vulnerability.',
+              '',
+              'Dependency updates are reviewed manually here (see docs/THREAT_MODEL.md),',
+              'so this is a notification, not an automatic upgrade.',
+              '',
+              '```',
+              report.slice(0, 26000),
+              '```',
+              '',
+              'Node dependency locks:',
+              '',
+              '```',
+              npmReport.slice(0, 26000),
+              '```',
+              '',
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            ].join('\n');
+
+            const open = existing.find(issue => issue.title === title);
+            if (open) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: open.number, body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body,
+              });
+            }
+
+      - name: Fail the run so the schedule shows red
+        if: steps.pip_audit.outputs.exit_code != '0' || steps.npm_audit.outputs.exit_code != '0'
+        run: exit 1

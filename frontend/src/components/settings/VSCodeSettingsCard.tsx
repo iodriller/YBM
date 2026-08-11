@@ -1,4 +1,3 @@
-import { useId, cloneElement } from "react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -99,8 +98,8 @@ export function VSCodeSettingsCard() {
           }}
         >
           <div className="flex items-center gap-2">
-            <Switch checked={draft.enabled} onCheckedChange={(v) => setDraft({ ...draft, enabled: v })} />
-            <Label className="text-sm">Enabled</Label>
+            <Switch id="vscode-enabled" checked={draft.enabled} onCheckedChange={(v) => setDraft({ ...draft, enabled: v })} />
+            <Label htmlFor="vscode-enabled" className="text-sm">Enabled</Label>
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field label="Bridge host">
@@ -127,17 +126,11 @@ export function VSCodeSettingsCard() {
   )
 }
 
-function Field({ label, children }: { label: string; children: React.ReactElement<{ id?: string }> }) {
-  // Every call site passes exactly one form control as children - id/htmlFor
-  // pairing via useId() associates the visible label with it for screen
-  // readers, without changing the sibling Label-then-control DOM structure
-  // (cloneElement, not wrapping children inside <label>, so the existing
-  // flex-col layout is untouched).
-  const id = useId()
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex flex-col gap-1">
-      <Label htmlFor={id} className="text-xs text-muted-foreground">{label}</Label>
-      {cloneElement(children, { id })}
-    </div>
+    <Label className="flex flex-col gap-1">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      {children}
+    </Label>
   )
 }

@@ -30,6 +30,7 @@ import time
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+import re
 from typing import Any, Protocol
 
 from agent_control.channels.memory import memory_context
@@ -45,6 +46,8 @@ from agent_control.schemas import (
     CommandEnvelope,
     InboundMessage,
     IntentRoute,
+    MemoryFact,
+    MemorySource,
     MessageClassification,
     OutboundMessage,
     TaskRecord,
@@ -225,6 +228,79 @@ async def _non_task_response(
     return _reply(inbound, answer[:3900])
 
 
+# A durable instruction is phrased as a standing rule, not a one-off request.
+# These are the openings people actually use for one; a message that merely
+# mentions "always" mid-sentence does not match because the cue has to lead the
+# clause it governs.
+_STANDING_INSTRUCTION = re.compile(
+    r"(?i)(?:^|[.!?;\n]\s*|,\s*)(?:please\s+)?(?:"
+    # "remember when ..." is reminiscence, not an instruction to keep.
+    r"remember(?:\s+(?:this|that|it))?\b(?!\s+when\b)"
+    r"|from now on\b"
+    r"|going forward\b"
+    r"|in future\b|in the future\b"
+    r"|whenever\s+(?:you|i)\b"
+    r"|every\s+time\s+(?:you|i)\b"
+    r"|always\s+(?:answer|reply|use|give|format|include|send|write|show|prefer)\b"
+    r"|never\s+(?:answer|reply|use|give|format|include|send|write|show)\b"
+    r"|i\s+(?:always\s+)?(?:prefer|want you to|would like you to)\b"
+    r"|my\s+preference\s+is\b"
+    r")"
+)
+
+
+def _standing_instruction(text: str) -> str | None:
+    """The durable rule a chat message states, or None if it states none.
+
+    The chat route used to compose an agreeable "Understood, all future
+    summaries will be…" and persist nothing, so the next task had no fact to
+    read and silently ignored the rule (docs/E2E_FINDINGS.md P1-3). Saying it
+    learned while learning nothing is worse than declining: the user gets no
+    signal the preference evaporated.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned or len(cleaned) > 600:
+        return None
+    return cleaned if _STANDING_INSTRUCTION.search(cleaned) else None
+
+
+def _remember_standing_instruction(
+    repositories: Repositories,
+    audit: AuditLogger,
+    inbound: InboundMessage,
+    actor: str,
+) -> str | None:
+    """Persist a stated rule as a durable fact. Returns the stored content.
+
+    Stored as USER_STATED so it outranks task-derived guesses, and read back by
+    `memory_context(remembered_facts=...)`, which both the chat and task paths
+    already build - so a rule stated here reaches the next task's operator
+    context without any further wiring.
+    """
+    content = _standing_instruction(inbound.text or "")
+    if content is None:
+        return None
+    try:
+        fact = repositories.memory_facts.create(
+            MemoryFact(category="preference", content=content, source=MemorySource.USER_STATED)
+        )
+    except Exception as exc:
+        audit.append(
+            AuditEventType.ERROR,
+            actor=actor,
+            correlation_id=inbound.correlation_id,
+            payload={"error": "remember_standing_instruction_failed", "reason": str(exc)},
+        )
+        return None
+    audit.append(
+        AuditEventType.MEMORY_UPDATED,
+        actor=actor,
+        correlation_id=inbound.correlation_id,
+        payload={"fact_id": fact.id, "category": fact.category, "content": fact.content},
+    )
+    return fact.content
+
+
 async def classify_and_spawn_task(
     inbound: InboundMessage,
     conversation_id: str,
@@ -345,8 +421,15 @@ async def classify_and_spawn_task(
         is_chat_only = intent_route == IntentRoute.CONVERSATION and classification.task_type != TaskType.STATUS_REQUEST
 
     if is_chat_only:
+        # Persist before replying, so the acknowledgment only claims what was
+        # actually stored.
+        remembered = _remember_standing_instruction(repositories, audit, inbound, actor)
         outbound = await _non_task_response(audit, repositories, inbound, classification, conversation_id, responder)
         if outbound is not None:
+            if remembered:
+                outbound = outbound.model_copy(
+                    update={"text": f"{outbound.text}\n\n(Remembered: {remembered[:300]})"}
+                )
             return ChannelUpdateResult(
                 authorized=True, inbound_message=inbound, classification=classification, outbound_message=outbound,
             )

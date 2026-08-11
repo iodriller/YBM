@@ -1,4 +1,3 @@
-import { useId, cloneElement } from "react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -8,6 +7,8 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { ApiError, type LLMConfigInput, type SettingsSummary } from "@/lib/api"
 import { useServerForm } from "@/lib/use-server-form"
 import { useSelectLLMPreset, useSettingsSummary, useTestLLM, useUpdateLLMConfig } from "@/lib/queries"
+import { useAdvancedMode } from "@/lib/advanced-mode"
+import { ProviderPicker } from "@/components/onboarding/ProviderPicker"
 
 type Draft = {
   profileName: string
@@ -50,6 +51,7 @@ export function LLMSettingsCard() {
   const updateLLM = useUpdateLLMConfig()
   const selectPreset = useSelectLLMPreset()
   const testLLM = useTestLLM()
+  const { advanced } = useAdvancedMode()
 
   const presets = data?.integrations.llm.presets ?? []
 
@@ -99,11 +101,22 @@ export function LLMSettingsCard() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>LLM</CardTitle>
-        <CardDescription>The model the Concierge, Operator, and Auditor all currently share.</CardDescription>
+        <CardTitle>Model</CardTitle>
+        {/* "The model the Concierge, Operator, and Auditor all currently share"
+            named three internal components at a first-time user. What they
+            care about is what happens to their request. */}
+        <CardDescription>
+          The model YBM uses to understand requests, do the work, and check the result.
+        </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {presets.length > 0 && (
+          <div className="flex flex-col gap-2">
+            <p className="text-sm font-medium">Run a model on this computer — free and private</p>
+            <p className="text-xs text-muted-foreground">
+              Installs LocalDeploy if it is missing, downloads the model, and runs it here. Nothing
+              you type leaves the machine.
+            </p>
           <div className="flex flex-wrap gap-2">
             {presets.map((preset) => (
               <Button
@@ -118,12 +131,42 @@ export function LLMSettingsCard() {
               </Button>
             ))}
           </div>
+          </div>
         )}
 
         <Button type="button" variant="outline" size="sm" className="self-start" disabled={testLLM.isPending} onClick={handleTest}>
-          {testLLM.isPending ? "Testing..." : "Test active LLM"}
+          {testLLM.isPending ? "Testing..." : "Send a test message to the current model"}
         </Button>
 
+        {/* There was no way to reach the 13 providers the first-run wizard
+            offers, so someone who set up Anthropic during onboarding could not
+            change it without editing YAML - and "how do I add a remote API?"
+            had no answer on this page at all. Same component as the wizard, so
+            the key is verified and the model must actually answer before
+            anything is saved. */}
+        <details className="border-t border-border pt-3">
+          <summary className="cursor-pointer text-sm font-medium">
+            Use an API key instead — Anthropic, OpenAI, and 11 others
+          </summary>
+          <div className="mt-3">
+            <ProviderPicker onConfigured={() => window.location.reload()} />
+          </div>
+        </details>
+
+        {/* Profile name, provider, base URL, API key env, timeout, max tokens
+            and temperature were shown to everyone. For the audience the
+            installer now targets - no Python, no terminal - the preset row
+            above is the whole useful control, and the rest is expert surface
+            presented as if it needed attention. Advanced mode already exists
+            in the sidebar; this is what it is for. */}
+        {!advanced && (
+          <p className="border-t border-border pt-3 text-xs text-muted-foreground">
+            Pick a model above, or turn on <span className="font-medium">Advanced mode</span> in the sidebar to edit the
+            profile directly.
+          </p>
+        )}
+
+        {advanced && (
         <form
           className="grid grid-cols-1 gap-3 border-t border-border pt-3 sm:grid-cols-2"
           onSubmit={(event) => {
@@ -187,22 +230,17 @@ export function LLMSettingsCard() {
             </Button>
           </div>
         </form>
+        )}
       </CardContent>
     </Card>
   )
 }
 
-function Field({ label, children }: { label: string; children: React.ReactElement<{ id?: string }> }) {
-  // Every call site passes exactly one form control as children - id/htmlFor
-  // pairing via useId() associates the visible label with it for screen
-  // readers, without changing the sibling Label-then-control DOM structure
-  // (cloneElement, not wrapping children inside <label>, so the existing
-  // flex-col layout is untouched).
-  const id = useId()
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex flex-col gap-1">
-      <Label htmlFor={id} className="text-xs text-muted-foreground">{label}</Label>
-      {cloneElement(children, { id })}
-    </div>
+    <Label className="flex flex-col gap-1">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      {children}
+    </Label>
   )
 }
