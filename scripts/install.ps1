@@ -2,19 +2,19 @@
 #   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.ps1 | iex"
 #
 # Or, with no terminal at all: download and extract the complete repository,
-# then double-click YBM-Setup.cmd at its root. The CMD file needs the adjacent
-# scripts directory and cannot bootstrap from a standalone download.
+# then double-click YBM.bat at its root - it installs whatever is missing,
+# including uv, and starts the console. That is the only file a person needs.
 #
-# Git and Python do not need to be preinstalled. Node.js 22.22+ is required to
-# build the admin console; the optional WhatsApp bridge also needs Node.js.
+# Git, Python, and uv do not need to be preinstalled. Node.js 22.22+ is only
+# needed to build the admin console from source; release builds ship it
+# prebuilt (.github/workflows/release.yml), so an installed copy needs no Node.
 #
-#   - uv is a standalone binary that needs no Python, and `uv python install`
-#     provides the interpreter. An earlier version of this script demanded
-#     Python 3.12+ on PATH and then never used it: `uv sync` builds the venv
-#     against a uv-managed interpreter (see backend/.venv/pyvenv.cfg's `home`),
-#     and common.ps1's Get-YbmPython returns that venv. The gate turned a
-#     working machine away and cost every first-time user a Python download
-#     plus the "Add to PATH" checkbox nobody ticks.
+#   - uv is a standalone binary that needs no Python, and `uv sync` builds the
+#     venv against a uv-managed interpreter (see backend/.venv/pyvenv.cfg's
+#     `home`), which common.ps1's Get-YbmPython then returns. An earlier
+#     version of this script demanded Python 3.12+ on PATH and never used it:
+#     the gate turned working machines away and cost every first-time user a
+#     Python download plus the "Add to PATH" checkbox nobody ticks.
 #   - git is used when present, and a source zip is downloaded when it is not.
 #
 # Everything after getting the code onto the machine is `scripts\ybm.ps1 run`:
@@ -41,13 +41,6 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Pinned on purpose. An unpinned https://astral.sh/uv/install.ps1 means two
-# machines a week apart get different uv versions, and a bad uv release breaks
-# every YBM install at once with nothing changed on our side.
-$UvVersion   = "0.9.7"
-$UvInstaller = "https://astral.sh/uv/$UvVersion/install.ps1"
-$PythonVersion = "3.12"
-
 $RepoUrl  = "https://github.com/iodriller/YBM.git"
 $ZipUrl   = "https://codeload.github.com/iodriller/YBM/zip/refs/heads/main"
 $ApiUrl   = "https://api.github.com/repos/iodriller/YBM/commits/main"
@@ -70,67 +63,13 @@ function Fail($msg, $hint) {
     exit 1
 }
 
-# --- 1. uv ---------------------------------------------------------------
-# Resolved to an absolute path rather than trusting PATH. The old script
-# prepended ~\.local\bin and re-checked Get-Command, then gave up with "open a
-# new PowerShell window and re-run" - a dead end halfway through an install,
-# because a freshly written PATH entry is not visible to the running process.
-
-function Resolve-Uv {
-    foreach ($candidate in @(
-        (Join-Path $HOME ".local\bin\uv.exe"),
-        (Join-Path $env:LOCALAPPDATA "Programs\uv\uv.exe")
-    )) {
-        if (Test-Path -LiteralPath $candidate) { return $candidate }
-    }
-    $onPath = Get-Command uv -ErrorAction SilentlyContinue
-    if ($onPath) { return $onPath.Source }
-    return $null
-}
-
-$uv = Resolve-Uv
-if ($uv) {
-    Write-Step "uv already installed"
-    Write-Info $uv
-} elseif ($DryRun) {
-    Write-Step "uv not found"
-    Write-Plan "would install uv $UvVersion from $UvInstaller"
-    $uv = "uv"
-} else {
-    Write-Step "Installing uv $UvVersion (standalone; no Python needed)"
-    # uv is deliberately left on PATH (its installer's default). This script
-    # calls it by absolute path because a PATH entry written by a child process
-    # is invisible to the running one - but later tooling needs the name to
-    # resolve normally, .mcp.json included, which launches the MCP server with
-    # `uv run` precisely because that is the one spelling that works on every
-    # platform.
-    try {
-        Invoke-RestMethod $UvInstaller -UseBasicParsing | Invoke-Expression
-    } catch {
-        Fail "could not install uv from $UvInstaller ($($_.Exception.Message))" `
-             "Check your internet connection, then re-run. uv is the only thing YBM needs to bootstrap."
-    }
-    $uv = Resolve-Uv
-    if (-not $uv) {
-        Fail "uv installed but could not be located" `
-             "Looked in ~\.local\bin and %LOCALAPPDATA%\Programs\uv. Set YBM_UV_PATH and re-run."
-    }
-    Write-Good "uv at $uv"
-}
-
-# --- 2. Python, provided by uv -------------------------------------------
-if ($DryRun) {
-    Write-Plan "would run: uv python install $PythonVersion"
-} else {
-    Write-Step "Ensuring Python $PythonVersion (downloaded by uv, not from your system)"
-    & $uv python install $PythonVersion
-    if ($LASTEXITCODE -ne 0) {
-        Fail "uv could not provide Python $PythonVersion" `
-             "Re-run, or install Python $PythonVersion yourself and re-run - YBM will use it."
-    }
-}
-
-# --- 3. The code: git if present, source zip if not ----------------------
+# --- 1. The code: git if present, source zip if not ----------------------
+# uv is deliberately NOT bootstrapped here any more. It is installed by
+# Install-YbmUv in scripts/lib/common.ps1, which `ybm.ps1 run` calls at the
+# end of this script - one implementation, reachable from the double-click
+# path as well as from this one. Nothing above this point needs uv: fetching
+# the source uses git or a plain download, and `uv sync` provides Python
+# itself, so the old separate `uv python install` step bought nothing.
 $inRepo = (Test-Path "backend\pyproject.toml") -and (Test-Path "AGENTS.md") -and (Test-Path "scripts\ybm.ps1")
 $git = Get-Command git -ErrorAction SilentlyContinue
 
@@ -207,7 +146,7 @@ The repository is private, so anonymous download cannot work. Either:
     }
 }
 
-# --- 4. Hand off to ybm.ps1 ----------------------------------------------
+# --- 2. Hand off to ybm.ps1 ----------------------------------------------
 if ($DryRun) {
     Write-Plan "would run: $RepoDir\scripts\ybm.ps1 run"
     if ($Verify) { Write-Plan "would then run: ybm.ps1 doctor (--Verify)" }
@@ -226,7 +165,7 @@ if ($LASTEXITCODE -ne 0) {
          "Run '$RepoDir\scripts\ybm.ps1 doctor' to diagnose. Logs: $RepoDir\.agent_control\logs"
 }
 
-# --- 5. Optional post-install proof --------------------------------------
+# --- 3. Optional post-install proof --------------------------------------
 if ($Verify) {
     Write-Step "Verifying the install"
     & "$RepoDir\scripts\ybm.ps1" doctor

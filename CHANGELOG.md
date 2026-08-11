@@ -19,7 +19,15 @@ releases exist it should compare against the latest tag instead - see
 - `ybm start --foreground`, which supervises until a service exits or a signal
   arrives. `start_all` spawns detached children and returns - correct for an
   interactive start, and an immediate exit to a container or systemd.
-- `YBM-Setup.cmd`, a double-click first-run entry point.
+- **A signed-off Windows install path.** `.github/workflows/release.yml` builds
+  the admin console, stages a runtime payload (`scripts/package_release.ps1`),
+  compiles a per-user Inno Setup installer (`packaging/windows/ybm.iss`), and
+  publishes both with checksums on a tag. The installer needs no administrator
+  rights and no Node.js, because the console ships prebuilt - previously a
+  source install had no console until the user installed Node 22.22+ themselves.
+- winget manifest templates (`packaging/winget/`) plus
+  `scripts/render_winget_manifests.ps1`, which hashes the published installer
+  rather than trusting a number copied out of a build log.
 - `--dry-run`, `--verify`, `--no-prompt` and `--install-dir` on both installers.
 - Scheduled daily dependency audit (`.github/workflows/security-audit.yml`)
   covering the Python and all Node lockfiles; it opens an issue rather than a
@@ -34,6 +42,12 @@ releases exist it should compare against the latest tag instead - see
 
 ### Changed
 
+- **One file to double-click, first run and every run.** `ybm setup` installs
+  `uv` when it is missing (`Install-YbmUv` in `scripts/lib/common.ps1`) instead
+  of refusing to continue, so `YBM.bat` handles a cold machine on its own. That
+  refusal was the entire reason a separate first-run entry point had to exist.
+  `scripts/install.ps1` no longer bootstraps uv either; it fetches the source
+  and hands off, leaving one implementation rather than two that can drift.
 - **Installers require nothing preinstalled.** The Python 3.12+ gate is gone -
   `uv` is a standalone binary and provides the interpreter. git is optional,
   with an archive fallback. The uv installer URL is pinned to a version.
@@ -49,6 +63,12 @@ releases exist it should compare against the latest tag instead - see
   dependencies, bundled starter skills, and project license.
 - Container base images and the optional Ollama service are pinned to reviewed
   manifest digests.
+
+### Removed
+
+- `YBM-Setup.cmd`. `YBM.bat` now covers the first run too, so a second
+  double-clickable file with a different name was one more thing to explain and
+  one more way to pick the wrong one.
 
 ### Fixed
 

@@ -24,32 +24,30 @@ scheduled work, MCP servers, and coding agents. Every tool call passes through p
 
 ## Install
 
-Source installs do not require a system Python or Git. The installers bootstrap `uv`, use it to
-provide Python 3.12, create the project environment, initialize local config and tokens, and start
+Nothing needs to be preinstalled: no Python, no Git, no `uv`. The install bootstraps `uv`, uses it to
+provide Python 3.12, creates the project environment, initializes local config and tokens, and starts
 YBM.
-
-Node.js 22.22 or newer is required to build the admin console from source. The optional WhatsApp
-bridge also needs Node.js, so 22.22 satisfies both. Without Node.js, the backend can still run, but
-`/admin` shows build instructions instead of the console. Docker includes Node.js and a prebuilt
-console in the image.
 
 ### Windows
 
-1. Download the repository as a ZIP and extract the entire folder.
-2. Double-click [`YBM-Setup.cmd`](YBM-Setup.cmd).
-3. Complete the two-step browser wizard to choose a model and optionally connect Telegram.
+1. Download `YBM-Setup.exe` from the [latest release](https://github.com/iodriller/YBM/releases/latest) and run it, **or** `winget install YBM`.
+2. Complete the two-step browser wizard to choose a model and optionally connect Telegram.
 
-The setup launcher must remain beside the repository's `scripts` folder. Downloading only
-`YBM-Setup.cmd` is not enough.
+The installer is per-user and needs no administrator rights. It installs into `%LOCALAPPDATA%\YBM`,
+adds a Start Menu entry, and can be removed from Add or remove programs.
 
-For a visible, verifiable PowerShell install from the extracted folder:
+Installing from source instead? Download the repository as a ZIP, extract the whole folder, and
+double-click [`YBM.bat`](YBM.bat). The same file handles the first run and every run after it, so
+there is nothing else to remember. For a visible, verifiable install:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Verify
 ```
 
-After the first install, double-click [`YBM.bat`](YBM.bat). It checks the environment, syncs changed
-runtime dependencies, starts the services, and opens the console. Repeated launches are safe.
+Node.js 22.22 or newer is only needed to build the admin console **from source**. Release builds and
+the Docker image ship it prebuilt, so an installed copy needs no Node.js. The optional WhatsApp
+bridge needs Node.js on any install. Without it, the backend still runs, but a source checkout serves
+build instructions at `/admin` instead of the console.
 
 ### macOS and Linux
 

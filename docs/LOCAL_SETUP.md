@@ -12,29 +12,26 @@ You do need:
 - Bash and `curl` for the macOS/Linux installer.
 - Docker Desktop or Docker Engine with Compose only if you choose the container path.
 
-The optional WhatsApp bridge also needs Node.js, so version 22.22 satisfies both requirements. If
-Node.js is missing, setup continues and the backend can run, but `/admin` shows instructions instead
-of the built console. Install Node.js, then run the `ui-build` command for your platform.
+The optional WhatsApp bridge also needs Node.js, so version 22.22 satisfies both requirements.
+
+Node.js is required only when building the console **from source**. The release installer and the
+Docker image both ship it prebuilt. In a source checkout without Node.js, setup continues and the
+backend runs, but `/admin` shows build instructions instead of the console; install Node.js, then run
+the `ui-build` command for your platform.
 
 ## Recommended install
 
 ### Windows, no terminal
 
-1. Download the repository as a ZIP and extract the entire folder.
-2. Double-click `YBM-Setup.cmd` in that folder.
-3. Finish the browser wizard that opens.
+1. Download `YBM-Setup.exe` from the [latest release](https://github.com/iodriller/YBM/releases/latest) and run it, or run `winget install YBM`.
+2. Finish the browser wizard that opens.
 
-`YBM-Setup.cmd` is a launcher for the adjacent `scripts/install.ps1`. It cannot be downloaded and
-run by itself. It accepts these optional command-line flags:
+The installer is per-user, needs no administrator rights, installs into `%LOCALAPPDATA%\YBM`, and
+registers an uninstall entry. It carries a prebuilt admin console, so Node.js is not required.
 
-```text
-YBM-Setup.cmd --dry-run
-YBM-Setup.cmd --verify
-YBM-Setup.cmd --no-prompt
-```
-
-`--no-prompt` is accepted for automation parity, but the installer itself currently has no terminal
-prompts. Model and Telegram setup happen in the browser.
+From a source checkout instead, double-click `YBM.bat` in the extracted folder. It installs anything
+missing, including `uv` itself, then starts YBM and opens the console. The same file serves the first
+run and every run after it; there is no separate setup step.
 
 For visible PowerShell output and the complete installer option set:
 

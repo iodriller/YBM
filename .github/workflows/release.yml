@@ -1,0 +1,156 @@
+name: Release
+
+# Publishes the Windows installer and source archive for a tag.
+#
+# The reason this workflow exists: a source checkout has no admin console until
+# someone installs Node.js 22.22+ and builds it, which is the one prerequisite a
+# non-developer cannot reasonably be asked to satisfy. Building the console here
+# and shipping it inside the payload turns Node.js back into a contributor tool.
+#
+# It also gives backend/src/agent_control/updates.py something to find. That
+# module polls the GitHub releases API on every `ybm run`; with no releases ever
+# published it could only ever answer "no_releases".
+
+on:
+  push:
+    tags: ["v*"]
+  # Build the artifacts without publishing, to check a packaging change before
+  # committing to a tag.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (no v prefix). Artifacts only, no release."
+        required: false
+        default: "0.0.0-dev"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    name: Windows installer
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      # Only the publish step needs this, and only on a tag.
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -like "refs/tags/v*") {
+            $version = $env:GITHUB_REF -replace "^refs/tags/v", ""
+          } else {
+            $version = "${{ inputs.version }}"
+          }
+          if (-not $version) { throw "could not determine a version to build" }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "Building YBM $version"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22.22.0"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # The console has to exist before packaging; package_release.ps1 refuses
+      # to build an archive without it rather than shipping a release that
+      # serves build instructions.
+      - name: Build the admin console
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Stage the release payload
+        shell: pwsh
+        run: ./scripts/package_release.ps1 -Version "${{ steps.version.outputs.version }}"
+
+      # Not preinstalled on windows-latest (Windows Server 2025), unlike the
+      # 2022 image. Installed here rather than through a marketplace action so
+      # the release path takes no third-party action dependency.
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found at $iscc" }
+          & $iscc "/DMyAppVersion=${{ steps.version.outputs.version }}" packaging\windows\ybm.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed (exit $LASTEXITCODE)" }
+
+      # winget's manifest needs the exact SHA256 of the published installer, and
+      # a user verifying a download needs it published beside the file.
+      - name: Checksums
+        id: checksums
+        shell: pwsh
+        run: |
+          $lines = @()
+          foreach ($file in Get-ChildItem dist\*.zip, dist\*.exe) {
+            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+            $lines += "$hash  $($file.Name)"
+            if ($file.Extension -eq ".exe") { "installer_sha256=$hash" >> $env:GITHUB_OUTPUT }
+          }
+          $lines | Set-Content -LiteralPath dist\SHA256SUMS.txt -Encoding ascii
+          $lines | ForEach-Object { Write-Host $_ }
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ybm-windows-${{ steps.version.outputs.version }}
+          path: |
+            dist/*.zip
+            dist/*.exe
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          INSTALLER_SHA: ${{ steps.checksums.outputs.installer_sha256 }}
+        shell: pwsh
+        run: |
+          # Single-quoted here-string: the notes are full of backticks (code
+          # fences and inline code), and inside a double-quoted here-string
+          # PowerShell reads a backtick as an escape character. Placeholders are
+          # substituted afterwards, and the result goes to gh via --notes-file
+          # so no quoting of a multi-line string is involved either.
+          $notes = @'
+          ## Install
+
+          **Windows:** download `YBM-Setup.exe` below and run it. Per-user install, no
+          administrator rights, and no Node.js required - the admin console ships prebuilt.
+
+          Windows will warn that the publisher is unrecognised, because the installer is not
+          code signed. Verify the download instead:
+
+          ```
+          Get-FileHash .\YBM-Setup.exe -Algorithm SHA256
+          # expect: __SHA__
+          ```
+
+          **From source:** extract `YBM-__VERSION__-windows.zip` and double-click `YBM.bat`.
+          It installs whatever is missing, including uv, then opens the console.
+
+          Full checksums are in `SHA256SUMS.txt`.
+          '@
+          $notes = $notes.Replace("__SHA__", $env:INSTALLER_SHA).Replace("__VERSION__", $env:VERSION)
+          Set-Content -LiteralPath release-notes.md -Value $notes -Encoding utf8
+          gh release create "v$env:VERSION" `
+            dist\YBM-Setup.exe `
+            "dist\YBM-$env:VERSION-windows.zip" `
+            dist\SHA256SUMS.txt `
+            --title "YBM $env:VERSION" `
+            --notes-file release-notes.md `
+            --verify-tag

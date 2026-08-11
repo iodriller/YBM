@@ -155,10 +155,14 @@ function Invoke-YbmSetup {
   param([string[]]$Argv)
 
   if (-not (Test-Path -LiteralPath $Script:YbmVenvPython)) {
-    $uvCmd = Get-Command uv -ErrorAction SilentlyContinue
-    if (-not $uvCmd) {
-      throw "uv is not installed. Install it from https://docs.astral.sh/uv/ then re-run '.\scripts\ybm.ps1 setup'."
-    }
+    # Installs uv when it is missing rather than refusing to continue. That
+    # refusal is what forced a separate first-run entry point to exist at all;
+    # with this, YBM.bat handles the first launch and every launch after it.
+    #
+    # Called by absolute path below, never as bare `uv`: when uv was installed
+    # a moment ago, its new PATH entry does not exist in THIS process, so the
+    # bare name fails on exactly the fresh machine this branch is here for.
+    $uv = Install-YbmUv
     Write-Host "Creating backend\.venv via uv sync (first run can take a minute)..."
     Push-Location (Join-Path $Script:YbmRoot "backend")
     try {
@@ -179,7 +183,7 @@ function Invoke-YbmSetup {
         # `uv run --frozen ruff check .` step AGENTS.md/CONTRIBUTING.md document.
         $extraArgs = @("--extra", "test", "--extra", "e2e", "--extra", "dev") + (Get-YbmRuntimeExtraArgs -Argv $Argv)
       }
-      & uv sync @extraArgs
+      & $uv sync @extraArgs
       if ($LASTEXITCODE -ne 0) {
         throw "uv sync failed (exit $LASTEXITCODE)"
       }
@@ -250,7 +254,10 @@ function Invoke-YbmRun {
     exit $LASTEXITCODE
   }
 
-  $uvCmd = Get-Command uv -ErrorAction SilentlyContinue
+  # Resolve-YbmUv, not Get-Command: setup may have just installed uv, whose
+  # PATH entry this process cannot see. Looking it up by name here made the
+  # dependency sync silently skip itself on a first run.
+  $uvCmd = Resolve-YbmUv
   if ($uvCmd) {
     $fingerprintPath = Get-YbmSyncFingerprintPath
     $currentFingerprint = Get-YbmLockFingerprint
@@ -267,7 +274,7 @@ function Invoke-YbmRun {
         # into a fatal NativeCommandError even on success - confirmed live,
         # not a hypothetical (this exact line halted `ybm run` the first
         # time). Letting it print normally avoids the whole gotcha.
-        & uv sync @(Get-YbmRuntimeExtraArgs -Argv @())
+        & $uvCmd sync @(Get-YbmRuntimeExtraArgs -Argv @())
         if ($LASTEXITCODE -ne 0) {
           Write-Host ""
           Write-Host "Dependency sync failed (exit $LASTEXITCODE) - see the message above." -ForegroundColor Red

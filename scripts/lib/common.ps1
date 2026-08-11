@@ -6,6 +6,59 @@ $Script:YbmVenvPython = Join-Path $Script:YbmRoot "backend\.venv\Scripts\python.
 $Script:YbmRunDir = Join-Path $Script:YbmRoot ".agent_control\run"
 $Script:YbmLogDir = Join-Path $Script:YbmRoot ".agent_control\logs"
 
+# Pinned on purpose. An unpinned https://astral.sh/uv/install.ps1 means two
+# machines a week apart get different uv versions, and a bad uv release breaks
+# every YBM install at once with nothing changed on our side.
+$Script:YbmUvVersion = "0.9.7"
+
+function Resolve-YbmUv {
+  # Resolved to an absolute path rather than trusting PATH: a PATH entry
+  # written by a child process is invisible to the process that spawned it,
+  # so a freshly installed uv is findable by location before it is findable
+  # by name.
+  foreach ($candidate in @(
+    $env:YBM_UV_PATH,
+    (Join-Path $HOME ".local\bin\uv.exe"),
+    (Join-Path $env:LOCALAPPDATA "Programs\uv\uv.exe")
+  )) {
+    if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
+  }
+  $onPath = Get-Command uv -ErrorAction SilentlyContinue
+  if ($onPath) { return $onPath.Source }
+  return $null
+}
+
+function Install-YbmUv {
+  <#
+    Returns a usable uv path, installing uv first when it is missing.
+
+    This is the whole reason YBM.bat can be the only file a person ever
+    double-clicks. Setup used to throw "uv is not installed, install it then
+    re-run", which meant a second, different entry point (YBM-Setup.cmd) had
+    to exist purely to run the installer that did this one step.
+
+    uv is the only thing YBM bootstraps: it is a standalone binary needing no
+    Python, and `uv sync` then provides the interpreter itself.
+  #>
+  $uv = Resolve-YbmUv
+  if ($uv) { return $uv }
+
+  $installer = "https://astral.sh/uv/$Script:YbmUvVersion/install.ps1"
+  Write-Host "Installing uv $Script:YbmUvVersion (standalone; no Python needed)..." -ForegroundColor Cyan
+  try {
+    Invoke-RestMethod $installer -UseBasicParsing | Invoke-Expression
+  } catch {
+    throw "Could not install uv from $installer ($($_.Exception.Message)). Check your internet connection and try again - uv is the only thing YBM needs to bootstrap."
+  }
+
+  $uv = Resolve-YbmUv
+  if (-not $uv) {
+    throw "uv installed but could not be located. Looked in ~\.local\bin and %LOCALAPPDATA%\Programs\uv. Set YBM_UV_PATH and try again."
+  }
+  Write-Host "uv at $uv" -ForegroundColor Green
+  return $uv
+}
+
 function Get-YbmPython {
   if (Test-Path -LiteralPath $Script:YbmVenvPython) {
     return $Script:YbmVenvPython

@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
+PackageIdentifier: iodriller.YBM
+PackageVersion: __VERSION__
+
+# Per-user by design: packaging/windows/ybm.iss sets PrivilegesRequired=lowest
+# and installs into %LOCALAPPDATA%, so winget must not try to elevate.
+Scope: user
+InstallerType: inno
+InstallModes:
+  - interactive
+  - silent
+  - silentWithProgress
+InstallerSwitches:
+  Silent: /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-
+  SilentWithProgress: /SILENT /SUPPRESSMSGBOXES /NORESTART /SP-
+UpgradeBehavior: install
+ReleaseDate: __RELEASE_DATE__
+
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/iodriller/YBM/releases/download/v__VERSION__/YBM-Setup.exe
+    InstallerSha256: __SHA256__
+
+ManifestType: installer
+ManifestVersion: 1.12.0
