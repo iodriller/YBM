@@ -141,6 +141,14 @@ jobs:
   secrets:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # gitleaks-action reads the pull request and reports findings back onto it.
+    # The workflow-level `contents: read` alone is enough for a push to main but
+    # not for a pull_request event, where the action fails at startup with
+    # "Resource not accessible by integration" before it scans anything. Scoped
+    # to this job so no other job gains write access.
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

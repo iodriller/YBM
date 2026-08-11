@@ -1,84 +1,104 @@
 # Capabilities
 
-The full, unabridged build log of what's implemented. See the [README](../README.md) for
-positioning and quickstart, and [docs/ARCHITECTURE.md](ARCHITECTURE.md) for how it fits together.
+What YBM can do, and what has to be switched on first. See [ARCHITECTURE.md](ARCHITECTURE.md)
+for how it fits together and [THREAT_MODEL.md](THREAT_MODEL.md) before enabling anything
+high-impact.
 
-## Implemented
+## How access works
 
-- Project scaffold
-- Pydantic schemas for commands, tasks, tools, approvals, artifacts, and audit events
-- Strict configuration models with safe default capability policies
-- SQLite persistence, repositories, audit logging, and redaction
-- Minimal Telegram Bot API polling wrapper, update normalizer, allowlist checks, command parsing, and task intake
-- Telegram gateway responses for direct questions, plain `status`, task lists, task details, logs, and screenshot capability state
-- Telegram voice download/transcription service with transcript artifacts
-- LLM provider abstraction; three-agent Concierge/Operator/Auditor pipeline (see [docs/ARCHITECTURE.md](ARCHITECTURE.md))
-- Capability policy engine with approval requests
-- Gated tool executor and minimal durable task worker
-- Minimal VS Code bridge endpoints, extension state sync, and terminal command queue
-- Generic terminal coding-assistant adapter
-- Local generated-workspace adapter that writes files under `.agent_control/workspaces` and launches localhost web previews
-- Chrome browser adapter for web search, page summaries, tab inspection, screenshots, navigation, tab close, click, and simple form-fill operations through DevTools
-- Windows-first `computer.use` adapter for policy-gated desktop observation and bounded local mouse/keyboard action loops
-- Scoped `filesystem.manage` adapter for folder inspection, file search, organization manifests, and approved move/copy application inside configured roots
-- File-backed artifacts, optional screenshot capture, and Telegram screenshot artifact delivery
-- Retry policy with durable retry metadata
-- Cross-platform setup: `scripts/install.sh` / `scripts/install.ps1`, `ybm onboard`, and Windows-specific `scripts/ybm.ps1`
-- Basic FastAPI health endpoint
-- React admin console (served by the backend at `/admin`) for chat, task monitoring, trace graphs, access/capability controls, and settings, backed by the same FastAPI admin APIs
-- A small pointer page served at `/admin` if the console hasn't been built yet at this checkout
-- Admin configuration and verification flows for Telegram, native Anthropic, and the supported
-  OpenAI-compatible provider catalog
-- LLM-based Telegram task classification with readable audit events
-- Admin audit filters, capability access modes, and database summary
-- One-command local stack launcher for LocalDeploy, backend, Telegram polling, worker, and scheduler
-- Worker completion notifications back to Telegram with tool output summaries
-- LLM-backed per-Telegram-chat rolling memory with a concise summary and recent-turn window
-- Launchable web-app flow with workspace materialization and localhost preview URLs; Codex/Copilot are only used when explicitly requested
-- Capability registry/vault plus generated adapter proposal cache under `.agent_control/adapters`
-- Sandbox-tested, approval-gated hot promotion for generated adapter proposals into the live tool registry
-- Registered `schedule.manage` tool plus supervised scheduler service for recurring tasks
-- Registered document and artifact delivery tools for PDF summaries, PowerPoint artifacts, and Telegram file delivery
-- Pluggable `code.interpreter` execution backends with normalized metadata, safer import defaults, health reporting, and an optional Docker Python sandbox
-- Session-backed `coding.agent` support for Codex, Claude Code, and GitHub Copilot CLI runs, with durable session files, event logs, and a watcher service for restart-safe completion handling
-- Structured attempt history and failure diagnosis metadata for bounded recovery instead of unbounded retries
-- YBM MCP server for external clients plus `mcp.client` for calling configured external MCP servers from YBM tasks
-- `task.status` includes active tasks, background coding sessions, waiting clarification/approval/external work, LocalDeploy fallback state, and MCP config state
-- Operator loop can run independent tool calls concurrently (`call_tools_parallel`) or hand a bounded sub-task to an isolated inner loop with its own history (`delegate`)
-- Per-task LLM token/cost tracking, surfaced in `ybm trace` and the admin trace view
-- User-droppable skills (`skills.use`), a global persona/preferences document (`persona.manage`), and local keyword-search over a personal document folder (`knowledge.search`)
-- Local web chat channel in the admin console — no Telegram required for basic use
-- WhatsApp channel via a Node.js Baileys sidecar (`whatsapp-bridge/`) that the backend spawns and
-  polls over loopback HTTP - QR-linked, no Meta developer account or public webhook; disabled by
-  default, plain-text only (no buttons/voice/file delivery yet)
+Every tool declares a **capability**. A capability is off until you enable it, and each one has
+its own risk ceiling and approval setting.
 
-## Not implemented yet
+```mermaid
+flowchart LR
+    T["Tool call"] --> C{"Capability<br/>enabled?"}
+    C -->|no| D["denied"]
+    C -->|yes| R{"Risk within<br/>ceiling?"}
+    R -->|no| D
+    R -->|yes| S{"In scope /<br/>allowlist?"}
+    S -->|no| D
+    S -->|yes| A{"Approval<br/>required?"}
+    A -->|yes| H["wait for human"]
+    A -->|no| X["execute"]
+    H -->|approved| X
+```
 
-- Direct GitHub Copilot Chat panel response capture through VS Code APIs
-- Persistent editable configuration for every advanced capability and adapter field
-- A single unified process supervisor (Windows `scripts/ybm.ps1` and the cross-platform `ybm`
-  console command are both fully functional but are two separate implementations today - see
-  docs/HISTORY.md)
+Only three capabilities ship enabled: `telegram.receive`, `telegram.send`, `llm.generate`.
+**Everything else starts off** — including all filesystem, terminal, browser, desktop, and
+network access.
 
-## Detailed runtime behavior
+Set access from the admin console's **Access** page, which groups capabilities into four modes:
 
-- The active default profile can use native Anthropic, a supported cloud provider, or a local
-  OpenAI-compatible endpoint such as LocalDeploy, Ollama, or LM Studio; keep any cloud keys in
-  `.env` or the encrypted vault, never in committed configuration.
-- Non-task Telegram/web-chat messages get a direct LLM answer with concise runtime context.
-- The gateway keeps an LLM-updated per-chat memory summary plus a small recent-turn window, not the full conversation.
-- Plain `status` and `/status` return deterministic task state.
-- Requests like `create a hello world web app and launch it` materialize files under `.agent_control/workspaces/task_<id>`, start a localhost preview, and return the URL. Codex or GitHub Copilot are used only when the message explicitly says to use them.
-- Requests like `use Codex to build the first step of this app` or `use GitHub Copilot for this project` route through `coding.agent`, record workspace/output/limit state, and report failures or usage-limit text when the CLI exposes it.
-- Long-running Codex, Claude Code, and Copilot CLI sessions move the task to `awaiting_external` until the durable watcher sees a terminal result. A task no longer looks complete simply because a background CLI started.
-- Browser requests like `search the web for Python packaging docs and summarize the first result` use the `browser.open` tool. Chrome is launched with remote debugging when needed, screenshots are saved under `.agent_control/browser/screenshots`, and results are returned to Telegram.
-- Computer-use requests like `take a screenshot and tell me what is open` or `use the computer to open this folder` route to `computer.use` when desktop control is enabled (Windows only). Screenshots are saved under `.agent_control/computer_use/screenshots`; action loops require the local multimodal LLM and are capped by `adapters.computer_use.max_steps`.
-- Folder organization/search requests use `filesystem.manage` when an explicit path is present. It creates a manifest first, then applies only approved moves/copies inside configured allowed roots.
-- Development tasks route to the VS Code/GitHub Copilot terminal handoff when VS Code write access is enabled, with a local Copilot CLI fallback when the bridge is not connected.
-- Direct API work can use `http.request` when `network.http` is enabled and the target host or URL prefix is allowlisted. It can inject secrets from the encrypted vault at call time without logging the values.
-- Missing-tool work can be routed to `adapter.factory`, which creates a cached adapter proposal under `.agent_control/adapters`; proposals can be hot-registered after their sandbox import and tests pass and approval is granted.
-- If a native tool is missing, recovery checks configured MCP tools first, then tries bounded `code.interpreter` helpers when appropriate, then scaffolds a reviewable adapter proposal. `mcp.client install_server` can persist a new stdio MCP server config when an installable server is known.
-- `code.interpreter` supports `run_python`, `generate_and_run`, `solve_once`, `inspect_state`, helper-building/repair operations, and `health`. By default it uses local Python for trusted runs; Docker can be enabled as `docker_python` for untrusted/generated code with network off, memory/CPU/pids limits, and artifact extraction from the managed workspace.
-- External MCP servers are configured under `mcp.servers`; MCP is disabled by default in the example config, while local runtime configs can enable specific stdio servers.
-- Scheduled-job requests like `set up a scheduled job every day to check this site` create a `schedule.manage` record. The supervised scheduler creates normal tasks from due schedules.
-- Worker results are sent back to the source Telegram chat, WhatsApp chat, or the web chat, whichever the task came from.
+| Mode | Means |
+|---|---|
+| **Off** | Tool is unavailable |
+| **Read-only** | Read operations only |
+| **Write with approval** | Writes allowed, each one pauses for a human |
+| **Full access** | Writes allowed without per-call approval |
+
+> "Full access" still does **not** bypass approvals that a tool declares for a specific
+> operation (installing an MCP server, promoting generated code, running generated Python).
+> Those are enforced by the runtime, not by the access mode. See [THREAT_MODEL.md](THREAT_MODEL.md).
+
+## Tools
+
+| Tool | Capability | What it does |
+|---|---|---|
+| `filesystem.manage` | `filesystem.write` | Inspect, search, describe, organize, and rename files inside allowed roots. Builds a manifest first, then applies only approved moves/copies. Rejects path escapes. |
+| `workspace.manage` | `filesystem.write` | Per-task workspace under `.agent_control/workspaces/task_<id>`: prepare, write files, materialize a static app, serve it on localhost. |
+| `document.manage` | `filesystem.write` | Inspect/extract documents, summarize PDFs, create and update PowerPoint files. |
+| `adapter.factory` | `filesystem.write` | Scaffolds a reviewable adapter proposal when a needed tool doesn't exist. Never auto-loaded. |
+| `code.interpreter` | `terminal.run` | Run or generate-and-run Python. Local subprocess by default; optional Docker sandbox for untrusted code with network off and memory/CPU/pid limits. |
+| `coding.agent` | `terminal.run` | Session-backed Codex, Claude Code, and GitHub Copilot CLI runs with durable session files and restart-safe completion. |
+| `mcp.client` | `terminal.run` | Discover, health-check, and call configured external MCP servers. Can install a new stdio server config. |
+| `browser.open` | `browser.open` | Open URLs, search, summarize pages, inspect tabs, screenshot. |
+| `browser.control` | `browser.control` | Navigate, click, fill forms, close tabs. |
+| `computer.use` | `desktop.control` | Windows-only. `observe` returns a screenshot plus UI tree; `run_goal` runs a bounded mouse/keyboard loop. |
+| `vscode.copilot_terminal` | `vscode.write_files` | Queue a Copilot prompt into the VS Code terminal, with a local Copilot CLI fallback. |
+| `vscode.terminal_command` | `vscode.write_files` | Queue a shell command into the VS Code terminal. |
+| `http.request` | `network.http` | Call allowlisted HTTP APIs, injecting vault secrets at call time without logging them. |
+| `schedule.manage` | `schedule.manage` | Create, list, pause, resume, delete, and run recurring schedules. |
+| `memory.manage` | `memory.manage` | Remember, list, and forget structured facts. |
+| `tts.synthesize` | `tts.synthesize` | Text to speech. |
+| `artifact.deliver` | `telegram.send` | Send a generated file or screenshot back to the chat. |
+| `knowledge.search` | `telegram.receive` | Keyword-overlap search across a folder of your documents. Not embeddings. |
+| `persona.manage` | `telegram.receive` | Read/update the global preference document injected into every Operator prompt. |
+| `skills.use` | `telegram.receive` | List and load user-droppable skill instructions. |
+| `task.status` | `telegram.receive` | Active tasks, background sessions, and what's waiting on approval or external work. |
+
+## Channels
+
+| | Telegram | WhatsApp | Web chat |
+|---|---|---|---|
+| Default | on (needs token) | **off** | on |
+| Setup | BotFather token + allowlist | QR link a number | none |
+| Text | ✅ | ✅ | ✅ |
+| Slash commands | ✅ | ❌ | ❌ |
+| Inline approve/reject buttons | ✅ | ❌ | ❌ |
+| Voice transcription | ✅ | ❌ | ✅ |
+| File / screenshot delivery | ✅ | ❌ | ❌ |
+
+Plain-text `approve`, `status`, and `remember that ...` work on every channel.
+
+## Not implemented
+
+- Direct GitHub Copilot **Chat panel** capture — no stable public API exists. Copilot routing
+  goes through the VS Code terminal or the CLI fallback instead.
+- Persistent editable config for every advanced adapter field.
+- A single unified process supervisor: Windows `scripts\ybm.ps1` and the cross-platform `ybm`
+  command are both complete, but they're two implementations.
+
+## Platform limits
+
+- **Desktop screenshot/control is Windows-only.** Everything else — filesystem, browser, code
+  interpreter, MCP, scheduling, coding agents, web chat — runs on Linux, Windows, and macOS in CI.
+- `scripts\ybm.ps1` is Windows-only; other platforms use the `ybm` command.
+- `browser.*` sees only Chrome tabs on the configured DevTools debugging port (default `9222`).
+  Ordinary Chrome windows launched without it are invisible to the adapter.
+- `computer.use run_goal` needs a local model endpoint that accepts OpenAI-compatible image
+  payloads. Without one, observation still works but action planning fails loudly.
+- VS Code terminal stdout capture needs VS Code shell integration; without it the bridge records
+  dispatch only.
+- WhatsApp's privacy-preserving **LID** addressing hides some senders' real numbers, and there's
+  no way to resolve one back. Those senders can never match `allowed_numbers`; the audit trail
+  labels this `lid_jid_no_resolvable_number` so it doesn't read as a config mistake.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 from pathlib import Path
 from typing import Any, Literal
 
@@ -18,16 +19,31 @@ class ServerConfig(StrictBaseModel):
     admin_token_env: str = "AGENT_ADMIN_TOKEN"
 
 
-_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"}
-
-
 def is_loopback_host(host: str) -> bool:
     """True when ``host`` only accepts connections from the local machine.
 
     Used to gate fail-closed auth checks: an unset admin/bridge token is only
-    safe while nothing beyond loopback can reach the port.
+    safe while nothing beyond loopback can reach the port. Covers the full
+    127.0.0.0/8 range (not just 127.0.0.1) and IPv4-mapped IPv6 loopback
+    addresses such as ::ffff:127.0.0.1 - a server bound to any of those is
+    still reachable only from this machine.
+
+    The IPv4-mapped case is unwrapped explicitly rather than left to
+    IPv6Address.is_loopback: whether that property follows a mapped address
+    through to the underlying IPv4 one varies by CPython patch release, so
+    relying on it makes the answer depend on the interpreter build.
     """
-    return (host or "").strip().lower() in _LOOPBACK_HOSTS
+    normalized = (host or "").strip().lower()
+    if normalized in {"localhost", "localhost."}:
+        return True
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        return False
+    mapped = getattr(address, "ipv4_mapped", None)
+    if mapped is not None:
+        return mapped.is_loopback
+    return address.is_loopback
 
 
 class IdentityConfig(StrictBaseModel):

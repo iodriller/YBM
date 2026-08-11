@@ -38,6 +38,7 @@ See [docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md) for full details.
 From `backend/`:
 
 ```powershell
+uv sync --frozen --extra test --extra dev   # first time only (skip if `ybm setup` already ran)
 uv run --frozen pytest
 uv run --frozen ruff check .
 uv run --frozen python ../scripts/check_markdown_links.py

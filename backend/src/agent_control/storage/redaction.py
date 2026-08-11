@@ -4,7 +4,20 @@ import re
 from typing import Any
 
 
-DEFAULT_PATTERNS = ("token", "api_key", "secret", "password", "authorization", "cookie")
+DEFAULT_PATTERNS = (
+    "token",
+    "api_key",
+    "secret",
+    "password",
+    "authorization",
+    "cookie",
+    "private_key",
+    "access_key",
+    "credential",
+    "pwd",
+    "passwd",
+    "bearer",
+)
 
 PLACEHOLDER = "***"
 

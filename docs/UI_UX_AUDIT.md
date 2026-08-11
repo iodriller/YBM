@@ -1,9 +1,9 @@
-# YBM Control UI/UX Audit and Product Roadmap
+# UI/UX Audit and Product Roadmap
 
-Audited 2026-08-01 against the live local console, the React source, FastAPI admin API,
-`docs/ARCHITECTURE.md`, `docs/CAPABILITIES.md`, and the current configuration schema.
-This document separates current behavior from recommendations; roadmap items are not implemented
-unless explicitly marked **shipped**.
+> **Archive + roadmap, not reference.** Audited 2026-08-01 against the live console, React
+> source, admin API, and config schema. **Roadmap items are not implemented unless marked
+> shipped.** For current behavior see [ARCHITECTURE.md](ARCHITECTURE.md) and
+> [CAPABILITIES.md](CAPABILITIES.md).
 
 > Historical implementation record: current limitations and release priorities live in
 > [GAPS.md](GAPS.md) and [PUBLIC_RELEASE.md](PUBLIC_RELEASE.md). Statements below such as

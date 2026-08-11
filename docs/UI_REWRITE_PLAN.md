@@ -1,14 +1,12 @@
 # UI Rewrite Plan — React + FastAPI
 
-Status: **built, cut over, and bug-hunted.** Written 2026-07-31; all six phases shipped and
-Streamlit removed 2026-08-01; a same-day Playwright pass then found and fixed two real bugs a
-curl-only verification pass had missed (§15.1). Full narrative in `docs/HISTORY.md` Part 5; this
-document keeps only what isn't obvious from the code. Remaining open items are tracked where
-they're scoped: D2/D6/A1–A3 in §9–14, a committed Playwright suite in §15.1.
+> **Archive, not reference.** Status: **built, cut over, and bug-hunted** — all six phases
+> shipped and Streamlit removed 2026-08-01. Kept for the design reasoning behind the console.
+> Open items stay tracked where scoped: D2/D6/A1–A3 in §9–14, a committed Playwright suite in
+> §15.1. Full narrative in [HISTORY.md](HISTORY.md) Part 5.
 
-Replaces the single-page Streamlit console (`backend/src/agent_control/admin_streamlit.py`,
-1,776 lines, ~25 render functions stacked onto one page) with a React single-page app served by
-the existing FastAPI backend.
+Replaces the single-page Streamlit console (1,776 lines, ~25 render functions on one page) with a
+React single-page app served by the existing FastAPI backend.
 
 **Design goal, stated once and enforced throughout:** *simple enough that a first-time user
 never opens a menu, deep enough that an advanced user can debug, inspect, and change anything

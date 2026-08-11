@@ -193,6 +193,32 @@ async def test_executor_runs_when_pre_approved(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_executor_strips_model_supplied_approved_flag_without_authorization(tmp_path) -> None:
+    """A model can put input.approved=true in its own tool call - the
+    executor must never let that survive to the adapter unless a real
+    approval or grant authorized this exact call. Uses a capability that
+    does NOT require approval, so the request dispatches straight through;
+    if the executor were passing the model's `approved` through unchanged,
+    the adapter would see approved=True with nothing behind it."""
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("t")
+    settings = _settings_with(Capability.LLM_GENERATE, requires_approval=False)
+    adapter = StaticToolAdapter()
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"llm": adapter},
+    )
+
+    request = _request(task.id).model_copy(update={"input": {"prompt": "hi", "approved": True}})
+    result = await executor.execute(request)
+
+    assert result.status == ToolResultStatus.SUCCEEDED
+    assert adapter.requests[-1].input["approved"] is False
+
+
+@pytest.mark.asyncio
 async def test_executor_approval_is_exact_and_one_shot(tmp_path) -> None:
     repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("t")

@@ -93,8 +93,15 @@ Choose checks in proportion to the change:
 
 - Documentation or agent-guidance only: verify referenced paths and commands, then
   run `git diff --check`; application tests are not required.
-- Backend behavior: `.\scripts\ybm.ps1 test` and the focused affected test.
-- Python quality: from `backend`, run `uv run --frozen ruff check .`.
+- Backend behavior: `.\scripts\ybm.ps1 test` and the focused affected test. On a
+  checkout where `ybm setup`/`ybm.ps1 setup` has not run (`backend/.venv` doesn't
+  exist yet), first run `uv sync --frozen --extra test --extra dev` from
+  `backend` - matches what CI does before `uv run --frozen pytest`. Without
+  that sync, a bare `uv run --frozen pytest` can silently resolve to a
+  system-installed `pytest` outside the project's `.venv` and fail with
+  `ModuleNotFoundError` instead of running the suite.
+- Python quality: from `backend`, run `uv run --frozen ruff check .` (same
+  sync prerequisite as above).
 - Admin console: from `frontend`, run `npx tsc -b --noEmit` and `npm run build`.
 - VS Code extension: from `vscode-extension`, run `npm run compile`.
 - WhatsApp sidecar: from `whatsapp-bridge`, run `npm run check`. Use this, not

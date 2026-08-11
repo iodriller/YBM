@@ -1,53 +1,58 @@
 # Database Inspection
 
-The MVP uses SQLite. That is the right storage choice for the local-first version because it is durable, simple, easy to back up, and easy to inspect without running another service.
+Storage is a single SQLite file — durable, easy to back up, and inspectable without running
+another service.
 
-## Quick Inspection
+Default path: `agent_control.db`
+
+## Inspect
 
 ```powershell
-.\scripts\ybm.ps1 db inspect
+.\scripts\ybm.ps1 db inspect     # Windows: row counts + task status breakdown
+```
+```bash
+ybm db-inspect                   # cross-platform equivalent
+ybm db-clean --days 30           # prune tasks + child records older than N days
+ybm db-reset --yes               # wipe everything
 ```
 
-Prints row counts per table and the task status breakdown. `ybm db clean --days N` prunes
-tasks (and their child records) older than N days; `ybm db reset --yes` wipes everything.
+The admin API exposes the same summary at `GET /admin/api/database/summary` (path, table counts,
+recent activity).
 
-## VS Code Viewer
+## Tables
 
-Recommended extension:
-
-```text
-qwtel.sqlite-viewer
+```mermaid
+erDiagram
+    conversations ||--o{ messages : holds
+    conversations ||--o| conversation_memory : "rolling summary"
+    tasks ||--o{ tool_invocations : "ran"
+    tasks ||--o{ approvals : "requested"
+    tasks ||--o{ artifacts : "produced"
+    tasks ||--o{ task_signals : "pause/cancel"
+    tasks ||--o{ llm_calls : "cost + latency"
+    schedules ||--o{ tasks : "spawns"
 ```
 
-VS Code should suggest it from `.vscode/extensions.json`. The Marketplace page describes it as a SQLite viewer that opens `.sqlite` and `.db` files directly in VS Code, with filtering and sorting support.
+| Table | Contents |
+|---|---|
+| `tasks` | Objective, status, metadata (`operator_history`, budgets, `synthesized_answer`) |
+| `tool_invocations` | Every tool request and its result |
+| `approvals` | Pending and decided approval requests |
+| `approval_grants` | "Allow for this task" grants |
+| `audit_events` | Policy decisions, classifications, access checks, failures — redacted |
+| `llm_calls` | Per-call tokens, cost, and latency |
+| `messages` | Normalized inbound messages |
+| `conversations` | One per chat/channel |
+| `conversation_memory` | Rolling per-chat summary |
+| `artifacts` | Files produced by tasks |
+| `schedules` | Recurring job definitions |
+| `memory_facts` | Structured facts with category, confidence, provenance |
+| `task_signals` | Pause/cancel/resume signals |
 
-Source: https://marketplace.visualstudio.com/items?itemName=qwtel.sqlite-viewer
+Start with `tasks`, `tool_invocations`, and `audit_events` — that trio explains almost any run.
+For a single task, `ybm trace-task <task_id>` is faster than reading tables by hand.
 
-## Open The Local Database
+## Browse in VS Code
 
-Default path:
-
-```text
-agent_control.db
-```
-
-Open that file in VS Code after installing SQLite Viewer.
-
-## Tables To Inspect First
-
-- `tasks`: spawned tasks, status, metadata, and plan linkage.
-- `messages`: normalized inbound Telegram messages.
-- `audit_events`: important decisions, access checks, classifications, and failures.
-- `plans`: persisted structured plans.
-- `approvals`: pending and decided approval requests.
-- `tool_invocations`: requested tools and results.
-
-## Admin Summary
-
-The admin UI also exposes database visibility:
-
-```text
-GET /admin/api/database/summary
-```
-
-It returns the database path, table counts, and recent activity timestamps.
+Install `qwtel.sqlite-viewer` (VS Code suggests it from `.vscode/extensions.json`), then open
+`agent_control.db` directly.

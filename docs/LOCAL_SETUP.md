@@ -1,6 +1,6 @@
 # Local Setup
 
-## Quickstart (any OS)
+## Fastest path
 
 Nothing needs to be installed first - not git, not Python. `uv` is a standalone binary and it
 downloads the interpreter YBM runs on.
@@ -25,19 +25,37 @@ wizard that opens (the local web chat needs no setup and is on by default). The 
 `ybm onboard` CLI wizard still exists for headless/SSH-only installs with no browser to open.
 Already inside a checkout? The script detects that and skips straight to setup.
 
-Once installed, the cross-platform `ybm` command (from `backend/.venv`) covers day-to-day use:
+```mermaid
+flowchart LR
+    I["install script"] --> S["ybm setup<br/>venv · config.yaml · .env tokens"]
+    S --> O["ybm onboard<br/>pick an LLM, optional Telegram"]
+    O --> D["ybm doctor<br/>one line per check"]
+    D --> R["ybm start"]
+    R --> A["http://127.0.0.1:8765/admin"]
+```
+
+After that, `YBM.bat` (double-click) or `ybm start` is all you need.
+
+## Two interfaces, both supported
+
+| | Cross-platform | Windows |
+|---|---|---|
+| Command | `ybm` (from `backend/.venv`) | `scripts\ybm.ps1` |
+| Style | hyphenated: `ybm trace-task <id>` | two-word: `.\scripts\ybm.ps1 trace <id>` |
+
+Day to day:
 
 ```bash
-ybm start           # start the stack
+ybm start            # start the stack
 ybm status           # what's running
-ybm logs worker -f   # follow one service's log
+ybm logs worker -f   # follow one service
+ybm doctor           # check the environment
 ybm stop             # stop everything
 ```
 
-The sections below cover the same setup manually, plus Windows-specific tooling
-(`scripts\ybm.ps1`) that predates the cross-platform `ybm` command and remains fully supported.
+## Manual setup
 
-## 1. Run Setup (Windows, manual)
+### 1. Install
 
 ```powershell
 .\scripts\ybm.ps1 setup
@@ -48,7 +66,9 @@ to `config/config.yaml` if missing (high-impact capabilities start disabled), an
 `AGENT_ADMIN_TOKEN` / `AGENT_SECRET_VAULT_KEY` into `.env`. Pass `--telegram-token <token>` to
 save `TELEGRAM_BOT_TOKEN` at the same time, or add it to `.env` yourself.
 
-If you run a local LocalDeploy checkout, add its path to `.env`:
+### 2. Point at an LLM
+
+Either add a local [LocalDeploy](https://github.com/iodriller/LocalDeploy) checkout to `.env`:
 
 ```powershell
 YBM_LOCALDEPLOY_ROOT=C:\path\to\LocalDeploy
@@ -57,155 +77,74 @@ YBM_LOCALDEPLOY_ROOT=C:\path\to\LocalDeploy
 Otherwise choose any provider in the browser wizard, or configure a native Anthropic or
 OpenAI-compatible profile under `llm.profiles` in `config/config.yaml`.
 
-Optional, for the VS Code bridge:
+Optional, for the VS Code bridge: `VSCODE_BRIDGE_TOKEN=...`
+
+### 3. Enable what you need
+
+Everything invasive starts **off**. Turn capabilities on from the admin console's Access page, or:
 
 ```powershell
-VSCODE_BRIDGE_TOKEN=...
+.\scripts\ybm.ps1 config set <dotted.path> <value>
 ```
 
-## 2. Configure The App
+See [CAPABILITIES.md](CAPABILITIES.md) for what each capability unlocks.
 
-`config/config.yaml` was created from `config/config.example.yaml` in step 1. Safe defaults keep
-terminal execution, filesystem access, VS Code access, desktop screenshots, desktop control/computer
-use, browser automation, dependency installation, and Git pushes disabled. The workspace adapter
-itself is available by default, but it only executes when `filesystem.write` is enabled for task
-workspaces and generated files. Toggle capabilities from the admin UI's Access panel, or with
-`.\scripts\ybm.ps1 config set <dotted.path> <value>`.
-
-## 3. Check The Environment
+### 4. Check and start
 
 ```powershell
-.\scripts\ybm.ps1 doctor
+.\scripts\ybm.ps1 doctor    # Python, deps, config, DB, LLM, tokens, ports
+.\scripts\ybm.ps1 start     # runs doctor first; -SkipDoctor to skip
 ```
 
-Reports one line per check - Python version, dependencies, config validity, database, LocalDeploy
-reachability, Telegram token, Node.js availability, WhatsApp link status, admin token, secret
-vault key, and port availability - so a missing piece surfaces before you try to start the stack,
-not as a silent crash loop after.
+`start` launches LocalDeploy, backend, Telegram polling, WhatsApp polling, worker, scheduler, and
+the coding-session watcher. Skip any with `-NoTelegram`, `-NoWhatsApp`, `-NoWorker`,
+`-NoScheduler`, `-NoLocalDeploy`. The admin console is served by the backend, not a separate
+process.
 
-## 4. Start The Stack
+Open **http://127.0.0.1:8765/admin**. If the React console hasn't been built at this checkout
+(`ybm ui-build`), you get a pointer page instead — the JSON API under `/admin/api/*` works either way.
 
-```powershell
-.\scripts\ybm.ps1 start
-```
+### 5. Link WhatsApp (optional)
 
-This runs `doctor` first (skip with `-SkipDoctor`), then initializes the database and starts
-LocalDeploy, backend, Telegram polling, WhatsApp polling, worker, scheduler, and the
-coding-session watcher. The admin console is served by the backend itself, not a separate
-service. Skip individual services with `-NoTelegram`, `-NoWhatsApp`, `-NoWorker`, `-NoScheduler`,
-or `-NoLocalDeploy`. Unlike Telegram, WhatsApp is off by default (`channels.whatsapp.enabled:
-false`) and only shows a non-blocking `[FAIL]` line here until you configure and link it - see
-below. Generated task workspaces default to `.agent_control/workspaces/task_<id>`.
+WhatsApp is off by default and uses [Baileys](https://github.com/WhiskeySockets/Baileys), an
+unofficial WhatsApp Web client — no Meta developer account or public webhook, just a phone you
+link as a device. `ybm setup` installs the sidecar's dependencies if Node.js 20+ is on `PATH`.
 
-Browser tasks use Chrome through the DevTools remote debugging port configured at `adapters.browser.remote_debugging_port` (default `9222`). If Chrome is not already available there, the adapter launches a separate Chrome profile under `.agent_control/browser/chrome-profile`. Screenshots are saved under `.agent_control/browser/screenshots`.
+1. Set `channels.whatsapp.enabled: true` in `config/config.yaml`.
+2. Restart: `.\scripts\ybm.ps1 start`
+3. Watch for the QR code: `.\scripts\ybm.ps1 logs whatsapp -Follow`
+4. Scan it (phone → Settings → Linked Devices). The session persists in `.agent_control/whatsapp_auth/`.
+5. Add the number to `channels.whatsapp.allowed_numbers` — E.164 digits, no `+`
+   (e.g. `"15551234567"`). **An empty list denies everything.** Restart to apply.
 
-Computer-use tasks use the `computer.use` adapter when desktop control is enabled. Desktop observations save screenshots under `.agent_control/computer_use/screenshots`; bounded action loops use the active local multimodal provider when available, stop at `adapters.computer_use.max_steps`, and check task cancellation before each action. Folder organization/search should use `filesystem.manage` instead of File Explorer automation when an explicit path is provided. Its allowed roots are configured through `adapters.computer_use.allowed_roots`.
+> Consider linking a secondary number. Baileys is unofficial, so there's a small
+> account-flagging risk. Never commit a real number to a shared checkout.
 
-Open the admin UI:
-
-```text
-http://127.0.0.1:8765/admin
-```
-
-If `frontend/`'s React console hasn't been built yet at this checkout (`ybm ui-build`, or
-`npm run build` in `frontend/`), this serves a small pointer page instead, explaining how to build
-it. Either way, the JSON API underneath it (`/admin/api/*`) is unchanged and works regardless of
-whether a build exists.
-
-Launchable app requests use Copilot first when VS Code write access is enabled, then the workspace adapter serves the result locally. Generated adapter proposals, when requested, are cached under `.agent_control/adapters` and are not loaded into runtime automatically.
-
-Codex, Claude Code, and GitHub Copilot CLI sessions are stored under `.agent_control/coding_sessions`. Long runs put the task in `awaiting_external`; the watcher finalizes session files and sends the completion report after a worker restart.
-
-External MCP tools are configured under `mcp.servers` in `config/config.yaml`. MCP is disabled by default; when enabled, YBM exposes a single `mcp.client` tool for discovery, health checks, and configured tool calls.
-
-`code.interpreter` is local-first and writes under `.agent_control/code_interpreter`. The default backend is `local_subprocess`; enable `adapters.code_interpreter.docker.enabled` and add `docker_python` to `adapters.code_interpreter.backends` to run untrusted/generated Python in a short-lived Docker container. Docker runs with network off unless requested and allowed by policy, plus configured memory/CPU/pids limits. Use `code.interpreter` operation `health` to inspect Docker availability, configured remote backends, and recent backend failures.
-
-## 5. Link WhatsApp (optional)
-
-WhatsApp uses [Baileys](https://github.com/WhiskeySockets/Baileys), an unofficial WhatsApp Web
-client - no Meta developer account or public webhook needed, just a phone with WhatsApp installed
-that you link as a linked device (the same mechanism as WhatsApp Web/Desktop). It runs as a small
-Node.js sidecar (`whatsapp-bridge/`) that the backend spawns and owns; `ybm setup` installs its
-dependencies automatically if Node.js 20+ is on `PATH` (`node_path` in config to point at a
-specific binary otherwise).
-
-Building the React admin console from source requires Node.js 22.22 or newer. The Docker image
-uses that version and already contains both the built console and WhatsApp production dependencies.
-
-1. In `config/config.yaml`, set `channels.whatsapp.enabled: true`.
-2. Start (or restart) the stack: `.\scripts\ybm.ps1 start`.
-3. Watch the `whatsapp` service's log for the QR code: `.\scripts\ybm.ps1 logs whatsapp -Follow`.
-4. Scan it from WhatsApp on your phone (Settings -> Linked Devices -> Link a Device). The linked
-   session is saved under `.agent_control/whatsapp_auth/` and persists across restarts.
-5. Add the linked number to `channels.whatsapp.allowed_numbers` in `config/config.yaml`, E.164
-   digits only, no leading `+` (e.g. `"15551234567"`) - like Telegram's allowlists, an empty list
-   denies every message. Restart the stack for the change to take effect.
-
-Consider linking a secondary number rather than your primary one - Baileys is unofficial, and
-while it mirrors how popular self-hosted WhatsApp gateways already run in production, there is a
-small account-flagging risk inherent to any unofficial client. Never commit a real phone number to
-`config/config.yaml` if you intend to share this checkout.
-
-v1 is plain text only: no slash commands, inline buttons, voice transcription, or screenshot/file
-delivery over WhatsApp (all of those already work over Telegram). Plain-text `approve` / `status`
-/ `remember that ...` work the same way they do on Telegram.
-
-## 6. Check Status, Logs, And Stop The Stack
+## Daily commands
 
 ```powershell
 .\scripts\ybm.ps1 status
 .\scripts\ybm.ps1 logs worker -Follow
 .\scripts\ybm.ps1 stop
-```
-
-Backend health check:
-
-```powershell
+.\scripts\ybm.ps1 test
 Invoke-RestMethod http://127.0.0.1:8765/health
 ```
 
-## 7. Lower-Level Commands
+Package the VS Code extension: `.\scripts\package_vscode_extension.ps1`
 
-The per-service launchers under `scripts/services/` are what `ybm start` actually runs; use
-them directly only when debugging a single process in isolation (they read `YBM_LOCALDEPLOY_ROOT`
-and other `.env` values the same way `ybm start` does): `run_backend.ps1`,
-`run_telegram_polling.ps1`, `run_whatsapp.ps1`, `run_worker.ps1`, `run_coding_session_watcher.ps1`,
-`run_localdeploy.ps1`.
+The per-service launchers under `scripts/services/` are what `start` actually runs — use them
+directly only to debug one process in isolation.
 
-## 8. Run Tests
+## Where things land
 
-```powershell
-.\scripts\ybm.ps1 test
-```
+| Path | Contents |
+|---|---|
+| `.agent_control/workspaces/task_<id>` | Per-task generated files |
+| `.agent_control/logs/<service>.jsonl` | Structured logs, secrets redacted |
+| `.agent_control/browser/screenshots` | Browser screenshots |
+| `.agent_control/computer_use/screenshots` | Desktop screenshots |
+| `.agent_control/coding_sessions` | Codex / Claude Code / Copilot session state |
+| `.agent_control/adapters` | Generated adapter proposals (never auto-loaded) |
+| `agent_control.db` | SQLite database — see [DATABASE_INSPECTION.md](DATABASE_INSPECTION.md) |
 
-## 9. Package VS Code Extension
-
-```powershell
-.\scripts\package_vscode_extension.ps1
-```
-
-The extension sends workspace state to the local backend and polls for queued terminal commands.
-
-## 10. Current Limits
-
-- **Desktop screenshot/control (`computer.use`) is Windows-only.** Every other capability -
-  filesystem, browser, code interpreter, MCP, scheduling, coding-agent sessions, the web chat -
-  is cross-platform and runs in CI on Linux, Windows, and macOS.
-- `scripts\ybm.ps1` is Windows-only (uses `Win32_Process` for process tracking); Linux/macOS use
-  the cross-platform `ybm start`/`stop`/`status`/`logs` commands instead, which are functionally
-  equivalent but not (yet) a single unified implementation - see docs/HISTORY.md for the current
-  state of that consolidation.
-- Desktop screenshot/control and computer use are disabled by default and should be enabled per task/access mode from the admin UI.
-- WhatsApp uses Baileys, an unofficial client, not Meta's Business API - it is disabled by
-  default, requires linking a number via QR (see step 5), and is plain-text only for now: no
-  slash commands, inline buttons, voice transcription, or screenshot/file delivery.
-- WhatsApp's privacy-preserving "LID" addressing sends an opaque id instead of the sender's real
-  phone number for some contacts - there is no way to resolve that id back to a number, so those
-  senders can never match `channels.whatsapp.allowed_numbers` no matter how it's configured. The
-  audit trail labels this denial reason distinctly (`lid_jid_no_resolvable_number`) from an
-  ordinary not-on-the-allowlist denial so it doesn't read as a config mistake.
-- `computer.use run_goal` needs the configured local model endpoint to accept OpenAI-compatible image payloads. If LocalDeploy/Gemma vision is unavailable, observation still returns screenshot/UI metadata but action planning fails clearly.
-- `filesystem.manage` only operates inside configured allowed roots and rejects path escapes.
-- Browser inspection/control can see only Chrome tabs exposed through the configured remote debugging port. Normal Chrome windows launched without remote debugging are not visible to this adapter.
-- VS Code terminal stdout capture depends on VS Code shell integration. Without it, the bridge records dispatch completion only.
-- Direct Copilot Chat panel scraping is not implemented; Copilot routing uses VS Code terminal command dispatch or the local Copilot CLI fallback.
+Keep all of it private — see [THREAT_MODEL.md](THREAT_MODEL.md).

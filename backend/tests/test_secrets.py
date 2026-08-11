@@ -76,3 +76,46 @@ def test_list_secrets_on_empty_vault_returns_empty_dict(tmp_path, monkeypatch) -
 
     assert vault.list_secrets() == {}
     assert vault.list_services() == []
+
+
+def test_passphrase_key_derives_via_salted_kdf_and_round_trips(tmp_path, monkeypatch) -> None:
+    """A key that isn't a valid Fernet key on its own (a hand-typed
+    passphrase) must still work end-to-end, deterministically, across
+    separate SecretVault instances - proving the derived key is stable given
+    the same passphrase and persisted salt, not just working by accident
+    within a single instance."""
+    monkeypatch.setenv("AGENT_SECRET_VAULT_KEY", "a plain human passphrase, not a Fernet key")
+    config = SecretVaultConfig(path=str(tmp_path / "vault.json"))
+
+    SecretVault(config).set_secret("openai", "api_key", "sk-test-123")
+
+    assert SecretVault(config).get_secret("openai", "api_key") == "sk-test-123"
+    assert (tmp_path / "vault.json.salt").exists()
+
+
+def test_passphrase_key_salt_is_persisted_not_random_per_call(tmp_path, monkeypatch) -> None:
+    """The derived key must be stable across process restarts: if the salt
+    weren't persisted, a fresh SecretVault instance would derive a different
+    key and fail to decrypt the existing vault."""
+    monkeypatch.setenv("AGENT_SECRET_VAULT_KEY", "another passphrase")
+    config = SecretVaultConfig(path=str(tmp_path / "vault.json"))
+    SecretVault(config).set_secret("svc", "key", "value")
+
+    salt_first = (tmp_path / "vault.json.salt").read_bytes()
+    SecretVault(config).get_secret("svc", "key")  # second, independent instance
+    salt_second = (tmp_path / "vault.json.salt").read_bytes()
+
+    assert salt_first == salt_second
+
+
+def test_write_leaves_no_tmp_file_and_vault_is_valid(tmp_path, monkeypatch) -> None:
+    """Atomic write (write-to-.tmp, then os.replace) must not leave the
+    temporary file behind on success."""
+    vault = _vault(tmp_path, monkeypatch)
+    vault.set_secret("openai", "api_key", "sk-1")
+
+    vault_path = tmp_path / "vault.json"
+    tmp_path_candidate = tmp_path / "vault.json.tmp"
+    assert vault_path.exists()
+    assert not tmp_path_candidate.exists()
+    assert vault.get_secret("openai", "api_key") == "sk-1"

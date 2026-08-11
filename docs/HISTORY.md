@@ -1,45 +1,27 @@
-# YBM History — from patchwork to product, then the post-migration audit
+# History — why it's built this way
 
-This file merges two documents written back-to-back and is read as one continuous story:
-**Part 1 (P0–P6)**, written 2026-07-26, is the original architecture overhaul — from "doesn't
-reliably install" to the current three-agent design. **Part 2 (N1–N6)**, written 2026-07-28
-immediately after P3 landed, is the audit that found P3 had regressed observability, plus the
-plan that fixed it. Both parts keep their original section labels (`P0`–`P6`, `§1.1` etc.,
-`N1`–`N6`) because ~90 code comments across the codebase cite them by that label — if you're
-here from a comment like `(docs/HISTORY.md P3 §2.2)`, search this file for that exact string.
-
-The detailed evidence trail for completed items — exact test names, line-count deltas,
-before/after reproductions — mostly lives in git history, not here; `git log --oneline` plus
-commit bodies from 2026-07-27 onward has it. **For current architecture and known gaps, see
-[ARCHITECTURE.md](ARCHITECTURE.md) — that's the accurate "how it works now" reference. This
-file is "why it's built this way."**
+> **Archive, not reference.** For how the system works *now*, read
+> [ARCHITECTURE.md](ARCHITECTURE.md). This file is the decision record: what was broken, what
+> was tried, and what was deliberately rejected.
 
 **The goal this repo exists to serve:** *I talk to my local computer, and agents on my local
 computer do whatever I ask.* Every decision below is judged against that sentence.
 
-**Status (2026-07-29):** P0–P3 and P6 done; P4/P5 partially done. **N1–N5 done, including
-N3's re-recording pass — the scenario tier is 33/33 green with zero skips, up from 2/18.**
-N6 (4-page console restructure) is the only unstarted item.
+| Part | Date | What it covers |
+|---|---|---|
+| [1 — P0–P6](#part-1--p0p6-the-architecture-overhaul) | 2026-07-26 | The architecture overhaul: from "doesn't reliably install" to the three-agent design |
+| [2 — N1–N6](#part-2--n1n6-the-post-migration-audit) | 2026-07-28 | The audit that found P3 had regressed observability, and the fix |
+| [3 — The way forward](#part-3--the-way-forward) | 2026-07-29 | Prioritised next steps; five real bugs the dark test tier had hidden |
+| [4 — Multi-agent build](#part-4--multi-agent-and-feature-parity-build-2026-07-30) | 2026-07-30 | Parallel calls, delegation, skills, persona, knowledge base, cost tracking |
+| [5 — React console](#part-5--react-admin-console-build-and-cutover-2026-08-01) | 2026-08-01 | Admin console build and cutover |
+| [6 — WhatsApp](#part-6--whatsapp-as-a-second-real-channel-2026-08-02) | 2026-08-02 | A second real channel, and the channel-agnostic core it forced |
 
-A cleanup pass on 2026-07-28 removed the plan-era code §1.1 had only flagged as dead (now
-physically deleted), trimmed 3 duplicate admin API routes, cut the live E2E suite from 72 to
-11 cases, cut `config/config.yaml` from 317 to 144 lines (verified redundant-with-default
-keys only), fixed a real bug in `ybm clean`'s flag handling, and confirmed the fallback chat
-responder is live code, not dead weight — see the closing note at the end of Part 2.
+**Section labels are load-bearing.** Parts keep their original `P0`–`P6`, `N1`–`N6`, and `§1.1`
+labels because ~90 code comments cite them. Arriving from a comment like
+`(docs/HISTORY.md P3 §2.2)`? Search this file for that exact string.
 
-A follow-up pass on 2026-07-29 recorded the remaining scenario fixtures and, in doing so,
-found and fixed **five real product bugs** the deterministic tier had been too dark to catch:
-the code interpreter's per-call workspace isolation (item 7), generated code hardcoding
-absolute paths in a way that breaks the Docker sandbox (item 9), the MCP catalog's misleading
-dotted `server.tool` format (item 8), an MCP subprocess leak on handshake failure (item 12),
-and a marginal MCP timeout masquerading as a random anyio error (item 13). Items 6 and 11 in
-§4 also record a **correction to an earlier claim of mine** that turned out not to be a bug.
-
-A final pass the same day ran an AST-normalised duplicate detector over the whole repo and
-collapsed **seven groups of duplicated code** into one definition each - including `_failed()`,
-which had 13 byte-identical copies, one per tool adapter (item 16). It also fixed a
-misleading `ybm doctor` result (item 15) and removed the last orphaned prompt files (item 14).
-**Part 3 below is the prioritised way forward** from here.
+The fine-grained evidence trail — test names, line-count deltas, before/after reproductions —
+lives in git history: `git log --oneline` plus commit bodies from 2026-07-27 onward.
 
 ---
 
