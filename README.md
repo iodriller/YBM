@@ -30,15 +30,30 @@ YBM.
 
 ### Windows
 
-1. Download `YBM-Setup.exe` from the [latest release](https://github.com/iodriller/YBM/releases/latest) and run it, **or** `winget install YBM`.
-2. Complete the two-step browser wizard to choose a model and optionally connect Telegram.
+```powershell
+winget install YBM
+```
 
-The installer is per-user and needs no administrator rights. It installs into `%LOCALAPPDATA%\YBM`,
-adds a Start Menu entry, and can be removed from Add or remove programs.
+Nothing to download, and no security prompt. Then finish the two-step browser wizard to choose a
+model and optionally connect Telegram.
 
-Installing from source instead? Download the repository as a ZIP, extract the whole folder, and
-double-click [`YBM.bat`](YBM.bat). The same file handles the first run and every run after it, so
-there is nothing else to remember. For a visible, verifiable install:
+**Prefer a download?** Get `YBM-Setup.exe` from the
+[latest release](https://github.com/iodriller/YBM/releases/latest). It is a per-user install needing
+no administrator rights: it goes to `%LOCALAPPDATA%\YBM`, adds a Start Menu entry, and uninstalls
+from Add or remove programs.
+
+Windows will say the publisher is unrecognised, because the installer is not code signed. Every
+release is built in public by [a GitHub Actions workflow](.github/workflows/release.yml) and carries
+signed build provenance, so you can check where it came from rather than trusting the dialog:
+
+```powershell
+gh attestation verify .\YBM-Setup.exe --repo iodriller/YBM
+```
+
+**Prefer no installer at all?** Download the repository as a ZIP, extract the whole folder, and
+double-click [`YBM.bat`](YBM.bat) - it installs whatever is missing and writes nothing outside that
+folder. The same file handles the first run and every run after it. For a visible, verifiable
+install:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Verify

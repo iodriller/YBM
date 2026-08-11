@@ -38,6 +38,9 @@ jobs:
     permissions:
       # Only the publish step needs this, and only on a tag.
       contents: write
+      # For the build provenance attestation below.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -113,6 +116,28 @@ jobs:
             dist/SHA256SUMS.txt
           if-no-files-found: error
 
+      # Cryptographic proof that this exact installer was built by this
+      # workflow from this repository, verifiable with `gh attestation verify`.
+      # Signed through Sigstore with a short-lived certificate, so it costs
+      # nothing and needs no code-signing certificate - which matters because
+      # Azure Trusted Signing is restricted to US/Canada organisations with
+      # three years of history (docs/INSTALL_PROPOSAL.md).
+      #
+      # It does not remove the SmartScreen prompt; nothing free does. It gives
+      # a careful user something better than a hash on the same page that
+      # served the download.
+      #
+      # Gated on visibility: attestations are free for public repositories, but
+      # a private one needs GitHub Enterprise Cloud, and this step would fail
+      # the release rather than skip.
+      - name: Attest build provenance
+        if: startsWith(github.ref, 'refs/tags/v') && github.event.repository.private == false
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/YBM-Setup.exe
+            dist/*.zip
+
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -129,19 +154,36 @@ jobs:
           $notes = @'
           ## Install
 
-          **Windows:** download `YBM-Setup.exe` below and run it. Per-user install, no
-          administrator rights, and no Node.js required - the admin console ships prebuilt.
+          ```
+          winget install YBM
+          ```
+
+          Nothing to download and no security prompt. This is the recommended way.
+
+          ### Or download the installer
+
+          `YBM-Setup.exe` below. Per-user install, no administrator rights, and no Node.js
+          required - the admin console ships prebuilt.
 
           Windows will warn that the publisher is unrecognised, because the installer is not
-          code signed. Verify the download instead:
+          code signed. That warning is expected and it is not evidence of anything either
+          way, so verify the file instead of judging the dialog:
 
           ```
+          # Proves it was built by this repo's release workflow, not just that
+          # it matches a hash published on the same page as the download.
+          gh attestation verify .\YBM-Setup.exe --repo iodriller/YBM
+
+          # Or, without gh:
           Get-FileHash .\YBM-Setup.exe -Algorithm SHA256
           # expect: __SHA__
           ```
 
-          **From source:** extract `YBM-__VERSION__-windows.zip` and double-click `YBM.bat`.
-          It installs whatever is missing, including uv, then opens the console.
+          ### Or run it without installing anything
+
+          Extract `YBM-__VERSION__-windows.zip` and double-click `YBM.bat`. It installs
+          whatever is missing, including uv, then opens the console. No installer, nothing
+          written outside the folder you extracted.
 
           Full checksums are in `SHA256SUMS.txt`.
           '@

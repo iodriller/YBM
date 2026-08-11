@@ -133,6 +133,41 @@ Note the ordering constraint: winget accepts MSIX, MSI, APPX, and executable
 installers, and **does not accept script-based installers** ([Microsoft
 Learn][wingetdocs]). Tier 2 is a hard prerequisite for Tier 3.
 
+## Why .exe, and not .msi, .msix, or a .bat
+
+Asked and settled, so it does not get relitigated:
+
+**A single .bat is the worst option, not the safest one.** Under Windows 11
+Smart App Control, `.bat`, `.cmd`, and `.ps1` carrying Mark-of-the-Web are
+blocked from launching outright, while an `.exe` gets a prompt the user can
+clear. A script can never be Authenticode signed, so it can never accumulate
+reputation or carry provenance. It has no uninstall entry. And winget rejects
+script-based installers, so choosing `.bat` would forfeit the one distribution
+path that shows no warning at all. The plain-folder option still exists for
+people who want it - that is what the source ZIP plus `YBM.bat` is - but it is
+the fallback, not the front door.
+
+**.msi carries no trust advantage over .exe.** SmartScreen judges signature and
+reputation, not container format; an unsigned MSI shows the same unknown
+publisher warning. MSI earns its keep in enterprise deployment (Group Policy,
+Intune, SCCM), which is not this audience. Worth adding later if organisations
+ask to deploy YBM centrally; not worth a second artifact and a WiX toolchain
+now.
+
+**.msix is the most trusted format and technically cannot work here.** MSIX
+confines an app's declared filesystem to `%USERPROFILE%\AppData` and its
+registry to HKCU, and it must be signed to install at all. YBM exists to work on
+the user's real machine - organise a Downloads folder, read PDFs on a desktop,
+drive a browser and a terminal. The sandbox that makes MSIX trustworthy is the
+thing that would break the product.
+
+**.exe is also what the comparable tools ship**: Ollama, LM Studio, VS Code,
+Chrome, Docker Desktop.
+
+The lever for trust is not the extension. It is, in order: winget (no download
+decision at all), build provenance, published checksums, and eventually a
+certificate.
+
 ## On code signing
 
 Worth setting expectations before anyone budgets for it:
