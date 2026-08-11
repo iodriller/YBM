@@ -14,7 +14,7 @@ is why it is worth having even though the installer works standalone.
 ## Prerequisite
 
 winget accepts MSIX, MSI, APPX, and executable installers. It does **not**
-accept script-based installers, so the Inno Setup `.exe` built by
+accept script-based installers, so the MSI built by
 `.github/workflows/release.yml` is what makes a listing possible at all.
 
 A release must already be published, because the manifest pins the installer's
@@ -29,7 +29,7 @@ The three files here carry placeholders (`__VERSION__`, `__SHA256__`,
 .\scripts\render_winget_manifests.ps1 -Version 0.1.0
 ```
 
-That downloads the published `YBM-Setup.exe`, hashes it, and writes the
+That downloads the published `YBM-Setup.msi`, hashes it, and writes the
 completed manifests to `dist\winget\manifests\i\iodriller\YBM\<version>\`.
 Hashing the actual published asset is deliberate: a manifest whose SHA does not
 match what users download fails validation, and copying the number by hand from
@@ -53,7 +53,7 @@ the easier route for subsequent version bumps:
 
 ```powershell
 wingetcreate update iodriller.YBM --version 0.1.0 `
-  --urls https://github.com/iodriller/YBM/releases/download/v0.1.0/YBM-Setup.exe `
+  --urls https://github.com/iodriller/YBM/releases/download/v0.1.0/YBM-Setup.msi `
   --submit
 ```
 

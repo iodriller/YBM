@@ -78,19 +78,17 @@ jobs:
         shell: pwsh
         run: ./scripts/package_release.ps1 -Version "${{ steps.version.outputs.version }}"
 
-      # Not preinstalled on windows-latest (Windows Server 2025), unlike the
-      # 2022 image. Installed here rather than through a marketplace action so
-      # the release path takes no third-party action dependency.
-      - name: Install Inno Setup
-        run: choco install innosetup --no-progress -y
+      # Pinned to v5: WiX v6 introduced the Open Source Maintenance Fee, whose
+      # EULA must be accepted before the binaries run at all. v5 is the last
+      # release without it. Installed as a dotnet tool rather than through a
+      # marketplace action so the release path takes no third-party action
+      # dependency.
+      - name: Install WiX
+        run: dotnet tool install --global wix --version 5.0.2
 
       - name: Build the installer
         shell: pwsh
-        run: |
-          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found at $iscc" }
-          & $iscc "/DMyAppVersion=${{ steps.version.outputs.version }}" packaging\windows\ybm.iss
-          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed (exit $LASTEXITCODE)" }
+        run: ./scripts/build_msi.ps1 -Version "${{ steps.version.outputs.version }}"
 
       # winget's manifest needs the exact SHA256 of the published installer, and
       # a user verifying a download needs it published beside the file.
@@ -99,10 +97,10 @@ jobs:
         shell: pwsh
         run: |
           $lines = @()
-          foreach ($file in Get-ChildItem dist\*.zip, dist\*.exe) {
+          foreach ($file in Get-ChildItem dist\*.zip, dist\*.msi) {
             $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
             $lines += "$hash  $($file.Name)"
-            if ($file.Extension -eq ".exe") { "installer_sha256=$hash" >> $env:GITHUB_OUTPUT }
+            if ($file.Extension -eq ".msi") { "installer_sha256=$hash" >> $env:GITHUB_OUTPUT }
           }
           $lines | Set-Content -LiteralPath dist\SHA256SUMS.txt -Encoding ascii
           $lines | ForEach-Object { Write-Host $_ }
@@ -112,7 +110,7 @@ jobs:
           name: ybm-windows-${{ steps.version.outputs.version }}
           path: |
             dist/*.zip
-            dist/*.exe
+            dist/*.msi
             dist/SHA256SUMS.txt
           if-no-files-found: error
 
@@ -135,7 +133,7 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
-            dist/YBM-Setup.exe
+            dist/YBM-Setup.msi
             dist/*.zip
 
       - name: Publish release
@@ -162,7 +160,7 @@ jobs:
 
           ### Or download the installer
 
-          `YBM-Setup.exe` below. Per-user install, no administrator rights, and no Node.js
+          `YBM-Setup.msi` below. Per-user install, no administrator rights, and no Node.js
           required - the admin console ships prebuilt.
 
           Windows will warn that the publisher is unrecognised, because the installer is not
@@ -172,10 +170,10 @@ jobs:
           ```
           # Proves it was built by this repo's release workflow, not just that
           # it matches a hash published on the same page as the download.
-          gh attestation verify .\YBM-Setup.exe --repo iodriller/YBM
+          gh attestation verify .\YBM-Setup.msi --repo iodriller/YBM
 
           # Or, without gh:
-          Get-FileHash .\YBM-Setup.exe -Algorithm SHA256
+          Get-FileHash .\YBM-Setup.msi -Algorithm SHA256
           # expect: __SHA__
           ```
 
@@ -190,7 +188,7 @@ jobs:
           $notes = $notes.Replace("__SHA__", $env:INSTALLER_SHA).Replace("__VERSION__", $env:VERSION)
           Set-Content -LiteralPath release-notes.md -Value $notes -Encoding utf8
           gh release create "v$env:VERSION" `
-            dist\YBM-Setup.exe `
+            dist\YBM-Setup.msi `
             "dist\YBM-$env:VERSION-windows.zip" `
             dist\SHA256SUMS.txt `
             --title "YBM $env:VERSION" `

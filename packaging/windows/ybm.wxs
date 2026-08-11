@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  WiX definition for YBM's Windows installer (MSI).
+
+  MSI rather than a self-extracting .exe, and a script rather than neither, is a
+  distribution decision rather than a security one: SmartScreen judges signature
+  and reputation, not container format. What MSI does buy is that msiexec.exe -
+  a Microsoft-signed component of Windows - performs the install, the package is
+  declarative and inspectable before it runs, Add or remove programs gets a real
+  entry, and it can be deployed centrally later. See docs/INSTALL_PROPOSAL.md.
+
+  Two deliberate choices:
+
+    Scope="perUser"   - installs into %LOCALAPPDATA% with no UAC prompt and no
+      administrator account. This is not only convenience: YBM's venv, config,
+      and database live beside the program files and must stay writable by the
+      user the app runs as.
+
+    No services, no file associations, no PATH edits - installing YBM changes
+      nothing about the machine except adding a folder and a shortcut.
+
+  Built by .github/workflows/release.yml. Locally:
+    wix build -arch x64 -d Version=0.1.0 -d PayloadDir=dist\payload `
+      -o dist\YBM-Setup.msi packaging\windows\ybm.wxs
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <!-- PayloadDir and IconFile are resolved relative to THIS file, not to the
+       working directory, so the build passes them as absolute paths.
+       scripts/build_msi.ps1 does that; the defaults only keep the file
+       openable in an editor. -->
+  <?ifndef Version?>
+  <?define Version = "0.0.0" ?>
+  <?endif?>
+  <?ifndef PayloadDir?>
+  <?define PayloadDir = "..\..\dist\payload" ?>
+  <?endif?>
+  <?ifndef IconFile?>
+  <?define IconFile = "..\..\scripts\assets\logo.ico" ?>
+  <?endif?>
+
+  <Package
+      Name="YBM"
+      Manufacturer="iodriller"
+      Version="$(Version)"
+      Scope="perUser"
+      Compressed="yes"
+      Codepage="1252"
+      UpgradeCode="6B1D8E42-2C7A-4F19-9E53-8A0C4D6B7F21">
+
+    <!-- Replaces an older version in place instead of leaving two entries in
+         Add or remove programs. Downgrades are refused with a readable message
+         rather than a raw MSI error code. -->
+    <MajorUpgrade
+        AllowSameVersionUpgrades="yes"
+        DowngradeErrorMessage="A newer version of YBM is already installed. Uninstall it first if you meant to go back to [ProductVersion]." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Shown in Add or remove programs, so someone auditing what is installed
+         can find out what this is and where it came from. -->
+    <Property Id="ARPHELPLINK" Value="https://github.com/iodriller/YBM/issues" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/iodriller/YBM" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+    <Icon Id="YbmIcon" SourceFile="$(IconFile)" />
+    <Property Id="ARPPRODUCTICON" Value="YbmIcon" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="INSTALLFOLDER" Name="YBM" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ShortcutFolder" Name="YBM" />
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="YBM" Level="1">
+      <ComponentGroupRef Id="PayloadFiles" />
+      <ComponentGroupRef Id="Shortcuts" />
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <!-- Harvests the tree scripts/package_release.ps1 staged, so the file list
+         is never maintained by hand and cannot drift from what actually ships. -->
+    <ComponentGroup Id="PayloadFiles" Directory="INSTALLFOLDER">
+      <Files Include="$(PayloadDir)\**" />
+    </ComponentGroup>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="Shortcuts">
+      <Component Id="StartMenuShortcut" Directory="ShortcutFolder" Guid="A47F1C90-3E28-4B6D-8C11-5F9E2A7D0B34">
+        <Shortcut Id="YbmStartMenu"
+                  Name="YBM"
+                  Description="Start YBM and open the console"
+                  Target="[INSTALLFOLDER]YBM.bat"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="YbmIcon" />
+        <RemoveFolder Id="RemoveShortcutFolder" Directory="ShortcutFolder" On="uninstall" />
+        <!-- A per-user component needs a per-user keypath, and HKCU is the only
+             hive this install is allowed to write. -->
+        <RegistryValue Root="HKCU" Key="Software\iodriller\YBM" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

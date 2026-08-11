@@ -37,7 +37,7 @@ winget install YBM
 Nothing to download, and no security prompt. Then finish the two-step browser wizard to choose a
 model and optionally connect Telegram.
 
-**Prefer a download?** Get `YBM-Setup.exe` from the
+**Prefer a download?** Get `YBM-Setup.msi` from the
 [latest release](https://github.com/iodriller/YBM/releases/latest). It is a per-user install needing
 no administrator rights: it goes to `%LOCALAPPDATA%\YBM`, adds a Start Menu entry, and uninstalls
 from Add or remove programs.
@@ -47,7 +47,7 @@ release is built in public by [a GitHub Actions workflow](.github/workflows/rele
 signed build provenance, so you can check where it came from rather than trusting the dialog:
 
 ```powershell
-gh attestation verify .\YBM-Setup.exe --repo iodriller/YBM
+gh attestation verify .\YBM-Setup.msi --repo iodriller/YBM
 ```
 
 **Prefer no installer at all?** Download the repository as a ZIP, extract the whole folder, and

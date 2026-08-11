@@ -26,7 +26,7 @@ $RepoRoot = (Resolve-Path "$PSScriptRoot\..").Path
 $TemplateDir = Join-Path $RepoRoot "packaging\winget"
 if (-not [IO.Path]::IsPathRooted($OutputRoot)) { $OutputRoot = Join-Path $RepoRoot $OutputRoot }
 
-$InstallerUrl = "https://github.com/iodriller/YBM/releases/download/v$Version/YBM-Setup.exe"
+$InstallerUrl = "https://github.com/iodriller/YBM/releases/download/v$Version/YBM-Setup.msi"
 
 if ($InstallerPath) {
     if (-not (Test-Path -LiteralPath $InstallerPath)) { throw "no installer at $InstallerPath" }
@@ -34,7 +34,7 @@ if ($InstallerPath) {
     Write-Host "Hashing local installer: $localInstaller" -ForegroundColor Cyan
     Write-Host "  (the rendered manifest still points at $InstallerUrl)" -ForegroundColor DarkGray
 } else {
-    $localInstaller = Join-Path ([IO.Path]::GetTempPath()) "YBM-Setup-$Version.exe"
+    $localInstaller = Join-Path ([IO.Path]::GetTempPath()) "YBM-Setup-$Version.msi"
     Write-Host "Downloading $InstallerUrl" -ForegroundColor Cyan
     try {
         Invoke-WebRequest -Uri $InstallerUrl -OutFile $localInstaller -UseBasicParsing

@@ -6,7 +6,7 @@ Status: **implemented**, except for the one step that needs a human decision.
 |---|---|
 | 0 - one file instead of two | Done. `Install-YbmUv` in `scripts/lib/common.ps1`; `YBM-Setup.cmd` deleted. |
 | 1 - releases with the console prebuilt | Done. `.github/workflows/release.yml` + `scripts/package_release.ps1`. Fires on a `v*` tag. |
-| 2 - per-user Windows installer | Done. `packaging/windows/ybm.iss`, built and published by the same workflow. |
+| 2 - per-user Windows installer | Done. `packaging/windows/ybm.wxs` (WiX v5, MSI), built and published by the same workflow. |
 | 3 - winget | Manifests and renderer done (`packaging/winget/`). **Submitting the PR is deliberately manual.** |
 
 Nothing here publishes anything on its own: no tag has been cut, and listing a
@@ -113,15 +113,20 @@ one prerequisite a non-developer cannot reasonably be asked to satisfy.
 
 ### Tier 2 - a real Windows installer (removes the ZIP and the script download)
 
-Build a per-user installer from the Tier 1 archive. Inno Setup is the usual
-choice; `PrivilegesRequired=none` gives a no-admin install into
-`%LOCALAPPDATA%`, the pattern Chrome and Firefox use ([kinook][inno]).
+Build a per-user MSI from the Tier 1 archive with WiX. `Scope="perUser"` gives a
+no-admin install into `%LOCALAPPDATA%`, which is not only convenience: YBM's
+venv, config, and database live beside the program files and must stay writable
+by the user the app runs as.
 
 - No extract step, so the "must stay beside scripts/" class of error disappears.
-- Start Menu and desktop shortcuts, so no file to locate and double-click.
-- A `.exe` still triggers SmartScreen's unknown-publisher prompt, but it is not
-  in the category Smart App Control blocks outright the way `.cmd` is.
+- Start Menu shortcut, so there is no file to locate and double-click.
 - Uninstall entry, which the current flow has no concept of.
+- Central deployment (Group Policy, Intune) stays available if it is ever wanted.
+
+Pin WiX to **v5**. v6 introduced the Open Source Maintenance Fee, whose EULA has
+to be accepted before the binaries run at all; v5 is the last release without
+that, and accepting a licence on a maintainer's behalf is not a build script's
+call.
 
 ### Tier 3 - winget (discovery, and no warning at all)
 
@@ -133,26 +138,35 @@ Note the ordering constraint: winget accepts MSIX, MSI, APPX, and executable
 installers, and **does not accept script-based installers** ([Microsoft
 Learn][wingetdocs]). Tier 2 is a hard prerequisite for Tier 3.
 
-## Why .exe, and not .msi, .msix, or a .bat
+## Why .msi, and not .exe, .msix, or a .bat
 
-Asked and settled, so it does not get relitigated:
+Settled, so it does not get relitigated. The decision was **MSI**, and the
+reason is perception rather than security - which is a legitimate reason to
+decide a distribution question.
+
+**.msi and .exe are equivalent to SmartScreen.** It judges signature and
+reputation, not container format, so an unsigned MSI and an unsigned EXE produce
+the same unknown-publisher warning. Anyone claiming one is inherently safer than
+the other is wrong on the mechanics.
+
+**MSI still wins here, on grounds that are not about the warning dialog.** A
+self-extracting `.exe` from an unknown publisher reads as malware to a lot of
+people, and a distribution format that a share of the audience will not
+double-click has failed at its only job regardless of what the security model
+says. Beyond perception, MSI is declarative and inspectable before it runs,
+`msiexec.exe` (a signed Windows component) performs the install, Add or remove
+programs gets a real entry, and central deployment stays available. The cost is
+one WiX definition, which is small.
 
 **A single .bat is the worst option, not the safest one.** Under Windows 11
 Smart App Control, `.bat`, `.cmd`, and `.ps1` carrying Mark-of-the-Web are
-blocked from launching outright, while an `.exe` gets a prompt the user can
+blocked from launching outright, while an installer gets a prompt the user can
 clear. A script can never be Authenticode signed, so it can never accumulate
-reputation or carry provenance. It has no uninstall entry. And winget rejects
-script-based installers, so choosing `.bat` would forfeit the one distribution
-path that shows no warning at all. The plain-folder option still exists for
-people who want it - that is what the source ZIP plus `YBM.bat` is - but it is
-the fallback, not the front door.
-
-**.msi carries no trust advantage over .exe.** SmartScreen judges signature and
-reputation, not container format; an unsigned MSI shows the same unknown
-publisher warning. MSI earns its keep in enterprise deployment (Group Policy,
-Intune, SCCM), which is not this audience. Worth adding later if organisations
-ask to deploy YBM centrally; not worth a second artifact and a WiX toolchain
-now.
+reputation or carry provenance, and it has no uninstall entry. winget also
+rejects script-based installers, so choosing `.bat` would forfeit the one
+distribution path that shows no warning at all. The plain-folder option still
+exists for people who want it - that is the source ZIP plus `YBM.bat` - but it
+is the documented fallback, not the front door.
 
 **.msix is the most trusted format and technically cannot work here.** MSIX
 confines an app's declared filesystem to `%USERPROFILE%\AppData` and its
@@ -160,9 +174,6 @@ registry to HKCU, and it must be signed to install at all. YBM exists to work on
 the user's real machine - organise a Downloads folder, read PDFs on a desktop,
 drive a browser and a terminal. The sandbox that makes MSIX trustworthy is the
 thing that would break the product.
-
-**.exe is also what the comparable tools ship**: Ollama, LM Studio, VS Code,
-Chrome, Docker Desktop.
 
 The lever for trust is not the extension. It is, in order: winget (no download
 decision at all), build provenance, published checksums, and eventually a
@@ -208,13 +219,12 @@ Tiers 2 and 3 together, when there is appetite for owning an installer build.
 
 Target end state, Windows:
 
-1. Download `YBM-Setup.exe` from the releases page, or `winget install YBM`.
+1. Download `YBM-Setup.msi` from the releases page, or `winget install YBM`.
 2. Run it.
 3. Answer the browser wizard.
 
 [motw]: https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation
 [motw2]: https://textslashplain.com/2016/04/04/downloads-and-the-mark-of-the-web/
-[inno]: https://kinook.com/blog2/inno-setup.html
 [winget]: https://github.com/microsoft/winget-pkgs
 [wingetdocs]: https://learn.microsoft.com/en-us/windows/package-manager/package/manifest
 [trustedsigning]: https://techcommunity.microsoft.com/blog/microsoft-security-blog/trusted-signing-is-now-open-for-individual-developers-to-sign-up-in-public-previ/4273554

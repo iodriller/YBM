@@ -21,7 +21,7 @@ releases exist it should compare against the latest tag instead - see
   interactive start, and an immediate exit to a container or systemd.
 - **A signed-off Windows install path.** `.github/workflows/release.yml` builds
   the admin console, stages a runtime payload (`scripts/package_release.ps1`),
-  compiles a per-user Inno Setup installer (`packaging/windows/ybm.iss`), and
+  compiles a per-user MSI (`packaging/windows/ybm.wxs`, WiX v5), and
   publishes both with checksums on a tag. The installer needs no administrator
   rights and no Node.js, because the console ships prebuilt - previously a
   source install had no console until the user installed Node 22.22+ themselves.

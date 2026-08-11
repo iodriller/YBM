@@ -23,7 +23,7 @@ the `ui-build` command for your platform.
 
 ### Windows, no terminal
 
-1. Download `YBM-Setup.exe` from the [latest release](https://github.com/iodriller/YBM/releases/latest) and run it, or run `winget install YBM`.
+1. Download `YBM-Setup.msi` from the [latest release](https://github.com/iodriller/YBM/releases/latest) and run it, or run `winget install YBM`.
 2. Finish the browser wizard that opens.
 
 The installer is per-user, needs no administrator rights, installs into `%LOCALAPPDATA%\YBM`, and
