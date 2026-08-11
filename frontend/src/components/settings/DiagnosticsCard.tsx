@@ -206,7 +206,7 @@ function DoctorCheckRow({ check }: { check: DoctorCheck }) {
       <Icon className={cn("mt-0.5 size-3.5 shrink-0", tone)} />
       <div className="min-w-0">
         <span className="font-medium">{check.name}</span>
-        {check.detail && <span className="text-muted-foreground"> — {check.detail}</span>}
+        {check.detail && <span className="text-muted-foreground"> - {check.detail}</span>}
       </div>
     </div>
   )

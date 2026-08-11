@@ -36,7 +36,7 @@ class LLMMessageClassifier:
                 reason="message has no text content",
             )
         try:
-            # Low temperature for classification — the choice of route / is_task
+            # Low temperature for classification - the choice of route / is_task
             # is a near-deterministic decision; sampling noise produces the
             # observed run-to-run flip-flops on borderline observation requests.
             classification = await self.provider.generate_structured(

@@ -1,6 +1,6 @@
 # Database Inspection
 
-Storage is a single SQLite file — durable, easy to back up, and inspectable without running
+Storage is a single SQLite file - durable, easy to back up, and inspectable without running
 another service.
 
 Default path: `agent_control.db`
@@ -39,7 +39,7 @@ erDiagram
 | `tool_invocations` | Every tool request and its result |
 | `approvals` | Pending and decided approval requests |
 | `approval_grants` | "Allow for this task" grants |
-| `audit_events` | Policy decisions, classifications, access checks, failures — redacted |
+| `audit_events` | Policy decisions, classifications, access checks, failures - redacted |
 | `llm_calls` | Per-call tokens, cost, and latency |
 | `messages` | Normalized inbound messages |
 | `conversations` | One per chat/channel |
@@ -49,7 +49,7 @@ erDiagram
 | `memory_facts` | Structured facts with category, confidence, provenance |
 | `task_signals` | Pause/cancel/resume signals |
 
-Start with `tasks`, `tool_invocations`, and `audit_events` — that trio explains almost any run.
+Start with `tasks`, `tool_invocations`, and `audit_events` - that trio explains almost any run.
 For a single task, `ybm trace-task <task_id>` is faster than reading tables by hand.
 
 ## Browse in VS Code

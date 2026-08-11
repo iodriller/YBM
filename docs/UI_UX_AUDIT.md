@@ -34,18 +34,18 @@ in the code comments each change left behind.
 
 | # | What landed | Deliberately not done |
 |---|---|---|
-| 0 | Stabilized the baseline: fixed a mislabeled Evidence Pack field and an absolute README secrets claim, re-recorded broken fixtures, web chat resumes a clarifying task instead of spawning a new one | — |
+| 0 | Stabilized the baseline: fixed a mislabeled Evidence Pack field and an absolute README secrets claim, re-recorded broken fixtures, web chat resumes a clarifying task instead of spawning a new one | - |
 | 1 | Chat: sanitized Markdown, Stop button, inline clarifications, artifact cards, inline approvals backed by real task-scoped grants, file attachments | Folder selection (shipped separately as Phase 13) |
-| 2 | Task Receipts: a "Done" card in Chat plus a full receipt (result, what was touched, services contacted, approvals, duration/cost), with export | — |
+| 2 | Task Receipts: a "Done" card in Chat plus a full receipt (result, what was touched, services contacted, approvals, duration/cost), with export | - |
 | 4 | Structured memory: `MemoryFact` schema with provenance/confidence/category, a `memory_facts` table, admin CRUD, a Memory page, and a `memory.manage` tool stamped `task_derived` | Retrieval, contradiction handling (now Phase 15) |
-| 5 | Skills lifecycle: `version`/`tools` manifest fields, install/uninstall endpoints, a Skills page, inferred tool references | Version pinning and integrity verification — no registry exists to pin against |
-| 6 | Packaging: tray icon, `ybm autostart`, `ybm backup`, `ybm check-updates` | A compiled `.msi`/`.exe` — no build toolchain present |
+| 5 | Skills lifecycle: `version`/`tools` manifest fields, install/uninstall endpoints, a Skills page, inferred tool references | Version pinning and integrity verification - no registry exists to pin against |
+| 6 | Packaging: tray icon, `ybm autostart`, `ybm backup`, `ybm check-updates` | A compiled `.msi`/`.exe` - no build toolchain present |
 | 8 | P0 correctness and honesty: cancellation cleanup, receipt wording that stops over-claiming, receipts for every terminal state, artifact download, skill-label wording. Second pass: a pending approval no longer blocks the single worker from later tasks | Per-item effect classification (now Phase 14) |
 | 9 | Console surfaces over data that already existed: approval window rebuilt (pager, sticky actions, keyboard), Tasks outcome column, clear-history, a Timeline tab, Diagnostics rebuilt with service cards and a doctor runner | Per-task delete (bulk clear only) |
-| 10 | One command to run it: `ybm run` + double-clickable `YBM.bat`, consistent logo across console/tray/favicon. Second pass: fingerprinted dependency sync and console build — a fully-warm launch went from ~60-90s to ~9s | Consolidating the CLI's several per-command Python process launches (the remaining gap to "a few seconds") |
+| 10 | One command to run it: `ybm run` + double-clickable `YBM.bat`, consistent logo across console/tray/favicon. Second pass: fingerprinted dependency sync and console build - a fully-warm launch went from ~60-90s to ~9s | Consolidating the CLI's several per-command Python process launches (the remaining gap to "a few seconds") |
 | 11 | Console regrouped: a Tools page, an Agent hub over Tools/Skills/Memory, and a bundled starter skill catalog | MCP server add/edit/test, an `adapter.factory` review UI, skill edit-in-place |
-| 12 | Console UX pass: a chat width control, expired approvals swept out of the list instead of leading it, breadcrumbs + fixed nav active-state on every sub-page, one entry point for adding a skill, an explicit disabled-tool affordance on Tools | — |
-| 13 | Server-side folder picker: `GET /admin/api/folders`, scoped to the same `computer_use.allowed_roots` `filesystem.manage` uses, with a `FolderPicker` dialog in the Chat composer | — |
+| 12 | Console UX pass: a chat width control, expired approvals swept out of the list instead of leading it, breadcrumbs + fixed nav active-state on every sub-page, one entry point for adding a skill, an explicit disabled-tool affordance on Tools | - |
+| 13 | Server-side folder picker: `GET /admin/api/folders`, scoped to the same `computer_use.allowed_roots` `filesystem.manage` uses, with a `FolderPicker` dialog in the Chat composer | - |
 | 14 | Timeline gained real categories, colors, and durations; Steps and the Graph gained real per-step/per-node durations; a new Duration/Gantt tab showing tool calls, approval waits (rendered as an outline), and LLM-call latency on one time axis, with any uncovered gap honestly labeled "inferred"; real per-item effect classification for receipts and evidence; `llm_calls` persistence (`task_id`, `source`, `model`, `step_index`, messages, response, tokens, latency), redacted and size-capped, wired into `ybm db clean`/`db reset`; a stable `step_id` stamped through operator history, `ToolCallRequest.parent_step_id`, approvals, and LLM calls, surviving an approval or background-external wait; and Graph v2 - rooted at the task's query, one node per real step (LLM decision + tool call(s) + approval gate grouped together), with duration/token badges and a click-to-inspect dialog showing the exact prompt, response, and tool input/output | Connecting a parallel/subagent lane in the graph back to the exact step that spawned it - step_id doesn't nest, only `origin` does |
 | 15 | Deterministic relevance selection (`score_facts`: keyword/entity overlap with the objective, category relevance, recency; facts with no `task_id` always included as durable global preferences) replacing "inject every fact into every task, uncapped"; a real `user_stated` route via `detect_remember_request` ("remember that ..." / "don't forget that ..."), detected at the runtime level before any LLM sees the message, wired into Telegram's plain-text command layer; `memory.manage`'s `forget` operation gated behind approval (medium risk floor) while `list`/`remember` stay free, via the same `operation_risks`/`approval_required_operations` mechanism `schedule.manage` uses | The fifth scoring signal (current folder/service context) - no caller has that signal available today; the same "remember that ..." interception for the web-chat intake path, which has no equivalent pre-classifier hook yet |
 | 16 | Channel-adapter interface (first half): the "classify -> task" stage extracted from `TelegramIntakeService` into channel-agnostic functions (`channels/base.py`'s `classify_and_spawn_task`, `resume_clarifying_reply`, `status_summary`, later joined by `approve_latest_pending`) behind a `ChannelAdapter` Protocol and shared `ChannelUpdateResult` type. Second half: WhatsApp as a real second channel, via a Node.js Baileys sidecar (`whatsapp-bridge/`) the backend spawns and polls over loopback HTTP - `WhatsAppAdapter`/`WhatsAppIntakeService`/`WhatsAppTaskNotifier`, `task_chat_id` generalized to `channel_chat_id(task, channel)`, and `format_task_message` extracted to `channels/task_notify.py` and shared with Telegram. Disabled by default, no real phone number ships in the repo | Plain-text only in v1 - no `/command` syntax, inline buttons, voice transcription, or artifact/screenshot delivery over WhatsApp (all Telegram-only for now); live QR-pairing and live send/receive were not performed in this session - no phone number was available, see the Phase 16 write-up below |
@@ -103,7 +103,7 @@ The goal is not to imitate a general chat product. The useful patterns are:
 Shipped entries were removed on 2026-08-01; what remains is still open. Items now scheduled as a
 numbered phase say so.
 
-### P0 — Trust and regression safety
+### P0 - Trust and regression safety
 
 1. Add a committed Playwright suite for token entry, chat wrapping, theme persistence, mobile
    navigation, approval review, access-mode changes, and a failed-task trace.
@@ -116,7 +116,7 @@ numbered phase say so.
    at every adapter boundary. Related: only `http.request` calls `record_egress`, so browser, MCP,
    coding-agent, and Telegram traffic is invisible to receipts.
 
-### P1 — Daily-use product quality
+### P1 - Daily-use product quality
 
 1. Add real task pagination and server-side search/filtering. The API exposes offsets, but the UI
    currently fetches and filters only the first 100 tasks.
@@ -128,7 +128,7 @@ numbered phase say so.
 4. Make advanced capability scopes and allow/deny patterns editable through validated backend
    endpoints with before/after confirmation.
 
-### P2 — Differentiating control-plane features
+### P2 - Differentiating control-plane features
 
 1. Per-role models for Concierge, Operator, and Auditor, with estimated cost/latency impact.
 2. Versioned prompt overrides with diff, reset, and an explicit scenario-fixture warning.
@@ -139,7 +139,7 @@ numbered phase say so.
    spend, model, and time window.
 6. SSE for task and approval events after measuring current polling load; keep polling fallback.
 
-### P3 — Expansion only after evidence
+### P3 - Expansion only after evidence
 
 1. Multiple local chat threads, search, archive, and export.
 2. Re-run/replay from a trace with a clear statement of what can cause side effects again.
@@ -160,7 +160,7 @@ Two findings from earlier reviews are repeated here because open phases depend o
 - LLM prompts are **not persisted anywhere**; `render_prompt()` builds them per call. This is the
   only genuinely new backend capability any open phase needs. Phase 14.
 
-### Phase 12 — Console UX pass (**shipped**)
+### Phase 12 - Console UX pass (**shipped**)
 
 Four unrelated daily irritations, grouped because they were all small, all in the console, and all
 verified in the code before being written down.
@@ -190,7 +190,7 @@ verified in the code before being written down.
   can actually be decided; every sub-page can be left without the browser back button; and there is
   exactly one obvious way to add a skill.
 
-### Phase 13 — Server-side folder picker (**shipped**)
+### Phase 13 - Server-side folder picker (**shipped**)
 
 - `GET /admin/api/folders[?path=...]`: no `path` returns the configured
   `computer_use.allowed_roots` (the exact same boundary `filesystem.manage` itself is scoped to,
@@ -205,7 +205,7 @@ verified in the code before being written down.
   behaved correctly against the running backend, not just in tests.
 - Acceptance: "organize this folder" is expressible from the console without typing a path.
 
-### Phase 16 — A second channel
+### Phase 16 - A second channel
 
 **Channel-adapter interface (shipped, first half).** The "classify -> task" half of intake ->
 classify -> task -> notify never actually depended on anything Telegram-specific - it was just

@@ -61,7 +61,7 @@ export function VoiceSettingsCard() {
       <CardHeader>
         <CardTitle>Voice messages</CardTitle>
         <CardDescription>
-          Turns recordings into text before YBM reads them — in this console and on Telegram. The
+          Turns recordings into text before YBM reads them - in this console and on Telegram. The
           model itself never hears audio.
         </CardDescription>
       </CardHeader>
@@ -79,7 +79,7 @@ export function VoiceSettingsCard() {
           // Flipping the switch without the package fails at the first
           // recording, so the reason is stated before it can be flipped.
           <p className="text-xs text-muted-foreground">
-            Needs the voice extra installed first — run <code>{config.install_hint}</code> and
+            Needs the voice extra installed first - run <code>{config.install_hint}</code> and
             restart.
           </p>
         ) : (

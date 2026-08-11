@@ -46,7 +46,7 @@ def test_invalid_capability_name_fails() -> None:
 
 def test_load_settings_error_never_echoes_the_offending_value(tmp_path) -> None:
     """Settings come from `.env`, so pydantic's ``input_value=`` in a failure is
-    the API key / bot token / vault key itself — and `ybm doctor` prints that
+    the API key / bot token / vault key itself - and `ybm doctor` prints that
     text verbatim. The failure must stay debuggable without carrying the value."""
     config_file = tmp_path / "config.yaml"
     config_file.write_text("server:\n  host: 127.0.0.1\n", encoding="utf-8")

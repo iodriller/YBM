@@ -101,7 +101,7 @@ def _reply(inbound: InboundMessage, text: str) -> OutboundMessage:
 # client message is extra exposure to the account-flagging risk Baileys
 # already carries. Telegram's own _send_progress sends both unchanged.
 ACKNOWLEDGMENT_TEXT = "Got your message, figuring out what to do…"
-TASK_STARTED_TEXT = "On it — I'll send the result here when it's done."
+TASK_STARTED_TEXT = "On it - I'll send the result here when it's done."
 
 
 def status_summary(repositories: Repositories) -> str:
@@ -170,7 +170,7 @@ def resume_clarifying_reply(
     )
     if result.cancelled:
         return _reply(inbound, f"Cancelled: {result.task.objective[:200]}")
-    return _reply(inbound, "Got it — resuming the task with your answer.")
+    return _reply(inbound, "Got it - resuming the task with your answer.")
 
 
 def _spawn_failed(

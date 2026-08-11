@@ -25,7 +25,7 @@ flowchart LR
 
 ## The Operator loop
 
-One tick per poll. Every tool call passes the policy gate — this is where approvals happen.
+One tick per poll. Every tool call passes the policy gate - this is where approvals happen.
 
 ```mermaid
 flowchart TD
@@ -53,10 +53,10 @@ next `decide()` sees it in context and chooses what to do. There is no separate 
 
 `call_tool` · `done` · `ask_user` · `blocked`, plus two narrow extras:
 
-- **`call_tools_parallel`** — 2+ *independent* calls via `asyncio.gather`. No approval, retry, or
+- **`call_tools_parallel`** - 2+ *independent* calls via `asyncio.gather`. No approval, retry, or
   background-wait support; a call needing one fails cleanly inside the batch while the rest run.
   Costs one step-budget slot per call.
-- **`delegate`** — a self-contained sub-task in an isolated inner loop with its own empty history
+- **`delegate`** - a self-contained sub-task in an isolated inner loop with its own empty history
   and its own budget (`DELEGATE_MAX_STEPS = 6`). Only a one-line summary returns to the parent.
   Cannot recurse, request approval, wait on background work, or ask the user.
 
@@ -89,11 +89,11 @@ stateDiagram-v2
 ```
 
 The worker claims `received`, `interpreting`, `planned`, `running`, and `retrying`, and routes
-them all through the Operator loop. `awaiting_approval` is deliberately **not** claimable — a
+them all through the Operator loop. `awaiting_approval` is deliberately **not** claimable - a
 pending approval would otherwise monopolize the single worker while a human decides. A decision
-(or a timed-out expiry — see [sweep_expired_approvals](#gap-handling-budgets)) flips the task back
+(or a timed-out expiry - see [sweep_expired_approvals](#gap-handling-budgets)) flips the task back
 to `running` so the next poll picks it up. `interpreting` and `planned` are pre-P3 leftovers
-nothing transitions into anymore — kept claimable only so an old stuck task
+nothing transitions into anymore - kept claimable only so an old stuck task
 isn't stranded. It skips `paused`, `cancelled`, `completed`, `failed`, and `blocked`.
 
 ## Gap-handling budgets
@@ -108,16 +108,16 @@ gap) or fails.
 | `operator_fulfillment_gap_count` | 2 | Postcondition check fails after `done` | Completes with `metadata.fulfillment_gap` set |
 | `clarify_count` | 2 | `ask_user`, or usage-limit backoff | Task **failed** |
 
-A pending approval isn't in this table because it isn't a step budget — it's a wall-clock deadline
+A pending approval isn't in this table because it isn't a step budget - it's a wall-clock deadline
 (`approval_policy.default_timeout_seconds`). `orchestration/signals.py::sweep_expired_approvals()`
 runs every worker poll tick: it expires the stale approval row, then requeues the task to `running`
 so the Operator loop's normal path transitions it to **blocked** (notified) instead of it sitting
-in `awaiting_approval` forever — the risk being a Telegram/WhatsApp-only operator who never opens
+in `awaiting_approval` forever - the risk being a Telegram/WhatsApp-only operator who never opens
 the admin console to trigger the older, console-only sweep.
 
 ## When the Auditor runs
 
-Only when a **content tool** was called — one that returns human-readable content:
+Only when a **content tool** was called - one that returns human-readable content:
 `browser.open`, `browser.control`, `code.interpreter`, `filesystem.manage`, `document.manage`,
 `computer.use`, `http.request`, `mcp.client`, `delegate` (`AuditorService.CONTENT_TOOLS`).
 
@@ -125,9 +125,9 @@ Tasks that never touch one (status checks, scheduling, delivery-only) skip it an
 Operator's own `final_answer` plus the fulfillment check.
 
 Two deliberate edge cases:
-- `artifact.deliver` is **excluded** — the loop scans backward past a delivery step to the tool
+- `artifact.deliver` is **excluded** - the loop scans backward past a delivery step to the tool
   that produced the content, so *that* gets audited rather than a delivery receipt.
-- `delegate` is **included** — a sub-task's tool calls update the parent's output, so a `done`
+- `delegate` is **included** - a sub-task's tool calls update the parent's output, so a `done`
   right after a `delegate` would otherwise skip the gate on a technicality.
 
 ## Processes and channels
@@ -139,7 +139,7 @@ flowchart TD
         WA["WhatsApp<br/>Node sidecar, Baileys"]
         WEB["Web chat<br/>/admin"]
     end
-    subgraph core["channels/base.py — channel-agnostic core"]
+    subgraph core["channels/base.py - channel-agnostic core"]
         CORE["classify_and_spawn_task<br/>resume_clarifying_reply<br/>status_summary"]
     end
     TG --> CORE
@@ -179,7 +179,7 @@ Node.js sidecar over loopback HTTP with a per-run shared secret. See
 | Fulfillment | `orchestration/fulfillment.py` | Deterministic postconditions inferred from objective text |
 | Notifications | `channels/task_notify.py` | `format_task_message()`, shared across channels |
 | Persona | `persona.py` | One global preference doc injected into every Operator prompt |
-| Knowledge base | `knowledge_base.py` | Local keyword-overlap search over your documents — not embeddings |
+| Knowledge base | `knowledge_base.py` | Local keyword-overlap search over your documents - not embeddings |
 | Logging | `logging_setup.py` | structlog → JSON, `task_id` bound as a contextvar |
 | LLM provider catalog | `llm/catalog.py` | The 13 providers the console offers, as data - adding one is a row, not a code path |
 | Anthropic provider | `llm/anthropic_provider.py` | Native, since Anthropic's API is not OpenAI-compatible; omits `temperature` on models that reject it |
@@ -198,7 +198,7 @@ Node.js sidecar over loopback HTTP with a per-run shared secret. See
 `vscode.terminal_command` · `workspace.manage`
 
 Every tool carries typed input/output contracts. The executor validates input **before** policy
-and adapter execution, and validates output before recording success — bad payloads surface as
+and adapter execution, and validates output before recording success - bad payloads surface as
 `validation_failed` rather than silently misbehaving.
 
 A missing tool routes to `adapter.factory`, which writes a reviewable proposal under
@@ -223,9 +223,9 @@ Three agent prompts. Everything else is a tool's own internal prompt, not a four
 
 ## Config and secrets
 
-- `config/config.yaml` — all non-secret runtime config: profiles, adapters, access modes,
+- `config/config.yaml` - all non-secret runtime config: profiles, adapters, access modes,
   allowlists, ports, `operator.max_steps`. Bootstrapped from `config.example.yaml`.
-- `.env` — secrets only: `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`, `VSCODE_BRIDGE_TOKEN`,
+- `.env` - secrets only: `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`, `VSCODE_BRIDGE_TOKEN`,
   `AGENT_ADMIN_TOKEN`, `AGENT_SECRET_VAULT_KEY`, `YBM_LOCALDEPLOY_ROOT`.
 
 > A YAML-set list **replaces** the code default rather than merging with it. Pinning a list
@@ -238,7 +238,7 @@ ybm trace-task <task_id>          # full post-mortem; --json for raw
 ybm logs worker -f                # follow a service log
 ```
 
-`trace-task` reads the DB directly — no running backend needed. The same data renders at
+`trace-task` reads the DB directly - no running backend needed. The same data renders at
 `/admin/tasks/:taskId`. Structured logs are at `.agent_control/logs/<service>.jsonl`, one JSON
 object per line, secrets redacted, `task_id` on every line written during that task.
 
@@ -260,4 +260,4 @@ deferred. Archived plans must not be used as evidence that behavior exists.
   measurement predates the current architecture. The deterministic scenario tier is the
   trustworthy signal meanwhile.
 - **Status requests cost two LLM calls.** The old LLM-free keyword shortcut was deliberately not
-  rebuilt — it was brittle and silently misroutable.
+  rebuilt - it was brittle and silently misroutable.

@@ -540,7 +540,7 @@ def test_diagnose_turn_rejects_forbidden_tool_invocation() -> None:
 
 
 def test_diagnose_turn_checks_audit_trail_for_leaked_secret(monkeypatch) -> None:
-    """Redacting the reply is not enough — the audit trail is persisted and
+    """Redacting the reply is not enough - the audit trail is persisted and
     operator-visible, so the canary must not survive there either."""
     runner = _runner_module()
     monkeypatch.setattr(
@@ -628,7 +628,7 @@ def test_turn_ceiling_reports_when_it_clips_a_declared_timeout() -> None:
 
 def test_diagnose_turn_fails_bot_reply_without_confirmed_telegram_send() -> None:
     """Task metadata can claim a completed answer even if nothing was ever
-    actually sent to Telegram — the audit log (message_sent events) is the
+    actually sent to Telegram - the audit log (message_sent events) is the
     only independent confirmation, so its absence must fail the assertion."""
     runner = _runner_module()
     turn = runner.TurnResult(
@@ -844,7 +844,7 @@ def test_autonomy_catalog_is_distinct_and_guarded_cases_stay_opt_in() -> None:
 
 
 def test_evolution_suite_is_selectable_and_unguarded() -> None:
-    """The evolution suite must stay runnable without external credentials —
+    """The evolution suite must stay runnable without external credentials -
     its whole purpose is checking trustworthy behavior on the local stack, so a
     stray guarded tag would silently drop cases from the default run."""
     runner = _runner_module()

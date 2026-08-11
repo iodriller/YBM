@@ -56,6 +56,7 @@ jobs:
       - run: uv run --frozen ruff check .
       - run: uv run --frozen --with pip-audit pip-audit
       - run: uv run --frozen python ../scripts/check_markdown_links.py
+      - run: uv run --frozen python ../scripts/check_no_em_dash.py
 
   frontend:
     runs-on: ubuntu-latest

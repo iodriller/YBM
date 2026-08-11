@@ -36,7 +36,7 @@ export function MCPServersCard() {
       <CardHeader>
         <CardTitle>MCP servers</CardTitle>
         <CardDescription>
-          {mcp.enabled ? "Enabled" : "Disabled"} · read-only here — edit config.yaml to change.
+          {mcp.enabled ? "Enabled" : "Disabled"} · read-only here - edit config.yaml to change.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">

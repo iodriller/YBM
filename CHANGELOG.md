@@ -4,7 +4,7 @@ Notable changes to YBM Control. Format follows [Keep a Changelog](https://keepac
 versions follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 `ybm check-updates` currently compares against the default branch. Once tagged
-releases exist it should compare against the latest tag instead — see
+releases exist it should compare against the latest tag instead - see
 `docs/GAPS.md`.
 
 ## [Unreleased]
@@ -17,7 +17,7 @@ releases exist it should compare against the latest tag instead — see
   control, screenshots and the VS Code bridge cannot, and `ybm doctor` now
   reports them as unavailable rather than failing at call time.
 - `ybm start --foreground`, which supervises until a service exits or a signal
-  arrives. `start_all` spawns detached children and returns — correct for an
+  arrives. `start_all` spawns detached children and returns - correct for an
   interactive start, and an immediate exit to a container or systemd.
 - `YBM-Setup.cmd`, a double-click first-run entry point.
 - `--dry-run`, `--verify`, `--no-prompt` and `--install-dir` on both installers.
@@ -34,14 +34,14 @@ releases exist it should compare against the latest tag instead — see
 
 ### Changed
 
-- **Installers require nothing preinstalled.** The Python 3.12+ gate is gone —
+- **Installers require nothing preinstalled.** The Python 3.12+ gate is gone -
   `uv` is a standalone binary and provides the interpreter. git is optional,
   with an archive fallback. The uv installer URL is pinned to a version.
 - `.mcp.json` launches the MCP server through `uv run` instead of a bare
   `python` with a relative `PYTHONPATH`, which only resolved on a machine that
   happened to have a system Python carrying the dependencies.
 - The first-run wizard preselects a recommended Ollama model, and distinguishes
-  "Ollama running with nothing pulled" from "no Ollama" — previously identical
+  "Ollama running with nothing pulled" from "no Ollama" - previously identical
   states, and the only point in onboarding that sent the user elsewhere.
 - Scenario fixtures are rebuilt rather than merged when re-recording, dropping
   roughly 4,500 lines of unreachable keys.
@@ -68,7 +68,7 @@ releases exist it should compare against the latest tag instead — see
 - The anti-fabrication guard was disabled task-wide by any earlier write; it now
   compares claimed filenames against recorded ones.
 - `filesystem.manage`'s desktop alias enumerated a directory that was not an
-  allowed root — the one operation bypassing `_safe_path`.
+  allowed root - the one operation bypassing `_safe_path`.
 - Admin token comparison is constant-time; scope matching refuses a `..`
   segment; three type-narrowing `assert`s that `python -O` strips became real
   raises.

@@ -102,19 +102,19 @@ the coding-session watcher. Skip any with `-NoTelegram`, `-NoWhatsApp`, `-NoWork
 process.
 
 Open **http://127.0.0.1:8765/admin**. If the React console hasn't been built at this checkout
-(`ybm ui-build`), you get a pointer page instead — the JSON API under `/admin/api/*` works either way.
+(`ybm ui-build`), you get a pointer page instead - the JSON API under `/admin/api/*` works either way.
 
 ### 5. Link WhatsApp (optional)
 
 WhatsApp is off by default and uses [Baileys](https://github.com/WhiskeySockets/Baileys), an
-unofficial WhatsApp Web client — no Meta developer account or public webhook, just a phone you
+unofficial WhatsApp Web client - no Meta developer account or public webhook, just a phone you
 link as a device. `ybm setup` installs the sidecar's dependencies if Node.js 20+ is on `PATH`.
 
 1. Set `channels.whatsapp.enabled: true` in `config/config.yaml`.
 2. Restart: `.\scripts\ybm.ps1 start`
 3. Watch for the QR code: `.\scripts\ybm.ps1 logs whatsapp -Follow`
 4. Scan it (phone → Settings → Linked Devices). The session persists in `.agent_control/whatsapp_auth/`.
-5. Add the number to `channels.whatsapp.allowed_numbers` — E.164 digits, no `+`
+5. Add the number to `channels.whatsapp.allowed_numbers` - E.164 digits, no `+`
    (e.g. `"15551234567"`). **An empty list denies everything.** Restart to apply.
 
 > Consider linking a secondary number. Baileys is unofficial, so there's a small
@@ -132,7 +132,7 @@ Invoke-RestMethod http://127.0.0.1:8765/health
 
 Package the VS Code extension: `.\scripts\package_vscode_extension.ps1`
 
-The per-service launchers under `scripts/services/` are what `start` actually runs — use them
+The per-service launchers under `scripts/services/` are what `start` actually runs - use them
 directly only to debug one process in isolation.
 
 ## Where things land
@@ -145,6 +145,6 @@ directly only to debug one process in isolation.
 | `.agent_control/computer_use/screenshots` | Desktop screenshots |
 | `.agent_control/coding_sessions` | Codex / Claude Code / Copilot session state |
 | `.agent_control/adapters` | Generated adapter proposals (never auto-loaded) |
-| `agent_control.db` | SQLite database — see [DATABASE_INSPECTION.md](DATABASE_INSPECTION.md) |
+| `agent_control.db` | SQLite database - see [DATABASE_INSPECTION.md](DATABASE_INSPECTION.md) |
 
-Keep all of it private — see [THREAT_MODEL.md](THREAT_MODEL.md).
+Keep all of it private - see [THREAT_MODEL.md](THREAT_MODEL.md).

@@ -38,7 +38,7 @@ export function ComposerModeChips({
             key={key}
             type="button"
             onClick={() => onToggle(key)}
-            title={`${mode.hint} — click to remove`}
+            title={`${mode.hint} - click to remove`}
             className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 py-1 pl-2.5 pr-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/20"
           >
             <Icon className="size-3.5" />

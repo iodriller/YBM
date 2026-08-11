@@ -2842,7 +2842,7 @@ _ADMIN_HTML = """
 <body>
   <h1>YBM Control</h1>
   <p>No admin console build was found yet.</p>
-  <p><b>1. Install Node.js 20 or newer</b> if you don't have it &mdash;
+  <p><b>1. Install Node.js 20 or newer</b> if you don't have it -
      <a href="https://nodejs.org">nodejs.org</a>, or <code>winget install OpenJS.NodeJS.LTS</code>.
      The console is a React app, so it cannot be built without it. Open a new terminal afterwards.</p>
   <p><b>2. Build it:</b> <code>.\\scripts\\ybm.ps1 ui-build</code>

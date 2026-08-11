@@ -8,7 +8,7 @@ install with nothing pre-configured.
 
 ---
 
-## 0. Yes — web chat is a channel
+## 0. Yes - web chat is a channel
 
 Confirming the mental model, because it is already how the code is shaped:
 `channels/catalog.py` lists `web` alongside `telegram` and `whatsapp`, and the
@@ -34,7 +34,7 @@ simply false, and the user finds out by watching it fail.
 `docs/archive/LLM_SETUP_PROPOSAL.md`) said LocalDeploy's control subsystem had **no
 HTTP surface**. That was wrong. Every module under `localdeploy/control/`
 defines an `APIRouter`, `control/__init__.py` aggregates them, and
-`server.py:1851` includes it as `web_router` whenever `ENABLE_WEB_UI` is on —
+`server.py:1851` includes it as `web_router` whenever `ENABLE_WEB_UI` is on -
 which is the default. The mistake came from grepping `@app.` decorators and a
 top-level `from .control import`, both of which miss a function-scoped import.
 
@@ -48,12 +48,12 @@ So these already exist and are live:
 | `POST /registry/starter-pack` · `/registry/recommend` | Curated picks for a new user |
 | `POST /system/install-ollama`, `GET /system/ollama-status` | Runtime install |
 
-**1a — done, and nothing needed writing.** YBM now calls `GET /system/hardware`
+**1a - done, and nothing needed writing.** YBM now calls `GET /system/hardware`
 first and falls back to its own detection only when LocalDeploy is not
 running.
 
 **1b.** YBM asks, and the answer drives the screen:
-- Fits → *"Recommended for your machine — RTX 3080, 8 GB VRAM"*
+- Fits → *"Recommended for your machine - RTX 3080, 8 GB VRAM"*
 - Does not fit → **disabled**, with the real reason: *"needs ~11 GB, you have 8 GB"*
 - Cannot tell → say so: *"We could not detect your GPU"* and recommend nothing.
 
@@ -65,15 +65,15 @@ This one is free and should land immediately.
 
 ## 2. Say what a choice will actually do before it does it
 
-*"Qwen3-VL 8B on the host — free (use this in Docker)"* is unreadable unless
+*"Qwen3-VL 8B on the host - free (use this in Docker)"* is unreadable unless
 you already know what a container gateway is. That was my wording and it is
 bad.
 
 **2a.** Rewrite in terms of consequences, not topology:
-> **Qwen3-VL 8B** — free, private, runs on your own hardware
+> **Qwen3-VL 8B** - free, private, runs on your own hardware
 > Downloads about 5 GB the first time. Nothing you type leaves this machine.
 
-**2b.** Add a disclosure — tooltip or expandable line — on every local preset
+**2b.** Add a disclosure - tooltip or expandable line - on every local preset
 stating plainly: *"YBM will install LocalDeploy if it is missing, download the
 model (~5 GB), and run it on this computer. It stays on your machine and
 costs nothing to use."* Downloading multiple gigabytes is not something to
@@ -89,8 +89,8 @@ read the words `host.docker.internal`.
 ## 3. Remove the duplication you spotted
 
 You are right that it is duplication. The screen currently offers
-*"OpenAI GPT-4.1 — needs a paid API key"* as a preset **and** OpenAI inside
-the provider picker below. Two paths, same destination, different quality —
+*"OpenAI GPT-4.1 - needs a paid API key"* as a preset **and** OpenAI inside
+the provider picker below. Two paths, same destination, different quality -
 the preset saves without verifying, the picker verifies and now requires a
 real completion.
 
@@ -99,14 +99,14 @@ real completion.
 verifies.
 
 **3b.** Two clearly-labelled routes and nothing else:
-> **Run a model on this computer** — free, private
-> **Use an API key** — Anthropic, OpenAI, and 11 others
+> **Run a model on this computer** - free, private
+> **Use an API key** - Anthropic, OpenAI, and 11 others
 
 That is the whole decision, stated once.
 
 ---
 
-## 4. Chat should decide its own tools — and offer modes when you want to force one
+## 4. Chat should decide its own tools - and offer modes when you want to force one
 
 **4a. Stop instructing the user to instruct the model.** The suggestion
 *"Use the local code interpreter to compute the 20th Fibonacci number"* teaches
@@ -114,7 +114,7 @@ exactly the wrong lesson: it implies YBM cannot work out that arithmetic needs
 code. If the model genuinely needs to be told, that is a routing bug to fix,
 not a prompt to ship. New suggestions describe **outcomes**:
 
-- *"Summarize the PDFs on my desktop"* (your suggestion — kept, it is the best one)
+- *"Summarize the PDFs on my desktop"* (your suggestion - kept, it is the best one)
 - *"What changed in this folder since yesterday?"*
 - *"Find the cheapest flight to Lisbon next month"*
 
@@ -127,12 +127,12 @@ chip.
 
 **4d. A tools menu in the composer.** Following the pattern you pointed at:
 a single **`+`** next to attach, opening web search / deep research / code /
-browser, each inserting a **removable chip that shows scope before send** —
+browser, each inserting a **removable chip that shows scope before send** -
 so the user sees what will run *before* committing. Modes carry equal visual
 weight and honest runtimes: **deep research announces that it will take
 minutes**, because a mode that silently runs long feels broken.
 
-The capabilities already exist — `browser.search`, `browser.research`,
+The capabilities already exist - `browser.search`, `browser.research`,
 `browser.research_pages` are real operations in `tools/browser.py`. The chips
 are a way to *force* one, not a way to make one possible. Default stays
 automatic: the model chooses.
@@ -150,19 +150,19 @@ first-time user.
 
 **My recommendation: change the words the user reads; leave the code alone.**
 `OperatorDecision`, `OperatorAction` and friends are woven through schemas
-that the recorded scenario fixtures depend on — renaming the classes would
+that the recorded scenario fixtures depend on - renaming the classes would
 invalidate all sixteen and buy nothing a label cannot.
 
 Three options for the user-facing trio:
 
 | | Concierge | Operator | Auditor |
 |---|---|---|---|
-| **A — verbs (recommended)** | **Understands** | **Does the work** | **Checks the result** |
-| B — roles | Intake | Runner | Reviewer |
-| C — plain nouns | Interpreter | Executor | Verifier |
+| **A - verbs (recommended)** | **Understands** | **Does the work** | **Checks the result** |
+| B - roles | Intake | Runner | Reviewer |
+| C - plain nouns | Interpreter | Executor | Verifier |
 
 **A** is my pick: it needs no glossary, and it describes what a user cares
-about — what happens to their request — rather than the architecture. Settings
+about - what happens to their request - rather than the architecture. Settings
 would read *"The model used to understand requests, do the work, and check the
 result"* instead of naming three internal components.
 
@@ -177,14 +177,14 @@ The recurring theme: **Settings has fallen behind the wizard.**
 **6a. "Change the model" is the whole job.** Today it is five preset pills and
 no way to reach the thirteen providers the wizard offers. Someone who
 configured Anthropic during onboarding cannot change it without editing YAML.
-Mount `ProviderPicker` — the component already exists — under a heading that
+Mount `ProviderPicker` - the component already exists - under a heading that
 says what the section is for.
 
 **6b. Show what is running now.** Nothing on the page answers "what model am I
 using". The active profile should be marked, with its provider and model.
 
-**6c. Adding a remote API is the same picker.** Your question — *how does a
-user add a remote API here?* — has no answer today. With 6a it becomes: pick
+**6c. Adding a remote API is the same picker.** Your question - *how does a
+user add a remote API here?* - has no answer today. With 6a it becomes: pick
 the provider, paste the key, press Test, save.
 
 **6d. Telegram in Settings still asks for numeric IDs.** "Allowed user IDs" and
@@ -217,7 +217,7 @@ face"*; both names are gone.
 | **1** | 1c, 2a, 3a/3b, 4a/4b/4c, 6a/6b/6c, 6e | No new infrastructure. Kills the false machine claim, the duplication, the bad suggestions, and the Settings gap |
 | **2** | 4d/4e, 2b, 5 | Composer tools menu, download disclosure, the rename |
 | **3** | 6d, 7a, 7d | Guided Telegram in Settings, banner collapse, Back |
-| **4** | 1a/1b, 2c | Real hardware fit — needs the LocalDeploy repo decision |
+| **4** | 1a/1b, 2c | Real hardware fit - needs the LocalDeploy repo decision |
 | **5** | 7b, 7c | Responsive audit |
 
 ## Open question for you

@@ -384,7 +384,7 @@ class BrowserClickInput(ToolInputModel):
 
 class BrowserFillFormInput(ToolInputModel):
     operation: Literal["fill_form"] = "fill_form"
-    # fields is logically required for fill_form — encoding that here instead
+    # fields is logically required for fill_form - encoding that here instead
     # of in the browser adapter's runtime check eliminates a class of replans.
     fields: dict[str, str] = Field(..., min_length=1)
     submit: bool = False

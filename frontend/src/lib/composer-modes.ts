@@ -21,7 +21,7 @@ export const COMPOSER_MODES: ComposerMode[] = [
   {
     key: "deep_research",
     label: "Deep research",
-    hint: "Reads many sources and writes up findings — takes several minutes",
+    hint: "Reads many sources and writes up findings - takes several minutes",
     icon: Telescope,
     capability: "browser.open",
     instruction:

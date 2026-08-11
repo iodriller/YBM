@@ -17,12 +17,12 @@ Worth recording, because two of these contradict assumptions in earlier docs:
 - **No horizontal page scroll at either width**, on any route.
 - **The phone layout already works.** Bottom tab bar, stacked content,
   readable type. The console was not a desktop-only app that needed a mobile
-  pass — `docs/KNOWN_GAPS.md` U3 assumed this needed auditing before changes;
+  pass - `docs/KNOWN_GAPS.md` U3 assumed this needed auditing before changes;
   the audit says the foundation is there.
 - **Every route is a fixed-height app shell** (`scrollHeight` = 900 on all
   eight) with internal scrolling, rather than a long scrolling document.
 
-## F1 — The Tasks table is 21x wider than the window (critical)
+## F1 - The Tasks table is 21x wider than the window (critical)
 
 Measured at 1440px viewport:
 
@@ -33,10 +33,10 @@ Measured at 1440px viewport:
 | Outcome | **26,618px** | 30,355 |
 | Created | 170px | **30,525** |
 
-The table headers exist — `["Objective","Status","Outcome","Created"]` — but
+The table headers exist - `["Objective","Status","Outcome","Created"]` - but
 everything past ~1,390px is off-screen. The `Table` primitive wraps itself in
 `overflow-x-auto`, so it is *technically* reachable by scrolling the container
-sideways — across roughly 21 screens per row. Status, outcome, duration and
+sideways - across roughly 21 screens per row. Status, outcome, duration and
 timestamp were effectively unavailable on desktop.
 
 Cause: no `max-width`, no truncation, and no `table-layout: fixed`, so a cell
@@ -52,12 +52,12 @@ visible there.
 `table-layout: fixed` with per-column widths and `line-clamp` on the text
 columns. The card route is less work and already designed.
 
-## F2 — Horizontal space is largely unused
+## F2 - Horizontal space is largely unused
 
 At 1440px, with a 255px sidebar leaving ~1,185px of content:
 
 - **Agent** renders three cards and then roughly 600px of empty vertical space
-  — about 65% of the viewport is blank. It is a hub whose three destinations
+  - about 65% of the viewport is blank. It is a hub whose three destinations
   (`/memory`, `/skills`, `/tools`) are already routes in their own right, so it
   costs a click and returns three links.
 - **Tools** lays cards out two-across ending at ~1,265px, and any group with a
@@ -71,20 +71,20 @@ At 1440px, with a 255px sidebar leaving ~1,185px of content:
 the sidebar under a group heading and dropping the hub page, or making the hub
 show real content rather than three links.
 
-## F3 — Advanced configuration is always visible
+## F3 - Advanced configuration is always visible
 
 The sidebar has an **Advanced mode** toggle, but Settings shows the full LLM
 profile regardless: provider, base URL, API key env var, timeout, max tokens,
 temperature, profile name, default profile.
 
-For the person the installer is now aimed at — no Python, no terminal — the
+For the person the installer is now aimed at - no Python, no terminal - the
 useful control is the preset row at the top (`LocalDeploy Qwen3-VL 8B
 (recommended)` and friends). The rest is expert surface shown by default.
 
 **Fix:** gate the raw fields behind the Advanced toggle that already exists.
 The presets and the enable switches stay.
 
-## F4 — Chat receipts outweigh their messages
+## F4 - Chat receipts outweigh their messages
 
 A one-line reply ("I am an AI assistant…") carries a receipt card with
 `Completed`, `Receipt`, `No external transfer was recorded`, `Time: 13s`,
@@ -97,7 +97,7 @@ than something a person asked about.
 on click; keep the full card for tasks that actually touched a tool, sent a
 file, or spent real time.
 
-## F5 — Persistent banner — WITHDRAWN, not a defect
+## F5 - Persistent banner - WITHDRAWN, not a defect
 
 Retracted after reading the code. `SafetyTourBanner` already persists its
 dismissal in localStorage (`lib/safety-tour.ts`) and is documented as "shown
@@ -107,7 +107,7 @@ not a bug in the console.
 
 Left alone deliberately.
 
-## F6 — Truncation with no way back — WITHDRAWN, not a defect
+## F6 - Truncation with no way back - WITHDRAWN, not a defect
 
 Also retracted. `ToolsPage` already sets `title={tool.operations.join(", ")}`
 on the truncated line, so the full list is available on hover. The visual
@@ -137,6 +137,6 @@ Backend on 127.0.0.1:8765 without Telegram, then drive `/admin`, `/admin/tasks`,
 `frontend` dev dependency (`@playwright/test`), and the browsers are installed;
 no extra tooling is required.
 
-The console needs an authenticated first navigation — `/admin?token=<the
-AGENT_ADMIN_TOKEN from .env>` — after which `lib/api.ts` keeps the token and
+The console needs an authenticated first navigation - `/admin?token=<the
+AGENT_ADMIN_TOKEN from .env>` - after which `lib/api.ts` keeps the token and
 strips it from the URL.

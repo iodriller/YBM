@@ -1,8 +1,8 @@
 # Pre-public review
 
 Full pass over the repo as a stranger would meet it. Secrets were audited
-earlier this session — gitleaks over all 175 commits, clean, and zero tracked
-files carrying the account name — so this covers everything else.
+earlier this session - gitleaks over all 175 commits, clean, and zero tracked
+files carrying the account name - so this covers everything else.
 
 **Verdict: one blocker left, and it is not mine to fix.**
 
@@ -14,7 +14,7 @@ files carrying the account name — so this covers everything else.
 
 ---
 
-## P0 — blocks publishing
+## P0 - blocks publishing
 
 ### 1. CI is red, and it is not the code
 
@@ -26,7 +26,7 @@ Every job on the last run failed in ~3 seconds:
 Nothing was executed. A public repo whose badge shows a failing build reads as
 abandoned, and it is the first thing a visitor sees. Worth knowing: **public
 repositories get free Actions minutes**, so publishing may resolve this by
-itself — but confirm the billing state first rather than hoping.
+itself - but confirm the billing state first rather than hoping.
 
 ### 2. The README is out of date in a way that becomes false on publish
 
@@ -38,13 +38,13 @@ More significant: **the README never mentions Anthropic, or that YBM now speaks
 to thirteen providers.** That is the headline capability added this week and it
 is invisible to anyone deciding whether to try this.
 
-`config/config.example.yaml` has the same gap — no Anthropic profile, despite
+`config/config.example.yaml` has the same gap - no Anthropic profile, despite
 `AGENTS.md` requiring that "documentation, schemas, and configuration examples
 [stay] aligned with the code that exists".
 
 ---
 
-## P1 — the docs directory is the weakest part of the repo
+## P1 - the docs directory is the weakest part of the repo
 
 **22 files. Eleven of them are planning documents I wrote this session, ~1,900
 lines, several explicitly superseding each other.**
@@ -52,7 +52,7 @@ lines, several explicitly superseding each other.**
 | Doc | Status |
 |---|---|
 | `KNOWN_GAPS.md` | superseded by `GAPS.md` |
-| `UI_UX_IMPROVEMENT_PLAN.md` | says so itself — superseded by `PRODUCT_PLAN.md` |
+| `UI_UX_IMPROVEMENT_PLAN.md` | says so itself - superseded by `PRODUCT_PLAN.md` |
 | `UI_MEASURED_FINDINGS.md` | folded into `PRODUCT_PLAN.md` |
 | `FIRST_RUN_PLAN.md` | all items marked done |
 | `INSTALL_UX_PLAN.md` | mostly implemented |
@@ -63,7 +63,7 @@ lines, several explicitly superseding each other.**
 | `VOICE_PLAN.md` | live |
 | `GAPS.md` | live |
 
-`AGENTS.md` names four durable sources of truth — `ARCHITECTURE.md`,
+`AGENTS.md` names four durable sources of truth - `ARCHITECTURE.md`,
 `HISTORY.md`, `config.example.yaml`, `README.md`. The other eighteen files are
 working notes, and a stranger cannot tell which is which. The signal that YBM
 is a serious project is buried under drafts of how it got here.
@@ -75,12 +75,12 @@ that are strictly superseded. Roughly 22 files becomes 11.
 ### `ARCHITECTURE.md` has fallen behind
 
 No mention of `llm/hardware.py`, `error_text.py`, `llm/catalog.py`, or
-`channels/catalog.py` — the four modules most likely to be extended by someone
+`channels/catalog.py` - the four modules most likely to be extended by someone
 new. It is one of the four documents `AGENTS.md` says to trust.
 
 ---
 
-## P2 — worth doing, not blocking
+## P2 - worth doing, not blocking
 
 - **G5: implausible results are reported as fine.** A recorded run said *"a
   total of 0"* for a file of expenses without comment. Highest-value item left,
@@ -90,7 +90,7 @@ new. It is one of the four documents `AGENTS.md` says to trust.
 - **No real recording has ever been transcribed.** faster-whisper is in the
   image, but no audio has gone through it end to end.
 - **Repository has no topics.** Free discoverability; the description is fine.
-- **No screenshots in the README.** The console looks good — the first-run and
+- **No screenshots in the README.** The console looks good - the first-run and
   chat captures in `docs/screenshots/first-run/` would do more for adoption
   than another paragraph.
 
@@ -114,7 +114,7 @@ Worth stating, because the list above is all criticism.
 
 | | Item | Effort |
 |---|---|---|
-| 1 | Sort the GitHub billing so CI is green | Yours — minutes |
+| 1 | Sort the GitHub billing so CI is green | Yours - minutes |
 | 2 | README: drop the private-repo note, add providers/voice, add a screenshot | ~30 min |
 | 3 | `config.example.yaml`: add an Anthropic profile | ~10 min |
 | 4 | Consolidate `docs/` into live + `archive/` | ~30 min |

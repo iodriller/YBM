@@ -1,6 +1,6 @@
 # Concierge, Operator, Auditor
 
-The three LLM roles a request passes through. The names stay as they are —
+The three LLM roles a request passes through. The names stay as they are -
 they are woven through `schemas.py` (`OperatorDecision`, `OperatorAction`) and
 the recorded scenario fixtures depend on them. What changed is the *user-facing*
 wording: the console no longer names them at a first-time user, and says
@@ -49,7 +49,7 @@ flowchart TD
 
 The loop between Operator and Auditor is the important part: the Auditor can
 send work back, which is why a task can run several rounds before it reports.
-Retries are bounded — see `orchestration/worker.py`.
+Retries are bounded - see `orchestration/worker.py`.
 
 ## Where each one lives
 
@@ -85,7 +85,7 @@ flowchart LR
 
 All three roles share one model profile by default. `llm/config` supports a
 separate `major_profile` for heavier work and a `fallback_profile` used when
-the primary endpoint is unreachable — connection errors, timeouts, or HTTP 5xx
+the primary endpoint is unreachable - connection errors, timeouts, or HTTP 5xx
 only. A 4xx or a bad structured response is *not* failed over, because it would
 fail the same way against the fallback and switching models would hide the real
 problem (`llm/providers.py::_is_unavailability`).
@@ -94,8 +94,8 @@ problem (`llm/providers.py::_is_unavailability`).
 
 Renaming would touch `OperatorDecision`, `OperatorAction`, and the schema
 fields the sixteen recorded scenario fixtures assert against. That is a large,
-risky diff whose entire benefit — a first-time user not meeting internal
-jargon — is already delivered by changing the words in the console.
+risky diff whose entire benefit - a first-time user not meeting internal
+jargon - is already delivered by changing the words in the console.
 
 If a short user-facing name is ever needed for a diagram, the suggestion on
 file is **Intake / Runner / Reviewer**.

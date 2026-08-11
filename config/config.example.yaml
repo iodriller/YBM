@@ -316,7 +316,7 @@ adapters:
       - "local_subprocess"
     untrusted_default_backend: "docker_python"
     # When true (default), untrusted/LLM-generated code silently runs unsandboxed
-    # on the host (local_subprocess) if Docker is disabled/unavailable — check
+    # on the host (local_subprocess) if Docker is disabled/unavailable - check
     # code.interpreter health for a safety_warnings entry when that happens.
     # Set to false to refuse untrusted runs instead of falling back.
     fallback_to_local_when_backend_unavailable: true

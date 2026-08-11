@@ -1,22 +1,24 @@
 <div align="center">
 
+<img src="docs/brand/ybm-mark.svg" alt="YBM Control logo" width="112" />
+
 # YBM Control
 
-**Your own AI agent, running on your machine — reachable from the apps you already use.**
+**Your own AI agent, running on your machine - reachable from the apps you already use.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/)
 [![Docker ready](https://img.shields.io/badge/docker-ready-2496ED.svg)](docker-compose.yml)
 [![Works with Claude, GPT, Gemini, Ollama](https://img.shields.io/badge/models-13%20providers-6E56CF.svg)](#bring-your-own-model)
 
-![YBM Control — setup, channels, tools, and policy](docs/screenshots/demo.gif)
+![YBM Control - setup, channels, tools, and policy](docs/screenshots/demo.gif)
 
 </div>
 
 ---
 
-Text it from your phone. It works on your actual computer — your files, your browser, your
-editor, your terminal — and reports back.
+Text it from your phone. It works on your actual computer - your files, your browser, your
+editor, your terminal - and reports back.
 
 ```
 You:  organize my Downloads folder by file type, then tell me what you moved
@@ -35,7 +37,7 @@ trace you can open: which tool ran, what it returned, what was approved, what wa
 - **It comes to you.** Telegram, WhatsApp, or the built-in web console. With optional local voice
   transcription enabled, you can send a voice note when typing is inconvenient.
 - **Nothing dangerous happens by default.** High-impact capabilities start **off**. Anything risky needs
-  a one-shot, expiring approval the *runtime* enforces — not the model, not a config flag, and not
+  a one-shot, expiring approval the *runtime* enforces - not the model, not a config flag, and not
   bypassable by an "allow everything" mode.
 - **It's yours.** Runs local models for free with nothing leaving the machine, or your own API
   key. MIT licensed.
@@ -43,7 +45,7 @@ trace you can open: which tool ran, what it returned, what was approved, what wa
 ## Try it in five minutes
 
 **Windows, no terminal:** download the folder, double-click **`YBM-Setup.cmd`**. It installs
-whatever is missing — Python included — and opens the console.
+whatever is missing - Python included - and opens the console.
 
 **macOS / Linux:**
 
@@ -60,7 +62,7 @@ docker compose up -d
 # then open http://127.0.0.1:8765/admin
 ```
 
-A browser wizard asks two questions — which model, and where you want to reach it — and both are
+A browser wizard asks two questions - which model, and where you want to reach it - and both are
 skippable. After that, **`YBM.bat`** (or `ybm run`) starts everything and opens the console.
 
 ## Bring your own model
@@ -70,7 +72,7 @@ skippable. After that, **`YBM.bat`** (or `ybm run`) starts everything and opens 
 | Ollama · LM Studio · LocalDeploy | Anthropic (Claude) · OpenAI · Google Gemini · OpenRouter · Groq · DeepSeek · Mistral · xAI · Together |
 
 Paste a key and YBM checks it, lists the models that key can actually reach, and **makes one real
-call before saving** — so a model that cannot answer never silently becomes your default. Local
+call before saving** - so a model that cannot answer never silently becomes your default. Local
 models cost nothing and nothing you type leaves the machine.
 
 Anthropic gets a native provider rather than an OpenAI-compatible shim, because current Claude
@@ -90,7 +92,7 @@ All of it policy-gated, on every channel. Full list in [docs/CAPABILITIES.md](do
 ## How it fits together
 
 A message arrives on any channel. The **Concierge** decides whether it is chat or work. Work goes
-to the **Operator**, a tool-calling loop where every call passes the policy engine first — allowed,
+to the **Operator**, a tool-calling loop where every call passes the policy engine first - allowed,
 needs your approval, or refused with a reason. The **Auditor** checks the result against what you
 asked before it is reported as done.
 
@@ -127,11 +129,11 @@ ybm stop              # stop everything
 ```
 
 `ybm autostart enable` adds a tray icon and starts YBM at login. Windows also has the fuller
-`scripts\ybm.ps1` interface — `.\scripts\ybm.ps1 help` lists it.
+`scripts\ybm.ps1` interface - `.\scripts\ybm.ps1 help` lists it.
 
 ## Contributing
 
-Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and
+Issues and pull requests are welcome - see [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and
 [docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md) for manual setup.
 
 ```bash
@@ -156,7 +158,7 @@ GPU, and no API spend.
 
 ## Honest limitations
 
-- WhatsApp is plain text only — no buttons, voice, or file delivery yet, unlike Telegram.
+- WhatsApp is plain text only - no buttons, voice, or file delivery yet, unlike Telegram.
 - Desktop control is Windows-only.
 - Voice transcription is off by default and needs the `voice` extra installed.
 - More in [docs/GAPS.md](docs/GAPS.md), which is kept current rather than flattering.

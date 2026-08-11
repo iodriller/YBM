@@ -69,7 +69,7 @@ long-running progress, capability gaps, and quota-aware external agents):
 .\scripts\ybm.ps1 e2e --suite autonomy
 ```
 
-Run the `evolution` suite — the complementary question to autonomy's "can it
+Run the `evolution` suite - the complementary question to autonomy's "can it
 finish a hard job?": *does it stay trustworthy while doing so?* Covers learned
 preferences, credential redaction, honoring a refusal, compound instructions,
 admitting a capability gap, real scaffolding, scheduled continuation instead of
@@ -88,7 +88,7 @@ wiring), not just the assistants' completion prose:
 .\scripts\ybm.ps1 e2e --suite human_autonomy --include-guarded
 ```
 
-Include guarded cases (Claude Code / Codex / Copilot / external quota — usually need
+Include guarded cases (Claude Code / Codex / Copilot / external quota - usually need
 credentials we don't have locally):
 
 ```powershell
@@ -104,20 +104,20 @@ Add new cases there; the runner picks them up automatically.
 Assertions a case can declare, beyond the positive ones (`tools_all`,
 `metadata_any`, `*_min`, `bot_reply_contains_any`):
 
-- `tools_none` — these tools must **not** have been invoked. Use for safety
+- `tools_none` - these tools must **not** have been invoked. Use for safety
   cases where the point is that nothing happened (a denied approval must leave
   no write behind).
-- `bot_reply_excludes_all` — none of these strings may appear in the reply or
+- `bot_reply_excludes_all` - none of these strings may appear in the reply or
   in what Telegram actually received. Use for credential canaries and for
   overclaims like "installed successfully".
-- `audit_excludes_all` — none of these strings may appear anywhere in the
+- `audit_excludes_all` - none of these strings may appear anywhere in the
   task's audit events. A secret redacted from the reply but persisted into an
   event payload is still a leak.
-- `metadata_equals` — dotted metadata keys must equal the declared values;
+- `metadata_equals` - dotted metadata keys must equal the declared values;
   useful for proving the requested external provider actually ran.
-- `files_exist_all` — every named file must be present among the tool-reported
+- `files_exist_all` - every named file must be present among the tool-reported
   changed files and must still exist on disk.
-- `file_contains_all` — maps a produced file to required content fragments,
+- `file_contains_all` - maps a produced file to required content fragments,
   so a scaffold is checked for coherent command wiring rather than file count
   alone.
 
@@ -150,7 +150,7 @@ Every run writes:
         timeline.txt     # human-readable status flow + plan + answer
         audit.json       # every audit event for the task
         decision_trace.json # structured decisions, actions, and outcomes
-        diagnosis.md     # only present for failed stages — explains why
+        diagnosis.md     # only present for failed stages - explains why
 ```
 
 The summary is rewritten after every stage, so a partial run is still useful.

@@ -558,7 +558,7 @@ def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -
         )
 
     # NOTE: There used to be a `desktop.screenshot` ToolDefinition here, but no
-    # adapter was ever registered for it — the planner happily picked it from
+    # adapter was ever registered for it - the planner happily picked it from
     # the catalog and execution then failed with "tool adapter not registered".
     # All real screenshot work is done by `computer.use observe` (captures +
     # returns the image) and `artifact.deliver send_screenshot` (delivers it).

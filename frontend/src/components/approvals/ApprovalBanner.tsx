@@ -181,7 +181,7 @@ function ReviewDialogBody({
           )}
         </div>
         <DialogDescription>
-          A runtime-owned gate that only you can clear — no access-mode preset, including Full
+          A runtime-owned gate that only you can clear - no access-mode preset, including Full
           Access, bypasses it.
         </DialogDescription>
       </DialogHeader>

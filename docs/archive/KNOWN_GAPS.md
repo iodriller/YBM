@@ -9,7 +9,7 @@ Companion to `docs/E2E_FINDINGS.md` (which holds the live-run evidence) and
 
 ## Blocking CI
 
-### G1 — Five scenario fixtures need re-recording
+### G1 - Five scenario fixtures need re-recording
 
 `code_interpreter_csv_summary`, `code_interpreter_generate_file`,
 `code_interpreter_json_transform`, `document_pdf_summary`, and
@@ -17,14 +17,14 @@ Companion to `docs/E2E_FINDINGS.md` (which holds the live-run evidence) and
 
 Their negative cases fail on `harness.assert_rejected` because the fixtures
 still carry the key order written before `scripted_llm._save` stopped sorting
-recorded payloads. Until then the same tests passed **vacuously** — a replay
+recorded payloads. Until then the same tests passed **vacuously** - a replay
 miss satisfies `status != COMPLETED` exactly as a real refusal does, so they
 would have passed with the policy check deleted.
 
 **Done when:** `ybm scenario record <name>` for each, suite green.
 **Cost:** roughly 15 minutes of local inference.
 
-### G2 — `operator_decide_failed:` carries an empty message
+### G2 - `operator_decide_failed:` carries an empty message
 
 Three of the re-records above failed with exactly that string and nothing after
 the colon, which made a reproducible failure indistinguishable from a flake and
@@ -41,7 +41,7 @@ when there is no message.
 
 ## Security
 
-### G3 — Tool output is not marked as untrusted in the operator prompt
+### G3 - Tool output is not marked as untrusted in the operator prompt
 
 `orchestration/operator.py::_format_history` renders tool results as plain
 `output: <contents>`. A file or web page containing "ignore previous
@@ -52,7 +52,7 @@ framing.
 scopes and approvals bound what a successful injection can *do*, and do not
 make the content safe. That is a legitimate layered stance, and current
 practice agrees prompt instructions alone are a nudge rather than a control.
-What is missing is the cheap half — *spotlighting*: wrapping untrusted content
+What is missing is the cheap half - *spotlighting*: wrapping untrusted content
 in randomised delimiters that the system prompt declares opaque data. It is
 reported to measurably reduce attack success at minimal cost.
 
@@ -62,7 +62,7 @@ instructions.
 **Cost:** changes the system prompt, so **all 16 scenario fixtures need
 re-recording**. Schedule it with recording time available.
 
-### G4 — Redaction is pattern-only
+### G4 - Redaction is pattern-only
 
 `storage/redaction.py` matches credential-shaped *names* and known provider
 token shapes. Current practice for secret detection is hybrid: patterns plus
@@ -76,7 +76,7 @@ provider prefix still passes through.
 UUIDs, base64 blobs and hashes, and this redactor runs on user-facing answers.
 The false-positive cost needs a decision before adding it.
 
-### G5 — Operator does not retry an unsupported operation
+### G5 - Operator does not retry an unsupported operation
 
 Carried over from `docs/E2E_FINDINGS.md` P0-2a. One `unsupported operation`
 failure ends the attempt even though the error message lists every valid
@@ -88,7 +88,7 @@ fabricated success, so it is a quality issue rather than a safety one.
 
 ## Maintainability
 
-### G6 — `orchestration/worker.py` is 2,519 lines
+### G6 - `orchestration/worker.py` is 2,519 lines
 
 43 module-level functions and 23 methods in one file; it grew by ~1,150 lines
 in a single commit. The operator loop, the approval resume path, the
@@ -97,14 +97,14 @@ all live together. The normalisation helpers (`_coding_agent_input_*`,
 `_filesystem_search_input_*`, `_existing_absolute_directories`) are pure
 functions with no worker state and would move cleanly.
 
-### G7 — `_safe_segment` is duplicated three times
+### G7 - `_safe_segment` is duplicated three times
 
 Identical body in `tools/adapter_factory.py`, `tools/code_interpreter.py` and
-`tools/local_workspace.py` — same regex, same `strip("._")`, differing only in
+`tools/local_workspace.py` - same regex, same `strip("._")`, differing only in
 fallback string. It sanitises path segments, so it is security-adjacent: a fix
 to one copy does not reach the other two.
 
-### G8 — `_trim` is duplicated
+### G8 - `_trim` is duplicated
 
 Byte-identical in `channels/task_notify.py` and
 `channels/telegram_notifications.py`. `task_notify.py` was extracted *out of*
@@ -113,7 +113,7 @@ Byte-identical in `channels/task_notify.py` and
 
 ## Installation
 
-### G9 — Remote install is impossible while the repository is private
+### G9 - Remote install is impossible while the repository is private
 
 A private GitHub repository answers **404**, not 403, to unauthenticated
 requests. So `raw.githubusercontent.com/.../install.sh`,
@@ -121,8 +121,8 @@ requests. So `raw.githubusercontent.com/.../install.sh`,
 all 404, and the `curl … | sh` one-liner the README led with could never have
 worked on a fresh machine.
 
-The installers now detect this and explain it. The underlying choice — public
-repo, authenticated install, or publishing built artifacts separately — is a
+The installers now detect this and explain it. The underlying choice - public
+repo, authenticated install, or publishing built artifacts separately - is a
 product decision, not a code one, and everything else in
 `docs/INSTALL_UX_PLAN.md` depends on it.
 

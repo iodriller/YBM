@@ -9,7 +9,7 @@ This is built to run UNATTENDED. Goals:
 * Send each message from your real Telegram user account; poll the admin API for
   task progress; honor each case's ``timeout_seconds``.
 * For multi-turn cases (``follow_ups``), keep conversation memory across turns.
-* Never crash mid-run — every per-stage failure is captured as a FAIL and the
+* Never crash mid-run - every per-stage failure is captured as a FAIL and the
   suite continues. Summary is rewritten after every stage so partial runs survive.
 * By default, skip ``guarded`` cases (codex / copilot / external-quota cases that
   need real credentials). Pass ``--include-guarded`` to run them too.
@@ -72,7 +72,7 @@ GUARDED_TAGS = {"codex", "copilot", "external", "quota", "limit", "presentation"
 # Per-case absolute ceiling regardless of what the JSON declares. Protects the
 # whole run from getting stuck on one runaway case. It must stay above the
 # largest declared `timeout_seconds` plus the worker-budget headroom below, or
-# the longest cases are quietly cut short — at 900 it under-budgeted every
+# the longest cases are quietly cut short - at 900 it under-budgeted every
 # 900s case by the 30s margin. `_turn_ceiling_seconds` reports any clipping and
 # a catalogue test fails if a case declares a budget this cannot honor.
 HARD_CEILING_S = 1260
@@ -84,7 +84,7 @@ TASK_SPAWN_TIMEOUT_S = 180
 # moves on while the worker is still busy, blocking the next case in queue.
 WORKER_BUDGET_SAFETY_S = 640
 
-# Chat-route turns settle in seconds, not minutes — they run no tools. The
+# Chat-route turns settle in seconds, not minutes - they run no tools. The
 # settle pause lets the substantive reply land after the acknowledgment ping.
 CHAT_REPLY_TIMEOUT_S = 90
 CHAT_REPLY_SETTLE_S = 6
@@ -656,7 +656,7 @@ def _case_suites(case: dict) -> set[str]:
 
 @dataclass
 class TurnResult:
-    """One Telegram turn — initial message OR a follow-up."""
+    """One Telegram turn - initial message OR a follow-up."""
     label: str = ""                       # "initial" or follow-up id
     message: str = ""
     task_id: str | None = None
@@ -678,7 +678,7 @@ class TurnResult:
     telegram_media_count: int = 0
     bot_reply_text: str | None = None
     # Ground truth from the audit log (agent_control.storage.audit MESSAGE_SENT
-    # events), not from task metadata — corroborates that a send actually
+    # events), not from task metadata - corroborates that a send actually
     # happened rather than trusting the adapter's/task's self-report.
     telegram_sent_events: list[dict] = field(default_factory=list)
     telegram_confirmed_text: str = ""
@@ -692,7 +692,7 @@ class TurnResult:
     status_transitions: list[dict] = field(default_factory=list)
     audit_event_count: int = 0
     error: str | None = None              # exception in the runner itself
-    # Captured from the classifier's audit event for this turn's message —
+    # Captured from the classifier's audit event for this turn's message -
     # surfaced in timeline.txt and diagnosis.md so model-judgment failures
     # don't require grepping audit.json.
     classifier_verdict: dict | None = None
@@ -863,7 +863,7 @@ def _diagnose_turn(
     if telegram_media_min is not None:
         # Cross-check the adapter's self-reported "delivered" claim against the
         # audit log's independent record of actual sendPhoto/sendDocument calls
-        # — the higher of the two is the effective count; either alone can be
+        # - the higher of the two is the effective count; either alone can be
         # under-counted, but this catches a claim with zero confirmed sends.
         effective_media_count = max(turn.telegram_media_count, turn.telegram_confirmed_media_count)
         if effective_media_count < int(telegram_media_min):
@@ -969,13 +969,13 @@ def _diagnose_turn(
     reply_needles = [str(item).lower() for item in assertions.get("bot_reply_contains_any") or [] if str(item).strip()]
     if reply_needles:
         # Truth source is the union of the task-metadata-derived reply AND the
-        # audit log's record of what was actually sent to Telegram — a task
+        # audit log's record of what was actually sent to Telegram - a task
         # that "completed" internally but never confirmed a send is a bug the
         # metadata-only check could not see.
         if not turn.telegram_sent_events:
             return False, (
                 "bot reply expected but no message_sent audit record exists for this turn "
-                "— task metadata may claim completion without a confirmed Telegram send"
+                "- task metadata may claim completion without a confirmed Telegram send"
             )
         reply = _turn_reply_text(turn).lower()
         confirmed = turn.telegram_confirmed_text.lower()
@@ -1264,7 +1264,7 @@ def _telegram_media_count(metadata: dict[str, Any], invocations: list[dict]) -> 
 def _bot_reply_text(task: dict[str, Any], metadata: dict[str, Any], last_tool_output: str | None) -> str:
     status = str(task.get("status") or "")
     # A clarifying task has no synthesized answer, so this used to fall through
-    # to the last tool output and report a file's contents as "the bot reply" —
+    # to the last tool output and report a file's contents as "the bot reply" -
     # hiding the actual question and making the diagnosis unreadable.
     if status == "clarifying" and metadata.get("clarifying_question"):
         return str(metadata["clarifying_question"])
@@ -1296,7 +1296,7 @@ async def _run_turn(
     ``expects_task=False`` covers the chat route, where the correct behavior is a
     direct reply and *no* persisted task. Those turns were previously untestable:
     the runner treated "no task spawned" as a failure, so conversational
-    behavior — including teaching a durable preference — had no coverage at all.
+    behavior - including teaching a durable preference - had no coverage at all.
     """
     turn = TurnResult(label=label, message=message)
     start_mono = time.monotonic()
@@ -1327,7 +1327,7 @@ async def _run_turn(
             while time.monotonic() < deadline:
                 # Wait for a *substantive* reply, not merely the first event.
                 # The acknowledgment ping is sent before classification runs, so
-                # any fixed settle after it is a race against an LLM call —
+                # any fixed settle after it is a race against an LLM call -
                 # losing that race captured only the filler line and failed a
                 # turn the system had actually answered correctly.
                 if any(not _is_filler_reply(event) for event in fetch_message_sent_events(turn_start_iso)):
@@ -1368,7 +1368,7 @@ async def _run_turn(
                     )
             else:
                 turn.error = (
-                    f"no task spawned within {spawn_timeout_s}s — "
+                    f"no task spawned within {spawn_timeout_s}s - "
                     "message never classified (telegram intake stuck?)"
                 )
             turn.duration_s = round(time.monotonic() - start_mono, 1)
@@ -1383,7 +1383,7 @@ async def _run_turn(
         if clipped:
             print(
                 f"    [warn] declared timeout {max_seconds}s needs more than "
-                f"HARD_CEILING_S={HARD_CEILING_S}s of runner wait — capping at {ceiling}s; "
+                f"HARD_CEILING_S={HARD_CEILING_S}s of runner wait - capping at {ceiling}s; "
                 "raise the constant to honor it"
             )
         deadline = start_mono + ceiling
@@ -1546,7 +1546,7 @@ async def _run_one(case: dict, fixtures: dict[str, str]) -> StageResult:
         stage.turns.append(initial)
         passed, reason = _diagnose_turn(case, initial, is_followup=False, fixtures=fixtures)
 
-        # Follow-ups (keep memory) — declared in JSON
+        # Follow-ups (keep memory) - declared in JSON
         for fu in (case.get("follow_ups") or []):
             fu_msg = render_text(str(fu.get("message") or ""), fixtures)
             fu_to = int(fu.get("timeout_seconds") or max_seconds)
@@ -1680,7 +1680,7 @@ def _write_stage_artifacts(stage_dir: Path, case: dict, stage: StageResult) -> N
 
         # Compact, reviewable evidence for why the system took each visible
         # action. These are structured decision fields emitted by the agents,
-        # tool outcomes, and observed state transitions — not hidden chain of
+        # tool outcomes, and observed state transitions - not hidden chain of
         # thought. audit.json remains the lossless source when deeper diagnosis
         # is needed.
         decision_trace = {
@@ -1767,7 +1767,7 @@ def _write_stage_artifacts(stage_dir: Path, case: dict, stage: StageResult) -> N
                     diag.extend(["", "**fulfillment_gap:**", "```", turn.fulfillment_gap, "```"])
                 diag.extend(["", "**Plan steps:**"])
                 for s in turn.plan_steps:
-                    diag.append(f"- `{s.get('tool_name')}` op=`{s.get('operation')}` — {s.get('title')}")
+                    diag.append(f"- `{s.get('tool_name')}` op=`{s.get('operation')}` - {s.get('title')}")
                 diag.extend([
                     "",
                     "**Last tool output (800 chars):**",
@@ -1795,9 +1795,9 @@ def _write_summary(run_dir: Path, results: list[StageResult]) -> None:
                 f"{r.total_duration_s:.1f}s | {sum(t.replan_count for t in r.turns)} | {outcome} |"
             )
         md = [
-            f"# YBM E2E Run — {run_dir.name}",
+            f"# YBM E2E Run - {run_dir.name}",
             "",
-            f"Started: {results[0].started_at if results else '—'}",
+            f"Started: {results[0].started_at if results else '-'}",
             f"Total:   {len(results)}",
             f"Passed:  {sum(1 for r in results if r.passed)}",
             f"Failed:  {sum(1 for r in results if not r.passed)}",
@@ -1855,7 +1855,7 @@ def _warn_if_chrome_down() -> None:
     """Browser cases need Chrome with remote debugging on port 9222.
 
     The browser adapter auto-launches Chrome on first use, but a heads-up here
-    lets the user fix it before half the suite fails. We do NOT bail — many
+    lets the user fix it before half the suite fails. We do NOT bail - many
     cases don't need a browser, so we just warn.
     """
     if not ping("http://127.0.0.1:9222/json/version", timeout=2.0):
@@ -1936,7 +1936,7 @@ async def main() -> int:
     _load_env()
     issues = _preflight()
     if issues:
-        print("Preflight failed — start the missing services first:")
+        print("Preflight failed - start the missing services first:")
         for issue in issues:
             print(f"  - {issue}")
         return 1
@@ -1990,7 +1990,7 @@ async def main() -> int:
         print(f"  [fixtures] ERROR: {message}")
         (run_dir / "fixture_error.txt").write_text(message + "\n", encoding="utf-8")
         (run_dir / "summary.md").write_text(
-            f"# YBM E2E Run — {run_dir.name}\n\n{message}\n",
+            f"# YBM E2E Run - {run_dir.name}\n\n{message}\n",
             encoding="utf-8",
         )
         return 1
@@ -2114,7 +2114,7 @@ def _fmt_duration(seconds: float) -> str:
 
 def _estimate_eta(elapsed_s: float, done: int, total: int) -> str:
     if done <= 0 or done >= total:
-        return "—"
+        return "-"
     per_case = elapsed_s / done
     remaining = (total - done) * per_case
     return _fmt_duration(remaining)

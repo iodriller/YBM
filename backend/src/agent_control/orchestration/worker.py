@@ -197,7 +197,7 @@ class TaskWorker:
 
     async def process_next(self) -> TaskRecord | None:
         # Atomically claim a task. Two workers running this call simultaneously
-        # will produce at most one successful claim — the other returns None
+        # will produce at most one successful claim - the other returns None
         # and tries again on the next poll. Claim expires after budget+buffer
         # so a crashed worker doesn't strand the task.
         claim_expiry = int(self.task_budget_seconds) + 120
@@ -227,7 +227,7 @@ class TaskWorker:
                 self.repositories.tasks.release_claim(processed.id)
             return processed
         except asyncio.TimeoutError:
-            # Wall-clock budget exceeded — fail the task so the worker can keep
+            # Wall-clock budget exceeded - fail the task so the worker can keep
             # moving. This is the only way a stuck planner/tool call doesn't
             # starve every queued task behind it.
             latest = self.repositories.tasks.get(task.id) or task

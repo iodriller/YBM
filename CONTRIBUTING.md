@@ -7,7 +7,7 @@ strong bias toward small, well-verified changes over large speculative ones.
 
 - For anything beyond a small fix, open an issue first to discuss the approach.
   This avoids wasted work on changes that don't fit the project's direction.
-- Read [AGENTS.md](AGENTS.md) — it's the canonical guidance for how this
+- Read [AGENTS.md](AGENTS.md) - it's the canonical guidance for how this
   codebase is organized and the standard this project holds changes to
   (including AI-assisted ones). It applies to human contributions too.
 - Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for current components and
@@ -28,7 +28,7 @@ See [docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md) for full details.
 - Keep pull requests focused: one logical change per PR.
 - Reuse existing registry, policy, adapter, and supervisor patterns rather
   than introducing parallel mechanisms.
-- Preserve capability policy, approval gates, and secure-by-default settings —
+- Preserve capability policy, approval gates, and secure-by-default settings -
   see the "Architecture Boundaries" section of [AGENTS.md](AGENTS.md).
 - Don't add speculative abstractions, config flags, or fallbacks for cases
   that can't happen. A small, direct change is preferred over a general one.
@@ -74,7 +74,7 @@ the resulting image contains the WhatsApp runtime and bundled starter skills.
 
 If your change touches prompt text, tool schemas, or workspace layout, the
 affected deterministic scenario fixtures under `backend/tests/scenario/fixtures/`
-may need re-recording — see `docs/HISTORY.md` for how that tier works and
+may need re-recording - see `docs/HISTORY.md` for how that tier works and
 `e2e/README.md` before touching anything that needs a live LLM or Telegram
 account. Never record fixtures or run live E2E as a side effect of an
 unrelated change.
@@ -95,5 +95,5 @@ Do **not** open a public issue for a security vulnerability. See
 
 - Use clear, descriptive commit messages focused on *why*, not just *what*.
 - Do not add AI-assistant attribution, co-author trailers, or session links
-  to commits — this applies to both human and AI-assisted contributions,
+  to commits - this applies to both human and AI-assisted contributions,
   consistent with this project's own conventions (see AGENTS.md).

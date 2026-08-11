@@ -86,6 +86,8 @@ and never hide a degraded fallback path.
   branches.
 - Preserve unrelated local changes and avoid speculative refactors.
 - Distinguish observed facts, inferences, and unverified assumptions.
+- Use ASCII punctuation in repository text. Do not use the Unicode em dash
+  (`U+2014`); rewrite the sentence or use a spaced ASCII hyphen.
 
 ## Verification
 

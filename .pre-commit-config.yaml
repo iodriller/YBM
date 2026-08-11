@@ -39,3 +39,11 @@ repos:
       - id: trailing-whitespace
         exclude: ^backend/tests/scenario/fixtures/
         args: [--markdown-linebreak-ext=md]
+
+  - repo: local
+    hooks:
+      - id: no-em-dash
+        name: no Unicode em dashes
+        entry: python scripts/check_no_em_dash.py
+        language: system
+        pass_filenames: false

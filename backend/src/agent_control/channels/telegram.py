@@ -150,7 +150,7 @@ class TelegramBotApi:
         caption: str | None = None,
         path: str | None = None,
     ) -> None:
-        # Durable local record of what YBM actually sent — the E2E runner's
+        # Durable local record of what YBM actually sent - the E2E runner's
         # truth source, independent of re-reading Telegram's live chat state.
         if self.audit is None:
             return

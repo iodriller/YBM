@@ -13,7 +13,7 @@ export function CostPanel({ usage }: { usage: TokenUsage }) {
       </CardHeader>
       <CardContent className="flex flex-col gap-2 text-sm">
         <div className="flex items-baseline gap-2">
-          <span className="text-2xl font-semibold">{usage.total_tokens ?? "—"}</span>
+          <span className="text-2xl font-semibold">{usage.total_tokens ?? "-"}</span>
           <span className="text-muted-foreground">
             total over {usage.calls} call{usage.calls === 1 ? "" : "s"}
           </span>
@@ -27,7 +27,7 @@ export function CostPanel({ usage }: { usage: TokenUsage }) {
               <div key={source} className="flex justify-between text-xs">
                 <span className="text-muted-foreground">{source}</span>
                 <span>
-                  {entry.total_tokens ?? "—"} tokens · {entry.calls} call{entry.calls === 1 ? "" : "s"}
+                  {entry.total_tokens ?? "-"} tokens · {entry.calls} call{entry.calls === 1 ? "" : "s"}
                 </span>
               </div>
             ))}

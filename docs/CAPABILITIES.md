@@ -24,7 +24,7 @@ flowchart LR
 ```
 
 Only three capabilities ship enabled: `telegram.receive`, `telegram.send`, `llm.generate`.
-**Everything else starts off** — including all filesystem, terminal, browser, desktop, and
+**Everything else starts off** - including all filesystem, terminal, browser, desktop, and
 network access.
 
 Set access from the admin console's **Access** page, which groups capabilities into four modes:
@@ -82,7 +82,7 @@ Plain-text `approve`, `status`, and `remember that ...` work on every channel.
 
 ## Not implemented
 
-- Direct GitHub Copilot **Chat panel** capture — no stable public API exists. Copilot routing
+- Direct GitHub Copilot **Chat panel** capture - no stable public API exists. Copilot routing
   goes through the VS Code terminal or the CLI fallback instead.
 - Persistent editable config for every advanced adapter field.
 - A single unified process supervisor: Windows `scripts\ybm.ps1` and the cross-platform `ybm`
@@ -90,8 +90,8 @@ Plain-text `approve`, `status`, and `remember that ...` work on every channel.
 
 ## Platform limits
 
-- **Desktop screenshot/control is Windows-only.** Everything else — filesystem, browser, code
-  interpreter, MCP, scheduling, coding agents, web chat — runs on Linux, Windows, and macOS in CI.
+- **Desktop screenshot/control is Windows-only.** Everything else - filesystem, browser, code
+  interpreter, MCP, scheduling, coding agents, web chat - runs on Linux, Windows, and macOS in CI.
 - `scripts\ybm.ps1` is Windows-only; other platforms use the `ybm` command.
 - `browser.*` sees only Chrome tabs on the configured DevTools debugging port (default `9222`).
   Ordinary Chrome windows launched without it are invisible to the adapter.

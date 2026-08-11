@@ -45,7 +45,7 @@ export function SecretVaultCard() {
         <div>
         <CardTitle>Secret vault</CardTitle>
         <CardDescription>
-          Store credentials here so http.request can inject them by reference — the value never
+          Store credentials here so http.request can inject them by reference - the value never
           appears in an LLM prompt or in this page&apos;s traffic.
         </CardDescription>
         </div>
@@ -65,7 +65,7 @@ export function SecretVaultCard() {
             <AlertTitle>Vault not initialized</AlertTitle>
             <AlertDescription className="flex flex-col gap-2">
               <span>
-                <span className="font-mono">{data.key_env}</span> is not set — generate one to start storing
+                <span className="font-mono">{data.key_env}</span> is not set - generate one to start storing
                 secrets. Takes effect immediately, no restart needed.
               </span>
               <Button

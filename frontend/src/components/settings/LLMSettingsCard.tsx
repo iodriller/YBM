@@ -112,7 +112,7 @@ export function LLMSettingsCard() {
       <CardContent className="flex flex-col gap-4">
         {presets.length > 0 && (
           <div className="flex flex-col gap-2">
-            <p className="text-sm font-medium">Run a model on this computer — free and private</p>
+            <p className="text-sm font-medium">Run a model on this computer - free and private</p>
             <p className="text-xs text-muted-foreground">
               Installs LocalDeploy if it is missing, downloads the model, and runs it here. Nothing
               you type leaves the machine.
@@ -146,7 +146,7 @@ export function LLMSettingsCard() {
             anything is saved. */}
         <details className="border-t border-border pt-3">
           <summary className="cursor-pointer text-sm font-medium">
-            Use an API key instead — Anthropic, OpenAI, and 11 others
+            Use an API key instead - Anthropic, OpenAI, and 11 others
           </summary>
           <div className="mt-3">
             <ProviderPicker onConfigured={() => window.location.reload()} />

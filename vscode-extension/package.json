@@ -3,6 +3,7 @@
   "displayName": "YBM Control Bridge",
   "description": "Companion VS Code bridge for YBM Control.",
   "version": "0.1.0",
+  "icon": "images/icon.png",
   "license": "MIT",
   "repository": {
     "type": "git",

@@ -227,7 +227,7 @@ def _default_operation(tool_name: str) -> str:
 def _safe_child_path(workspace_dir: Path, relative_path: str) -> Path:
     # Accept either a relative path or an absolute path that points INTO the
     # workspace. The LLM often gives us an absolute path after substituting
-    # {{workspace_dir}} into a `path` field — that path is safe as long as it
+    # {{workspace_dir}} into a `path` field - that path is safe as long as it
     # actually resolves under the workspace, even if it was passed as absolute.
     raw = Path(relative_path)
     if raw.is_absolute():

@@ -42,7 +42,7 @@ controlled by someone else.
 
 ## Security invariants
 
-Enforcement is deterministic — the model participates in none of it.
+Enforcement is deterministic - the model participates in none of it.
 
 1. The **runtime tool definition** owns each tool's capability and minimum operation risk. A model
    cannot substitute a lower-risk capability or understate an operation's risk.
@@ -50,12 +50,12 @@ Enforcement is deterministic — the model participates in none of it.
 3. The **global approval floor** stays authoritative even when a capability's `requires_approval`
    is false.
 4. Persistent and critical operations require approval **independently of any access-mode preset**
-   — MCP server installation, generated-adapter promotion, active desktop/browser control,
+   - MCP server installation, generated-adapter promotion, active desktop/browser control,
    generated or unsandboxed code execution, and HTTP requests carrying vault secrets.
 5. An approval is bound to one task, tool, capability, validated input, scope, risk, timeout, and
    approval requirement. It **expires** and is **atomically consumed** before a single dispatch.
    Changing any parameter or replaying it fails closed.
-6. Access modes configure availability. They **do not grant or fabricate approvals** — including
+6. Access modes configure availability. They **do not grant or fabricate approvals** - including
    "Full Access".
 
 Defaults keep terminal, filesystem writes, browser/desktop control, dependency installs, and Git
@@ -65,8 +65,8 @@ push disabled. Network requests require explicit host allowlisting.
 
 | Threat | What limits it | What it does *not* do |
 |---|---|---|
-| **Indirect prompt injection** — untrusted content redirects the model | Runtime-owned capabilities, risk levels, scopes, approvals bound the blast radius | Does not make injected content safe, or guarantee the model ignores it |
-| **Memory poisoning** — tool output persists into later context | Treat recalled content as untrusted; clear conversation state after processing known-bad content | Provenance tracking and automated poisoning detection remain open work |
+| **Indirect prompt injection** - untrusted content redirects the model | Runtime-owned capabilities, risk levels, scopes, approvals bound the blast radius | Does not make injected content safe, or guarantee the model ignores it |
+| **Memory poisoning** - tool output persists into later context | Treat recalled content as untrusted; clear conversation state after processing known-bad content | Provenance tracking and automated poisoning detection remain open work |
 | **Excessive agency** | Capability policy, operation risk, bounded retries/steps, exact approvals, kill switch | You remain responsible for approving the exact operation shown |
 | **Generated / unsandboxed code** | Docker is the preferred boundary when enabled; local-subprocess fallback runs with the YBM account's authority and therefore requires approval | Docker is defense in depth, **not** equivalent to a separate host or VM |
 | **MCP servers and generated adapters** | Both need an exact one-shot approval; review package, command, env vars, declared risks, and generated files first | Use a separate OS account or VM for anything untrusted |
@@ -81,7 +81,7 @@ Do not treat "Full Access" as a safe mode for browsing or processing untrusted c
 `.env`, `config/config.yaml`, `agent_control.db`, logs, screenshots, generated workspaces, and
 everything under `.agent_control/`.
 
-A Gitleaks finding requires **credential revocation and history cleanup** — not just deleting the
+A Gitleaks finding requires **credential revocation and history cleanup** - not just deleting the
 current file.
 
 ## Before making the repo public
@@ -95,7 +95,7 @@ current file.
 - [ ] Protect `main` with required review and CI
 - [ ] Restrict branch deletion and force pushes
 
-Visibility must not change as a side effect of this checklist — it takes an explicit decision by
+Visibility must not change as a side effect of this checklist - it takes an explicit decision by
 the owner.
 
 ## References

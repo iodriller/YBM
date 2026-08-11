@@ -466,7 +466,7 @@ def test_import_validation_allows_openpyxl_and_third_party() -> None:
     from agent_control.tools.code_interpreter import _validate_python
 
     code = "import openpyxl\nimport pandas\nimport requests\nprint('ok')\n"
-    # Should not raise — third-party imports are permitted by default
+    # Should not raise - third-party imports are permitted by default
     _validate_python(code, allowed_imports=set(), blocked_imports=set())
 
 

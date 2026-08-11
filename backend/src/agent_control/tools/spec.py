@@ -196,7 +196,7 @@ class ToolRegistry:
                 f"{definition.description}{operations}"
             )
             if definition.examples:
-                # Show worked examples inline — the model imitates these
+                # Show worked examples inline - the model imitates these
                 # better than abstract descriptions of input shape.
                 for ex in definition.examples:
                     lines.append(f"    example tool_input: {json.dumps(ex, ensure_ascii=False)}")

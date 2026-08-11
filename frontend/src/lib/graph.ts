@@ -45,7 +45,7 @@ interface StepGroup {
 function classifyOrigin(origin: string | undefined): { key: string; label: string } {
   if (!origin || origin === "operator") return { key: "operator", label: "Main sequence" }
   if (origin.startsWith("subagent:")) {
-    return { key: origin, label: origin.includes("/parallel_batch:") ? "Sub-task — parallel batch" : "Delegated sub-task" }
+    return { key: origin, label: origin.includes("/parallel_batch:") ? "Sub-task - parallel batch" : "Delegated sub-task" }
   }
   if (origin.startsWith("parallel_batch:")) return { key: origin, label: "Parallel batch" }
   return { key: origin, label: origin }

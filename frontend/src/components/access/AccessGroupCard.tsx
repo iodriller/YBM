@@ -91,7 +91,7 @@ export function AccessGroupCard({
         {advanced && (
           <div className="flex min-w-0 flex-col gap-2 rounded-xl border border-border/60 bg-muted/35 p-3 text-xs">
             <p className="font-medium text-muted-foreground">
-              Risk ceilings & patterns (read-only — edit config.yaml to change)
+              Risk ceilings & patterns (read-only - edit config.yaml to change)
             </p>
             {group.capabilities.map((capability) => {
               const policy = rawPolicies[capability]

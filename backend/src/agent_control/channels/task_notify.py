@@ -67,7 +67,7 @@ def _format_task_message(task: TaskRecord) -> str:
         question = str(task.metadata.get("clarifying_question") or "").strip()
         if question:
             return _trim(f"{question}\n\n(Reply here to continue this task, or say 'cancel'.)", 3900)
-        return "I need more input to continue this task — reply here with details, or say 'cancel'."
+        return "I need more input to continue this task - reply here with details, or say 'cancel'."
     if task.status in {TaskStatus.BLOCKED, TaskStatus.FAILED}:
         error = _last_error(task)
         first_line = _failure_headline(task, error)
@@ -85,7 +85,7 @@ def _format_task_message(task: TaskRecord) -> str:
 
     # Synthesizer-produced focused answer wins over raw tool output.
     # The synthesizer was specifically prompted with the user's objective and
-    # extracts ONLY what was asked for — sending the raw page dump instead
+    # extracts ONLY what was asked for - sending the raw page dump instead
     # defeats the entire purpose of synthesis.
     synthesized = str(task.metadata.get("synthesized_answer") or "").strip()
     if synthesized:
@@ -345,7 +345,7 @@ def _failure_headline(task: TaskRecord, error: str | None) -> str:
     low = error.lower()
     if "chrome" in low or "devtools" in low or "browser" in low or "websocket" in low:
         return (
-            "Browser task failed — Chrome is not running with remote debugging enabled.\n"
+            "Browser task failed - Chrome is not running with remote debugging enabled.\n"
             "Start Chrome with: chrome --remote-debugging-port=9222 --remote-allow-origins=*"
         )
     if "planning" in low or "plan failed" in low or "no plan" in low:

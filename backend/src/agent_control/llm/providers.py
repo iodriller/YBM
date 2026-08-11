@@ -190,7 +190,7 @@ class OpenAICompatibleProvider:
 class FailoverLLMProvider:
     """Try the primary provider first; on unavailability fall back to the secondary.
 
-    Unavailability means the endpoint could not serve the request at all —
+    Unavailability means the endpoint could not serve the request at all -
     connection errors, timeouts, or HTTP 5xx. Model-quality failures (invalid
     structured output, HTTP 4xx) are NOT failed over: they would fail the same
     way against the fallback or indicate a request bug, and silently switching

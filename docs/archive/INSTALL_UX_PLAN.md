@@ -65,7 +65,7 @@ uses it.
 - `install.ps1:37-44` installs `uv` if missing.
 - `uv` is a standalone binary that needs no Python at all.
 - `ybm.ps1 setup` builds the venv with `uv sync`, and `uv` downloads its own
-  interpreter — the current `backend/.venv/pyvenv.cfg` on this machine reads
+  interpreter - the current `backend/.venv/pyvenv.cfg` on this machine reads
   `home = ...\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none`.
 - `common.ps1::Get-YbmPython` returns the venv interpreter and only falls back
   to `python` when the venv is missing, which is the broken-install path.
@@ -78,7 +78,7 @@ all.
 `uv python install 3.12` so the interpreter is present before `ybm.ps1 run`.
 Keep a *diagnostic* mention of any system Python, not a gate.
 
-## Phase 1 — Zero prerequisites (biggest win, smallest diff)
+## Phase 1 - Zero prerequisites (biggest win, smallest diff)
 
 1. **Remove the Python gate** as above.
 2. **Pin the uv installer.** `install.ps1:39` fetches `https://astral.sh/uv/install.ps1`
@@ -86,7 +86,7 @@ Keep a *diagnostic* mention of any system Python, not a gate.
    apart get the same uv, and a bad uv release cannot break YBM installs.
 3. **Stop relying on PATH inheritance.** Line 40 prepends `$HOME\.local\bin`
    and line 41 re-checks `Get-Command uv`. Resolve and call the absolute
-   `uv.exe` path instead — `UV_NO_MODIFY_PATH=1` plus an explicit path removes
+   `uv.exe` path instead - `UV_NO_MODIFY_PATH=1` plus an explicit path removes
    the "open a new PowerShell window and re-run" failure at line 42, which is a
    dead end in the middle of an install.
 4. **Make git optional.** Fall back to the GitHub zip
@@ -99,24 +99,24 @@ Keep a *diagnostic* mention of any system Python, not a gate.
 **Result:** prerequisites 2 → 0. Works on a fresh Windows box with nothing
 installed.
 
-## Phase 2 — Remove the terminal
+## Phase 2 - Remove the terminal
 
 Even a perfect one-liner requires opening PowerShell and pasting. For the
 "double-click" audience `YBM.bat` already serves after install, the gap is
 first-run only.
 
-1. **`YBM-Setup.cmd`** — a small committed file the user downloads and
+1. **`YBM-Setup.cmd`** - a small committed file the user downloads and
    double-clicks. It self-elevates only if needed, runs the Phase 1 bootstrap,
    and leaves the console open on failure so the error is readable. No typing,
    no PowerShell knowledge, no execution-policy flag to explain.
-2. **A winget manifest** — `winget install iodriller.YBM` for people who prefer
+2. **A winget manifest** - `winget install iodriller.YBM` for people who prefer
    a package manager, and it gives update-through-winget for free.
 3. Keep the `irm | iex` one-liner for SSH and CI. It should not be the
    recommended path for a desktop user.
 
 **Result:** terminal interactions 1 → 0 for the primary path.
 
-## Phase 3 — Fewer clicks after install
+## Phase 3 - Fewer clicks after install
 
 The wizard is already well placed (browser, not terminal), and Telegram is
 already optional. What remains:
@@ -131,16 +131,16 @@ already optional. What remains:
 3. **Defer everything not needed for the first message.** Telegram, WhatsApp,
    desktop control and Git push are all disabled by default; none should appear
    before the first successful conversation. First screen ideally reads
-   "You're ready — say something", with a Settings link.
+   "You're ready - say something", with a Settings link.
 
-## Phase 4 — Unattended and verifiable
+## Phase 4 - Unattended and verifiable
 
 Parity with what mature installers expose, and what makes this testable:
 
-1. `--no-prompt` / `YBM_NO_PROMPT=1` — never block on input.
-2. `--dry-run` — print the plan, change nothing. Also the cheapest way to test
+1. `--no-prompt` / `YBM_NO_PROMPT=1` - never block on input.
+2. `--dry-run` - print the plan, change nothing. Also the cheapest way to test
    installer changes without a clean VM.
-3. `--verify` — post-install smoke test: backend health, `ybm doctor`, one
+3. `--verify` - post-install smoke test: backend health, `ybm doctor`, one
    round-trip through the local model. Exit non-zero on failure, so a broken
    install reports itself instead of surfacing later as a confusing runtime
    error.
@@ -148,7 +148,7 @@ Parity with what mature installers expose, and what makes this testable:
 5. `YBM_INSTALL_DIR` already exists (`install.ps1:21`); document it alongside
    the rest.
 
-## Phase 5 — Honest failure
+## Phase 5 - Honest failure
 
 The current script fails with a bare message and `exit 1` at four places. Each
 should say what to do next:

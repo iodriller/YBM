@@ -116,7 +116,7 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
               )}
 
               {!detect.llm_configured && (
-                <p className="text-sm font-medium">Run a model on this computer — free and private</p>
+                <p className="text-sm font-medium">Run a model on this computer - free and private</p>
               )}
 
               {detect.llm_configured ? (
@@ -287,7 +287,7 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
 
                   <details className="text-sm" open={!detect.ollama.available}>
                     <summary className="cursor-pointer font-medium">
-                      Or use an API key — Anthropic, OpenAI, and 11 others
+                      Or use an API key - Anthropic, OpenAI, and 11 others
                     </summary>
                     <div className="mt-2">
                       <ProviderPicker onConfigured={() => setStep("face")} />
@@ -394,7 +394,7 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                           // every message. Reporting plain success here is what
                           // sent people off to message a bot that would never
                           // answer, with nothing anywhere saying why.
-                          toast.success("Token saved — now pick who may use it.")
+                          toast.success("Token saved - now pick who may use it.")
                           setStep("done")
                         },
                         onError: (err) => {

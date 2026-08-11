@@ -789,6 +789,6 @@ def load_settings(config_path: str | Path | None = None, **overrides: Any) -> Ap
     # Raised outside the handler on purpose. `raise ... from None` inside it
     # only sets __suppress_context__, which hides the original unredacted
     # ValidationError from a printed traceback while leaving it reachable on
-    # __context__ — where exception reporters that walk the chain still find
+    # __context__ - where exception reporters that walk the chain still find
     # the secret. Raising here leaves no chain at all.
     raise ConfigValidationError(redacted)

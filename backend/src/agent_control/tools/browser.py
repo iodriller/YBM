@@ -356,7 +356,7 @@ class BrowserAdapter:
                 url = str(step_output.get("url") or "")
                 last_output["summary"] = (
                     f"I opened {url or 'the page'} but it requires login before I can continue. "
-                    "Let me know how to proceed — you can log in manually and ask me to retry, "
+                    "Let me know how to proceed - you can log in manually and ask me to retry, "
                     "or I can try a different approach."
                 )
                 last_output["chain_stopped_at"] = i

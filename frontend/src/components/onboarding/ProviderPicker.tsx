@@ -225,8 +225,8 @@ export function ProviderPicker({ onConfigured }: { onConfigured: () => void }) {
             <Badge variant="secondary">Connected</Badge>
             <span className="text-xs text-muted-foreground">
               {verified.models.length > 0
-                ? `${verified.label} — ${verified.models.length} models available`
-                : `${verified.label} — enter a model name`}
+                ? `${verified.label} - ${verified.models.length} models available`
+                : `${verified.label} - enter a model name`}
             </span>
           </div>
           <Label htmlFor={`${fieldId}-model`} className="text-xs text-muted-foreground">Model</Label>

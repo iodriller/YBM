@@ -298,7 +298,7 @@ class TaskRepository:
 
         Uses a single ``UPDATE ... WHERE id = (SELECT ... LIMIT 1) RETURNING *``
         statement, which SQLite serializes via its write lock. Two workers
-        cannot both succeed at the same SELECT here — exactly one gets the
+        cannot both succeed at the same SELECT here - exactly one gets the
         row back; the other gets an empty result and tries again on the
         next poll.
 

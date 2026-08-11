@@ -4,7 +4,7 @@ Focuses on the registry-side contract: per-operation schema validation, and
 the context/vault summary strings shown to the Operator's decide() call.
 
 We use ad-hoc toy ToolDefinitions instead of pulling the full
-build_tool_registry — that path is covered indirectly by every other test
+build_tool_registry - that path is covered indirectly by every other test
 that builds a real worker.
 """
 from __future__ import annotations

@@ -324,7 +324,7 @@ class CodeInterpreterAdapter:
     ) -> None:
         self.config = config
         self.provider = provider
-        # Optional artifact repository — when present, files produced by a script
+        # Optional artifact repository - when present, files produced by a script
         # are registered as task artifacts so later steps (e.g. artifact.deliver)
         # can find them by id without any path guessing.
         self.artifacts = artifacts
@@ -456,7 +456,7 @@ class CodeInterpreterAdapter:
             except Exception:
                 # If the LLM regen call itself fails (provider error, schema
                 # validation, etc.), fall back to the static template as a
-                # final attempt — same as before.
+                # final attempt - same as before.
                 fallback = _fallback_generated_script(objective)
                 if fallback is not None and fallback.code != generated.code:
                     generation_repaired = True
@@ -778,7 +778,7 @@ class CodeInterpreterAdapter:
                 )
                 ids.append(artifact.id)
             except Exception:
-                # Registration is best-effort — a missing repo or DB hiccup must
+                # Registration is best-effort - a missing repo or DB hiccup must
                 # not break the actual code execution result. But it does mean
                 # a generated file that artifact.deliver won't be able to find
                 # later, which is worth knowing about, not just swallowing.

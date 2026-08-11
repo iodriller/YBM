@@ -58,8 +58,8 @@ def _admin_port() -> int:
 def _make_icon_image() -> Image.Image:
     """The real mark (docs/UI_UX_AUDIT.md Phase 10), not a placeholder -
     scripts/assets/logo_256.png is a rasterized copy of
-    frontend/public/favicon.svg (the same purple/blue bolt already shown
-    in the browser tab), so the tray icon and the browser tab agree
+    frontend/public/favicon.svg (the same chunky Y shown in the browser
+    tab), so the tray icon and the browser tab agree
     instead of the tray showing a generic Lucide-icon badge nothing else
     in the product uses. Falls back to a plain generated badge only if the
     asset is somehow missing, so a packaging mistake degrades visibly
@@ -69,7 +69,14 @@ def _make_icon_image() -> Image.Image:
         return Image.open(LOGO_PATH).convert("RGBA")
     image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-    draw.ellipse((2, 2, 62, 62), fill=(126, 20, 255, 255))
+    color = (98, 116, 232, 255)
+    width = 12
+    radius = width // 2
+    segments = (((19, 19), (32, 32)), ((45, 19), (32, 32)), ((32, 32), (32, 46)))
+    for start, end in segments:
+        draw.line((start, end), fill=color, width=width)
+    for x, y in ((19, 19), (45, 19), (32, 32), (32, 46)):
+        draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=color)
     return image
 
 

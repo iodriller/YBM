@@ -265,7 +265,7 @@ class ArtifactDeliveryAdapter:
         """Locate a file by name across common user folders + configured roots.
 
         Used as a fallback when the planner gives a bare filename like
-        ``resume.pdf`` instead of a full path. Order matters — search
+        ``resume.pdf`` instead of a full path. Order matters - search
         recently-modified locations first (code interpreter workspace,
         screenshots), then user folders, then bounded recursive scan of
         allowed roots (depth-limited to keep latency sane on large trees).
@@ -292,7 +292,7 @@ class ArtifactDeliveryAdapter:
             direct = root / filename
             if direct.exists() and direct.is_file():
                 return direct.resolve()
-        # 2. Bounded recursive scan (depth ≤ 4) — avoids walking all of C:\for fun.
+        # 2. Bounded recursive scan (depth ≤ 4) - avoids walking all of C:\for fun.
         #    Code interpreter writes one task-dir deep; workspaces nest one level deeper;
         #    screenshots are flat. Depth 4 covers all real cases without blowing up latency.
         for root in seen:
@@ -339,7 +339,7 @@ def path_from_uri(value: object) -> Path | None:
 def _walk_with_max_depth(root: Path, *, max_depth: int):
     """Yield files/dirs under ``root`` up to ``max_depth`` levels deep.
 
-    Cheaper than ``rglob("*")`` on huge trees — stops descending once we hit
+    Cheaper than ``rglob("*")`` on huge trees - stops descending once we hit
     the depth limit instead of walking everything.
     """
     root_depth = len(root.parts)
@@ -441,7 +441,7 @@ def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -
             ),
             default_operation="send_latest",
             examples=(
-                # Deliver a file by basename — finds files produced by a prior
+                # Deliver a file by basename - finds files produced by a prior
                 # code.interpreter step automatically (registered as artifacts).
                 {"operation": "send_file", "path": "sales_data.xlsx"},
                 {"operation": "send_screenshot"},
@@ -465,7 +465,7 @@ def artifact_delivery_roots(settings: AppSettings) -> list[str]:
         settings.adapters.workspace.root_dir,
         settings.adapters.browser.screenshot_dir,
         settings.adapters.computer_use.screenshot_dir,
-        # Files produced by code.interpreter live here — without this entry,
+        # Files produced by code.interpreter live here - without this entry,
         # "generate a file and send it" requests can't deliver the result.
         settings.adapters.code_interpreter.workspace_root,
         *settings.adapters.computer_use.allowed_roots,
