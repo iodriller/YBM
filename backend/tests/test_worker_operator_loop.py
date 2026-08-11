@@ -7,11 +7,29 @@ See orchestration/operator.py's module docstring for the design.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from agent_control.config import AppSettings, CapabilityPolicy
 from agent_control.orchestration import StaticToolAdapter, TaskWorker, ToolExecutor
 from agent_control.orchestration.auditor import AuditResult
+from agent_control.orchestration.signals import requeue_after_approval_decision
+from agent_control.orchestration.worker import (
+    _canonical_operator_tool_call,
+    _coding_agent_input_with_task_defaults,
+    _coding_agent_input_with_explicit_workspace,
+    _effective_operator_risk,
+    _filesystem_search_input_with_content_intent,
+    _ground_operator_final_answer,
+    _clarification_recovery_reason,
+    _operator_audit_evidence,
+    _ordered_artifact_delivery_call,
+    _required_named_coding_agent_call,
+    _satisfied_task_does_not_need_clarification,
+    _stale_read_recovery_call,
+    _unsupported_write_claim,
+)
 from agent_control.policy import PolicyEngine
 from agent_control.recovery import RetryPolicy
 from agent_control.schemas import (
@@ -21,6 +39,7 @@ from agent_control.schemas import (
     OperatorAction,
     OperatorDecision,
     RiskLevel,
+    TaskRecord,
     TaskStatus,
     ToolCallRequest,
     ToolCallResult,
@@ -116,13 +135,31 @@ class QueueAuditor:
         self.results = list(results)
         self._usages = list(usages) if usages is not None else None
         self.calls: list[tuple[str, str]] = []
+        self.response_contexts: list[str | None] = []
         self.last_usage: dict | None = None
 
-    async def audit(self, objective, raw_output, *, original_message=None):
+    async def audit(self, objective, raw_output, *, original_message=None, response_context=None):
         self.calls.append((objective, raw_output))
+        self.response_contexts.append(response_context)
         if self._usages is not None:
             self.last_usage = self._usages.pop(0)
         return self.results.pop(0)
+
+
+def test_ground_operator_final_answer_preserves_read_file_identity() -> None:
+    history = [{
+        "tool_name": "filesystem.manage",
+        "input": {"operation": "read_file", "path": r"C:\evidence\resume-notes.txt"},
+        "status": "succeeded",
+        "output_summary": "career evidence",
+    }]
+
+    grounded = _ground_operator_final_answer("career evidence", history)
+
+    assert grounded == "career evidence\n\nSource file: C:\\evidence\\resume-notes.txt"
+    assert _ground_operator_final_answer("Read resume-notes.txt: career evidence", history) == (
+        "Read resume-notes.txt: career evidence"
+    )
 
 
 def _executor(settings, audit, repos, *, tool_name="llm", output=None) -> ToolExecutor:
@@ -249,14 +286,42 @@ async def test_operator_loop_exhausts_step_budget(tmp_path) -> None:
         if result.status not in {TaskStatus.RUNNING}:
             break
 
-    assert result.status == TaskStatus.FAILED
+    assert result.status == TaskStatus.BLOCKED
     assert len(result.metadata["operator_history"]) == 3
+    assert "Blocked after the bounded 3-step operator budget" in result.metadata["last_worker_error"]
     audit_events = repos.audit.list_for_task(task.id)
     assert any(
         event.payload.get("error") == "operator_step_budget_exhausted"
         for event in audit_events
         if event.type == "error"
     )
+
+
+@pytest.mark.asyncio
+async def test_operator_loop_blocks_repeated_successful_observations(tmp_path) -> None:
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("find a download link")
+    settings = _settings()
+    executor = _executor(settings, audit, repos, output={"summary": "same page content"})
+    operator = QueueOperator([
+        OperatorDecision(
+            action=OperatorAction.CALL_TOOL,
+            tool_name="llm",
+            tool_input={"operation": "summarize_page", "objective": f"attempt {index}"},
+            risk_level=RiskLevel.LOW,
+        )
+        for index in range(3)
+    ])
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator, operator_max_steps=8)
+
+    result = task
+    for _ in range(3):
+        result = await worker.process_task(result.id)
+
+    assert result.status == TaskStatus.BLOCKED
+    assert "repeated llm:summarize_page calls returned the same result" in result.metadata["last_worker_error"]
+    events = repos.audit.list_for_task(result.id)
+    assert any(event.payload.get("error") == "operator_repeated_no_progress" for event in events)
 
 
 @pytest.mark.asyncio
@@ -275,7 +340,7 @@ async def test_gap_check_entries_do_not_consume_the_tool_call_budget(tmp_path) -
     class GapThenOkAuditor:
         def __init__(self) -> None:
             self.calls = 0
-        async def audit(self, objective, raw_output, *, original_message=None):
+        async def audit(self, objective, raw_output, *, original_message=None, response_context=None):
             self.calls += 1
             if self.calls == 1:
                 return AuditResult(sufficient=False, reason="need more")
@@ -330,7 +395,7 @@ async def test_auditor_receives_full_output_not_the_truncated_history_summary(tm
     class RecordingAuditor:
         def __init__(self) -> None:
             self.seen: list[str] = []
-        async def audit(self, objective, raw_output, *, original_message=None):
+        async def audit(self, objective, raw_output, *, original_message=None, response_context=None):
             self.seen.append(raw_output)
             return AuditResult(sufficient=True, answer="ok")
 
@@ -346,7 +411,616 @@ async def test_auditor_receives_full_output_not_the_truncated_history_summary(tm
 
     assert auditor.seen, "auditor should have run"
     assert len(auditor.seen[0]) > 2000
-    assert len(auditor.seen[0]) == len(long_text)
+    assert auditor.seen[0] == long_text
+
+
+@pytest.mark.asyncio
+async def test_pre_clarification_content_cannot_replace_the_answer_after_user_declines(tmp_path) -> None:
+    repos, audit = make_repos(tmp_path)
+    old_history = [
+        {
+            "tool_name": "filesystem.manage",
+            "input": {"operation": "read_file", "path": "policy.md"},
+            "status": "succeeded",
+            "output_summary": "The old retention value is 400 days.",
+        }
+    ]
+    task = repos.tasks.create(
+        "Read the policy, then change it only if I approve.\n"
+        "[User clarification: No. Do not make that change.]",
+        metadata={
+            "operator_loop": True,
+            "operator_history": old_history,
+            "operator_history_offset_after_clarification": len(old_history),
+            "answered_clarifying_question": "Should I make the edit?",
+            "clarification_answer": "No. Do not make that change.",
+            "last_tool_output_text": "The old retention value is 400 days.",
+        },
+    )
+    operator = QueueOperator(
+        [OperatorDecision(action=OperatorAction.DONE, final_answer="No change was made; I left the file unchanged.")]
+    )
+    auditor = QueueAuditor([])
+    worker = TaskWorker(
+        repos,
+        audit,
+        executor=_executor(_settings(), audit, repos),
+        operator=operator,
+        auditor=auditor,
+    )
+
+    result = await worker.process_task(task.id)
+
+    assert result.status == TaskStatus.COMPLETED
+    assert result.metadata["synthesized_answer"].startswith(
+        "No change was made; I left the file unchanged."
+    )
+    assert auditor.calls == []
+
+
+@pytest.mark.asyncio
+async def test_auditor_receives_latest_clarification_as_response_context(tmp_path) -> None:
+    repos, audit = make_repos(tmp_path)
+    history = [
+        {
+            "tool_name": "filesystem.manage",
+            "input": {"operation": "read_file", "path": "policy.md"},
+            "status": "succeeded",
+            "output_summary": "The value is 400 days.",
+            "request_id": "req-1",
+        }
+    ]
+    task = repos.tasks.create(
+        "Read policy.md.\n[User clarification: Use one short sentence.]",
+        metadata={
+            "operator_loop": True,
+            "operator_history": history,
+            "operator_history_offset_after_clarification": 0,
+            "answered_clarifying_question": "How should I format the answer?",
+            "clarification_answer": "Use one short sentence.",
+            "last_tool_output_text": "The value is 400 days.",
+        },
+    )
+    auditor = QueueAuditor([AuditResult(sufficient=True, answer="The value is 400 days.")])
+    worker = TaskWorker(
+        repos,
+        audit,
+        executor=_executor(_settings(), audit, repos),
+        operator=QueueOperator([OperatorDecision(action=OperatorAction.DONE, final_answer="done")]),
+        auditor=auditor,
+    )
+
+    result = await worker.process_task(task.id)
+
+    assert result.status == TaskStatus.COMPLETED
+    assert "Latest clarifying question: How should I format the answer?" in auditor.response_contexts[0]
+    assert "Latest user clarification: Use one short sentence." in auditor.response_contexts[0]
+
+
+@pytest.mark.asyncio
+async def test_delivery_receipt_does_not_replace_latest_content_for_auditor(tmp_path) -> None:
+    repos, audit = make_repos(tmp_path)
+    full_content = "Complete evidence with marker CAREER-PROOF-47 and every requested detail."
+    history = [
+        {
+            "tool_name": "filesystem.manage",
+            "input": {"operation": "read_file", "path": "career-evidence.txt"},
+            "status": "succeeded",
+            "output_summary": "Complete evidence with marker...",
+            "request_id": "read-request",
+        },
+        {
+            "tool_name": "artifact.deliver",
+            "input": {"path": "career-evidence.txt"},
+            "status": "succeeded",
+            "output_summary": "Delivered career-evidence.txt to Telegram.",
+            "request_id": "delivery-request",
+        },
+    ]
+    task = repos.tasks.create(
+        "Read career-evidence.txt and send me the file.",
+        metadata={
+            "operator_loop": True,
+            "operator_history": history,
+            "artifact_delivery": {"delivered": True},
+            "last_tool_output_text": "Delivered career-evidence.txt to Telegram.",
+            "last_content_tool_output_text": full_content,
+            "last_content_tool_request_id": "read-request",
+        },
+    )
+    auditor = QueueAuditor([AuditResult(sufficient=True, answer="The evidence was read and delivered.")])
+    worker = TaskWorker(
+        repos,
+        audit,
+        executor=_executor(_settings(), audit, repos),
+        operator=QueueOperator([OperatorDecision(action=OperatorAction.DONE, final_answer="Done.")]),
+        auditor=auditor,
+    )
+
+    result = await worker.process_task(task.id)
+
+    assert result.status == TaskStatus.COMPLETED
+    assert "CAREER-PROOF-47" in auditor.calls[0][1]
+    assert "Delivered career-evidence.txt" in auditor.calls[0][1]
+
+
+def test_coding_agent_inherits_only_a_workspace_explicitly_named_by_user() -> None:
+    requested = r"C:\work\dog-plugin"
+    task = TaskRecord(
+        objective="Build the plugin",
+        metadata={
+            "original_message_text": f"Use Claude Code in {requested} to build the plugin.",
+            "orchestration_intent": {"folder_path": requested},
+        },
+    )
+
+    enriched = _coding_agent_input_with_explicit_workspace(task, "coding.agent", {"provider": "claude_code"})
+
+    assert enriched["workspace_dir"] == requested
+
+    workspace_route = TaskRecord(
+        objective="Build the plugin",
+        metadata={
+            "original_message_text": f"Use Claude Code in {requested} to build the plugin.",
+            "orchestration_intent": {"route": "workspace.manage", "path": requested},
+        },
+    )
+    route_enriched = _coding_agent_input_with_explicit_workspace(
+        workspace_route, "coding.agent", {"provider": "claude_code"}
+    )
+    assert route_enriched["workspace_dir"] == requested
+
+    invented = TaskRecord(
+        objective="Build the plugin",
+        metadata={
+            "original_message_text": "Use Claude Code to build the plugin.",
+            "orchestration_intent": {"folder_path": requested},
+        },
+    )
+    unchanged = _coding_agent_input_with_explicit_workspace(
+        invented, "coding.agent", {"provider": "claude_code"}
+    )
+    assert "workspace_dir" not in unchanged
+
+    overridden = _coding_agent_input_with_explicit_workspace(
+        workspace_route,
+        "coding.agent",
+        {"provider": "codex", "workspace_dir": r"C:\work\generated-task"},
+    )
+    assert overridden["workspace_dir"] == requested
+
+    unresolved = TaskRecord(
+        objective="Build the plugin",
+        metadata={
+            "original_message_text": "Use Codex in {{dog_workspace}} to build it.",
+            "orchestration_intent": {"path": "dog_workspace"},
+        },
+    )
+    unresolved_input = _coding_agent_input_with_explicit_workspace(
+        unresolved, "coding.agent", {"provider": "codex"}
+    )
+    assert "workspace_dir" not in unresolved_input
+
+
+def test_coding_agent_start_recovers_named_provider_and_task_objective() -> None:
+    task = TaskRecord(
+        objective="Build the accessible dog app in the requested folder.",
+        metadata={
+            "original_message_text": "Could you ask Codex to start my dog app?",
+        },
+    )
+
+    enriched = _coding_agent_input_with_task_defaults(
+        task,
+        "coding.agent",
+        {"operation": "start"},
+    )
+
+    assert enriched["provider"] == "codex"
+    assert enriched["objective"] == task.objective
+
+    ambiguous = task.model_copy(
+        update={
+            "metadata": {
+                "original_message_text": "Compare Codex and Claude Code before doing anything."
+            }
+        }
+    )
+    ambiguous_input = _coding_agent_input_with_task_defaults(
+        ambiguous,
+        "coding.agent",
+        {"operation": "start"},
+    )
+    assert "provider" not in ambiguous_input
+
+
+@pytest.mark.asyncio
+async def test_completed_coding_session_finishes_without_redundant_status_polls(tmp_path) -> None:
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("Use Codex to build a small accessible dog app")
+    settings = _settings()
+    executor = _executor(
+        settings,
+        audit,
+        repos,
+        tool_name="coding.agent",
+        output={
+            "status": "completed",
+            "returncode": 0,
+            "provider": "codex",
+            "session_id": "codex_done",
+            "workspace_dir": str(tmp_path / "dog-app"),
+            "changed_files": ["index.html", "styles.css", "script.js"],
+            "summary": "Created and syntax-checked the dog app.",
+        },
+    )
+    operator = QueueOperator(
+        [
+            OperatorDecision(
+                action=OperatorAction.CALL_TOOL,
+                tool_name="coding.agent",
+                tool_input={"operation": "start"},
+                risk_level=RiskLevel.LOW,
+            )
+        ]
+    )
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator)
+
+    result = await worker.process_task(task.id)
+
+    assert result.status == TaskStatus.COMPLETED
+    assert result.metadata["coding_agent_session_id"] == "codex_done"
+    assert "Changed files:" in result.metadata["synthesized_answer"]
+    assert operator.calls == 1
+
+
+def test_coding_agent_recovers_one_existing_path_when_classifier_omits_it(tmp_path) -> None:
+    requested = tmp_path / "dog app workspace"
+    generated = tmp_path / "generated task"
+    requested.mkdir()
+    generated.mkdir()
+    task = TaskRecord(
+        objective="Build the dog app in the specified workspace.",
+        metadata={
+            "original_message_text": f"Use Codex in {requested} to build a dog app.",
+            "orchestration_intent": {"route": "coding.agent", "path": None},
+        },
+    )
+
+    enriched = _coding_agent_input_with_explicit_workspace(
+        task,
+        "coding.agent",
+        {"provider": "codex", "workspace_dir": str(generated)},
+    )
+
+    assert enriched["workspace_dir"] == str(requested.resolve())
+
+
+def test_coding_agent_does_not_guess_between_multiple_existing_paths(tmp_path) -> None:
+    first = tmp_path / "first workspace"
+    second = tmp_path / "second workspace"
+    generated = tmp_path / "generated task"
+    first.mkdir()
+    second.mkdir()
+    generated.mkdir()
+    task = TaskRecord(
+        objective="Work on the project.",
+        metadata={
+            "original_message_text": f"Compare {first} with {second} before coding.",
+            "orchestration_intent": {"route": "coding.agent", "path": None},
+        },
+    )
+
+    unchanged = _coding_agent_input_with_explicit_workspace(
+        task,
+        "coding.agent",
+        {"provider": "codex", "workspace_dir": str(generated)},
+    )
+
+    assert unchanged["workspace_dir"] == str(generated)
+
+
+def test_later_workspace_result_does_not_overwrite_coding_agent_handoff(tmp_path) -> None:
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("Build the dog app with Codex")
+    worker = TaskWorker(
+        repos,
+        audit,
+        executor=_executor(_settings(), audit, repos),
+        operator=QueueOperator([]),
+    )
+    canonical = str(tmp_path / "canonical dog app")
+    generated = str(tmp_path / "generated preview")
+
+    worker._record_tool_result(
+        task.id,
+        "coding.agent",
+        ToolCallResult(
+            request_id="coding-result",
+            status=ToolResultStatus.SUCCEEDED,
+            output={
+                "workspace_dir": canonical,
+                "session_id": "codex_123",
+                "limit_state": {"limited": False},
+            },
+        ),
+    )
+    updated = worker._record_tool_result(
+        task.id,
+        "workspace.manage",
+        ToolCallResult(
+            request_id="preview-result",
+            status=ToolResultStatus.SUCCEEDED,
+            output={"workspace_dir": generated, "url": "http://127.0.0.1:8890/"},
+        ),
+    )
+
+    assert updated.metadata["workspace_dir"] == generated
+    assert updated.metadata["coding_agent_workspace"] == canonical
+    assert updated.metadata["coding_agent_session_id"] == "codex_123"
+
+
+def test_content_search_intent_enables_content_scan() -> None:
+    task = TaskRecord(
+        objective="Find the handoff file whose contents contain ORBIT-GLASS-27.",
+        metadata={
+            "original_message_text": (
+                "Somewhere under C:/handoffs is the text file whose contents "
+                "contain ORBIT-GLASS-27."
+            )
+        },
+    )
+
+    enriched = _filesystem_search_input_with_content_intent(
+        task,
+        "filesystem.manage",
+        {"operation": "search", "root": "C:/handoffs", "query": "ORBIT-GLASS-27"},
+    )
+
+    assert enriched["include_content"] is True
+
+
+def test_content_search_recovers_marker_query_from_human_request() -> None:
+    task = TaskRecord(
+        objective="Find the file whose contents contain ORBIT-GLASS-27.",
+        metadata={
+            "original_message_text": (
+                "Somewhere under C:/handoffs is the file whose contents contain ORBIT-GLASS-27."
+            )
+        },
+    )
+
+    enriched = _filesystem_search_input_with_content_intent(
+        task,
+        "filesystem.manage",
+        {"operation": "search", "root": "C:/handoffs"},
+    )
+
+    assert enriched["query"] == "orbit-glass-27"
+    assert enriched["include_content"] is True
+
+
+def test_failed_explicit_stale_read_switches_to_nearest_existing_parent_search(tmp_path) -> None:
+    recovery_root = tmp_path / "career"
+    recovery_root.mkdir()
+    stale_path = recovery_root / "old_location" / "career-master.txt"
+    task = TaskRecord(
+        objective="Read the career master file and recover it if moved.",
+        metadata={
+            "original_message_text": (
+                f"Read {stale_path}. If that location no longer works, search under "
+                f"{recovery_root} for the renamed file."
+            )
+        },
+    )
+    history = [
+        {
+            "tool_name": "filesystem.manage",
+            "status": "failed",
+            "input": {"operation": "read_file", "path": str(stale_path)},
+            "error": "file not found",
+        }
+    ]
+
+    tool_name, tool_input = _stale_read_recovery_call(
+        task,
+        "filesystem.manage",
+        {"operation": "read_file", "path": str(stale_path)},
+        history,
+    )
+
+    assert tool_name == "filesystem.manage"
+    assert tool_input == {
+        "operation": "search",
+        "root": str(recovery_root.resolve()),
+        "query": "career-master",
+        "include_content": False,
+    }
+
+
+def test_named_coding_provider_is_enforced_before_fallback_workspace_build() -> None:
+    task = TaskRecord(
+        objective="Use Codex to build a small dog app.",
+        metadata={"original_message_text": "Please use Codex to build a small dog app."},
+    )
+    definitions = {
+        "coding.agent": ToolDefinition(
+            name="coding.agent",
+            capability=Capability.LLM_GENERATE,
+            enabled=True,
+            description="test",
+            operations=("start", "status"),
+        ),
+        "workspace.manage": ToolDefinition(
+            name="workspace.manage",
+            capability=Capability.FILESYSTEM_WRITE,
+            enabled=True,
+            description="test",
+            operations=("prepare", "write_files"),
+        ),
+    }
+
+    tool_name, tool_input = _required_named_coding_agent_call(
+        task,
+        "workspace.manage",
+        {"operation": "prepare"},
+        definitions,
+    )
+
+    assert tool_name == "coding.agent"
+    assert tool_input == {
+        "operation": "start",
+        "provider": "codex",
+        "objective": task.objective,
+    }
+
+
+def test_filename_search_does_not_enable_content_scan() -> None:
+    task = TaskRecord(objective="Find report.md by filename.", metadata={})
+
+    unchanged = _filesystem_search_input_with_content_intent(
+        task,
+        "filesystem.manage",
+        {"operation": "search", "root": "C:/docs", "query": "report.md"},
+    )
+
+    assert "include_content" not in unchanged
+
+
+def test_completed_typed_work_rejects_optional_clarification() -> None:
+    history = [
+        {
+            "tool_name": "adapter.factory",
+            "input": {"operation": "scaffold"},
+            "status": "succeeded",
+            "output_summary": "Adapter proposal created in cache.",
+        }
+    ]
+    task = TaskRecord(
+        objective="Create an adapter proposal with a manifest and tests.",
+        metadata={"adapter_dir": "C:/cache/example", "operator_history": history},
+    )
+
+    assert _satisfied_task_does_not_need_clarification(task, history)
+
+
+def test_untyped_request_can_still_ask_for_required_user_input() -> None:
+    history = [{"tool_name": "memory.search", "status": "succeeded"}]
+    task = TaskRecord(objective="Help me with it.", metadata={"operator_history": history})
+
+    assert not _satisfied_task_does_not_need_clarification(task, history)
+
+
+def test_known_written_file_rejects_delivery_clarification() -> None:
+    history = [
+        {
+            "tool_name": "filesystem.manage",
+            "input": {"operation": "write_text_file", "path": "C:/output/brief.md"},
+            "status": "succeeded",
+        }
+    ]
+    task = TaskRecord(
+        objective="Write a brief and send me that exact file.",
+        metadata={"operator_history": history},
+    )
+
+    reason = _clarification_recovery_reason(task, history)
+
+    assert reason is not None
+    assert "C:/output/brief.md" in reason
+    assert "delivery tool" in reason
+
+
+def test_explicit_delivery_before_schedule_reorders_the_tool_call() -> None:
+    history = [
+        {
+            "tool_name": "filesystem.manage",
+            "input": {"operation": "write_text_file", "path": "C:/output/brief.md"},
+            "status": "succeeded",
+        }
+    ]
+    task = TaskRecord(
+        objective="Write a brief, deliver it, and create a schedule.",
+        metadata={
+            "original_message_text": (
+                "Write the brief and send me that exact file. Only after the file is delivered, "
+                "create a weekly schedule."
+            ),
+            "operator_history": history,
+        },
+    )
+    definitions = {
+        "artifact.deliver": ToolDefinition(
+            name="artifact.deliver",
+            capability=Capability.TELEGRAM_SEND,
+            enabled=True,
+            description="test",
+            operations=("send_file",),
+        )
+    }
+
+    tool_name, tool_input = _ordered_artifact_delivery_call(
+        task,
+        "schedule.manage",
+        {"operation": "create", "cadence": "weekly"},
+        history,
+        definitions,
+    )
+
+    assert tool_name == "artifact.deliver"
+    assert tool_input["operation"] == "send_file"
+    assert tool_input["path"] == "C:/output/brief.md"
+
+
+def test_named_cache_only_adapter_rejects_premature_clarification() -> None:
+    task = TaskRecord(
+        objective="Create the adapter proposal.",
+        metadata={
+            "original_message_text": (
+                "Create a reusable adapter proposal named linkedin_evidence_compare with a "
+                "generic contract and keep it cache-only."
+            )
+        },
+    )
+
+    reason = _clarification_recovery_reason(task, [])
+
+    assert reason is not None
+    assert "scaffold" in reason
+
+
+def test_multi_tool_audit_evidence_includes_every_observed_outcome() -> None:
+    delivery = {
+        "tool_name": "artifact.deliver",
+        "status": "succeeded",
+        "output_summary": "Delivered report.md to Telegram.",
+    }
+    evidence = _operator_audit_evidence(
+        [
+            {
+                "tool_name": "filesystem.manage",
+                "status": "succeeded",
+                "output_summary": "Inspected three career evidence files.",
+            },
+            {
+                "tool_name": "filesystem.manage",
+                "status": "succeeded",
+                "input": {
+                    "operation": "write_text_file",
+                    "path": "report.md",
+                    "content": "Evidence-backed LinkedIn brief",
+                },
+                "output_summary": "Wrote report.md.",
+            },
+            delivery,
+        ],
+        delivery,
+        "Delivered report.md to Telegram chat 123.",
+    )
+
+    assert "Inspected three career evidence files" in evidence
+    assert "Evidence-backed LinkedIn brief" in evidence
+    assert "Delivered report.md to Telegram chat 123" in evidence
 
 
 @pytest.mark.asyncio
@@ -451,6 +1125,20 @@ async def test_operator_loop_applies_runtime_risk_floor_to_model_tool_call(tmp_p
     assert result.metadata["operator_history"][0]["status"] == "succeeded"
 
 
+def test_operator_risk_normalizes_conservative_overstatement_to_runtime_definition() -> None:
+    definition = ToolDefinition(
+        name="schedule.manage",
+        capability=Capability.SCHEDULE_MANAGE,
+        enabled=True,
+        description="manage schedules",
+        operation_risks={"create": RiskLevel.MEDIUM},
+    )
+
+    risk = _effective_operator_risk(definition, {"operation": "create"}, RiskLevel.HIGH)
+
+    assert risk == RiskLevel.MEDIUM
+
+
 def _approval_settings() -> AppSettings:
     return AppSettings(
         _env_file=None,
@@ -540,6 +1228,45 @@ async def test_run_forever_sleeps_instead_of_busy_looping_on_a_pending_approval(
 
 
 @pytest.mark.asyncio
+async def test_run_forever_survives_one_infrastructure_poll_failure(tmp_path, monkeypatch) -> None:
+    repos, audit = make_repos(tmp_path)
+    worker = TaskWorker(
+        repos,
+        audit,
+        executor=_executor(_settings(), audit, repos),
+        operator=QueueOperator([]),
+    )
+    poll_calls = 0
+
+    async def flaky_process_next():
+        nonlocal poll_calls
+        poll_calls += 1
+        if poll_calls == 1:
+            raise RuntimeError("transient claim failure")
+        return None
+
+    sleep_calls: list[float] = []
+
+    async def stop_after_retry(seconds: float) -> None:
+        sleep_calls.append(seconds)
+        if len(sleep_calls) == 2:
+            raise RuntimeError("stop after proving the loop retried")
+
+    monkeypatch.setattr(worker, "process_next", flaky_process_next)
+    monkeypatch.setattr("agent_control.orchestration.worker.asyncio.sleep", stop_after_retry)
+
+    with pytest.raises(RuntimeError, match="stop after proving"):
+        await worker.run_forever(poll_interval_seconds=3.0)
+
+    assert poll_calls == 2
+    assert sleep_calls == [3.0, 3.0]
+    assert any(
+        event.payload.get("error") == "worker_poll_failed"
+        for event in repos.audit.list_recent(limit=20)
+    )
+
+
+@pytest.mark.asyncio
 async def test_operator_loop_resumes_and_executes_after_approval_granted(tmp_path) -> None:
     repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("needs approval")
@@ -553,6 +1280,8 @@ async def test_operator_loop_resumes_and_executes_after_approval_granted(tmp_pat
     awaiting = await worker.process_task(task.id)
     approvals = repos.approvals.list_for_task(task.id)
     repos.approvals.set_status(approvals[0].id, ApprovalStatus.APPROVED)
+    requeue_after_approval_decision(repos, task.id)
+    assert repos.tasks.get(task.id).status == TaskStatus.RUNNING
 
     resumed = await worker.process_task(awaiting.id)
 
@@ -562,6 +1291,7 @@ async def test_operator_loop_resumes_and_executes_after_approval_granted(tmp_pat
     assert len(resumed.metadata["operator_history"]) == 1
     assert resumed.metadata["operator_history"][0]["tool_name"] == "llm"
     assert resumed.metadata["operator_history"][0]["status"] == "succeeded"
+    assert len(repos.approvals.list_for_task(task.id)) == 1
 
     completed = await worker.process_task(resumed.id)
     assert completed.status == TaskStatus.COMPLETED
@@ -641,12 +1371,105 @@ async def test_operator_loop_done_with_fulfillment_gap_continues_instead_of_comp
     assert "workspace_dir" in result.metadata["operator_history"][-1]["error"]
 
 
+def test_write_claim_without_any_successful_write_is_rejected() -> None:
+    """The observed failure: one unsupported-operation error, then a synthesized
+    "The following files were created:" for an empty workspace, and the task
+    completed (docs/E2E_FINDINGS.md P0-2)."""
+    answer = "Scaffolded the extension. The following files were created: package.json, extension.js"
+    history = [{"tool_name": "filesystem.manage", "status": "failed", "input": {"operation": "list_directory"}}]
+
+    assert _unsupported_write_claim(answer, history, {}) is not None
+
+
+def test_write_claim_is_accepted_on_real_evidence() -> None:
+    answer = "The following files were created: package.json"
+    wrote = [{"tool_name": "filesystem.manage", "status": "succeeded", "input": {"operation": "write_text_file"}}]
+
+    assert _unsupported_write_claim(answer, wrote, {}) is None
+    # Merely preparing a workspace is not write evidence for the requested
+    # project. A concrete produced path is.
+    assert _unsupported_write_claim(answer, [], {"workspace_dir": "/tmp/ws"}) is not None
+    assert _unsupported_write_claim(answer, [], {"changed_files": ["package.json"]}) is None
+
+
+def test_write_claim_must_match_the_files_actually_written() -> None:
+    """Evidence that *some* write happened is not evidence the claimed one did.
+
+    P0-2 listed package.json for an empty workspace; a task that had already
+    written something unrelated would otherwise carry the same fabrication
+    through, because any truthy evidence key disabled the check task-wide.
+    """
+    answer = "The following files were created: package.json and extension.ts"
+
+    unrelated = {"changed_files": ["notes.txt"]}
+    assert _unsupported_write_claim(answer, [], unrelated) is not None
+
+    matching = {"changed_files": ["/ws/package.json", "/ws/extension.ts"]}
+    assert _unsupported_write_claim(answer, [], matching) is None
+
+    # Partial evidence is enough - the operator named one file it really wrote.
+    assert _unsupported_write_claim(answer, [], {"changed_files": ["package.json"]}) is None
+
+
+def test_unspecific_write_claim_passes_on_any_recorded_write() -> None:
+    """Without named files there is nothing to compare, so a recorded write is
+    all that can reasonably be required."""
+    wrote = [{"tool_name": "filesystem.manage", "status": "succeeded", "input": {"operation": "write_text_file"}}]
+
+    assert _unsupported_write_claim("I created the files you asked for.", wrote, {}) is None
+
+
+def test_honest_report_of_a_failed_write_is_not_treated_as_a_claim() -> None:
+    """Flagging this would push a correctly-behaving run into a pointless
+    replan and penalize the exact honesty the guard exists to encourage."""
+    history = [{"tool_name": "filesystem.manage", "status": "failed", "input": {"operation": "list_directory"}}]
+
+    for honest in (
+        "I could not create the files: the operation is unsupported.",
+        "No files were created because filesystem.manage rejected the operation.",
+        "I was unable to write the README file.",
+    ):
+        assert _unsupported_write_claim(honest, history, {}) is None, honest
+
+
+def test_answer_that_claims_no_write_is_ignored() -> None:
+    history = [{"tool_name": "filesystem.manage", "status": "succeeded", "input": {"operation": "read_file"}}]
+
+    assert _unsupported_write_claim("The folder contains three CSV files.", history, {}) is None
+
+
+@pytest.mark.asyncio
+async def test_operator_loop_rejects_a_fabricated_write_and_keeps_working(tmp_path) -> None:
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("scaffold the extension files")
+    settings = _settings()
+    executor = _executor(settings, audit, repos)
+    operator = QueueOperator([
+        OperatorDecision(
+            action=OperatorAction.DONE,
+            final_answer="The following files were created: package.json, extension.js",
+        ),
+    ])
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator)
+
+    result = await worker.process_task(task.id)
+
+    assert result.status == TaskStatus.RUNNING
+    assert result.metadata["operator_history"][-1]["status"] == "fulfillment_gap"
+    assert "expected_workspace_dir_missing" in result.metadata["operator_history"][-1]["error"]
+
+
 @pytest.mark.asyncio
 async def test_operator_loop_fulfillment_gap_resolves_once_postcondition_met(tmp_path) -> None:
     repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("create a script that prints hello")
     settings = _settings()
-    executor = _executor(settings, audit, repos, output={"workspace_dir": "/tmp/ws"})
+    executor = _executor(
+        settings,
+        audit,
+        repos,
+        output={"workspace_dir": "/tmp/ws", "changed_paths": ["/tmp/ws/hello.py"]},
+    )
     operator = QueueOperator([
         OperatorDecision(action=OperatorAction.CALL_TOOL, tool_name="llm", tool_input={}, risk_level=RiskLevel.LOW),
         OperatorDecision(action=OperatorAction.DONE, final_answer="Created the script in /tmp/ws."),
@@ -662,7 +1485,7 @@ async def test_operator_loop_fulfillment_gap_resolves_once_postcondition_met(tmp
 
 
 @pytest.mark.asyncio
-async def test_operator_loop_fulfillment_gap_exhausts_and_completes_with_gap_flagged(tmp_path) -> None:
+async def test_operator_loop_fulfillment_gap_exhausts_and_blocks_with_gap_flagged(tmp_path) -> None:
     repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("create a script that prints hello")
     settings = _settings()
@@ -678,9 +1501,80 @@ async def test_operator_loop_fulfillment_gap_exhausts_and_completes_with_gap_fla
         if result.status != TaskStatus.RUNNING:
             break
 
-    assert result.status == TaskStatus.COMPLETED
+    assert result.status == TaskStatus.BLOCKED
     assert result.metadata["fulfillment_gap"] == "expected_workspace_dir_missing"
     assert result.metadata["operator_fulfillment_gap_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_operator_loop_blocked_without_reason_reports_latest_failed_capability(tmp_path) -> None:
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("send something using a capability that is unavailable")
+    settings = _settings()
+    executor = _executor(settings, audit, repos)
+    operator = QueueOperator([
+        OperatorDecision(
+            action=OperatorAction.CALL_TOOL,
+            tool_name="missing.integration",
+            tool_input={"operation": "send"},
+        ),
+        OperatorDecision(action=OperatorAction.BLOCKED),
+    ])
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator)
+
+    running = await worker.process_task(task.id)
+    result = await worker.process_task(running.id)
+
+    assert result.status == TaskStatus.BLOCKED
+    assert "No available capability completed the request" in result.metadata["last_worker_error"]
+    assert "missing.integration" in result.metadata["last_worker_error"]
+
+
+def test_operator_call_normalization_accepts_common_filesystem_dialect() -> None:
+    definition = ToolDefinition(
+        name="filesystem.manage",
+        capability=Capability.FILESYSTEM_WRITE,
+        enabled=True,
+        description="test",
+        operations=("inspect_folder", "search", "read_file", "write_text_file"),
+    )
+
+    tool_name, tool_input = _canonical_operator_tool_call(
+        "filesystem",
+        {"operation": "write_file", "path": "README.md", "content": "hello"},
+        {definition.name: definition},
+    )
+    list_name, list_input = _canonical_operator_tool_call(
+        "filesystem_manager",
+        {"operation": "list_directory", "path": "documents"},
+        {definition.name: definition},
+    )
+    tree_name, tree_input = _canonical_operator_tool_call(
+        "filesystem.manage",
+        {"operation": "directory_tree", "root": "documents"},
+        {definition.name: definition},
+    )
+    search_name, search_input = _canonical_operator_tool_call(
+        "filesystem.manage",
+        {"operation": "search_files", "root_folder": "documents", "pattern": "report"},
+        {definition.name: definition},
+    )
+    read_name, read_input = _canonical_operator_tool_call(
+        "filesystem.manage",
+        {"operation": "read_file", "folder_path": "documents", "file_name": "report.md"},
+        {definition.name: definition},
+    )
+
+    assert tool_name == "filesystem.manage"
+    assert tool_input["operation"] == "write_text_file"
+    assert list_name == "filesystem.manage"
+    assert list_input == {"operation": "inspect_folder", "root": "documents"}
+    assert tree_name == "filesystem.manage"
+    assert tree_input == {"operation": "inspect_folder", "root": "documents"}
+    assert search_name == "filesystem.manage"
+    assert search_input == {"operation": "search", "root": "documents", "query": "report"}
+    assert read_name == "filesystem.manage"
+    assert read_input == {"operation": "read_file", "path": str(Path("documents") / "report.md")}
 
 
 @pytest.mark.asyncio
@@ -729,7 +1623,7 @@ async def test_operator_loop_audit_gap_continues_loop_instead_of_completing(tmp_
 
 
 @pytest.mark.asyncio
-async def test_operator_loop_audit_gap_exhausts_and_completes_with_operator_answer(tmp_path) -> None:
+async def test_operator_loop_audit_gap_exhausts_and_blocks_without_unverified_answer(tmp_path) -> None:
     repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("list the first 5 episodes")
     settings = _settings()
@@ -752,13 +1646,10 @@ async def test_operator_loop_audit_gap_exhausts_and_completes_with_operator_answ
         if result.status != TaskStatus.RUNNING:
             break
 
-    assert result.status == TaskStatus.COMPLETED
+    assert result.status == TaskStatus.BLOCKED
     assert result.metadata["operator_audit_gap_count"] == 2
     assert len(auditor.calls) == 2
-    # Budget exhausted after 2 insufficient audits - the 3rd `done` skips the
-    # audit check entirely and completes with the operator's own answer,
-    # not silently dropped.
-    assert result.metadata["synthesized_answer"] == "attempt 3"
+    assert "unverified answer" in result.metadata["last_worker_error"]
 
 
 @pytest.mark.asyncio

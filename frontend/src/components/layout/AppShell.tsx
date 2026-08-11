@@ -5,6 +5,8 @@ import { cn } from "@/lib/utils"
 import { HealthIndicator } from "@/components/layout/HealthIndicator"
 import { ApprovalBanner } from "@/components/approvals/ApprovalBanner"
 import { SafetyTourBanner } from "@/components/layout/SafetyTourBanner"
+import { SetupIncompleteBanner } from "@/components/layout/SetupIncompleteBanner"
+import { useBootstrap } from "@/lib/queries"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { AdvancedModeContext, readAdvancedMode, writeAdvancedMode } from "@/lib/advanced-mode"
@@ -38,6 +40,7 @@ function isNavItemActive(item: (typeof NAV_ITEMS)[number], pathname: string): bo
 }
 
 export function AppShell() {
+  const { data: bootstrap } = useBootstrap()
   const [advanced, setAdvancedState] = useState(readAdvancedMode)
   const location = useLocation()
   const setAdvanced = (value: boolean) => {
@@ -52,7 +55,21 @@ export function AppShell() {
             on every route" (docs/UI_REWRITE_PLAN.md §11.1). Renders nothing
             when there are no pending approvals. */}
         <ApprovalBanner />
-        <SafetyTourBanner />
+        {/* While no model is configured the console cannot answer anything.
+            Skipping the wizard is allowed now, so this is what stops that
+            being a silent dead end. */}
+        {bootstrap && !bootstrap.onboarding_complete && (
+          <SetupIncompleteBanner
+            onResume={() => {
+              localStorage.removeItem("ybm.setup.dismissed")
+              window.location.reload()
+            }}
+          />
+        )}
+        {/* Setup already explains the blocking condition and route back. Do
+            not stack a second banner above every mobile screen until setup is
+            complete. */}
+        {bootstrap?.onboarding_complete && <SafetyTourBanner />}
         <header className="flex h-14 shrink-0 items-center justify-between border-b border-sidebar-border bg-sidebar px-4 md:hidden">
           <Brand />
           <ThemeToggle />

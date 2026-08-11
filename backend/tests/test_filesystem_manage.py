@@ -140,6 +140,21 @@ async def test_filesystem_manage_search_by_name_includes_readable_content_previe
 
 
 @pytest.mark.asyncio
+async def test_filesystem_manage_search_supports_natural_wildcard_filename_queries(tmp_path) -> None:
+    root = tmp_path / "notes"
+    root.mkdir()
+    renamed = root / "career-master-current.txt"
+    renamed.write_text("marker: RECOVERED", encoding="utf-8")
+    adapter = FilesystemManageAdapter([str(tmp_path)])
+
+    result = await adapter.execute(_request(root, "search", query="career*"))
+    all_result = await adapter.execute(_request(root, "search", query="*"))
+
+    assert [entry["path"] for entry in result.output["entries"]] == [str(renamed.resolve())]
+    assert [entry["path"] for entry in all_result.output["entries"]] == [str(renamed.resolve())]
+
+
+@pytest.mark.asyncio
 async def test_filesystem_manage_read_file_returns_contents(tmp_path) -> None:
     root = tmp_path / "desktop"
     root.mkdir()

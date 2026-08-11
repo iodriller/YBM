@@ -55,6 +55,49 @@ jobs:
       - run: uv sync --frozen --extra test --extra dev
       - run: uv run --frozen ruff check .
       - run: uv run --frozen --with pip-audit pip-audit
+      - run: uv run --frozen python ../scripts/check_markdown_links.py
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22.22.0"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npx tsc -b --noEmit
+      - run: npm run lint
+      - run: npm run build
+      - run: npm audit --audit-level=high
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+
+  whatsapp-bridge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: whatsapp-bridge
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22.22.0"
+          cache: npm
+          cache-dependency-path: whatsapp-bridge/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - run: npm audit --audit-level=high
 
   vscode-extension:
     runs-on: ubuntu-latest
@@ -68,12 +111,32 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: "22"
+          node-version: "22.22.0"
           cache: npm
           cache-dependency-path: vscode-extension/package-lock.json
       - run: npm ci
       - run: npm run compile
       - run: npm audit --audit-level=high
+
+  container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build the headless image
+        run: docker build --tag ybm-control:ci .
+      - name: Check packaged runtime assets
+        run: |
+          docker run --rm --entrypoint sh ybm-control:ci -c '
+            node --version &&
+            test -f /app/whatsapp-bridge/src/index.js &&
+            test -d /app/whatsapp-bridge/node_modules &&
+            test -f /app/skills/starter/repo-review.md &&
+            test -f /app/LICENSE &&
+            ybm --help >/dev/null
+          '
 
   secrets:
     runs-on: ubuntu-latest
@@ -91,8 +154,28 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      # Run gitleaks directly rather than through gitleaks-action. The action
+      # passes `--log-opts=-1` on a push, so it scans the last commit only -
+      # this job was named "Scan Git history for leaked secrets" and had never
+      # scanned any history, while fetch-depth: 0 above paid for the full clone
+      # regardless. Invoking the binary makes the scope visible in the diff
+      # instead of hidden in the action's defaults.
       - name: Scan Git history for leaked secrets
-        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
-          GITLEAKS_CONFIG: .gitleaks.toml
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: 8.24.3
+          # From the release's own checksums file. Pinned so a compromised or
+          # re-tagged release cannot silently become the thing auditing us.
+          GITLEAKS_SHA256: 9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c
+        run: |
+          set -euo pipefail
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSLO "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum -c -
+          tar -xzf "$archive" gitleaks
+          ./gitleaks detect \
+            --source . \
+            --config .gitleaks.toml \
+            --log-opts=--all \
+            --redact \
+            --no-banner \
+            --exit-code 1

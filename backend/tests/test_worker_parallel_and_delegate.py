@@ -10,7 +10,7 @@ import asyncio
 
 import pytest
 
-from agent_control.config import AppSettings, CapabilityPolicy
+from agent_control.config import ApprovalPolicyConfig, AppSettings, CapabilityPolicy
 from agent_control.orchestration import TaskWorker, ToolExecutor
 from agent_control.policy import PolicyEngine
 from agent_control.schemas import (
@@ -87,6 +87,20 @@ class BackgroundAdapter:
         )
 
 
+class ChangedPathAdapter:
+    def __init__(self) -> None:
+        self.started_at: list[str] = []
+
+    async def execute(self, request: ToolCallRequest) -> ToolCallResult:
+        path = str(request.input["path"])
+        self.started_at.append(path)
+        return ToolCallResult(
+            request_id=request.id,
+            status=ToolResultStatus.SUCCEEDED,
+            output={"changed_paths": [path]},
+        )
+
+
 def _settings(*caps: Capability) -> AppSettings:
     return AppSettings(
         _env_file=None,
@@ -146,6 +160,60 @@ async def test_call_tools_parallel_runs_calls_concurrently_not_sequentially(tmp_
 
 
 @pytest.mark.asyncio
+async def test_parallel_calls_normalize_common_filesystem_tool_and_operation_aliases(tmp_path) -> None:
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("write three extension files")
+    settings = _settings(Capability.FILESYSTEM_WRITE).model_copy(
+        update={
+            "approval_policy": ApprovalPolicyConfig(
+                require_approval_at_or_above=RiskLevel.CRITICAL
+            )
+        }
+    )
+    adapter = ChangedPathAdapter()
+    definition = ToolDefinition(
+        name="filesystem.manage",
+        capability=Capability.FILESYSTEM_WRITE,
+        enabled=True,
+        description="filesystem",
+        operations=("write_text_file",),
+    )
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit),
+        repos,
+        audit,
+        adapters={"filesystem.manage": adapter},
+        tool_definitions={"filesystem.manage": definition},
+    )
+    operator = QueueOperator(
+        [
+            OperatorDecision(
+                action=OperatorAction.CALL_TOOLS_PARALLEL,
+                parallel_calls=[
+                    ParallelToolCall(
+                        tool_name="filesystem",
+                        tool_input={"operation": "write_file", "path": name, "content": name},
+                    )
+                    for name in ("package.json", "extension.js", "README.md")
+                ],
+            )
+        ]
+    )
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator)
+
+    running = await worker.process_task(task.id)
+
+    assert len(adapter.started_at) == 3
+    assert all(entry["tool_name"] == "filesystem.manage" for entry in running.metadata["operator_history"])
+    assert all(
+        entry["input"]["operation"] == "write_text_file"
+        for entry in running.metadata["operator_history"]
+    )
+    assert all("normalized_from" in entry for entry in running.metadata["operator_history"])
+    assert running.metadata["changed_paths"] == ["package.json", "extension.js", "README.md"]
+
+
+@pytest.mark.asyncio
 async def test_call_tools_parallel_counts_as_n_steps_toward_the_budget(tmp_path) -> None:
     """Fairness/safety: a parallel batch must cost as many budget slots as
     the calls it makes, not act as a free unlimited-fanout escape hatch."""
@@ -167,7 +235,7 @@ async def test_call_tools_parallel_counts_as_n_steps_toward_the_budget(tmp_path)
     # 3 history entries already consumes the whole budget of 3.
     assert len(running.metadata["operator_history"]) == 3
     exhausted = await worker.process_task(running.id)
-    assert exhausted.status.value == "failed"
+    assert exhausted.status.value == "blocked"
     events = repos.audit.list_for_task(exhausted.id)
     assert any(event.payload.get("error") == "operator_step_budget_exhausted" for event in events)
 

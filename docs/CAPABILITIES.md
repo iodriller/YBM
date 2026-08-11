@@ -75,7 +75,7 @@ Set access from the admin console's **Access** page, which groups capabilities i
 | Text | ✅ | ✅ | ✅ |
 | Slash commands | ✅ | ❌ | ❌ |
 | Inline approve/reject buttons | ✅ | ❌ | ❌ |
-| Voice transcription | ✅ | ❌ | ❌ |
+| Voice transcription | ✅ | ❌ | ✅ |
 | File / screenshot delivery | ✅ | ❌ | ❌ |
 
 Plain-text `approve`, `status`, and `remember that ...` work on every channel.

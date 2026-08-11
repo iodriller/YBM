@@ -30,6 +30,28 @@ llm:
   major_profile: "localdeploy_qwen3vl_8b"
   fallback_profile: "openai_saved"
   profiles:
+    # Claude. `provider: anthropic` routes to the native provider rather than
+    # the OpenAI-compatible one, which matters: current Claude models reject
+    # `temperature` with a 400, and the native provider omits it for them.
+    # No base_url - the SDK supplies it.
+    anthropic_sonnet:
+      provider: "anthropic"
+      model: "claude-sonnet-5"
+      api_key_env: "ANTHROPIC_API_KEY"
+      timeout_seconds: 120
+      max_tokens: 4096
+      temperature: 0.2
+    # Any OpenAI-compatible endpoint is base_url plus a key. The console's
+    # provider picker writes these for you, and verifies the key and one real
+    # completion before saving.
+    openrouter:
+      provider: "openai_compatible"
+      model: "anthropic/claude-sonnet-4.5"
+      base_url: "https://openrouter.ai/api/v1"
+      api_key_env: "OPENROUTER_API_KEY"
+      timeout_seconds: 120
+      max_tokens: 4096
+      temperature: 0.2
     localdeploy_qwen3vl_8b:
       provider: "openai_compatible"
       model: "qwen3vl_8b_ollama"
@@ -193,7 +215,7 @@ operator:
   # Hard ceiling on REAL tool calls per task - the only backstop against a
   # model that never converges. Fulfillment/audit check entries do not count
   # against it. Raise for genuinely long multi-tool work; lower to fail fast.
-  max_steps: 8
+  max_steps: 12
 
 adapters:
   vscode:
@@ -260,6 +282,7 @@ adapters:
     use_runner: true
     timeout_seconds: 3600
     start_wait_seconds: 20
+    progress_interval_seconds: 300
     output_limit_chars: 20000
     rate_limit_patterns:
       - "rate limit"

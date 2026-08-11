@@ -1,0 +1,63 @@
+# Known gaps
+
+This is the current list of product and engineering limitations. Completed
+plans and earlier review snapshots live under [`archive/`](archive/); they are
+useful design history, not current status.
+
+## Security boundaries
+
+- **Indirect prompt injection remains possible.** Tool results, web pages,
+  documents, and MCP output are untrusted. Runtime capability policy,
+  allowlists, workspace boundaries, and one-shot approvals limit impact, but
+  the Operator prompt does not yet spotlight tool output with per-run
+  delimiters. That prompt change requires review and re-recording affected
+  scenario fixtures; see [THREAT_MODEL.md](THREAT_MODEL.md).
+- **Redaction is pattern-based.** Known secret fields, configured secret
+  values, and provider-token shapes are redacted. A novel high-entropy secret
+  with no recognizable name or prefix may pass through. Entropy scanning has
+  not been enabled because it would also hide hashes, UUIDs, and generated
+  identifiers in user-facing results.
+- **YBM is single-operator software.** It is not a hardened multi-tenant or
+  Internet-facing control plane. Keep the backend and preview servers on
+  loopback and use an admin token when the bind host is broader.
+
+## Behavior still needing live validation
+
+- The Auditor checks grounding and objective completion, but it does not
+  reliably challenge an implausible value such as a zero total for a non-empty
+  expense file. Improving that prompt requires a reviewed live fixture
+  re-record.
+- The built-in starter suggestions have deterministic UI and worker coverage,
+  but the current wording has not been exercised against a configured live
+  model profile.
+- Voice failure paths and transcription APIs are tested with simulated audio
+  and adapters. A real microphone recording and Telegram voice note have not
+  been transcribed end to end in the release environment.
+- WhatsApp's sidecar imports and health behavior are checked, but live QR
+  pairing and send/receive need a real account. WhatsApp remains text-only:
+  there are no buttons, voice messages, or artifact delivery.
+- The credentialed live E2E suite is intentionally separate from deterministic
+  CI and has not been run as part of this pre-public pass.
+
+## Product limitations
+
+- Desktop observation/control and computer-use actions are Windows-only.
+- GitHub Copilot Chat panel responses cannot be captured directly through the
+  VS Code API; the bridge and CLI-based coding-agent flow are supported.
+- The Windows PowerShell supervisor and cross-platform `ybm` supervisor are
+  separate implementations.
+- `mcp.client` supports configured servers, but the console does not yet offer
+  a full add/edit/test form for MCP server definitions.
+
+## Maintainability
+
+- `orchestration/worker.py`, `admin.py`, and the frontend API client remain
+  large coordination modules. Shared path/text helpers have been extracted,
+  but decomposing these files should be incremental and contract-tested rather
+  than a release-blocking rewrite.
+
+## Release-state items
+
+Repository visibility, GitHub Actions billing/availability, release tags, and
+clean-machine anonymous installation are external release steps, not code
+gaps. They are tracked in [PUBLIC_RELEASE.md](PUBLIC_RELEASE.md).

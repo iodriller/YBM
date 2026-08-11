@@ -27,6 +27,7 @@ import { ClearHistoryButton } from "@/components/tasks/ClearHistoryButton"
 import { PageHeader } from "@/components/layout/PageHeader"
 import { Card, CardContent } from "@/components/ui/card"
 import { useTasks } from "@/lib/queries"
+import { cn } from "@/lib/utils"
 import type { TaskRecord, TaskStatus } from "@/lib/api"
 
 const STATUS_OPTIONS: (TaskStatus | "all")[] = [
@@ -57,24 +58,43 @@ export function TasksPage() {
     return statusFilter === "all" ? bySearch : bySearch.filter((t) => t.status === statusFilter)
   }, [data, statusFilter, search])
 
+  // Widths are declared, and the table below is `table-fixed`, because an
+  // auto-layout table sizes each column to its longest unwrapped line. The
+  // cells already carried line-clamp-1, but that clamps vertically - it stops
+  // the text wrapping without constraining the box - so a long objective or
+  // outcome grew the column instead of being truncated. Measured before this
+  // change: the Objective cell was 3,321px and Outcome 26,618px, for a table
+  // 30,525px wide inside a 1,440px window (docs/archive/UI_MEASURED_FINDINGS.md F1).
   const columns = useMemo(
     () => [
       columnHelper.accessor("objective", {
         header: "Objective",
-        cell: (info) => <span className="line-clamp-1">{info.getValue()}</span>,
+        meta: { headClassName: "w-[38%]", cellClassName: "whitespace-normal" },
+        cell: (info) => (
+          <span className="line-clamp-2 [overflow-wrap:anywhere]" title={info.getValue()}>
+            {info.getValue()}
+          </span>
+        ),
       }),
       columnHelper.accessor("status", {
         header: "Status",
+        meta: { headClassName: "w-[132px]" },
         cell: (info) => <StatusBadge status={info.getValue()} />,
       }),
       columnHelper.display({
         id: "outcome",
         header: "Outcome",
+        meta: { headClassName: "w-auto", cellClassName: "whitespace-normal" },
         cell: (info) => <TaskOutcomeCell task={info.row.original} />,
       }),
       columnHelper.accessor("created_at", {
         header: "Created",
-        cell: (info) => new Date(info.getValue()).toLocaleString(),
+        meta: { headClassName: "w-[168px]" },
+        cell: (info) => (
+          <span className="text-sm whitespace-nowrap text-muted-foreground">
+            {new Date(info.getValue()).toLocaleString()}
+          </span>
+        ),
       }),
     ],
     [],
@@ -166,12 +186,15 @@ export function TasksPage() {
         </div>
         <Card className="hidden py-0 shadow-sm ring-border sm:block">
           <CardContent className="px-0">
-          <Table>
+          <Table className="table-fixed">
           <TableHeader>
             {table.getHeaderGroups().map((headerGroup) => (
               <TableRow key={headerGroup.id}>
                 {headerGroup.headers.map((header) => (
-                  <TableHead key={header.id}>
+                  <TableHead
+                    key={header.id}
+                    className={(header.column.columnDef.meta as { headClassName?: string } | undefined)?.headClassName}
+                  >
                     {flexRender(header.column.columnDef.header, header.getContext())}
                   </TableHead>
                 ))}
@@ -186,7 +209,13 @@ export function TasksPage() {
                 onClick={() => navigate(`/tasks/${row.original.id}`)}
               >
                 {row.getVisibleCells().map((cell) => (
-                  <TableCell key={cell.id}>
+                  <TableCell
+                    key={cell.id}
+                    className={cn(
+                      "align-top",
+                      (cell.column.columnDef.meta as { cellClassName?: string } | undefined)?.cellClassName,
+                    )}
+                  >
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
                   </TableCell>
                 ))}

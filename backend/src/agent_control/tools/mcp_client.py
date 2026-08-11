@@ -441,7 +441,10 @@ def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -
                     "operation": "install_server",
                     "name": "filesystem",
                     "command": "npx",
-                    "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\\\Users\\\\oneye"],
+                    # A placeholder, not a real home directory: this example is
+                    # shown to the model in the tool catalog and ships in a
+                    # public repository, so it should not name anyone's account.
+                    "args": ["-y", "@modelcontextprotocol/server-filesystem", "<a folder you allow>"],
                 },
             ),
         )

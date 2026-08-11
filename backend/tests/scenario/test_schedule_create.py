@@ -10,10 +10,10 @@ to the deterministic tier (docs/HISTORY.md P2). Fixture re-recorded
 from __future__ import annotations
 
 from agent_control.config import CapabilityPolicy, default_capability_policies
-from agent_control.schemas import Capability, RiskLevel, TaskStatus
+from agent_control.schemas import Capability, RiskLevel
 import pytest
 
-from .harness import build_scenario, isolated_settings, run_task_to_completion
+from .harness import assert_completed, assert_rejected, build_scenario, isolated_settings, run_task_to_completion
 
 
 @pytest.mark.asyncio
@@ -32,7 +32,7 @@ async def test_schedule_create_persists_a_schedule(tmp_path, monkeypatch) -> Non
         auto_approve=True,
     )
 
-    assert task.status == TaskStatus.COMPLETED
+    assert_completed(task)
     schedules = scenario.repositories.schedules.list_recent(10)
     assert len(schedules) == 1
     assert "example.com/status" in schedules[0].objective
@@ -50,5 +50,5 @@ async def test_schedule_create_denied_without_capability(tmp_path, monkeypatch) 
         scenario, "create a daily schedule that checks https://example.com/status for updates"
     )
 
-    assert task.status != TaskStatus.COMPLETED
+    assert_rejected(task)
     assert scenario.repositories.schedules.list_recent(10) == []

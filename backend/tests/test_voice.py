@@ -137,8 +137,15 @@ async def test_main_telegram_intake_voice_reports_clear_stt_error(tmp_path) -> N
 
     assert result.task is None
     assert result.outbound_message is not None
-    assert "Voice transcription failed" in (result.outbound_message.text or "")
-    assert "not configured" in (result.outbound_message.text or "")
+    # Was: "Voice transcription failed: RuntimeError: STT adapter is disabled".
+    # A person cannot act on a class name, and a feature being switched off is
+    # not a failure - so the reply now names the situation and a way forward,
+    # and the diagnostic stays in the audit trail.
+    text = result.outbound_message.text or ""
+    assert "turned off" in text or "isn't installed" in text
+    assert "Send it as text" in text
+    assert "RuntimeError" not in text
+    assert "STT" not in text
 
 
 @pytest.mark.asyncio

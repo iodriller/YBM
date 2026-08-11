@@ -12,10 +12,10 @@ code_interpreter_json_transform`, localdeploy_qwen3vl_8b).
 from __future__ import annotations
 
 from agent_control.config import CapabilityPolicy, default_capability_policies
-from agent_control.schemas import Capability, RiskLevel, TaskStatus
+from agent_control.schemas import Capability, RiskLevel
 import pytest
 
-from .harness import build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
+from .harness import assert_completed, assert_rejected, build_scenario, isolated_settings, run_task_to_completion, scenario_scratch_dir
 
 
 @pytest.mark.asyncio
@@ -53,7 +53,7 @@ async def test_code_interpreter_json_transform_normalizes_task_list(tmp_path, mo
         auto_approve=True,
     )
 
-    assert task.status == TaskStatus.COMPLETED
+    assert_completed(task)
     tool_calls = scenario.repositories.tool_invocations.list_for_task(task.id)
     tool_names = {call["tool_name"] for call in tool_calls}
     assert "code.interpreter" in tool_names
@@ -85,4 +85,4 @@ async def test_code_interpreter_json_transform_disabled_by_capability_policy(tmp
         "task A priority high owner Oney; task B priority low owner Agent; task C priority medium owner Oney.",
     )
 
-    assert task.status != TaskStatus.COMPLETED
+    assert_rejected(task)

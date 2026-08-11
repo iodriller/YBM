@@ -2,8 +2,22 @@
 name = "agent-control-backend"
 version = "0.1.0"
 description = "Configurable local agentic control system backend"
+authors = [{ name = "iodriller" }]
+license = { text = "MIT" }
 requires-python = ">=3.12"
+keywords = ["agent", "automation", "fastapi", "local-first", "telegram"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
 dependencies = [
+  # Anthropic's API is not OpenAI-compatible and its own guidance is to use the
+  # official SDK rather than a compatibility shim, so Claude gets a native
+  # provider instead of a base_url entry in the catalog.
+  "anthropic>=0.40",
   "fastapi>=0.115",
   "cryptography>=50.0.0",
   "httpx>=0.27",
@@ -22,6 +36,16 @@ dependencies = [
 
 [project.scripts]
 ybm = "agent_control.cli:main"
+# Entry point for .mcp.json. A console script rather than `python -m` so the
+# launcher does not have to know where the interpreter lives - the previous
+# config ran a bare `python` with a relative PYTHONPATH, which only resolved on
+# a machine that happened to have a system Python carrying the dependencies.
+ybm-mcp = "agent_control.mcp_server:main"
+
+[project.urls]
+Homepage = "https://github.com/iodriller/YBM"
+Issues = "https://github.com/iodriller/YBM/issues"
+Repository = "https://github.com/iodriller/YBM.git"
 
 [project.optional-dependencies]
 # Desktop observation/control (computer.use, desktop.screenshot capabilities).

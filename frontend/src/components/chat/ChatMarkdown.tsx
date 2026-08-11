@@ -100,7 +100,7 @@ function CodeBlock({ children }: { children?: React.ReactNode }) {
         type="button"
         onClick={handleCopy}
         aria-label="Copy code"
-        className="absolute right-2 top-2 flex size-6 items-center justify-center rounded-md border border-border bg-card text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
+        className="absolute right-2 top-2 flex size-6 items-center justify-center rounded-md border border-border bg-card text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100"
       >
         {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
       </button>

@@ -23,11 +23,12 @@ from __future__ import annotations
 import sys
 
 from agent_control.config import MCPConfig, MCPServerConfig
-from agent_control.schemas import TaskStatus
 import pytest
 
 from .harness import (
+    assert_completed,
     MCP_HANDSHAKE_TIMEOUT_SECONDS,
+    assert_rejected,
     build_scenario,
     mcp_settings,
     isolated_settings,
@@ -63,7 +64,7 @@ async def test_mcp_discover_tools_lists_configured_tools(tmp_path, monkeypatch) 
         assert call["request"].get("input", {}).get("operation") == "list_tools"
         assert call["result"]["status"] == "succeeded"
         assert any(tool.get("name") == "echo" for tool in call["result"]["output"].get("tools", []))
-    assert task.status == TaskStatus.COMPLETED
+    assert_completed(task)
 
 
 @pytest.mark.asyncio
@@ -86,7 +87,7 @@ async def test_mcp_discover_tools_disabled_by_capability_policy(tmp_path, monkey
 
     task = await run_task_to_completion(scenario, "Check what MCP tools are available.")
 
-    assert task.status != TaskStatus.COMPLETED
+    assert_rejected(task)
     # The Operator still decides to try mcp.client (a reasonable read of the
     # objective) - the policy engine is what blocks it, recorded as a denied
     # attempt in the audit trail, not as the call never being attempted at

@@ -1,4 +1,5 @@
 import { LLMSettingsCard } from "@/components/settings/LLMSettingsCard"
+import { VoiceSettingsCard } from "@/components/settings/VoiceSettingsCard"
 import { TelegramSettingsCard } from "@/components/settings/TelegramSettingsCard"
 import { VSCodeSettingsCard } from "@/components/settings/VSCodeSettingsCard"
 import { WorkspaceSettingsCard } from "@/components/settings/WorkspaceSettingsCard"
@@ -32,6 +33,7 @@ export function SettingsPage({ onRerunWizard }: { onRerunWizard: () => void }) {
       />
 
       <LLMSettingsCard />
+      <VoiceSettingsCard />
       <TelegramSettingsCard />
 
       {advanced && (
@@ -48,7 +50,7 @@ export function SettingsPage({ onRerunWizard }: { onRerunWizard: () => void }) {
       <Card>
         <CardHeader>
           <CardTitle>Setup wizard</CardTitle>
-          <CardDescription>Re-run the first-run wizard (pick a brain, pick a face).</CardDescription>
+          <CardDescription>Re-run guided model and channel setup.</CardDescription>
         </CardHeader>
         <CardContent>
           <Button variant="outline" size="sm" onClick={onRerunWizard}>

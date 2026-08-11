@@ -49,7 +49,7 @@ class OneShotAuditor:
         self.last_started_at = llm_fields.get("started_at", datetime(2026, 1, 1, tzinfo=timezone.utc))
         self.last_latency_ms = llm_fields.get("latency_ms", 50.0)
 
-    async def audit(self, objective, raw_output, *, original_message=None):
+    async def audit(self, objective, raw_output, *, original_message=None, response_context=None):
         return self.result
 
 
@@ -107,8 +107,17 @@ async def test_auditor_call_is_persisted_as_a_separate_source(tmp_path) -> None:
     # filesystem.manage is a real CONTENT_TOOLS member (auditor.py) - the
     # auditor only runs on a `done` that follows one.
     executor = _executor(settings, audit, repos, tool_name="filesystem.manage", output={"text": "the file says hello"})
+    # A real read carries operation/path, and the SOURCE_CONTENT postcondition
+    # "summarize this file" derives now reads exactly those off the history
+    # (fulfillment._source_content_satisfied). An empty tool_input would leave
+    # the objective unfulfilled and replan instead of completing.
     operator = OneShotOperator(
-        OperatorDecision(action=OperatorAction.CALL_TOOL, tool_name="filesystem.manage", tool_input={}, risk_level=RiskLevel.LOW)
+        OperatorDecision(
+            action=OperatorAction.CALL_TOOL,
+            tool_name="filesystem.manage",
+            tool_input={"operation": "read_file", "path": "notes.txt"},
+            risk_level=RiskLevel.LOW,
+        )
     )
     auditor = OneShotAuditor(AuditResult(sufficient=True, answer="grounded answer"))
     worker = TaskWorker(repos, audit, executor=executor, operator=operator, auditor=auditor)

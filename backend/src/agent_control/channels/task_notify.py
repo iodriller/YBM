@@ -14,11 +14,26 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from agent_control.error_text import explain_for_user
+from agent_control.text import trim_text as _trim
 from agent_control.schemas import TaskRecord, TaskStatus
+from agent_control.storage.redaction import redact_text
 from agent_control.tools.mcp_client import mcp_output_text
 
 
 def format_task_message(task: TaskRecord) -> str:
+    """Channel-agnostic outbound text for a task, with credentials stripped.
+
+    Every channel's notifier renders this, so it is the one place that can
+    guarantee a credential read out of a user's file does not leave the system
+    in a chat message (docs/E2E_FINDINGS.md P0-1). The audit sink is covered
+    separately by `AuditLogger.append`; a task's answer reaches the user through
+    here regardless of which tool produced it.
+    """
+    return redact_text(_format_task_message(task))
+
+
+def _format_task_message(task: TaskRecord) -> str:
     if task.status == TaskStatus.RECEIVED:
         return "Got your message, working on it now…"
     if task.status == TaskStatus.RUNNING:
@@ -420,10 +435,9 @@ def _last_error(task: TaskRecord) -> str | None:
     if not isinstance(result, dict):
         return fallback
     value = result.get("error_message") or fallback
-    return str(value) if value else None
-
-
-def _trim(value: str, limit: int) -> str:
-    if len(value) <= limit:
-        return value
-    return f"{value[: limit - 3]}..."
+    if not value:
+        return None
+    # Stored worker errors are describe_exception strings - correct for the
+    # trace, unreadable in a chat message. Anything already written for a
+    # person passes through untouched.
+    return explain_for_user(str(value))

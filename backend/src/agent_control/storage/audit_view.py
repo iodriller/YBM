@@ -35,6 +35,7 @@ CATEGORY_BY_TYPE = {
     AuditEventType.TASK_STATE_CHANGED: "task_state",
     AuditEventType.TASK_CANCELLED: "task_state",
     AuditEventType.ARTIFACT_CREATED: "artifact",
+    AuditEventType.MEMORY_UPDATED: "memory",
     AuditEventType.EGRESS_CONTACTED: "egress",
 }
 
@@ -80,6 +81,7 @@ def _title(event_type: AuditEventType) -> str:
         AuditEventType.TOOL_COMPLETED: "Tool completed",
         AuditEventType.APPROVAL_REQUESTED: "Approval requested",
         AuditEventType.APPROVAL_DECIDED: "Approval decided",
+        AuditEventType.MEMORY_UPDATED: "Memory updated",
         AuditEventType.ERROR: "Error",
     }.get(event_type, event_type.value.replace("_", " ").title())
 
@@ -105,6 +107,11 @@ def _summary(event_type: AuditEventType, payload: dict[str, Any]) -> str:
         return _preview(payload.get("reason") or payload.get("error") or "Task was not created")
     if event_type == AuditEventType.TASK_CREATED:
         return _preview(payload.get("objective") or "Task created")
+    if event_type == AuditEventType.MEMORY_UPDATED:
+        # The stored text is the whole point of the row - a bare "Memory
+        # updated" would make the operator open the payload to learn what the
+        # agent now believes.
+        return _preview(payload.get("content") or "Remembered a fact")
     if event_type == AuditEventType.POLICY_DECISION:
         return f"{'Allowed' if payload.get('allowed') else 'Denied'} {payload.get('capability', 'capability')}"
     if event_type == AuditEventType.CONFIG_UPDATED:

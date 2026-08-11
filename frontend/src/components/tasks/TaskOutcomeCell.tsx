@@ -25,10 +25,18 @@ export function TaskOutcomeCell({ task }: { task: TaskRecord }) {
   const usage = tokenUsageOf(task)
   const failed = task.status === "failed" || task.status === "blocked"
 
+  // min-w-0 and overflow-wrap matter inside a table cell: line-clamp alone
+  // stops the text wrapping without bounding the box, so a long summary grew
+  // the whole column rather than being truncated (F1).
   return (
-    <div className="flex flex-col gap-0.5">
-      <span className={`line-clamp-1 text-sm ${failed ? "text-destructive" : ""}`}>{summary}</span>
-      <span className="text-[11px] text-muted-foreground">
+    <div className="flex min-w-0 flex-col gap-0.5">
+      <span
+        className={`line-clamp-2 text-sm [overflow-wrap:anywhere] ${failed ? "text-destructive" : ""}`}
+        title={summary}
+      >
+        {summary}
+      </span>
+      <span className="text-[11px] whitespace-nowrap text-muted-foreground">
         {formatDuration(durationSeconds)}
         {steps > 0 && ` · ${steps} step${steps === 1 ? "" : "s"}`}
         {usage?.total_tokens ? ` · ${usage.total_tokens.toLocaleString()} tokens` : ""}

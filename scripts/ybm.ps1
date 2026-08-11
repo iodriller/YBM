@@ -16,7 +16,7 @@
 #>
 param(
   [Parameter(Position = 0)]
-  [ValidateSet("run", "setup", "doctor", "start", "stop", "restart", "status", "logs", "test", "e2e", "e2e-login", "send", "trace", "scenario", "db", "config", "clean", "package-extension", "tray", "autostart", "backup", "check-updates", "help")]
+  [ValidateSet("run", "setup", "doctor", "start", "stop", "restart", "status", "logs", "test", "e2e", "e2e-login", "send", "trace", "scenario", "db", "config", "clean", "package-extension", "tray", "autostart", "backup", "check-updates", "ui-build", "ui-dev", "help")]
   [string]$Command = "help",
 
   [Parameter(Position = 1)]
@@ -55,6 +55,8 @@ YBM - local agentic control stack
   ybm trace <task_id> [--json] full post-mortem for one task - reads the DB directly, no running backend needed
   ybm scenario record <name> [--profile <name>]
                                 re-record a scenario fixture against a live LLM (real API calls, may cost money)
+  ybm ui-build                 build the React admin console into backend/src/agent_control/static/admin
+  ybm ui-dev                   run the admin console with hot reload against a running backend
   ybm package-extension        build the VS Code bridge extension .vsix
   ybm tray                     launch the system tray icon (Open Admin Console / Start / Stop / Status)
   ybm autostart enable|disable|status
@@ -294,7 +296,7 @@ function Stop-YbmOrphansForName {
     return
   }
   $patterns = switch ($Name) {
-    "backend" { @("run_backend.ps1", "uvicorn agent_control.main:app") }
+    "backend" { @("run_backend.ps1", "uvicorn agent_control.main:app", "agent_control.serve_backend") }
     "localdeploy" { @("run_localdeploy.ps1", "api_server.py") }
     "worker" { @("run_worker.ps1", "agent_control.cli run-worker") }
     "coding_session_watcher" { @("run_coding_session_watcher.ps1", "agent_control.cli run-coding-session-watcher") }
@@ -588,14 +590,21 @@ function Invoke-YbmTest {
   # The wrapper imports the repo's .env at startup for normal operator
   # commands. The unit suite creates isolated TestClient instances that do
   # not send the real local admin token, so carrying it into pytest turns
-  # otherwise-valid admin API tests into blanket 401s. Individual auth tests
-  # set their own token explicitly with monkeypatch.
+  # otherwise-valid admin API tests into blanket 401s. Run from backend as
+  # the documented Python workflow does, so read_env_value() cannot fall
+  # back to the repo-root .env after the process variable is removed.
+  # Individual auth tests set their own token explicitly with monkeypatch.
   $savedAdminToken = $env:AGENT_ADMIN_TOKEN
   Remove-Item Env:AGENT_ADMIN_TOKEN -ErrorAction SilentlyContinue
-  & (Get-YbmPython) -m pytest "$Script:YbmRoot\backend\tests" @Argv
-  $testExitCode = $LASTEXITCODE
-  if ($null -ne $savedAdminToken) {
-    $env:AGENT_ADMIN_TOKEN = $savedAdminToken
+  Push-Location (Join-Path $Script:YbmRoot "backend")
+  try {
+    & (Get-YbmPython) -m pytest "tests" @Argv
+    $testExitCode = $LASTEXITCODE
+  } finally {
+    Pop-Location
+    if ($null -ne $savedAdminToken) {
+      $env:AGENT_ADMIN_TOKEN = $savedAdminToken
+    }
   }
   exit $testExitCode
 }
@@ -753,6 +762,20 @@ switch ($Command) {
       exit 1
     }
     & (Get-YbmPython) "$Script:YbmRoot\backend\tests\scenario\record.py" @Rest
+    exit $LASTEXITCODE
+  }
+  # Frontend build/dev live in the Python CLI, but AGENTS.md and README both
+  # document them as `ybm ui-build` / `ybm ui-dev` while pointing developers at
+  # this script as the interface. Without these branches the documented command
+  # failed here on the ValidateSet and only worked via the console script.
+  "ui-build" {
+    $env:PYTHONPATH = "$Script:YbmRoot\backend\src"
+    & (Get-YbmPython) -m agent_control.cli ui-build @(@($Sub) + $Rest | Where-Object { $_ })
+    exit $LASTEXITCODE
+  }
+  "ui-dev" {
+    $env:PYTHONPATH = "$Script:YbmRoot\backend\src"
+    & (Get-YbmPython) -m agent_control.cli ui-dev @(@($Sub) + $Rest | Where-Object { $_ })
     exit $LASTEXITCODE
   }
   default { Show-YbmHelp }

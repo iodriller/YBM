@@ -25,6 +25,7 @@ from agent_control.tools.contracts import (
     WorkspaceWriteFilesInput,
     WorkspaceWriteFilesOutput,
 )
+from agent_control.tools.path_utils import safe_path_segment
 from agent_control.tools.spec import Adapters, Definitions, RegistryDeps, ToolDefinition, capability_enabled, failed_result
 
 
@@ -61,6 +62,12 @@ class LocalWorkspaceAdapter:
 
     def _prepare(self, request: ToolCallRequest) -> dict[str, Any]:
         workspace_dir = workspace_dir_for_task(self.config.root_dir, request.task_id)
+        requested_workspace = str(request.input.get("workspace_path") or "").strip()
+        if requested_workspace and Path(requested_workspace).expanduser().resolve() != workspace_dir:
+            raise ValueError(
+                "workspace_path does not match this task's managed workspace; "
+                f"expected {workspace_dir}"
+            )
         workspace_dir.mkdir(parents=True, exist_ok=True)
         objective = str(request.input.get("objective") or "").strip()
         task_file = workspace_dir / "TASK.md"
@@ -89,6 +96,7 @@ class LocalWorkspaceAdapter:
         return {
             "workspace_dir": str(workspace_dir),
             "files": [*prepared.get("files", []), *files],
+            "changed_paths": files,
         }
 
     def _launch_static(self, request: ToolCallRequest) -> dict[str, Any]:
@@ -112,6 +120,7 @@ class LocalWorkspaceAdapter:
             "url": url,
             "server_pid": process.pid,
             "files": sorted(set([*prepared.get("files", []), *_workspace_preview_files(workspace_dir), *fallback_files])),
+            "changed_paths": fallback_files,
         }
 
     def _materialize_static_app(self, request: ToolCallRequest) -> dict[str, Any]:
@@ -130,6 +139,7 @@ class LocalWorkspaceAdapter:
             return {
                 "workspace_dir": str(workspace_dir),
                 "files": sorted(set([*prepared.get("files", []), str(existing_index), *fallback_files])),
+                "changed_paths": fallback_files,
                 "materialized_from": "existing_files",
             }
 
@@ -165,6 +175,7 @@ class LocalWorkspaceAdapter:
         return {
             "workspace_dir": str(workspace_dir),
             "files": sorted(set([*prepared.get("files", []), *files])),
+            "changed_paths": sorted(set(files)),
             "materialized_from": materialized_from,
         }
 
@@ -190,6 +201,9 @@ class LocalWorkspaceAdapter:
             **launch_output,
             "workspace_dir": write_output["workspace_dir"],
             "files": sorted(set([*write_output.get("files", []), *launch_output.get("files", [])])),
+            "changed_paths": sorted(
+                set([*write_output.get("changed_paths", []), *launch_output.get("changed_paths", [])])
+            ),
         }
 
 
@@ -198,7 +212,7 @@ LocalWorkspaceWebAppAdapter = LocalWorkspaceAdapter
 
 def workspace_dir_for_task(root_dir: str, task_id: str) -> Path:
     root = Path(root_dir).expanduser().resolve()
-    workspace = (root / _safe_segment(task_id)).resolve()
+    workspace = (root / safe_path_segment(task_id, fallback="task")).resolve()
     if root != workspace and root not in workspace.parents:
         raise ValueError("workspace path escaped configured root")
     return workspace
@@ -208,11 +222,6 @@ def _default_operation(tool_name: str) -> str:
     if tool_name == "workspace.web_app":
         return "web_app_preview"
     return "prepare"
-
-
-def _safe_segment(value: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._")
-    return cleaned or "task"
 
 
 def _safe_child_path(workspace_dir: Path, relative_path: str) -> Path:

@@ -10,10 +10,9 @@ against was deleted.
 
 from __future__ import annotations
 
-from agent_control.schemas import TaskStatus
 import pytest
 
-from .harness import build_scenario, filesystem_settings, run_task_to_completion, scenario_scratch_dir
+from .harness import assert_completed, assert_rejected, build_scenario, filesystem_settings, run_task_to_completion, scenario_scratch_dir
 
 
 
@@ -32,7 +31,7 @@ async def test_folder_inspection_reports_files_and_subfolders(tmp_path, monkeypa
         scenario, f"Inspect the folder {docs_dir} and tell me what files and subfolders are inside."
     )
 
-    assert task.status == TaskStatus.COMPLETED
+    assert_completed(task)
     answer = task.metadata.get("synthesized_answer", "")
     assert "notes.txt" in answer
     assert "budget.csv" in answer
@@ -56,4 +55,4 @@ async def test_folder_inspection_rejects_path_outside_allowed_roots(tmp_path, mo
         scenario, f"Inspect the folder {docs_dir} and tell me what files and subfolders are inside."
     )
 
-    assert task.status != TaskStatus.COMPLETED
+    assert_rejected(task)

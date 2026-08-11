@@ -7,6 +7,8 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { ArtifactCard } from "@/components/chat/ArtifactCard"
 import { ChatMarkdown } from "@/components/chat/ChatMarkdown"
+import { ComposerModeChips, ComposerTools } from "@/components/chat/ComposerTools"
+import { VoiceRecorder } from "@/components/chat/VoiceRecorder"
 import { FolderPicker } from "@/components/chat/FolderPicker"
 import { InlineApproval } from "@/components/chat/InlineApproval"
 import { TaskReceiptCard } from "@/components/chat/TaskReceiptCard"
@@ -21,6 +23,7 @@ import {
 } from "@/lib/queries"
 import { cn } from "@/lib/utils"
 import { ApiError, type TaskRecord } from "@/lib/api"
+import { COMPOSER_MODES } from "@/lib/composer-modes"
 
 const WIDTH_OPTIONS: { value: ChatWidth; label: string; icon: typeof Minimize2 }[] = [
   { value: "comfortable", label: "Comfortable", icon: Minimize2 },
@@ -35,13 +38,19 @@ interface PendingAttachment {
   uploading: boolean
 }
 
-// One of these deliberately routes through an approval, so a first-time
-// user meets the approval gate in their first minute rather than
-// discovering it later (docs/UI_REWRITE_PLAN.md §10).
+// Suggestions describe an outcome, never a tool. "Use the local code
+// interpreter to compute..." taught the user to name the tool themselves,
+// which implies YBM cannot work out that arithmetic needs code - if that were
+// true it would be a routing bug to fix, not a prompt to ship. Deciding which
+// capability to reach for is the agent's job.
+//
+// One of these deliberately routes through an approval, so a first-time user
+// meets the approval gate in their first minute rather than discovering it
+// later (docs/UI_REWRITE_PLAN.md §10).
 const STARTER_PROMPTS = [
-  "What's the current status?",
-  "Summarize a PDF on my desktop",
-  "Use the local code interpreter to compute the 20th Fibonacci number",
+  "What can you help me with?",
+  "Summarize the PDFs on my desktop",
+  "What's the 20th Fibonacci number?",
 ]
 
 export function ChatPage() {
@@ -49,6 +58,7 @@ export function ChatPage() {
   const sendMessage = useSendChatMessage()
   const uploadAttachment = useUploadChatAttachment()
   const [draft, setDraft] = useState("")
+  const [modes, setModes] = useState<string[]>([])
   const [attachments, setAttachments] = useState<PendingAttachment[]>([])
   const [width, setWidth] = useState<ChatWidth>(readChatWidth)
   const scrollAnchorRef = useRef<HTMLDivElement>(null)
@@ -96,9 +106,20 @@ export function ChatPage() {
     const trimmed = text.trim()
     if (!trimmed || sendMessage.isPending || attachmentsUploading) return
     const attachmentIds = attachments.map((a) => a.artifactId).filter((id): id is string => Boolean(id))
-    sendMessage.mutate({ text: trimmed, attachmentIds })
+    // Selected modes ride along as an explicit instruction. The default is no
+    // modes, which is the right default - the agent picks its own tools. A
+    // chip is for when the user has already decided.
+    const instructions = modes
+      .map((key) => COMPOSER_MODES.find((m) => m.key === key)?.instruction)
+      .filter(Boolean)
+      .join(" ")
+    const body = instructions ? `${trimmed}
+
+${instructions}` : trimmed
+    sendMessage.mutate({ text: body, attachmentIds })
     setDraft("")
     setAttachments([])
+    setModes([])
   }
 
   return (
@@ -215,6 +236,12 @@ export function ChatPage() {
               ))}
             </div>
           )}
+          <ComposerModeChips
+            selected={modes}
+            onToggle={(key) =>
+              setModes((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]))
+            }
+          />
           <div className="flex items-end gap-2 rounded-2xl border border-input bg-card p-2 shadow-sm focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/20">
             <input
               ref={fileInputRef}
@@ -237,6 +264,19 @@ export function ChatPage() {
               <Paperclip className="size-4" />
             </Button>
             <FolderPicker onSelect={handleFolderSelect} />
+            <VoiceRecorder
+              disabled={sendMessage.isPending}
+              // Into the composer, not straight out - the user gets to read
+              // what was heard and fix it before sending.
+              onTranscript={(text) => setDraft((prev) => (prev ? `${prev} ${text}` : text))}
+              onError={(message) => toast.error(message)}
+            />
+            <ComposerTools
+              selected={modes}
+              onToggle={(key) =>
+                setModes((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]))
+              }
+            />
             <textarea
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
@@ -246,7 +286,10 @@ export function ChatPage() {
                   handleSend(draft)
                 }
               }}
-              placeholder="Ask YBM to do something..."
+              placeholder="Ask YBM anything..."
+              // At 390px the composer buttons leave the textarea narrow
+              // enough to wrap the placeholder, and rows={1} clipped it.
+              style={{ minHeight: "2.75rem" }}
               disabled={sendMessage.isPending}
               autoFocus
               rows={1}

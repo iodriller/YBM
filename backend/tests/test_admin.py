@@ -255,7 +255,14 @@ def test_admin_setup_detect_reports_real_ollama_models_and_credential_presence(m
 
     assert response.status_code == 200
     body = response.json()
-    assert body["ollama"] == {"available": True, "models": ["qwen3:8b", "mistral:7b"]}
+    assert body["ollama"] == {
+        "available": True,
+        "reachable": True,
+        "models": ["qwen3:8b", "mistral:7b"],
+        # Preferred over mistral so the wizard can offer a default instead of
+        # an undifferentiated list.
+        "recommended": "qwen3:8b",
+    }
     assert body["localdeploy_root_present"] is False
     assert body["openai_key_present"] is False
     assert body["telegram_token_present"] is True
@@ -271,7 +278,41 @@ def test_admin_setup_detect_reports_no_ollama_when_unreachable(monkeypatch, tmp_
     response = client.get("/admin/api/setup/detect")
 
     assert response.status_code == 200
-    assert response.json()["ollama"] == {"available": False, "models": []}
+    assert response.json()["ollama"] == {
+        "available": False,
+        "reachable": False,
+        "models": [],
+        "recommended": None,
+    }
+
+
+def test_admin_setup_detect_separates_an_empty_ollama_from_a_missing_one(monkeypatch, tmp_path) -> None:
+    """A running server with nothing pulled used to look identical to no server
+    at all, which is why onboarding could only say "no local model" and send
+    the user off to find a model name."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    monkeypatch.setattr(admin_module, "_http_json", lambda url, timeout=2.0: {"models": []})
+    repositories = _repositories(f"sqlite:///{tmp_path / 'admin.db'}")
+    client = _admin_client(repositories)
+
+    body = client.get("/admin/api/setup/detect").json()
+
+    assert body["ollama"]["reachable"] is True
+    assert body["ollama"]["available"] is False
+    assert body["ollama"]["recommended"] is None
+
+
+def test_recommended_ollama_model_prefers_a_known_good_tag() -> None:
+    recommend = admin_module._recommended_ollama_model
+
+    # One installed model is the answer whatever it is - pulling it was itself
+    # the choice.
+    assert recommend(["something-obscure:latest"]) == "something-obscure:latest"
+    assert recommend(["mistral:7b", "qwen3-vl:8b-instruct"]) == "qwen3-vl:8b-instruct"
+    assert recommend([]) is None
+    # Nothing recognised among several: do not guess on the user's behalf.
+    assert recommend(["obscure-a:latest", "obscure-b:latest"]) is None
 
 
 def test_admin_serves_built_index_html_when_a_build_exists(monkeypatch, tmp_path) -> None:
@@ -1132,6 +1173,52 @@ def test_admin_artifact_download_inline_uses_inline_disposition(tmp_path) -> Non
 
     assert response.status_code == 200
     assert "inline" in response.headers["content-disposition"]
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert "sandbox" in response.headers["content-security-policy"]
+
+
+def test_admin_artifact_download_uses_scoped_grant_not_admin_token_query(monkeypatch, tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    file_path = artifact_root / "report.txt"
+    file_path.write_text("safe report", encoding="utf-8")
+    artifact = repositories.artifacts.create(Artifact(type=ArtifactType.DOCUMENT, uri=str(file_path)))
+    monkeypatch.setenv("AGENT_ADMIN_TOKEN", "secret-token")
+    client = _admin_client(repositories, settings=_settings_with_artifact_root(artifact_root))
+
+    leaked_token = client.get(f"/admin/api/artifacts/{artifact.id}/download?token=secret-token")
+    grant_response = client.post(
+        f"/admin/api/artifacts/{artifact.id}/download-grant",
+        headers={"X-Agent-Control-Admin-Token": "secret-token"},
+    )
+    granted_download = client.get(grant_response.json()["url"])
+
+    assert leaked_token.status_code == 401
+    assert grant_response.status_code == 200
+    assert "secret-token" not in grant_response.json()["url"]
+    assert granted_download.status_code == 200
+    assert granted_download.content == b"safe report"
+
+
+def test_admin_artifact_download_forces_active_content_to_attachment(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'admin.db'}"
+    repositories = _repositories(database_url)
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    file_path = artifact_root / "generated.html"
+    file_path.write_text("<script>document.body.textContent = localStorage.length</script>", encoding="utf-8")
+    artifact = repositories.artifacts.create(Artifact(type=ArtifactType.GENERATED_FILE, uri=str(file_path)))
+    client = _admin_client(repositories, settings=_settings_with_artifact_root(artifact_root))
+
+    response = client.get(f"/admin/api/artifacts/{artifact.id}/download?inline=true")
+
+    assert response.status_code == 200
+    assert "attachment" in response.headers["content-disposition"]
+    assert response.headers["content-type"].startswith("text/html")
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["content-security-policy"] == "sandbox; default-src 'none'"
 
 
 def test_admin_artifact_download_404s_for_an_unknown_artifact(tmp_path) -> None:
@@ -2029,4 +2116,371 @@ def test_admin_chat_send_audits_task_creation(monkeypatch, tmp_path) -> None:
     assert any(
         e.type == AuditEventType.TASK_CREATED and e.task_id == task_id and e.actor == "admin_chat"
         for e in events
+    )
+
+
+def test_telegram_verify_names_the_bot_back(monkeypatch, tmp_path) -> None:
+    """Pasting an opaque string and being told nothing is the step people get
+    wrong, and the failure is silent and much later. getMe turns it into a
+    confirmation the user can recognise."""
+    import respx
+    from httpx import Response
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    with respx.mock:
+        respx.get(url__regex=r".*/getMe$").mock(
+            return_value=Response(200, json={"ok": True, "result": {"username": "my_bot", "first_name": "My Bot"}})
+        )
+        body = client.post("/admin/api/setup/telegram/verify", json={"bot_token": "123:AA-token"}).json()
+
+    assert body["ok"] is True
+    assert body["username"] == "my_bot"
+    assert body["link"] == "https://t.me/my_bot"
+
+
+def test_telegram_verify_reports_a_rejected_token_plainly(monkeypatch, tmp_path) -> None:
+    import respx
+    from httpx import Response
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    with respx.mock:
+        respx.get(url__regex=r".*/getMe$").mock(return_value=Response(401, json={"ok": False}))
+        response = client.post("/admin/api/setup/telegram/verify", json={"bot_token": "nope"})
+
+    assert response.status_code == 400
+    assert "copied" in response.json()["detail"]
+    # The token must never appear in an error, since it lives in the request URL.
+    assert "nope" not in response.text
+
+
+def test_telegram_await_first_message_returns_the_sender_id(monkeypatch, tmp_path) -> None:
+    """The allowlist is what makes the bot answer at all - _authorization_decision
+    fails closed on an empty one - and asking someone to find their own numeric
+    id is the worst way to fill it. This learns it from the message they were
+    going to send anyway."""
+    import respx
+    from httpx import Response
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    update = {
+        "message": {
+            "from": {"id": 4242, "username": "someone", "first_name": "Some"},
+            "chat": {"id": 4242},
+        }
+    }
+    with respx.mock:
+        respx.get(url__regex=r".*/getUpdates.*").mock(return_value=Response(200, json={"ok": True, "result": [update]}))
+        body = client.post(
+            "/admin/api/setup/telegram/await-first-message",
+            json={"bot_token": "123:AA-token", "wait_seconds": 5},
+        ).json()
+
+    assert body == {
+        "found": True,
+        "user_id": 4242,
+        "chat_id": 4242,
+        "username": "someone",
+        "first_name": "Some",
+    }
+
+
+def test_telegram_await_first_message_reports_nothing_arrived(monkeypatch, tmp_path) -> None:
+    import respx
+    from httpx import Response
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    with respx.mock:
+        respx.get(url__regex=r".*/getUpdates.*").mock(return_value=Response(200, json={"ok": True, "result": []}))
+        body = client.post(
+            "/admin/api/setup/telegram/await-first-message",
+            json={"bot_token": "123:AA-token", "wait_seconds": 5},
+        ).json()
+
+    assert body == {"found": False}
+
+
+def test_llm_provider_catalog_is_served_to_the_console(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    body = client.get("/admin/api/llm/providers").json()
+    keys = {p["key"] for p in body["providers"]}
+
+    assert {"anthropic", "openai", "ollama", "custom"} <= keys
+    anthropic = next(p for p in body["providers"] if p["key"] == "anthropic")
+    assert anthropic["kind"] == "anthropic"
+    assert anthropic["needs_key"] is True
+    assert anthropic["keys_url"]
+    ollama = next(p for p in body["providers"] if p["key"] == "ollama")
+    assert ollama["local"] is True and ollama["needs_key"] is False
+
+
+def test_llm_verify_lists_models_for_an_openai_compatible_provider(monkeypatch, tmp_path) -> None:
+    """Verifying proves the key and fills the model picker in one call, so the
+    list is never a hardcoded one that rots."""
+    import respx
+    from httpx import Response
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    with respx.mock:
+        respx.get("https://api.openai.com/v1/models").mock(
+            return_value=Response(200, json={"data": [{"id": "gpt-4.1"}, {"id": "gpt-4o"}]})
+        )
+        body = client.post(
+            "/admin/api/setup/llm/verify", json={"provider": "openai", "api_key": "sk-live"}
+        ).json()
+
+    assert body["ok"] is True
+    assert [m["id"] for m in body["models"]] == ["gpt-4.1", "gpt-4o"]
+    assert body["listed"] is True
+
+
+def test_llm_verify_reports_a_rejected_key_without_echoing_it(monkeypatch, tmp_path) -> None:
+    import respx
+    from httpx import Response
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    with respx.mock:
+        respx.get("https://api.groq.com/openai/v1/models").mock(return_value=Response(401))
+        response = client.post(
+            "/admin/api/setup/llm/verify", json={"provider": "groq", "api_key": "sk-wrong"}
+        )
+
+    assert response.status_code == 400
+    assert "rejected" in response.json()["detail"]
+    assert "sk-wrong" not in response.text
+
+
+def test_llm_verify_rejects_an_unknown_provider(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    response = client.post(
+        "/admin/api/setup/llm/verify", json={"provider": "nope", "api_key": "x"}
+    )
+    assert response.status_code == 400
+    assert "unknown provider" in response.json()["detail"]
+
+
+def test_llm_verify_requires_a_key_for_a_remote_provider(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    response = client.post("/admin/api/setup/llm/verify", json={"provider": "anthropic"})
+    assert response.status_code == 400
+    assert "needs an API key" in response.json()["detail"]
+
+
+def test_llm_verify_says_a_local_runtime_is_not_running(monkeypatch, tmp_path) -> None:
+    """The useful message for a local provider is 'is it running', not a
+    connection-error class name."""
+    import httpx
+    import respx
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    with respx.mock:
+        respx.get("http://127.0.0.1:11434/v1/models").mock(
+            side_effect=httpx.ConnectError("refused")
+        )
+        response = client.post("/admin/api/setup/llm/verify", json={"provider": "ollama"})
+
+    assert response.status_code == 502
+    assert "running" in response.json()["detail"]
+
+
+def test_channel_catalog_reports_live_connection_state(monkeypatch, tmp_path) -> None:
+    """Adding a way to reach YBM is a catalog row, but `connected` must come
+    from real config - the console must never claim a channel is live when it
+    is not."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    body = client.get("/admin/api/channels").json()
+    by_key = {c["key"]: c for c in body["channels"]}
+
+    # Web chat is the one thing that always works.
+    assert by_key["web"]["connected"] is True
+    assert by_key["web"]["zero_setup"] is True
+    # Telegram is unconfigured on a fresh install, so it must not claim to be.
+    assert by_key["telegram"]["connected"] is False
+    assert by_key["telegram"]["guided"] is True
+    # Planned channels are listed, so the shape of the product is visible.
+    assert by_key["discord"]["status"] == "planned"
+    assert by_key["discord"]["note"]
+
+
+def test_channel_catalog_does_not_call_telegram_connected_on_a_token_alone(
+    monkeypatch, tmp_path
+) -> None:
+    """A token with an empty allowlist produces a bot that ignores every
+    message, so that state is not 'connected'."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:AA-token")
+    settings = AppSettings(_env_file=None)
+    settings.channels.telegram.enabled = True
+    settings.channels.telegram.allowed_user_ids = []
+    settings.channels.telegram.allowed_chat_ids = []
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"), settings=settings)
+
+    body = client.get("/admin/api/channels").json()
+    telegram = next(c for c in body["channels"] if c["key"] == "telegram")
+    assert telegram["connected"] is False
+
+
+def test_llm_test_makes_a_real_completion_before_setup_finishes(monkeypatch, tmp_path) -> None:
+    """Listing models proves the key. Only a real round trip proves the chosen
+    model answers, the routing is right, and the response parses."""
+    import respx
+    from httpx import Response
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    with respx.mock:
+        route = respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=Response(
+                200,
+                json={"choices": [{"message": {"content": "ready"}}], "usage": {}},
+            )
+        )
+        body = client.post(
+            "/admin/api/setup/llm/test",
+            json={"provider": "openai", "model": "gpt-4.1", "api_key": "sk-live"},
+        ).json()
+
+    assert route.called, "no completion was actually attempted"
+    assert body["ok"] is True
+    assert body["reply"] == "ready"
+    assert body["model"] == "gpt-4.1"
+    assert isinstance(body["latency_ms"], int)
+
+
+def test_llm_test_surfaces_a_model_that_does_not_answer(monkeypatch, tmp_path) -> None:
+    """A valid key with a bad model name is exactly the case model-listing
+    alone would have let through."""
+    import respx
+    from httpx import Response
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    with respx.mock:
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=Response(404, json={"error": {"message": "no such model"}})
+        )
+        response = client.post(
+            "/admin/api/setup/llm/test",
+            json={"provider": "openai", "model": "gpt-nonexistent", "api_key": "sk-live"},
+        )
+
+    assert response.status_code == 502
+    assert "sk-live" not in response.text
+
+
+def test_llm_test_routes_anthropic_to_the_native_provider(monkeypatch, tmp_path) -> None:
+    """The test call must go through the same routing a real request uses, or
+    it proves nothing about the provider that will actually serve traffic."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    captured: dict = {}
+
+    class _Client:
+        def __init__(self, **kwargs):
+            async def _create(**kw):
+                captured.update(kw)
+                return type(
+                    "_M",
+                    (),
+                    {
+                        "content": [type("_B", (), {"type": "text", "text": "hello"})()],
+                        "stop_reason": "end_turn",
+                        "usage": None,
+                    },
+                )()
+
+            self.messages = type("_Messages", (), {"create": staticmethod(_create)})()
+
+        async def close(self):
+            return None
+
+    import anthropic
+
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", _Client)
+    body = client.post(
+        "/admin/api/setup/llm/test",
+        json={"provider": "anthropic", "model": "claude-sonnet-5", "api_key": "sk-ant"},
+    ).json()
+
+    assert body["reply"] == "hello"
+    # Proof it went through AnthropicProvider: temperature is omitted, which is
+    # the whole reason that provider exists.
+    assert "temperature" not in captured
+    assert captured["model"] == "claude-sonnet-5"
+
+
+def test_presets_offered_are_only_the_ones_that_could_work(monkeypatch, tmp_path) -> None:
+    """Inside a container 127.0.0.1 is the container, so every loopback preset
+    is unreachable - offering them makes the recommended choice the one that
+    cannot work. Outside one, the host-gateway preset is just a confusing
+    duplicate. Which it is, is checkable."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    monkeypatch.delenv("YBM_HEADLESS", raising=False)
+    keys = {p["key"] for p in client.get("/admin/api/summary").json()["integrations"]["llm"]["presets"]}
+    assert not any(k.endswith("_container") for k in keys), keys
+    assert keys, "a normal install must still be offered local presets"
+
+    monkeypatch.setenv("YBM_HEADLESS", "1")
+    container_keys = {
+        p["key"] for p in client.get("/admin/api/summary").json()["integrations"]["llm"]["presets"]
+    }
+    assert all(k.endswith("_container") for k in container_keys), container_keys
+    assert container_keys, "a containerised install must still get a workable preset"
+
+
+def test_no_cloud_preset_bypasses_the_verified_provider_path(monkeypatch, tmp_path) -> None:
+    """A cloud preset saved without verifying a key, while the picker verifies
+    and requires a real completion - two routes to the same place with
+    different quality."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    presets = client.get("/admin/api/summary").json()["integrations"]["llm"]["presets"]
+    assert all(p.get("api_key_env") is None for p in presets), (
+        "presets must be local-only; anything needing a key goes through the picker"
     )

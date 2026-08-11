@@ -1,4 +1,22 @@
+<div align="center">
+
 # YBM Control
+
+**Your own AI agent, running on your machine — reachable from the apps you already use.**
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/)
+[![Docker ready](https://img.shields.io/badge/docker-ready-2496ED.svg)](docker-compose.yml)
+[![Works with Claude, GPT, Gemini, Ollama](https://img.shields.io/badge/models-13%20providers-6E56CF.svg)](#bring-your-own-model)
+
+![YBM Control — setup, channels, tools, and policy](docs/screenshots/demo.gif)
+
+</div>
+
+---
+
+Text it from your phone. It works on your actual computer — your files, your browser, your
+editor, your terminal — and reports back.
 
 ```
 You:  organize my Downloads folder by file type, then tell me what you moved
@@ -7,132 +25,142 @@ YBM:  Sorted 41 files into 6 folders (Images, Documents, Archives, Installers,
       are in this task's trace.
 ```
 
-Real access to your machine — filesystem, terminal, browser, VS Code, a scheduler, MCP tools,
-desktop control — through Telegram, WhatsApp, or a built-in web chat, with **every capability
-disabled by default**. Dangerous operations need an explicit, one-shot, expiring approval that the
-*runtime* enforces: not the model, not a config flag, and not bypassable by an "allow everything"
-mode.
+That is not a chat window pretending to do things. Every request becomes a **task** with a full
+trace you can open: which tool ran, what it returned, what was approved, what was refused.
 
-## Why
+## Why you might want this
 
-Most self-hosted agent frameworks ask you to trust the model. YBM assumes you shouldn't have to.
+- **It reaches your real machine.** Filesystem, terminal, Chrome, VS Code, desktop control, a
+  scheduler, MCP tools. Not a sandbox in someone else's cloud.
+- **It comes to you.** Telegram, WhatsApp, or the built-in web console. With optional local voice
+  transcription enabled, you can send a voice note when typing is inconvenient.
+- **Nothing dangerous happens by default.** High-impact capabilities start **off**. Anything risky needs
+  a one-shot, expiring approval the *runtime* enforces — not the model, not a config flag, and not
+  bypassable by an "allow everything" mode.
+- **It's yours.** Runs local models for free with nothing leaving the machine, or your own API
+  key. MIT licensed.
 
-| | |
+## Try it in five minutes
+
+**Windows, no terminal:** download the folder, double-click **`YBM-Setup.cmd`**. It installs
+whatever is missing — Python included — and opens the console.
+
+**macOS / Linux:**
+
+```bash
+./scripts/install.sh
+```
+
+**Docker:**
+
+```bash
+cp .env.example .env
+# edit .env and set AGENT_ADMIN_TOKEN to a long random value
+docker compose up -d
+# then open http://127.0.0.1:8765/admin
+```
+
+A browser wizard asks two questions — which model, and where you want to reach it — and both are
+skippable. After that, **`YBM.bat`** (or `ybm run`) starts everything and opens the console.
+
+## Bring your own model
+
+| Free, on your hardware | With an API key |
 |---|---|
-| **Approvals the model can't bypass** | High-impact operations are gated at the runtime level — `ToolDefinition.approval_required_operations` — independent of any access-mode preset, including "Full Access". A model setting `approved: true` in its own output has no effect. |
-| **Secure by default** | Terminal, filesystem, browser, desktop, dependency installs, and Git push all start **off**. A policy engine with per-capability risk ceilings and a global approval floor sits in front of every tool call. |
-| **A real audit trail** | Every tool request, policy decision, and approval is a structured, redacted audit event. Every task has a full trace you can open and check. |
-| **Tested against recorded reality** | 30+ deterministic scenario tests replay real recorded LLM responses through the actual worker/policy/executor stack — no network, no flake, no API cost. |
-| **A published threat model** | [Trust boundaries and known limitations](docs/THREAT_MODEL.md) stated up front. |
+| Ollama · LM Studio · LocalDeploy | Anthropic (Claude) · OpenAI · Google Gemini · OpenRouter · Groq · DeepSeek · Mistral · xAI · Together |
 
-This is a smaller, younger project than the big general-purpose agent frameworks. What it does
-well is the **governance layer**: real capability without losing visibility or control.
+Paste a key and YBM checks it, lists the models that key can actually reach, and **makes one real
+call before saving** — so a model that cannot answer never silently becomes your default. Local
+models cost nothing and nothing you type leaves the machine.
 
-## How it works
+Anthropic gets a native provider rather than an OpenAI-compatible shim, because current Claude
+models reject `temperature` outright and a shim would fail every request while looking like an
+auth problem.
 
-Three agents, many tools. One LLM call each.
+## What it can actually do
 
-```mermaid
-flowchart LR
-    M["Message<br/>Telegram · WhatsApp · web"] --> C{"Concierge<br/>chat or task?"}
-    C -->|chat| R["Reply"]
-    C -->|task| O["Operator loop<br/>observe → decide → act"]
-    O -->|every tool call| P{"Policy gate<br/>+ approvals"}
-    P --> O
-    O --> A["Auditor<br/>grounds the answer"]
-    A --> N["Result + full trace"]
+Search and organize files inside allowed roots · run coding agents (Codex, Claude Code, Copilot
+CLI) or a bounded Python interpreter · drive Chrome, including multi-source research · bridge to
+VS Code · take and act on screenshots (Windows) · schedule recurring work · speak MCP as both
+client and server · generate PDFs and documents · track cost per task · run tools in parallel and
+delegate to sub-agents · remember facts you tell it, with provenance · search your own documents.
+
+All of it policy-gated, on every channel. Full list in [docs/CAPABILITIES.md](docs/CAPABILITIES.md).
+
+## How it fits together
+
+A message arrives on any channel. The **Concierge** decides whether it is chat or work. Work goes
+to the **Operator**, a tool-calling loop where every call passes the policy engine first — allowed,
+needs your approval, or refused with a reason. The **Auditor** checks the result against what you
+asked before it is reported as done.
+
+```
+Telegram ─┐
+WhatsApp ─┼─▶ Concierge ─▶ Operator ⇄ Policy ⇄ Tools
+Web chat ─┘       │            │
+                  └── reply    └──▶ Auditor ─▶ result + full trace
 ```
 
-Details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Diagrams and the detail: [docs/ROLES.md](docs/ROLES.md) and
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-## Quickstart
+## Is this safe to run?
+
+It is designed to be, and the design is written down rather than asserted.
+
+Capabilities are off until you turn them on. Filesystem access is confined to roots you choose.
+Terminal, browser, desktop control, dependency installation, and git push are each separately
+gated. Approvals expire and are single-use. Secrets are redacted from logs and task output.
+Everything is auditable after the fact.
+
+Read [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) before pointing it at anything you care about,
+and [SECURITY.md](SECURITY.md) to report a problem.
+
+## Everyday commands
 
 ```bash
-# Linux/macOS
-curl -fsSL https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.sh | sh
+ybm doctor            # is this machine set up correctly?
+ybm start             # start everything
+ybm status            # what is running
+ybm logs worker -f    # follow a service
+ybm stop              # stop everything
 ```
-```powershell
-# Windows
-iwr https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.ps1 -UseBasicParsing | iex
-```
 
-Clones, installs, then runs a wizard: detects a local LLM (Ollama or a LocalDeploy checkout) or
-asks for a cloud key, offers Telegram setup (optional — the web chat needs none), writes your
-config, checks the environment, and starts the stack.
+`ybm autostart enable` adds a tray icon and starts YBM at login. Windows also has the fuller
+`scripts\ybm.ps1` interface — `.\scripts\ybm.ps1 help` lists it.
 
-That's the only terminal command needed. After that, double-click **`YBM.bat`**. Already running?
-**http://127.0.0.1:8765/admin**
+## Contributing
 
-## What it can do
-
-Filesystem search/organize inside allowed roots · terminal-run coding via Codex/Claude Code/Copilot
-CLI or a bounded Python interpreter · Chrome automation · VS Code bridge · desktop
-screenshot/control (Windows) · recurring schedules · MCP client and server · PDF and document
-generation · per-task cost tracking · parallel tool calls and sub-agent delegation · a
-persona/preferences layer · local keyword search over your own documents.
-
-Plus structured memory (facts with category, confidence, and provenance) and an installable skill
-catalog. Full list: [docs/CAPABILITIES.md](docs/CAPABILITIES.md).
-
-## Development
+Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and
+[docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md) for manual setup.
 
 ```bash
-ybm doctor            # check the environment
-ybm start             # start the stack
-ybm status            # what's running
-ybm logs worker -f    # follow one service
-ybm trace-task <id>   # post-mortem a task
-ybm stop
+cd backend && uv run --frozen pytest
 ```
 
-Windows also has `scripts\ybm.ps1` (two-word subcommands: `ybm.ps1 trace <id>`), equally
-supported — run `.\scripts\ybm.ps1 help` for the full list. `ybm autostart enable` adds a tray
-icon that launches at login.
-
-The admin console is a React app (`frontend/`) served at `/admin`. `ybm ui-dev` runs it with hot
-reload; `ybm ui-build` builds it into the backend's static directory.
-
-Tests:
-
-```bash
-cd backend
-uv sync --frozen --extra test --extra dev   # first time only
-uv run --frozen pytest
-```
-
-`backend/tests/scenario/` is a fast deterministic tier — the real worker/registry/policy/executor
-stack against a temp filesystem, replaying recorded LLM responses. When a change alters a prompt,
-tool schema, or workspace layout, affected fixtures fail loudly rather than replaying stale data;
-re-record just those with `.\scripts\ybm.ps1 scenario record <name>`.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow.
+`backend/tests/scenario/` replays recorded LLM responses, so the suite runs with no network, no
+GPU, and no API spend.
 
 ## Docs
 
 | | |
 |---|---|
-| [Architecture](docs/ARCHITECTURE.md) | How a message becomes an answer |
-| [Capabilities](docs/CAPABILITIES.md) | Every tool, what unlocks it, platform limits |
-| [Local setup](docs/LOCAL_SETUP.md) | Install, configure, run |
-| [Minimal E2E test](docs/MINIMAL_END_TO_END_TEST.md) | Prove the chain works in 5 minutes |
-| [Threat model](docs/THREAT_MODEL.md) | Trust boundaries and enforced controls |
-| [Database inspection](docs/DATABASE_INSPECTION.md) | Tables and how to read a run |
-| [History](docs/HISTORY.md) | *Archive* — why it's built this way |
-| [UI rewrite plan](docs/UI_REWRITE_PLAN.md) · [UI/UX audit](docs/UI_UX_AUDIT.md) | *Archive* — console design record |
+| [Architecture](docs/ARCHITECTURE.md) | How the system works today |
+| [Roles](docs/ROLES.md) | Concierge, Operator, Auditor, with diagrams |
+| [Capabilities](docs/CAPABILITIES.md) | Everything it can be allowed to do |
+| [Threat model](docs/THREAT_MODEL.md) | What it protects against, and what it does not |
+| [Local setup](docs/LOCAL_SETUP.md) | Manual setup and every runtime option |
+| [Gaps](docs/GAPS.md) | Known bugs and missing pieces, kept honest |
+| [Public release](docs/PUBLIC_RELEASE.md) | External checks to perform when visibility changes |
+| [History](docs/HISTORY.md) | Why things are the way they are |
 
-## Safety
+## Honest limitations
 
-Intended for **one trusted operator on a local machine**. Keep the backend, admin UI, VS Code
-bridge, model endpoints, and preview servers on loopback. It is not an Internet-facing or
-multi-tenant control plane.
+- WhatsApp is plain text only — no buttons, voice, or file delivery yet, unlike Telegram.
+- Desktop control is Windows-only.
+- Voice transcription is off by default and needs the `voice` extra installed.
+- More in [docs/GAPS.md](docs/GAPS.md), which is kept current rather than flattering.
 
-Tool and memory content is untrusted data — web pages, documents, HTTP bodies, MCP results,
-generated code, prior summaries. Review the exact tool parameters before approving. Keep `.env`,
-`config/config.yaml`, `agent_control.db`, logs, screenshots, and `.agent_control/` private.
+---
 
-Read the [threat model](docs/THREAT_MODEL.md) before enabling high-impact capabilities or changing
-repository visibility.
-
-## License
-
-[MIT](LICENSE)
+MIT licensed. Built to run on your own hardware, on your own terms.

@@ -98,8 +98,8 @@ export function VSCodeSettingsCard() {
           }}
         >
           <div className="flex items-center gap-2">
-            <Switch checked={draft.enabled} onCheckedChange={(v) => setDraft({ ...draft, enabled: v })} />
-            <Label className="text-sm">Enabled</Label>
+            <Switch id="vscode-enabled" checked={draft.enabled} onCheckedChange={(v) => setDraft({ ...draft, enabled: v })} />
+            <Label htmlFor="vscode-enabled" className="text-sm">Enabled</Label>
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field label="Bridge host">
@@ -128,9 +128,9 @@ export function VSCodeSettingsCard() {
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex flex-col gap-1">
-      <Label className="text-xs text-muted-foreground">{label}</Label>
+    <Label className="flex flex-col gap-1">
+      <span className="text-xs text-muted-foreground">{label}</span>
       {children}
-    </div>
+    </Label>
   )
 }

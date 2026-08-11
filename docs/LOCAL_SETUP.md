@@ -2,17 +2,28 @@
 
 ## Fastest path
 
+Nothing needs to be installed first - not git, not Python. `uv` is a standalone binary and it
+downloads the interpreter YBM runs on.
+
+From inside the folder:
+
 ```bash
 # Linux/macOS
-curl -fsSL https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.sh | sh
+./scripts/install.sh
 ```
 ```powershell
-# Windows
-iwr https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.ps1 -UseBasicParsing | iex
+# Windows - or just double-click YBM-Setup.cmd, no terminal needed
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
 ```
 
-Clones the repo, installs dependencies via `uv`, and runs `ybm onboard`. Already cloned? Run the
-same script from inside the repo and it skips to setup.
+Both accept `--dry-run` (show the plan, change nothing), `--verify` (prove the install works
+before returning), `--no-prompt`, and `--install-dir DIR`.
+
+The installer installs dependencies via `uv`, writes `config/config.yaml` and `.env`, generates
+admin and vault tokens, and starts the stack. The LLM and Telegram choices happen in the browser
+wizard that opens (the local web chat needs no setup and is on by default). The interactive
+`ybm onboard` CLI wizard still exists for headless/SSH-only installs with no browser to open.
+Already inside a checkout? The script detects that and skips straight to setup.
 
 ```mermaid
 flowchart LR
@@ -50,9 +61,10 @@ ybm stop             # stop everything
 .\scripts\ybm.ps1 setup
 ```
 
-Creates `backend\.venv`, installs dependencies, copies `config/config.example.yaml` to
-`config/config.yaml` if missing, and generates `AGENT_ADMIN_TOKEN` + `AGENT_SECRET_VAULT_KEY`
-into `.env`. Add `--telegram-token <token>` to save the bot token at the same time.
+This creates `backend\.venv` via `uv`, installs dependencies, copies `config/config.example.yaml`
+to `config/config.yaml` if missing (high-impact capabilities start disabled), and generates
+`AGENT_ADMIN_TOKEN` / `AGENT_SECRET_VAULT_KEY` into `.env`. Pass `--telegram-token <token>` to
+save `TELEGRAM_BOT_TOKEN` at the same time, or add it to `.env` yourself.
 
 ### 2. Point at an LLM
 
@@ -62,7 +74,8 @@ Either add a local [LocalDeploy](https://github.com/iodriller/LocalDeploy) check
 YBM_LOCALDEPLOY_ROOT=C:\path\to\LocalDeploy
 ```
 
-…or point `llm.profiles` in `config/config.yaml` at any OpenAI-compatible endpoint.
+Otherwise choose any provider in the browser wizard, or configure a native Anthropic or
+OpenAI-compatible profile under `llm.profiles` in `config/config.yaml`.
 
 Optional, for the VS Code bridge: `VSCODE_BRIDGE_TOKEN=...`
 

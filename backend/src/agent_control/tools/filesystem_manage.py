@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 import logging
 from pathlib import Path
 import os
@@ -104,13 +105,18 @@ class FilesystemManageAdapter:
     def _search(self, request: ToolCallRequest) -> dict[str, Any]:
         root = self._safe_path(str(request.input["root"]))
         query = str(request.input["query"]).lower()
+        wildcard_query = any(char in query for char in "*?[")
         include_content = bool(request.input.get("include_content", False))
         max_results = int(request.input.get("max_results") or 100)
         results = []
         for path in _walk_limited(root, max_depth=20):
             if path == root:
                 continue
-            matched = query in path.name.lower()
+            matched = (
+                fnmatch.fnmatch(path.name.lower(), query)
+                if wildcard_query
+                else query in path.name.lower()
+            )
             content_preview = None
             content_summary = None
             if include_content and path.is_file() and _is_text_file(path):
@@ -263,7 +269,7 @@ class FilesystemManageAdapter:
         include_ocr = bool(request.input.get("include_ocr", True))
         max_files = int(request.input.get("max_files") or 50)
         max_chars = int(request.input.get("max_chars_per_file") or 4000)
-        iterator = root.rglob("*") if recursive else root.iterdir()
+        iterator = _ordered_children(root, recursive=recursive)
         files: list[dict[str, Any]] = []
         for path in iterator:
             if len(files) >= max_files:
@@ -334,7 +340,7 @@ class FilesystemManageAdapter:
         recursive = bool(request.input.get("recursive", False))
         max_files = int(request.input.get("max_files") or 1000)
         manifest = []
-        iterator = root.rglob("*") if recursive else root.iterdir()
+        iterator = _ordered_children(root, recursive=recursive)
         for path in iterator:
             if len(manifest) >= max_files:
                 break
@@ -367,7 +373,7 @@ class FilesystemManageAdapter:
         max_files = int(request.input.get("max_files") or 1000)
         manifest = []
         rename_manifest = []
-        iterator = root.rglob("*") if recursive else root.iterdir()
+        iterator = _ordered_children(root, recursive=recursive)
         for path in iterator:
             if len(manifest) >= max_files:
                 break
@@ -478,8 +484,22 @@ class FilesystemManageAdapter:
         return path
 
     def _candidate_roots(self, alias: str) -> list[Path]:
+        """Allowed roots reachable from an alias like "desktop".
+
+        The alias path used to be included unconditionally - ``root ==
+        alias_path`` is trivially true for it - so the desktop was enumerated
+        even when it was not an allowed root, making this the one operation
+        that read outside the configured boundary. It is kept only when an
+        allowed root actually covers it.
+        """
         alias_path = self._alias_path(alias).resolve()
-        return [root for root in [alias_path, *self.allowed_roots] if root == alias_path or alias_path in root.parents or root in alias_path.parents]
+        covered = any(root == alias_path or root in alias_path.parents for root in self.allowed_roots)
+        candidates = [alias_path] if covered else []
+        return candidates + [
+            root
+            for root in self.allowed_roots
+            if root != alias_path and (alias_path in root.parents or root in alias_path.parents)
+        ]
 
     def _first_existing_root(self) -> Path:
         for root in self.allowed_roots:
@@ -546,6 +566,26 @@ def _rewrite_placeholder_user_path(value: str) -> str:
 
 def _resolve_root(value: str) -> Path:
     return Path(value).expanduser().resolve()
+
+
+def _ordered_children(root: Path, *, recursive: bool):
+    """Directory entries in a stable order, on every platform.
+
+    `Path.iterdir()` and `rglob()` yield in whatever order the filesystem
+    returns. NTFS keeps a sorted index so Windows looks alphabetical; ext4
+    hashes names, so Linux order is arbitrary and can differ between two
+    machines listing the same directory.
+
+    That matters twice over. Every one of these callers truncates at
+    `max_files`, so an unstable order changes *which* files the model is shown,
+    not merely their sequence. And a recorded scenario replays the prompt built
+    from that listing, so an unsorted listing cannot replay across platforms.
+
+    `_walk_limited` (used by inspect_folder and search) already sorted with
+    this key; these four callers did not.
+    """
+    iterator = root.rglob("*") if recursive else root.iterdir()
+    return sorted(iterator, key=lambda path: (str(path).casefold(), str(path)))
 
 
 def _walk_limited(root: Path, *, max_depth: int):
@@ -811,9 +851,10 @@ def register(deps: RegistryDeps, definitions: Definitions, adapters: Adapters) -
                 "apply_manifest": RiskLevel.HIGH,
             },
             examples=(
-                {"operation": "inspect_folder", "root": "desktop"},
+                {"operation": "inspect_folder", "root": "{{folder_path}}"},
                 {"operation": "search", "root": "desktop", "query": "resume"},
                 {"operation": "read_file", "path": "{{last_entry_path}}", "max_chars": 8000},
+                {"operation": "write_text_file", "path": "{{output_path}}", "content": "Report content"},
             ),
         )
     )

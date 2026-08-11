@@ -50,7 +50,11 @@ async def test_operator_loop_finds_and_reads_resume_file(tmp_path, monkeypatch) 
     assert "resume.txt" in task.metadata["synthesized_answer"]
     history = task.metadata["operator_history"]
     assert [entry["tool_name"] for entry in history] == ["filesystem.manage", "filesystem.manage"]
-    assert history[0]["input"]["operation"] == "search"
+    # Listing the folder and searching it are both grounded discovery steps for
+    # a known directory, and the model picks either across re-recordings.
+    # test_filesystem_search.py already allows both; pinning one here made this
+    # fixture fail to re-record for a reason that is not a behaviour change.
+    assert history[0]["input"]["operation"] in {"search", "inspect_folder"}
     assert history[1]["input"]["operation"] == "read_file"
     assert all(entry["status"] == "succeeded" for entry in history)
 

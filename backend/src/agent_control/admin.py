@@ -3,19 +3,33 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
+import importlib.util
+import logging
+import mimetypes
 import os
+from functools import lru_cache
 from pathlib import Path
+import secrets
 from typing import Any
 from urllib.parse import urlparse
 
+import time
+
+import httpx
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
-from pydantic import Field
+from pydantic import Field, SecretStr
 
 from agent_control.bootstrap import OLLAMA_TAGS_URL, _http_json, check_llm_configured, collect_checks
 from agent_control.config_sync import CONFIG_FILE_PATH, ConfigManager, read_env_value
 from agent_control.config import AppSettings, backend_base_url, is_loopback_host
-from agent_control.llm.providers import OpenAICompatibleProvider
+from agent_control.config import LLMProfileConfig
+from agent_control.tools.stt import build_stt_adapter
+from agent_control.channels import catalog as channel_catalog
+from agent_control.error_text import explain_voice_failure
+from agent_control.llm import catalog as llm_catalog
+from agent_control.llm import hardware as llm_hardware
+from agent_control.llm.providers import build_provider_for_profile
 from agent_control.observation.artifacts import ArtifactService
 from agent_control.orchestration.signals import apply_task_signal, requeue_after_approval_decision
 from agent_control.policy import apply_access_modes_to_config, summarize_access_modes
@@ -80,6 +94,11 @@ class AdminLLMPresetRequest(StrictBaseModel):
     preset: str = Field(min_length=1, max_length=80)
 
 
+class AdminVoiceConfigRequest(StrictBaseModel):
+    enabled: bool
+    model: str | None = Field(default=None, min_length=1, max_length=80)
+
+
 class AdminTelegramConfigRequest(StrictBaseModel):
     enabled: bool | None = None
     token_env: str | None = Field(default=None, min_length=1, max_length=120)
@@ -87,6 +106,31 @@ class AdminTelegramConfigRequest(StrictBaseModel):
     allowed_chat_ids: list[int] | None = None
     polling: bool | None = None
     bot_token: str | None = None
+
+
+class AdminLLMVerifyRequest(StrictBaseModel):
+    """Setup-time only: the key may not be saved to .env yet."""
+
+    provider: str = Field(min_length=1, max_length=60)
+    api_key: str | None = None
+    base_url: str | None = None
+
+
+class AdminLLMTestRequest(StrictBaseModel):
+    """Setup-time only: nothing is saved until the model actually answers."""
+
+    provider: str = Field(min_length=1, max_length=60)
+    model: str = Field(min_length=1, max_length=200)
+    api_key: str | None = None
+    base_url: str | None = None
+
+
+class AdminTelegramVerifyRequest(StrictBaseModel):
+    """Setup-time only: the token may not be saved to .env yet."""
+
+    bot_token: str | None = None
+    token_env: str | None = Field(default=None, min_length=1, max_length=120)
+    wait_seconds: int | None = Field(default=None, ge=5, le=60)
 
 
 class AdminVSCodeConfigRequest(StrictBaseModel):
@@ -235,6 +279,29 @@ _STATIC_ADMIN_DIR = Path(__file__).parent / "static" / "admin"
 # backend/src/agent_control/admin.py to the repo root.
 _STARTER_SKILLS_DIR = Path(__file__).resolve().parents[3] / "skills" / "starter"
 
+# Browser-renderable formats that do not execute script. Active content such
+# as HTML and SVG is always served as an attachment, even when the caller asks
+# for an inline preview. The response also gets a sandbox CSP below as a second
+# boundary in case a browser sniffs or a MIME database misclassifies a file.
+_SAFE_INLINE_MEDIA_TYPES = frozenset(
+    {
+        "application/json",
+        "application/pdf",
+        "audio/mpeg",
+        "audio/ogg",
+        "audio/wav",
+        "image/gif",
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "text/plain",
+        "video/mp4",
+        "video/ogg",
+        "video/webm",
+    }
+)
+_ARTIFACT_GRANT_TTL_SECONDS = 60
+
 
 SettingsLoader = Callable[[], AppSettings]
 RepositoriesLoader = Callable[[], Repositories]
@@ -303,9 +370,37 @@ def _serve_admin_app(request: Request, sub_path: str) -> FileResponse | HTMLResp
     return HTMLResponse(_ADMIN_HTML)
 
 
+# Ollama tags the wizard should prefer when several are installed, best first.
+# Matched as a prefix against the tag ("qwen3-vl:8b-instruct" matches
+# "qwen3-vl"), so a specific quantisation still counts. Vision-capable and
+# instruction-tuned models come first because the operator loop asks for
+# structured output and the desktop tools pass screenshots.
+_PREFERRED_OLLAMA_MODELS = (
+    "qwen3-vl", "qwen3vl", "qwen3", "qwen2.5", "gemma3", "llama3.1", "mistral",
+)
+
+
+def _recommended_ollama_model(models: list[str]) -> str | None:
+    """The model the wizard should preselect, or None when it should not guess.
+
+    A single installed model is the answer whatever it is - the user has
+    already made the choice by pulling it. With several, prefer the ones this
+    project is actually tuned against rather than whichever sorts first.
+    """
+    if not models:
+        return None
+    if len(models) == 1:
+        return models[0]
+    for preferred in _PREFERRED_OLLAMA_MODELS:
+        for model in models:
+            if model.casefold().startswith(preferred):
+                return model
+    return None
+
+
 LLM_PRESETS: dict[str, dict[str, Any]] = {
     "localdeploy_qwen3vl_8b": {
-        "label": "LocalDeploy Qwen3-VL 8B (recommended)",
+        "label": "Qwen3-VL 8B - free and private, runs locally (~6 GB download)",
         "profile_name": "localdeploy_qwen3vl_8b",
         "provider": "openai_compatible",
         "model": "qwen3vl_8b_ollama",
@@ -317,7 +412,7 @@ LLM_PRESETS: dict[str, dict[str, Any]] = {
         "context_limit": 32768,
     },
     "localdeploy_gemma3_12b": {
-        "label": "LocalDeploy Gemma 3 12B",
+        "label": "Gemma 3 12B - free and private, runs locally (~8 GB download)",
         "profile_name": "localdeploy_gemma3_12b",
         "provider": "openai_compatible",
         "model": "gemma3_12b_ollama_safe",
@@ -329,7 +424,7 @@ LLM_PRESETS: dict[str, dict[str, Any]] = {
         "context_limit": 32768,
     },
     "localdeploy_gemma3_4b": {
-        "label": "LocalDeploy Gemma 3 4B",
+        "label": "Gemma 3 4B - free and private, smallest and fastest (~3 GB download)",
         "profile_name": "localdeploy_gemma3_4b",
         "provider": "openai_compatible",
         "model": "gemma3_4b_ollama_safe",
@@ -340,16 +435,40 @@ LLM_PRESETS: dict[str, dict[str, Any]] = {
         "temperature": 0.2,
         "context_limit": 32768,
     },
-    "openai_gpt41": {
-        "label": "OpenAI GPT-4.1",
-        "profile_name": "openai_saved",
+    # Local runtimes only. A cloud model needs a key, and the provider picker
+    # is the only path that verifies one and proves the model answers before
+    # saving - offering a cloud preset here as well was two routes to the same
+    # place with different quality.
+    #
+    # Inside a container, 127.0.0.1 is the container - so every preset above is
+    # unreachable there, including the recommended one. compose already maps
+    # host.docker.internal, so this is the same local model seen from inside.
+    # A container install that could only be offered the 8B had nothing to
+    # choose when the card was busy: the filter hides loopback presets, and the
+    # 8B needs ~7 GB. A small model has to be reachable from a container too.
+    "localdeploy_gemma3_4b_container": {
+        "label": "Gemma 3 4B on your computer - free and private (~3 GB download)",
+        "profile_name": "localdeploy_gemma3_4b_container",
         "provider": "openai_compatible",
-        "model": "gpt-4.1",
-        "base_url": "https://api.openai.com/v1",
-        "api_key_env": "OPENAI_API_KEY",
-        "timeout_seconds": 60,
-        "max_tokens": 4096,
+        "model": "gemma3_4b_ollama_safe",
+        "base_url": "http://host.docker.internal:8000/v1",
+        "api_key_env": None,
+        "timeout_seconds": 180,
+        "max_tokens": 9000,
         "temperature": 0.2,
+        "context_limit": 32768,
+    },
+    "localdeploy_qwen3vl_8b_container": {
+        "label": "Qwen3-VL 8B on your computer - free and private (~6 GB download)",
+        "profile_name": "localdeploy_qwen3vl_8b_container",
+        "provider": "openai_compatible",
+        "model": "qwen3vl_8b_ollama",
+        "base_url": "http://host.docker.internal:8000/v1",
+        "api_key_env": None,
+        "timeout_seconds": 800,
+        "max_tokens": 4096,
+        "temperature": 0.1,
+        "context_limit": 32768,
     },
 }
 
@@ -361,6 +480,7 @@ def create_admin_router(
 ) -> APIRouter:
     router = APIRouter(prefix="/admin", tags=["admin"])
     config_manager = ConfigManager()
+    artifact_download_grants: dict[str, tuple[str, bool, float]] = {}
 
     def settings() -> AppSettings:
         loaded = settings_loader()
@@ -376,7 +496,11 @@ def create_admin_router(
                 detail="admin API refused: cross-origin request (Origin header does not match Host)",
             )
         expected = read_env_value(loaded.server.admin_token_env)
-        provided = request.headers.get("X-Agent-Control-Admin-Token") or request.query_params.get("token")
+        # Never accept the long-lived admin token from a query string. URLs
+        # leak into browser history, referrers, screenshots, and proxy logs.
+        # The SPA captures its one-time launch URL token into an auth header
+        # before making API calls; artifact navigation uses a scoped grant.
+        provided = request.headers.get("X-Agent-Control-Admin-Token")
         if not expected:
             if not is_loopback_host(loaded.server.host):
                 raise HTTPException(
@@ -387,7 +511,10 @@ def create_admin_router(
                     ),
                 )
             return loaded
-        if provided != expected:
+        # compare_digest, not ==: a plain comparison returns as soon as two
+        # bytes differ, which leaks the shared prefix length to anything that
+        # can time requests.
+        if not secrets.compare_digest(str(provided or ""), str(expected)):
             raise HTTPException(status_code=401, detail="invalid admin token")
         return loaded
 
@@ -439,7 +566,17 @@ def create_admin_router(
         ollama = _http_json(OLLAMA_TAGS_URL, timeout=2.0)
         ollama_models = [str(m.get("name")) for m in (ollama or {}).get("models", []) if m.get("name")]
         return {
-            "ollama": {"available": bool(ollama_models), "models": ollama_models},
+            "ollama": {
+                # `available` conflated two very different states: a server that
+                # is not running, and one that is running with nothing pulled.
+                # The second is the only point in onboarding where the user has
+                # to leave YBM, find a model name, and come back - so the wizard
+                # needs to tell them apart to offer the pull.
+                "available": bool(ollama_models),
+                "reachable": ollama is not None,
+                "models": ollama_models,
+                "recommended": _recommended_ollama_model(ollama_models),
+            },
             "localdeploy_root_present": bool(read_env_value("YBM_LOCALDEPLOY_ROOT")),
             "openai_key_present": bool(read_env_value("OPENAI_API_KEY")),
             "telegram_token_present": bool(read_env_value("TELEGRAM_BOT_TOKEN")),
@@ -498,9 +635,17 @@ def create_admin_router(
                     "default_profile": loaded.llm.default_profile,
                     "profile_count": len(loaded.llm.profiles),
                     "default_profile_configured": loaded.llm.default_profile in loaded.llm.profiles,
+                    "hardware": _hardware_probe().as_dict(),
                     "presets": [
-                        {**preset, "key": key, "active": loaded.llm.default_profile == preset["profile_name"]}
-                        for key, preset in LLM_PRESETS.items()
+                        {
+                            **preset,
+                            "key": key,
+                            "active": loaded.llm.default_profile == preset["profile_name"],
+                            # Earned, not asserted: "fits" / "too_big" /
+                            # "unknown", with the reason for whichever it is.
+                            "fit": llm_hardware.fit(key, _hardware_probe()),
+                        }
+                        for key, preset in _presets_that_can_work().items()
                     ],
                 },
             },
@@ -576,20 +721,7 @@ def create_admin_router(
             raise HTTPException(status_code=404, detail="task not found")
         return _redact_admin_output(receipt, loaded)
 
-    @router.get("/api/artifacts/{artifact_id}/download", response_model=None)
-    def admin_artifact_download(request: Request, artifact_id: str, inline: bool = False) -> FileResponse:
-        """A generated file previously showed only its path in Chat - not
-        actionable from a browser (docs/UI_UX_AUDIT.md Phase 8: "generated
-        files still are not conveniently usable"). Serves only artifacts
-        registered in the database whose resolved path stays inside the
-        same allowed roots artifact.deliver itself enforces - reuses that
-        exact check rather than re-deriving a second path-safety rule.
-        ``?inline=1`` renders in a new tab (PDFs, images) instead of forcing
-        a Save As dialog; ``?token=`` (require_admin's existing fallback) is
-        what lets a plain ``<a href>`` navigation authenticate at all, since
-        a browser-initiated download can't attach the admin token header.
-        """
-        loaded = require_admin(request)
+    def resolve_artifact_file(artifact_id: str, loaded: AppSettings) -> Path:
         repositories = repositories_loader()
         artifact = repositories.artifacts.get(artifact_id)
         if artifact is None or not artifact.uri:
@@ -602,9 +734,86 @@ def create_admin_router(
             raise HTTPException(status_code=403, detail="artifact path is outside configured delivery roots")
         if not path.is_file():
             raise HTTPException(status_code=404, detail="artifact file no longer exists on disk")
-        return FileResponse(
-            path, filename=path.name, content_disposition_type="inline" if inline else "attachment"
+        return path
+
+    @router.post("/api/artifacts/{artifact_id}/download-grant")
+    def admin_artifact_download_grant(
+        request: Request,
+        artifact_id: str,
+        inline: bool = False,
+    ) -> dict[str, Any]:
+        """Mint a short-lived grant for a single artifact and disposition.
+
+        A normal browser navigation cannot attach the admin-token header. A
+        scoped grant keeps that long-lived credential out of URLs and cannot
+        be reused against any other admin endpoint or artifact.
+        """
+        loaded = require_admin(request)
+        resolve_artifact_file(artifact_id, loaded)
+        now = time.monotonic()
+        expired = [token for token, (_, _, expires_at) in artifact_download_grants.items() if expires_at <= now]
+        for token in expired:
+            artifact_download_grants.pop(token, None)
+        grant = secrets.token_urlsafe(32)
+        artifact_download_grants[grant] = (artifact_id, inline, now + _ARTIFACT_GRANT_TTL_SECONDS)
+        inline_query = "true" if inline else "false"
+        return {
+            "url": f"/admin/api/artifacts/{artifact_id}/download?grant={grant}&inline={inline_query}",
+            "expires_in_seconds": _ARTIFACT_GRANT_TTL_SECONDS,
+        }
+
+    @router.get("/api/artifacts/{artifact_id}/download", response_model=None)
+    def admin_artifact_download(
+        request: Request,
+        artifact_id: str,
+        inline: bool = False,
+        grant: str | None = None,
+    ) -> FileResponse:
+        """A generated file previously showed only its path in Chat - not
+        actionable from a browser (docs/UI_UX_AUDIT.md Phase 8: "generated
+        files still are not conveniently usable"). Serves only artifacts
+        registered in the database whose resolved path stays inside the
+        same allowed roots artifact.deliver itself enforces - reuses that
+        exact check rather than re-deriving a second path-safety rule.
+        ``?inline=1`` renders only a conservative safe-type allowlist in a
+        new tab. Active formats such as HTML and SVG remain attachments.
+        Browser navigations authenticate with the short-lived, artifact-
+        scoped grant above rather than putting the admin token in the URL.
+        """
+        loaded = settings()
+        if not _origin_is_trusted(request):
+            raise HTTPException(
+                status_code=403,
+                detail="admin API refused: cross-origin request (Origin header does not match Host)",
+            )
+        if grant:
+            granted = artifact_download_grants.get(grant)
+            if granted is None:
+                raise HTTPException(status_code=401, detail="invalid artifact download grant")
+            granted_artifact_id, granted_inline, expires_at = granted
+            if expires_at <= time.monotonic():
+                artifact_download_grants.pop(grant, None)
+                raise HTTPException(status_code=401, detail="artifact download grant expired")
+            if granted_artifact_id != artifact_id or granted_inline is not inline:
+                raise HTTPException(status_code=401, detail="artifact download grant does not match this request")
+        else:
+            loaded = require_admin(request)
+
+        path = resolve_artifact_file(artifact_id, loaded)
+        media_type, _ = mimetypes.guess_type(path.name)
+        allow_inline = inline and media_type in _SAFE_INLINE_MEDIA_TYPES
+        response = FileResponse(
+            path,
+            filename=path.name,
+            content_disposition_type="inline" if allow_inline else "attachment",
+            media_type=media_type,
         )
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Content-Security-Policy"] = "sandbox; default-src 'none'"
+        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
 
     @router.get("/api/approvals")
     def admin_pending_approvals(request: Request) -> dict[str, Any]:
@@ -1002,6 +1211,316 @@ def create_admin_router(
         _audit_config_update(repositories_loader(), loaded, "telegram", patch)
         return {"config_file": str(CONFIG_FILE_PATH), "telegram": telegram}
 
+    @router.post("/api/setup/telegram/verify")
+    async def admin_verify_telegram_token(request: Request, payload: AdminTelegramVerifyRequest) -> dict[str, Any]:
+        """Confirm a pasted bot token and name the bot back to the user.
+
+        Pasting a long opaque string and being told nothing is the step people
+        get wrong, and the failure is silent and much later. `getMe` costs one
+        call and turns it into "Connected to @your_bot".
+        """
+        require_admin(request)
+        token = payload.bot_token.strip() if payload.bot_token else read_env_value(payload.token_env or "TELEGRAM_BOT_TOKEN")
+        if not token:
+            raise HTTPException(status_code=400, detail="no bot token supplied and none is configured")
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.get(f"https://api.telegram.org/bot{token}/getMe")
+        except httpx.HTTPError as exc:
+            # Never echo the URL: it contains the token.
+            raise HTTPException(status_code=502, detail=f"could not reach Telegram ({type(exc).__name__})") from None
+        if response.status_code == 401:
+            raise HTTPException(status_code=400, detail="Telegram rejected that token. Check you copied all of it.")
+        if response.status_code >= 400:
+            raise HTTPException(status_code=502, detail=f"Telegram returned HTTP {response.status_code}")
+        result = (response.json() or {}).get("result") or {}
+        username = result.get("username")
+        return {
+            "ok": True,
+            "username": username,
+            "display_name": result.get("first_name") or username,
+            "link": f"https://t.me/{username}" if username else None,
+        }
+
+    @router.post("/api/setup/telegram/await-first-message")
+    async def admin_await_first_telegram_message(
+        request: Request, payload: AdminTelegramVerifyRequest
+    ) -> dict[str, Any]:
+        """Learn the operator's Telegram id from a message they send.
+
+        The allowlist is what makes the bot answer at all - `_authorization_decision`
+        fails closed on an empty one - and the wizard used to collect only a
+        token, so the documented happy path produced a bot that ignored every
+        message with the reason buried in an audit event. Asking someone to
+        find their own numeric id is the worst way to fix that; watching for
+        the message they were about to send anyway is the best.
+
+        Long-polls Telegram directly rather than through the polling service,
+        which is not running yet during setup.
+        """
+        require_admin(request)
+        token = payload.bot_token.strip() if payload.bot_token else read_env_value(payload.token_env or "TELEGRAM_BOT_TOKEN")
+        if not token:
+            raise HTTPException(status_code=400, detail="no bot token supplied and none is configured")
+        wait_seconds = max(5, min(int(payload.wait_seconds or 45), 60))
+        try:
+            async with httpx.AsyncClient(timeout=wait_seconds + 10) as client:
+                response = await client.get(
+                    f"https://api.telegram.org/bot{token}/getUpdates",
+                    params={"timeout": wait_seconds, "limit": 1, "allowed_updates": '["message"]'},
+                )
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"could not reach Telegram ({type(exc).__name__})") from None
+        if response.status_code >= 400:
+            raise HTTPException(status_code=502, detail=f"Telegram returned HTTP {response.status_code}")
+        for update in (response.json() or {}).get("result") or []:
+            message = update.get("message") or {}
+            sender = message.get("from") or {}
+            chat = message.get("chat") or {}
+            if sender.get("id"):
+                return {
+                    "found": True,
+                    "user_id": sender["id"],
+                    "chat_id": chat.get("id") or sender["id"],
+                    "username": sender.get("username"),
+                    "first_name": sender.get("first_name"),
+                }
+        return {"found": False}
+
+    @router.get("/api/channels")
+    def admin_list_channels(request: Request) -> dict[str, Any]:
+        """The channel catalog, with each entry's live connection state.
+
+        Data, not code: adding a way to reach YBM is a row in
+        channels/catalog.py. `connected` is resolved per request from real
+        config rather than stored in the catalog, so the console never claims
+        a channel is live when it is not.
+        """
+        loaded = require_admin(request)
+        telegram_connected = bool(
+            loaded.channels.telegram.enabled
+            and read_env_value(loaded.channels.telegram.token_env)
+            and (
+                loaded.channels.telegram.allowed_user_ids
+                or loaded.channels.telegram.allowed_chat_ids
+            )
+        )
+        whatsapp_connected = bool(getattr(loaded.channels, "whatsapp", None) and loaded.channels.whatsapp.enabled)
+        live = {"web": True, "telegram": telegram_connected, "whatsapp": whatsapp_connected}
+        return {
+            "channels": [
+                {
+                    "key": spec.key,
+                    "label": spec.label,
+                    "status": spec.status,
+                    "blurb": spec.blurb,
+                    "note": spec.note,
+                    "guided": spec.guided,
+                    "zero_setup": spec.zero_setup,
+                    "connected": live.get(spec.key, False),
+                }
+                for spec in channel_catalog.CHANNELS
+            ]
+        }
+
+    @router.get("/api/llm/providers")
+    def admin_list_llm_providers(request: Request) -> dict[str, Any]:
+        """The provider catalog the console renders as a picker.
+
+        Data, not code - adding a provider is a row in llm/catalog.py.
+        """
+        require_admin(request)
+        return {
+            "providers": [
+                {
+                    "key": spec.key,
+                    "label": spec.label,
+                    "kind": spec.kind,
+                    "base_url": spec.base_url,
+                    "api_key_env": spec.api_key_env,
+                    "default_model": spec.default_model,
+                    "needs_key": spec.needs_key,
+                    "local": spec.local,
+                    "lists_models": spec.lists_models,
+                    "keys_url": spec.keys_url,
+                    "notes": spec.notes,
+                    "example_models": list(spec.example_models),
+                }
+                for spec in llm_catalog.PROVIDERS
+            ]
+        }
+
+    @router.post("/api/setup/llm/verify")
+    async def admin_verify_llm_provider(request: Request, payload: AdminLLMVerifyRequest) -> dict[str, Any]:
+        """Confirm a key works and report back what it can reach.
+
+        Same reason the Telegram step verifies its token: a pasted secret that
+        is silently accepted fails much later, somewhere the user will not
+        connect to this screen. Asking the provider for its model list proves
+        the key and populates the model picker in one call, so the list is
+        never a hardcoded one that rots.
+        """
+        require_admin(request)
+        spec = llm_catalog.get(payload.provider)
+        if spec is None:
+            raise HTTPException(status_code=400, detail=f"unknown provider: {payload.provider}")
+
+        key = (payload.api_key or "").strip() or (
+            read_env_value(spec.api_key_env) if spec.api_key_env else None
+        )
+        if spec.needs_key and not key:
+            raise HTTPException(status_code=400, detail=f"{spec.label} needs an API key")
+        base_url = (payload.base_url or spec.base_url or "").strip()
+        if not base_url and spec.kind != "anthropic":
+            raise HTTPException(status_code=400, detail=f"{spec.label} needs a base URL")
+
+        try:
+            models = await _list_provider_models(spec, key, base_url)
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001 - normalized for the UI
+            raise HTTPException(status_code=502, detail=_provider_error(spec, exc)) from None
+
+        return {
+            "ok": True,
+            "provider": spec.key,
+            "label": spec.label,
+            "models": models,
+            "default_model": spec.default_model,
+            # Only meaningful when a real list came back; the UI shows the
+            # count rather than claiming a number it did not verify.
+            "listed": bool(models),
+        }
+
+    @router.post("/api/setup/llm/test")
+    async def admin_test_llm_model(request: Request, payload: AdminLLMTestRequest) -> dict[str, Any]:
+        """Make one real completion before setup is allowed to finish.
+
+        Listing models proves a key is valid. It does not prove the chosen
+        model answers, that the provider routing is right, or that the response
+        parses - and each of those fails later, in a place the user will not
+        connect back to this screen. A single real round trip proves the whole
+        chain, and the reply is shown to them so "it works" is something they
+        can see rather than something we assert.
+
+        Deliberately not free: this spends a token or two of the user's own
+        quota. It is triggered by an explicit click, and the alternative is
+        discovering the failure on their first real message.
+        """
+        require_admin(request)
+        spec = llm_catalog.get(payload.provider)
+        if spec is None:
+            raise HTTPException(status_code=400, detail=f"unknown provider: {payload.provider}")
+
+        key = (payload.api_key or "").strip() or (
+            read_env_value(spec.api_key_env) if spec.api_key_env else None
+        )
+        if spec.needs_key and not key:
+            raise HTTPException(status_code=400, detail=f"{spec.label} needs an API key")
+
+        profile = LLMProfileConfig(
+            provider=spec.kind,
+            model=payload.model.strip(),
+            base_url=(payload.base_url or spec.base_url or None),
+            api_key=SecretStr(key) if key else None,
+            timeout_seconds=45,
+            max_tokens=128,
+        )
+        started = time.monotonic()
+        try:
+            provider = build_provider_for_profile(profile)
+            reply = await provider.generate_text(
+                render_prompt("base/llm_health_check_system.md"),
+                render_prompt("tasks/llm_health_check_user.md"),
+            )
+        except Exception as exc:  # noqa: BLE001 - normalized for the UI
+            raise HTTPException(status_code=502, detail=_provider_error(spec, exc)) from None
+
+        return {
+            "ok": True,
+            "model": profile.model,
+            "reply": reply.strip()[:500],
+            "latency_ms": round((time.monotonic() - started) * 1000),
+        }
+
+    @router.get("/api/config/voice")
+    def admin_get_voice_config(request: Request) -> dict[str, Any]:
+        """Whether voice transcription is on, and whether it could be.
+
+        The voice failure reply tells the user to turn voice on in Settings, so
+        Settings has to actually offer it - otherwise the advice is a promise
+        the console cannot keep.
+        """
+        loaded = require_admin(request)
+        stt = loaded.adapters.stt
+        installed = importlib.util.find_spec("faster_whisper") is not None
+        return {
+            "enabled": stt.enabled,
+            "provider": stt.provider,
+            "model": stt.model,
+            "installed": installed,
+            # Turning it on without the package fails at the first voice
+            # message, so say so before the switch is flipped.
+            "available": installed or stt.provider != "faster_whisper",
+            "install_hint": "uv sync --extra voice",
+        }
+
+    @router.post("/api/chat/transcribe")
+    async def admin_transcribe_chat_audio(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
+        """Turn a recording from the console into text.
+
+        Voice worked on Telegram and nowhere else, which is backwards - the
+        console is where someone tries it first. Same STT adapter, so turning
+        transcription on lights up both channels at once.
+
+        Returns the text rather than creating a task: the console puts it in
+        the composer so the user can read it and correct it before sending,
+        which a chat UI can do and a messaging app cannot.
+        """
+        require_admin(request)
+        settings = settings_loader()
+        if not settings.adapters.stt.enabled:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Speech-to-text is turned off in this setup, so I can't transcribe that. "
+                    "Turn on voice under Settings."
+                ),
+            )
+        audio = await file.read()
+        if not audio:
+            raise HTTPException(status_code=400, detail="That recording was empty.")
+        try:
+            transcript = await build_stt_adapter(settings.adapters.stt).transcribe(
+                audio, file_name=file.filename, mime_type=file.content_type
+            )
+        except Exception as exc:  # noqa: BLE001 - normalized for the UI
+            raise HTTPException(status_code=502, detail=explain_voice_failure(exc)) from None
+        text = (transcript.text or "").strip()
+        if not text:
+            raise HTTPException(
+                status_code=422, detail="I could not make out any words in that recording."
+            )
+        return {"text": text}
+
+    @router.post("/api/config/voice")
+    def admin_update_voice_config(request: Request, payload: AdminVoiceConfigRequest) -> dict[str, Any]:
+        loaded = require_admin(request)
+        if payload.enabled and loaded.adapters.stt.provider == "faster_whisper":
+            if importlib.util.find_spec("faster_whisper") is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Voice transcription needs the voice extra installed first: uv sync --extra voice",
+                )
+        config = _read_config_file(config_manager)
+        stt = config.setdefault("adapters", {}).setdefault("stt", {})
+        stt["enabled"] = payload.enabled
+        if payload.model:
+            stt["model"] = payload.model
+        _write_config_file(config_manager, config)
+        _audit_config_update(repositories_loader(), loaded, "voice", {"enabled": payload.enabled})
+        return {"config_file": str(CONFIG_FILE_PATH), "stt": stt}
+
     @router.post("/api/config/vscode")
     def admin_update_vscode_config(request: Request, payload: AdminVSCodeConfigRequest) -> dict[str, Any]:
         loaded = require_admin(request)
@@ -1166,7 +1685,7 @@ def create_admin_router(
         }
 
     @router.post("/api/chat/messages")
-    def admin_send_chat_message(request: Request, payload: AdminChatMessageRequest) -> dict[str, Any]:
+    async def admin_send_chat_message(request: Request, payload: AdminChatMessageRequest) -> dict[str, Any]:
         """A reply while a task sits in CLARIFYING resumes that task instead
         of spawning an unrelated new one - same behavior Telegram already
         had (clarification.py, shared with channels/telegram.py), just
@@ -1213,6 +1732,14 @@ def create_admin_router(
             remembered_facts=repositories.memory_facts.list_all(),
             objective=objective,
         )
+        # Web chat had no classifier at all: every message became a task,
+        # including "hi" and questions the model could simply answer. Asking
+        # "what is the capital of France?" sent the Operator to knowledge.search,
+        # which returned no matches, three times, until the no-progress guard
+        # blocked it (docs/GAPS.md G8). Telegram has always classified first;
+        # web chat is a channel too and should behave like one.
+        chat_reply = await _web_chat_reply(loaded, objective) if not attached else None
+
         task = repositories.tasks.create(
             objective,
             conversation_id=conversation_id,
@@ -1221,8 +1748,13 @@ def create_admin_router(
                 "source_channel": ChannelType.WEB.value,
                 "attachment_ids": [a.id for a in attached],
                 "memory_context": memory_ctx,
+                # Present only when the Concierge answered directly, so the
+                # worker never picks this up.
+                **({"synthesized_answer": chat_reply} if chat_reply else {}),
             },
         )
+        if chat_reply:
+            task = repositories.tasks.update_status(task.id, TaskStatus.COMPLETED)
         for artifact in attached:
             repositories.artifacts.link_to_task(artifact.id, task.id)
         audit.append(
@@ -1324,10 +1856,10 @@ def create_admin_router(
         profile = loaded.llm.profiles.get(loaded.llm.default_profile)
         if profile is None:
             raise HTTPException(status_code=400, detail="default LLM profile is not configured")
-        if profile.provider != "openai_compatible":
-            raise HTTPException(status_code=400, detail=f"unsupported LLM provider: {profile.provider}")
         try:
-            provider = OpenAICompatibleProvider(profile)
+            # Routes by profile.provider, so the health check works for
+            # Anthropic and every catalog provider, not just the OpenAI shape.
+            provider = build_provider_for_profile(profile)
             output = await provider.generate_text(
                 render_prompt("base/llm_health_check_system.md"),
                 render_prompt("tasks/llm_health_check_user.md"),
@@ -1417,6 +1949,140 @@ def _legacy_default_llm_env_keys() -> list[str]:
 def _llm_profile_env_keys(profile_name: str) -> list[str]:
     fields = ("PROVIDER", "MODEL", "BASE_URL", "API_KEY_ENV", "TIMEOUT_SECONDS", "MAX_TOKENS", "TEMPERATURE")
     return [f"AGENT_LLM__PROFILES__{profile_name}__{field}" for field in fields]
+
+
+async def _list_provider_models(
+    spec: "llm_catalog.ProviderSpec", key: str | None, base_url: str
+) -> list[dict[str, str]]:
+    """Ask the provider what models it has. Never raises for "no list".
+
+    A provider that cannot enumerate models is not a failed key - `custom`
+    endpoints often have no /models route - so those return the spec's
+    examples and let the user type a name.
+    """
+    if spec.kind == "anthropic":
+        import anthropic
+
+        client = anthropic.AsyncAnthropic(api_key=key, timeout=20.0)
+        try:
+            page = await client.models.list(limit=100)
+        finally:
+            await client.close()
+        return [
+            {"id": m.id, "label": getattr(m, "display_name", None) or m.id}
+            for m in page.data
+        ]
+
+    if not spec.lists_models:
+        return [{"id": m, "label": m} for m in spec.example_models]
+
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.get(f"{base_url.rstrip('/')}/models", headers=headers)
+    if response.status_code in (401, 403):
+        raise HTTPException(status_code=400, detail=f"{spec.label} rejected that API key")
+    response.raise_for_status()
+    payload = response.json() or {}
+    entries = payload.get("data") if isinstance(payload, dict) else None
+    models: list[dict[str, str]] = []
+    for entry in entries or []:
+        model_id = (entry or {}).get("id") if isinstance(entry, dict) else None
+        if model_id:
+            models.append({"id": str(model_id), "label": str(model_id)})
+    return models
+
+
+def _provider_error(spec: "llm_catalog.ProviderSpec", exc: Exception) -> str:
+    """Describe a provider failure without echoing the key."""
+    status = getattr(exc, "status_code", None) or getattr(
+        getattr(exc, "response", None), "status_code", None
+    )
+    if status in (401, 403):
+        return f"{spec.label} rejected that API key"
+    if status == 429:
+        return f"{spec.label} rate limit reached - try again shortly"
+    if isinstance(status, int):
+        return f"{spec.label} returned HTTP {status}"
+    if spec.local:
+        return f"Could not reach {spec.label}. Is it running?"
+    return f"Could not reach {spec.label} ({type(exc).__name__})"
+
+
+@lru_cache(maxsize=1)
+def _hardware_probe() -> "llm_hardware.Hardware":
+    """Probing shells out, so do it once per process rather than per preset."""
+    return llm_hardware.probe()
+
+
+def _in_container() -> bool:
+    """Whether this process is running inside the shipped container image.
+
+    The Dockerfile sets YBM_HEADLESS=1; /.dockerenv is the belt-and-braces
+    check for other container runtimes.
+    """
+    if os.environ.get("YBM_HEADLESS"):
+        return True
+    try:
+        return Path("/.dockerenv").exists()
+    except OSError:
+        return False
+
+
+def _presets_that_can_work() -> dict[str, dict[str, Any]]:
+    """Only offer presets that could actually serve a request here.
+
+    Inside a container, 127.0.0.1 is the container itself, so every loopback
+    preset is unreachable - offering them means the recommended choice is the
+    one that cannot work. Outside a container the reverse is true: the
+    host-gateway preset is meaningless and just looks like a duplicate of the
+    loopback one with confusing wording. Which environment we are in is
+    something we can actually check, so it should not be a question put to the
+    user.
+    """
+    containerised = _in_container()
+    return {
+        key: preset
+        for key, preset in LLM_PRESETS.items()
+        if key.endswith("_container") == containerised
+    }
+
+
+async def _web_chat_reply(settings: AppSettings, objective: str) -> str | None:
+    """Let the Concierge answer plain chat instead of spawning a task.
+
+    Returns the reply when the message is not work, None when it is - in which
+    case the caller creates a task exactly as before. Any failure returns None
+    too: classification is an optimisation, and a broken classifier must not
+    stop a real request from running.
+    """
+    from agent_control.channels.base import ChannelType as _ChannelType
+    from agent_control.llm.classifier import LLMMessageClassifier
+    from agent_control.llm.providers import build_default_llm_provider
+    from agent_control.schemas import InboundMessage, MessageKind
+
+    try:
+        provider = build_default_llm_provider(settings)
+        if provider is None:
+            return None
+        message = InboundMessage(
+            id="web_chat",
+            channel=_ChannelType.WEB,
+            chat_id=WEB_CHAT_ID,
+            sender_id="admin",
+            kind=MessageKind.TEXT,
+            text=objective,
+            received_at=utc_now(),
+        )
+        classification = await LLMMessageClassifier(provider).classify(message)
+    except Exception:  # noqa: BLE001 - never block a real request on this
+        logging.getLogger(__name__).warning(
+            "web chat classification failed; treating as a task", exc_info=True
+        )
+        return None
+    if classification.is_task:
+        return None
+    reply = (classification.reply or "").strip()
+    return reply or None
 
 
 def _telegram_config_env_keys() -> list[str]:

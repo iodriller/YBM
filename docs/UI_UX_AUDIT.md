@@ -5,6 +5,10 @@
 > shipped.** For current behavior see [ARCHITECTURE.md](ARCHITECTURE.md) and
 > [CAPABILITIES.md](CAPABILITIES.md).
 
+> Historical implementation record: current limitations and release priorities live in
+> [GAPS.md](GAPS.md) and [PUBLIC_RELEASE.md](PUBLIC_RELEASE.md). Statements below such as
+> “nothing is currently open” describe the audit at that time, not the current release state.
+
 ## Outcome
 
 YBM's strongest product idea is not generic chat. It is governed local agency: powerful tools,
@@ -196,7 +200,7 @@ verified in the code before being written down.
   the Chat composer browses this and inserts the selected absolute path into the draft text -
   there is no new "folder reference" concept, it's the same plain path-in-the-objective
   `filesystem.manage`'s alias resolution already understands.
-- Verified live against this machine's real configured roots (`C:\for fun`, `C:\Users\oneye`):
+- Verified live against this machine's real configured roots (`C:\projects`, `C:\Users\<you>`):
   listing roots, browsing into one, and rejecting a path outside them (`C:\Windows`, 400) all
   behaved correctly against the running backend, not just in tests.
 - Acceptance: "organize this folder" is expressible from the console without typing a path.

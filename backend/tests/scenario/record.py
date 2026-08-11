@@ -44,6 +44,10 @@ def main(argv: list[str] | None = None) -> int:
         "--profile", default=None,
         help="llm profile name from config/config.yaml's llm.profiles (default: llm.default_profile)",
     )
+    parser.add_argument(
+        "--keep-existing", action="store_true",
+        help="merge into the existing fixture instead of rebuilding it (leaves unreachable keys behind)",
+    )
     args = parser.parse_args(argv)
 
     files = find_scenario_files(args.name)
@@ -64,10 +68,38 @@ def main(argv: list[str] | None = None) -> int:
     if args.profile:
         env["YBM_SCENARIO_RECORD_PROFILE"] = args.profile
 
+    # Rebuild rather than merge. RecordingLLMProvider writes keys as it goes and
+    # never removes them, so every re-record used to layer a fresh set on top of
+    # the old ones: file_find_and_read.json accumulated entries from four
+    # separate runs, none of the stale ones reachable. Rebuilding is safe here
+    # precisely because this command runs *every* test file that declares the
+    # fixture, so one run regenerates the complete set. --keep-existing restores
+    # the old merge if a fixture ever needs assembling across separate runs.
+    fixture_path = FIXTURES_DIR / f"{args.name}.json"
+    previous = None
+    if fixture_path.exists() and not args.keep_existing:
+        previous = fixture_path.read_bytes()
+        fixture_path.unlink()
+        print(f"Rebuilding {fixture_path.name} from scratch (use --keep-existing to merge instead).")
+        print()
+
     cmd = [sys.executable, "-m", "pytest", "-v", "-s", *[str(f) for f in files]]
     result = subprocess.run(cmd, cwd=BACKEND_DIR, env=env)
 
-    fixture_path = FIXTURES_DIR / f"{args.name}.json"
+    # Restore on ANY failed run, not just one that wrote nothing.
+    # RecordingLLMProvider saves after every call, so a run that dies partway
+    # leaves a truncated fixture on disk - which an "only if missing" guard
+    # happily keeps. That is the case that actually happened: three fixtures
+    # were cut from 15/26/34 keys down to 2/3/9 by a mid-run model failure.
+    if previous is not None and result.returncode != 0:
+        current = fixture_path.read_bytes() if fixture_path.exists() else b""
+        if current != previous:
+            fixture_path.write_bytes(previous)
+            print(
+                f"\nRecording failed; restored the previous {fixture_path.name} "
+                "(a partial rebuild would otherwise have replaced it)."
+            )
+
     if result.returncode == 0 and fixture_path.exists():
         print(f"\nFixture written: {fixture_path.relative_to(BACKEND_DIR.parent)}")
         print("Review the diff, then commit it.")

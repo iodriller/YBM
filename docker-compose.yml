@@ -1,0 +1,92 @@
+# YBM Control, headless profile.
+#
+#   cp .env.example .env      # set AGENT_ADMIN_TOKEN at minimum
+#   docker compose up -d
+#   open http://127.0.0.1:8765/admin
+#
+# Bring a local model along too:
+#   docker compose --profile ollama up -d
+#   docker compose exec ollama ollama pull qwen3:8b
+#
+# Desktop control, screenshots, and the VS Code bridge do not work in here -
+# there is no session to attach to. `ybm doctor` reports them as unavailable
+# rather than failing at call time (bootstrap.is_headless_runtime). Everything
+# else - Telegram, WhatsApp, the operator loop, the code interpreter, MCP, the
+# admin console - runs normally.
+
+services:
+  ybm:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ybm-control:local
+    restart: unless-stopped
+    # Published to loopback only. The admin API refuses to serve on a
+    # non-loopback host without a token, but binding the port itself to
+    # 0.0.0.0 would still expose it to the LAN - so scope it here.
+    ports:
+      - "127.0.0.1:8765:8765"
+    env_file:
+      - .env
+    environment:
+      YBM_HEADLESS: "1"
+      # Reach a model running on the host (Ollama, LocalDeploy) rather than in
+      # compose. host.docker.internal resolves on Docker Desktop; the
+      # extra_hosts entry below makes it work on Linux too.
+      AGENT_SERVER__HOST: "0.0.0.0"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Live state: database, logs, audit trail, generated workspaces.
+      - ybm-state:/app/.agent_control
+      # Config is a bind mount so config.yaml is editable from the host and
+      # survives `docker compose down -v`.
+      - ./config:/app/config
+      # What the agent is allowed to read and write. Deliberately one explicit
+      # directory rather than the host filesystem: the container boundary is
+      # doing real work here, on top of the adapter's allowed_roots check.
+      - ./workspace:/app/workspace
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8765/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    # A runaway agent should not take the host down. Generous enough for the
+    # code interpreter, bounded enough to matter.
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Opt-in: `docker compose --profile ollama up -d`. Off by default because
+  # most people already run Ollama on the host, and pulling a model inside a
+  # second container would duplicate several gigabytes.
+  ollama:
+    profiles: ["ollama"]
+    # Pinned manifest: upgrading the model runtime is a reviewed change, not
+    # whatever `latest` happens to mean on the next deployment.
+    image: ollama/ollama:latest@sha256:b88c73ace3e115f8ec53dc8761ae1c0aabfa675406e3681786b98757ce050f42
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  ybm-state:
+  ollama-models:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 from agent_control import bootstrap
 from agent_control.config import AppSettings
@@ -122,8 +123,28 @@ def test_check_telegram_fails_when_enabled_without_token(monkeypatch, tmp_path) 
 def test_check_node_ok_when_present(monkeypatch, tmp_path) -> None:
     _isolate(monkeypatch, tmp_path)
     monkeypatch.setattr(bootstrap.shutil, "which", lambda name: "/usr/bin/node" if name == "node" else None)
+    monkeypatch.setattr(
+        bootstrap.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="v22.22.0\n"),
+    )
     check = bootstrap._check_node()
     assert check.status == "ok"
+
+
+def test_check_node_warns_when_too_old(monkeypatch, tmp_path) -> None:
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda name: "/usr/bin/node" if name == "node" else None)
+    monkeypatch.setattr(
+        bootstrap.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="v22.11.0\n"),
+    )
+
+    check = bootstrap._check_node()
+
+    assert check.status == "warn"
+    assert "22.22+" in check.detail
 
 
 def test_check_node_warns_not_fails_when_missing(monkeypatch, tmp_path) -> None:
