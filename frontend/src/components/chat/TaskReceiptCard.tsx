@@ -111,7 +111,7 @@ export function TaskReceiptCard({ taskId }: { taskId: string }) {
   // A plain answer that touched nothing carried a full card - status chip,
   // "Receipt", "No external transfer was recorded", duration, and two actions -
   // for a one-line reply, so the receipt outweighed the message it described
-  // (docs/UI_MEASURED_FINDINGS.md F4). Collapse exactly that case: completed,
+  // (docs/archive/UI_MEASURED_FINDINGS.md F4). Collapse exactly that case: completed,
   // nothing changed, no tool used, nothing left the machine. Anything with
   // real effects keeps the full card, which is the point of having one.
   const unremarkable =

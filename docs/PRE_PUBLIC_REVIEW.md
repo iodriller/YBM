@@ -4,8 +4,13 @@ Full pass over the repo as a stranger would meet it. Secrets were audited
 earlier this session — gitleaks over all 175 commits, clean, and zero tracked
 files carrying the account name — so this covers everything else.
 
-**Verdict: two blockers, both cheap. The code is in good shape; the
-*presentation* is not.**
+**Verdict: one blocker left, and it is not mine to fix.**
+
+> **Update.** Everything below except the GitHub billing has been done:
+> the README no longer claims the repo is private and now leads with the
+> thirteen providers and voice, `config.example.yaml` carries an Anthropic
+> profile, `docs/` is consolidated behind `docs/archive/`, `ARCHITECTURE.md`
+> covers the new modules, and the repository has topics.
 
 ---
 

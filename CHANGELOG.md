@@ -5,7 +5,7 @@ versions follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 `ybm check-updates` currently compares against the default branch. Once tagged
 releases exist it should compare against the latest tag instead — see
-`docs/KNOWN_GAPS.md`.
+`docs/archive/KNOWN_GAPS.md`.
 
 ## [Unreleased]
 
@@ -69,7 +69,7 @@ releases exist it should compare against the latest tag instead — see
 
 ### Known issues
 
-See `docs/KNOWN_GAPS.md`. The largest: remote one-line install is impossible
+See `docs/archive/KNOWN_GAPS.md`. The largest: remote one-line install is impossible
 while the repository is private (GitHub answers 404, not 403, to
 unauthenticated requests), and tool output is not marked as untrusted in the
 operator prompt.

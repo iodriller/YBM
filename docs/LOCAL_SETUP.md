@@ -21,7 +21,7 @@ before returning), `--no-prompt`, and `--install-dir DIR`.
 
 > Remote one-line install (`curl … raw.githubusercontent.com/… | sh`) returns **404** while this
 > repository is private - GitHub answers 404 rather than 403 to unauthenticated requests. Get the
-> folder first, then run the above. See `docs/INSTALL_UX_PLAN.md`.
+> folder first, then run the above. See `docs/archive/INSTALL_UX_PLAN.md`.
 
 The installer installs dependencies via `uv`, writes `config/config.yaml` and `.env`, generates
 admin and vault tokens, and starts the stack. The LLM and Telegram choices happen in the browser

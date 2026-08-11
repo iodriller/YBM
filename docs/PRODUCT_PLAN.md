@@ -1,6 +1,6 @@
 # Product plan: setup honesty, chat power, and naming
 
-Supersedes `docs/UI_UX_IMPROVEMENT_PLAN.md`, which is folded in below as
+Supersedes `docs/archive/UI_UX_IMPROVEMENT_PLAN.md`, which is folded in below as
 section 6. Ordered by your priorities, not by size.
 
 Evidence is `docs/screenshots/first-run/`, captured from a containerised
@@ -31,7 +31,7 @@ we never looked at the machine. On a device with 4 GB of VRAM that sentence is
 simply false, and the user finds out by watching it fail.
 
 **Correction:** an earlier version of this plan (and of
-`docs/LLM_SETUP_PROPOSAL.md`) said LocalDeploy's control subsystem had **no
+`docs/archive/LLM_SETUP_PROPOSAL.md`) said LocalDeploy's control subsystem had **no
 HTTP surface**. That was wrong. Every module under `localdeploy/control/`
 defines an `APIRouter`, `control/__init__.py` aggregates them, and
 `server.py:1851` includes it as `web_router` whenever `ENABLE_WEB_UI` is on —

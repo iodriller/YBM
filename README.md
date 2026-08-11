@@ -9,10 +9,18 @@ YBM:  Sorted 41 files into 6 folders (Images, Documents, Archives, Installers,
 
 That's the shape of it: real access to your machine — filesystem, terminal, browser, VS Code, a
 scheduler, MCP tools, even desktop control — through Telegram, WhatsApp, or a built-in web chat, with every
-capability **disabled by default**. Dangerous operations require an explicit, one-shot, expiring
+capability **disabled by default**.
+
+Bring your own model. **Anthropic (Claude), OpenAI, Google Gemini, OpenRouter, Groq, DeepSeek,
+Mistral, xAI, and Together** work with an API key, and **Ollama, LM Studio, or LocalDeploy** run
+a model on your own hardware for free with nothing leaving the machine. Setup verifies the key
+and makes one real call before saving, so a model that cannot answer never becomes your default.
+Voice messages work too, in the console and on Telegram — recordings are transcribed locally. Dangerous operations require an explicit, one-shot, expiring
 approval that the runtime enforces — not the model, not a config flag, and not bypassable by an
 "allow everything" mode. Every request, approval, and result is logged, and every task has a full
 trace you can open and check.
+
+![The YBM Control console](docs/screenshots/first-run/06-chat.png)
 
 ## Why YBM Control
 
@@ -56,11 +64,9 @@ the install works before returning, `--install-dir DIR` picks the location.
 
 </details>
 
-> **Remote one-line install is not available yet.** This repository is private, so
-> `curl … raw.githubusercontent.com/…/install.sh | sh` returns 404 for anyone who is not
-> authenticated. Get the folder first (clone it with credentials, or copy it across), then run
-> the setup file above. Once the repository is public the same installer works as a one-liner
-> unchanged.
+> **Prefer a one-liner?** Once you have the repository, the setup file above is the
+> shortest path. If you would rather not clone first, `install.sh` and `install.ps1`
+> can be piped straight from a checkout of this repo.
 
 The installer sets up dependencies, writes your config and tokens, and starts the stack. The
 model and Telegram choices happen in the browser wizard that opens — Telegram is optional, since

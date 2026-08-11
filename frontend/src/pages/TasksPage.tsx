@@ -64,7 +64,7 @@ export function TasksPage() {
   // the text wrapping without constraining the box - so a long objective or
   // outcome grew the column instead of being truncated. Measured before this
   // change: the Objective cell was 3,321px and Outcome 26,618px, for a table
-  // 30,525px wide inside a 1,440px window (docs/UI_MEASURED_FINDINGS.md F1).
+  // 30,525px wide inside a 1,440px window (docs/archive/UI_MEASURED_FINDINGS.md F1).
   const columns = useMemo(
     () => [
       columnHelper.accessor("objective", {

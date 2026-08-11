@@ -67,7 +67,7 @@ export function ToolsPage() {
     <div className="h-full overflow-y-auto">
       {/* max-w-6xl to match Tasks and Settings. At 4xl this inventory of 22
           tools used about 58% of a 1440px window, and every single-tool group
-          left half a row empty (docs/UI_MEASURED_FINDINGS.md F2). */}
+          left half a row empty (docs/archive/UI_MEASURED_FINDINGS.md F2). */}
       <div className="mx-auto flex max-w-6xl flex-col gap-6 p-4 sm:p-6 lg:p-8 [&>*]:shrink-0">
         <PageBreadcrumb items={[{ label: "Agent", to: "/agent" }, { label: "Tools" }]} />
         <PageHeader
