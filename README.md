@@ -30,17 +30,36 @@ YBM.
 
 ### Windows
 
+Four ways in. They install the same thing; pick whichever you are comfortable running.
+
+| | Best if you want | Downloads a file? |
+|---|---|---|
+| **1. winget** | The shortest path, and no security prompt | No |
+| **2. PowerShell** | To read the installer before it runs | No |
+| **3. MSI** | A normal Windows install with an uninstall entry | Yes |
+| **4. ZIP** | No installer and no terminal at all | Yes |
+
+**1. winget**
+
 ```powershell
 winget install YBM
 ```
 
-Nothing to download, and no security prompt. Then finish the two-step browser wizard to choose a
-model and optionally connect Telegram.
+**2. PowerShell.** Nothing is written to disk before it runs, so there is no downloaded file for
+Windows to flag. Read it first if you like - it is the same URL either way:
 
-**Prefer a download?** Get `YBM-Setup.msi` from the
-[latest release](https://github.com/iodriller/YBM/releases/latest). It is a per-user install needing
-no administrator rights: it goes to `%LOCALAPPDATA%\YBM`, adds a Start Menu entry, and uninstalls
-from Add or remove programs.
+```powershell
+# Look at exactly what it will do
+irm https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.ps1 | more
+
+# Run it
+irm https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.ps1 | iex
+```
+
+**3. MSI.** Get `YBM-Setup.msi` from the
+[latest release](https://github.com/iodriller/YBM/releases/latest). Per-user, no administrator
+rights: it goes to `%LOCALAPPDATA%\YBM`, adds a Start Menu entry, and uninstalls from Add or remove
+programs.
 
 Windows will say the publisher is unrecognised, because the installer is not code signed. Every
 release is built in public by [a GitHub Actions workflow](.github/workflows/release.yml) and carries
@@ -50,14 +69,16 @@ signed build provenance, so you can check where it came from rather than trustin
 gh attestation verify .\YBM-Setup.msi --repo iodriller/YBM
 ```
 
-**Prefer no installer at all?** Download the repository as a ZIP, extract the whole folder, and
-double-click [`YBM.bat`](YBM.bat) - it installs whatever is missing and writes nothing outside that
-folder. The same file handles the first run and every run after it. For a visible, verifiable
-install:
+**4. ZIP.** Download the repository as a ZIP, extract the whole folder, and double-click
+[`YBM.bat`](YBM.bat). It installs whatever is missing and writes nothing outside that folder. The
+same file handles the first run and every run after it. For visible output and a post-install check:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Verify
 ```
+
+Whichever you pick, finish the two-step browser wizard that opens to choose a model and optionally
+connect Telegram.
 
 Node.js 22.22 or newer is only needed to build the admin console **from source**. Release builds and
 the Docker image ship it prebuilt, so an installed copy needs no Node.js. The optional WhatsApp

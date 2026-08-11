@@ -21,17 +21,28 @@ the `ui-build` command for your platform.
 
 ## Recommended install
 
-### Windows, no terminal
+### Windows
 
-1. Download `YBM-Setup.msi` from the [latest release](https://github.com/iodriller/YBM/releases/latest) and run it, or run `winget install YBM`.
-2. Finish the browser wizard that opens.
+Four routes install the same thing. None needs administrator rights.
 
-The installer is per-user, needs no administrator rights, installs into `%LOCALAPPDATA%\YBM`, and
-registers an uninstall entry. It carries a prebuilt admin console, so Node.js is not required.
+| Route | Command or file | Downloads a file? |
+|---|---|---|
+| Package manager | `winget install YBM` | No |
+| PowerShell | `irm https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.ps1 \| iex` | No |
+| Installer | `YBM-Setup.msi` from the [latest release](https://github.com/iodriller/YBM/releases/latest) | Yes |
+| Plain folder | Repository ZIP, then double-click `YBM.bat` | Yes |
 
-From a source checkout instead, double-click `YBM.bat` in the extracted folder. It installs anything
-missing, including `uv` itself, then starts YBM and opens the console. The same file serves the first
-run and every run after it; there is no separate setup step.
+Finish the browser wizard that opens afterwards.
+
+The MSI is per-user, installs into `%LOCALAPPDATA%\YBM`, and registers an uninstall entry. It carries
+a prebuilt admin console, so Node.js is not required.
+
+The PowerShell route writes nothing to disk before running, so there is no downloaded file for
+Windows to flag. Pipe it to `more` instead of `iex` to read it first.
+
+From a source checkout, double-click `YBM.bat` in the extracted folder. It installs anything missing,
+including `uv` itself, then starts YBM and opens the console. The same file serves the first run and
+every run after it; there is no separate setup step.
 
 For visible PowerShell output and the complete installer option set:
 

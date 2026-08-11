@@ -141,7 +141,18 @@ def _check_desktop_modules(settings: AppSettings) -> list[Check]:
 def _load_settings_checked() -> tuple[Check, AppSettings | None]:
     path = Path("config/config.yaml")
     if not path.exists():
-        return Check("config/config.yaml", "fail", "missing - run `ybm setup`"), None
+        # Same reasoning as is_headless_runtime's docstring: advice an operator
+        # cannot act on is worse than none. "Run `ybm setup`" is right on a host
+        # checkout, where setup is what creates this file, and wrong inside a
+        # container, where the first-run wizard writes it and there is no setup
+        # step to run. Still a failure either way - nothing can answer a message
+        # until a model is configured.
+        hint = (
+            "missing - finish the first-run wizard at /admin"
+            if is_headless_runtime()
+            else "missing - run `ybm setup`"
+        )
+        return Check("config/config.yaml", "fail", hint), None
     try:
         settings = load_settings()
     except Exception as exc:  # noqa: BLE001 - reporting, not handling

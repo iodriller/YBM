@@ -15,6 +15,14 @@
 #     not.
 #
 # Keep this in step with scripts/install.ps1 - the two have drifted before.
+#
+# One difference is deliberate and must stay: install.ps1 no longer installs uv,
+# because on Windows `ybm.ps1 run` does it (Install-YbmUv in scripts/lib/
+# common.ps1) and that is what makes YBM.bat work on a cold machine. There is no
+# ybm.ps1 on Linux/macOS - the equivalent entry point is the Python CLI inside
+# backend/.venv, which does not exist until uv has built it. So this script has
+# to bootstrap uv itself. Removing the block below to "match" install.ps1 would
+# leave nothing on this platform that installs uv at all.
 set -euo pipefail
 
 # Pinned deliberately: an unpinned installer means two machines a week apart get

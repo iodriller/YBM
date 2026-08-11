@@ -78,7 +78,10 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
               Y
             </div>
             <div>
-              <CardTitle>Welcome to YBM</CardTitle>
+              {/* CardTitle renders a div, and the wizard takes over the whole
+                  page - so without this the first screen a new user meets has
+                  no heading at all for a screen reader to navigate by. */}
+              <CardTitle role="heading" aria-level={1}>Welcome to YBM</CardTitle>
               <CardDescription>
                 Two quick questions. Skippable, and re-runnable later from Settings.
               </CardDescription>
@@ -244,7 +247,12 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
                           // numbers that make the reason obvious.
                           disabled={preset.fit?.status === "too_big" || selectPreset.isPending}
                           title={preset.fit?.reason ?? undefined}
-                          className="h-auto flex-col items-start gap-0.5 py-2 text-left"
+                          // whitespace-normal overrides the Button base's
+                          // whitespace-nowrap. Without it the label is clipped
+                          // at the card's edge on a phone, and "(~3 GB
+                          // download)" - the number the choice actually turns
+                          // on - is the part that disappears.
+                          className="h-auto w-full flex-col items-start gap-0.5 py-2 text-left whitespace-normal"
                           onClick={() => {
                             selectPreset.mutate(preset.key, {
                               onSuccess: () => {
