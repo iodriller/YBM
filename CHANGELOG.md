@@ -19,12 +19,21 @@ releases exist it should compare against the latest tag instead - see
 - `ybm start --foreground`, which supervises until a service exits or a signal
   arrives. `start_all` spawns detached children and returns - correct for an
   interactive start, and an immediate exit to a container or systemd.
-- **A signed-off Windows install path.** `.github/workflows/release.yml` builds
-  the admin console, stages a runtime payload (`scripts/package_release.ps1`),
-  compiles a per-user MSI (`packaging/windows/ybm.wxs`, WiX v5), and
-  publishes both with checksums on a tag. The installer needs no administrator
-  rights and no Node.js, because the console ships prebuilt - previously a
-  source install had no console until the user installed Node 22.22+ themselves.
+- **A signed-off install path on every platform.** `.github/workflows/release.yml`
+  builds the admin console, stages a runtime payload
+  (`scripts/package_release.py`), compiles a per-user MSI
+  (`packaging/windows/ybm.wxs`, WiX v5), and publishes the installer plus a
+  `.zip` and a `.tar.gz` with checksums and Sigstore build provenance on a tag.
+  None of them needs administrator rights or Node.js, because the console ships
+  prebuilt - previously a source install had no console at all until the user
+  installed Node 22.22+ themselves.
+- **`ybm.sh`**, the macOS/Linux counterpart to `YBM.bat`. One file that installs
+  whatever is missing - `uv` included - then starts the stack and opens the
+  console, idempotently. macOS and Linux previously had no equivalent: the
+  documented path was `scripts/install.sh` followed by
+  `./backend/.venv/bin/ybm start --open`, two commands where one only works
+  after the other. The Python CLI cannot fill that gap because it lives inside
+  the virtualenv it would have to create.
 - winget manifest templates (`packaging/winget/`) plus
   `scripts/render_winget_manifests.ps1`, which hashes the published installer
   rather than trusting a number copied out of a build log.
@@ -48,6 +57,12 @@ releases exist it should compare against the latest tag instead - see
   refusal was the entire reason a separate first-run entry point had to exist.
   `scripts/install.ps1` no longer bootstraps uv either; it fetches the source
   and hands off, leaving one implementation rather than two that can drift.
+- **`scripts/install.sh` hands off to `./ybm.sh`**, the way `install.ps1` hands
+  off to `ybm.ps1 run`. Both installers now do the same small job - get the code
+  onto the machine - and the launcher owns uv, the virtualenv, setup, and start.
+  install.sh also stopped installing the developer extras (pytest, telethon,
+  ruff) for people who only wanted to run YBM; that is the documented
+  `uv sync --extra test --extra dev` line, as on Windows.
 - **Installers require nothing preinstalled.** The Python 3.12+ gate is gone -
   `uv` is a standalone binary and provides the interpreter. git is optional,
   with an archive fallback. The uv installer URL is pinned to a version.

@@ -5,7 +5,7 @@ Status: **implemented**, except for the one step that needs a human decision.
 | Tier | State |
 |---|---|
 | 0 - one file instead of two | Done. `Install-YbmUv` in `scripts/lib/common.ps1`; `YBM-Setup.cmd` deleted. |
-| 1 - releases with the console prebuilt | Done. `.github/workflows/release.yml` + `scripts/package_release.ps1`. Fires on a `v*` tag. |
+| 1 - releases with the console prebuilt | Done. `.github/workflows/release.yml` + `scripts/package_release.py`. Fires on a `v*` tag. |
 | 2 - per-user Windows installer | Done. `packaging/windows/ybm.wxs` (WiX v5, MSI), built and published by the same workflow. |
 | 3 - winget | Manifests and renderer done (`packaging/winget/`). **Submitting the PR is deliberately manual.** |
 

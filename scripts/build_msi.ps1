@@ -1,6 +1,6 @@
 # Build the Windows installer (MSI) from a staged payload.
 #
-#   .\scripts\package_release.ps1 -Version 0.1.0
+#   python scripts/package_release.py --version 0.1.0
 #   .\scripts\build_msi.ps1 -Version 0.1.0
 #
 # Exists because `wix build` resolves paths in the .wxs relative to the .wxs
@@ -30,7 +30,7 @@ if (-not [IO.Path]::IsPathRooted($PayloadDir)) { $PayloadDir = Join-Path $RepoRo
 if (-not [IO.Path]::IsPathRooted($OutputDir)) { $OutputDir = Join-Path $RepoRoot $OutputDir }
 
 if (-not (Test-Path -LiteralPath $PayloadDir)) {
-    throw "no staged payload at $PayloadDir - run scripts\package_release.ps1 -Version $Version first"
+    throw "no staged payload at $PayloadDir - run: python scripts/package_release.py --version $Version"
 }
 
 $wix = Get-Command wix -ErrorAction SilentlyContinue

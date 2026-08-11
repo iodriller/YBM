@@ -78,7 +78,7 @@
   </Package>
 
   <Fragment>
-    <!-- Harvests the tree scripts/package_release.ps1 staged, so the file list
+    <!-- Harvests the tree scripts/package_release.py staged, so the file list
          is never maintained by hand and cannot drift from what actually ships. -->
     <ComponentGroup Id="PayloadFiles" Directory="INSTALLFOLDER">
       <Files Include="$(PayloadDir)\**" />

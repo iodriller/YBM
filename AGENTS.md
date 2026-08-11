@@ -19,12 +19,17 @@ configuration examples aligned with the code that exists.
 
 ## Supported Commands
 
-The Windows end-user entry point is `YBM.bat` at the repo root (double-click, no
-terminal) or `scripts\ybm.ps1 run`. It installs or updates missing runtime
-dependencies, then starts and opens the console. It is idempotent: run it again
-with nothing changed and it just starts. On macOS/Linux, use
-`./backend/.venv/bin/ybm start --open` after `scripts/install.sh`; the installed
-Python CLI does not have a `run` command.
+The end-user entry point is a single file at the repo root, one per platform:
+`YBM.bat` on Windows (double-click, no terminal) and `./ybm.sh` on macOS/Linux.
+Both install or update whatever is missing - including `uv` itself - then start
+the stack and open the console, and both are idempotent: run again with nothing
+changed and they just start.
+
+`YBM.bat` wraps `scripts\ybm.ps1 run`; `ybm.sh` is self-contained because the
+installed Python CLI lives inside the virtualenv it has to create and so cannot
+bootstrap it. Keep the runtime extras in `ybm.sh` in step with
+`Get-YbmRuntimeExtraArgs` in `scripts/ybm.ps1`. `scripts/install.sh` and
+`scripts/install.ps1` only fetch the code and hand off to those launchers.
 
 For development, use `scripts/ybm.ps1` instead of assembling service commands by hand:
 

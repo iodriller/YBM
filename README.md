@@ -87,18 +87,30 @@ build instructions at `/admin` instead of the console.
 
 ### macOS and Linux
 
-From an extracted checkout:
+Download `YBM-<version>-unix.tar.gz` from the
+[latest release](https://github.com/iodriller/YBM/releases/latest):
 
 ```bash
-bash ./scripts/install.sh --verify
+tar -xzf YBM-*-unix.tar.gz
+cd YBM-*/ && ./ybm.sh
 ```
 
-The script requires Bash and `curl`. It uses Git when available and can download a source archive
-when Git is absent. After installation, start YBM from the checkout with:
+`./ybm.sh` installs whatever is missing - `uv`, Python 3.12, dependencies - then starts YBM and
+opens the console. Run it again any time; it does nothing when there is nothing to do. The admin
+console ships prebuilt in this archive, so no Node.js is needed.
+
+Prefer a one-liner, or want a git checkout you can update in place?
 
 ```bash
-./backend/.venv/bin/ybm start --open
+curl -fsSL https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.sh | bash
 ```
+
+That needs Bash and `curl`, uses Git when available, and falls back to a source archive when it is
+not. It fetches the code and then runs the same `./ybm.sh`. From a checkout you already have, run
+`bash ./scripts/install.sh --verify` to install and prove it works.
+
+Note that a **source** checkout builds the console itself and so needs Node.js 22.22+; the release
+tarball above does not. After the first run, `./ybm.sh` is all you need.
 
 If the machine has no browser, configure the model and Telegram interactively with:
 

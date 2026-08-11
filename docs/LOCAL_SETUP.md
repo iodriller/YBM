@@ -8,16 +8,15 @@ need to install Python or Git first.
 You do need:
 
 - An internet connection for the first dependency install.
-- Node.js 22.22 or newer to build the React admin console from source.
 - Bash and `curl` for the macOS/Linux installer.
+- Node.js 22.22 or newer **only** if you build the console from a source checkout, or you want the
+  optional WhatsApp bridge.
 - Docker Desktop or Docker Engine with Compose only if you choose the container path.
 
-The optional WhatsApp bridge also needs Node.js, so version 22.22 satisfies both requirements.
-
-Node.js is required only when building the console **from source**. The release installer and the
-Docker image both ship it prebuilt. In a source checkout without Node.js, setup continues and the
-backend runs, but `/admin` shows build instructions instead of the console; install Node.js, then run
-the `ui-build` command for your platform.
+Every release artifact - the MSI, the `.zip`, the `.tar.gz`, and the Docker image - ships the admin
+console prebuilt, so an installed copy needs no Node.js. Only a source checkout builds it: without
+Node.js there, setup continues and the backend runs, but `/admin` shows build instructions instead of
+the console until you install Node.js and run the `ui-build` command for your platform.
 
 ## Recommended install
 
@@ -59,13 +58,30 @@ dependencies when the lock files change, starts YBM, and opens the console.
 
 ### macOS and Linux
 
-From an extracted checkout:
+From the release tarball, which carries a prebuilt console and so needs no Node.js:
+
+```bash
+tar -xzf YBM-*-unix.tar.gz
+cd YBM-*/ && ./ybm.sh
+```
+
+`./ybm.sh` is the counterpart to `YBM.bat`: it installs whatever is missing, including `uv` and
+Python 3.12, then starts YBM and opens the console. It is idempotent, so it is also the command for
+every launch afterwards. Pass `--no-desktop` to skip the desktop-control extras on a headless box.
+
+Or bootstrap from source in one line:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.sh | bash
+```
+
+From a checkout you already have:
 
 ```bash
 bash ./scripts/install.sh --verify
 ```
 
-Available options:
+`install.sh` only fetches the code and then runs `./ybm.sh`. Available options:
 
 ```text
 --dry-run
@@ -78,7 +94,8 @@ The script uses Git when it is available. If Git is absent and the script needs 
 it downloads a source archive instead. `YBM_INSTALL_DIR` changes the default install path, and
 `YBM_DRY_RUN=1` enables the dry run.
 
-After setup, run the installed CLI from the repository root:
+After setup, `./ybm.sh` starts YBM and opens the console. The equivalent CLI call, if you want the
+individual command rather than the launcher, is:
 
 ```bash
 ./backend/.venv/bin/ybm start --open
@@ -158,7 +175,7 @@ identical.
 
 | Operation | Windows wrapper | Installed CLI on macOS/Linux |
 |---|---|---|
-| Start and open | `YBM.bat` or `.\scripts\ybm.ps1 run` | `./backend/.venv/bin/ybm start --open` |
+| Start and open | `YBM.bat` or `.\scripts\ybm.ps1 run` | `./ybm.sh` or `./backend/.venv/bin/ybm start --open` |
 | Diagnose | `.\scripts\ybm.ps1 doctor` | `./backend/.venv/bin/ybm doctor` |
 | Status | `.\scripts\ybm.ps1 status` | `./backend/.venv/bin/ybm status` |
 | Follow worker log | `.\scripts\ybm.ps1 logs worker -Follow` | `./backend/.venv/bin/ybm logs worker --follow` |

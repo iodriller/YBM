@@ -15,22 +15,12 @@
 #     not.
 #
 # Keep this in step with scripts/install.ps1 - the two have drifted before.
-#
-# One difference is deliberate and must stay: install.ps1 no longer installs uv,
-# because on Windows `ybm.ps1 run` does it (Install-YbmUv in scripts/lib/
-# common.ps1) and that is what makes YBM.bat work on a cold machine. There is no
-# ybm.ps1 on Linux/macOS - the equivalent entry point is the Python CLI inside
-# backend/.venv, which does not exist until uv has built it. So this script has
-# to bootstrap uv itself. Removing the block below to "match" install.ps1 would
-# leave nothing on this platform that installs uv at all.
+# Both now do the same small job: get the code onto the machine, then hand off
+# to the platform's launcher (./ybm.sh here, scripts\ybm.ps1 run there), which
+# owns uv, the virtualenv, setup, and starting the stack.
 set -euo pipefail
 
-# Pinned deliberately: an unpinned installer means two machines a week apart get
-# different uv versions, and a bad uv release breaks every install at once.
-UV_VERSION="0.9.7"
-UV_INSTALLER="https://astral.sh/uv/${UV_VERSION}/install.sh"
-PYTHON_VERSION="3.12"
-
+# The pinned uv version lives in ./ybm.sh now, which is what installs it.
 REPO_URL="https://github.com/iodriller/YBM.git"
 TARBALL_URL="https://codeload.github.com/iodriller/YBM/tar.gz/refs/heads/main"
 INSTALL_DIR="${YBM_INSTALL_DIR:-$HOME/ybm}"
@@ -61,52 +51,13 @@ fail() {
   exit 1
 }
 
-# --- 1. uv ---------------------------------------------------------------
-# Resolved to an absolute path rather than trusting PATH: a freshly written
-# PATH entry is not visible to the already-running shell, which is why the old
-# script could dead-end with "open a new shell and re-run" mid-install.
-find_uv() {
-  for candidate in "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
-    [ -x "$candidate" ] && { printf '%s' "$candidate"; return 0; }
-  done
-  command -v uv 2>/dev/null || return 1
-}
-
-UV="$(find_uv || true)"
-if [ -n "$UV" ]; then
-  log "uv already installed"
-  info "$UV"
-elif [ "$DRY_RUN" = "1" ]; then
-  log "uv not found"
-  plan "would install uv ${UV_VERSION} from ${UV_INSTALLER}"
-  UV="uv"
-else
-  log "Installing uv ${UV_VERSION} (standalone; no Python needed)"
-  # uv is deliberately left on PATH (its installer's default). This script calls
-  # it by absolute path because a PATH entry written by a child process is
-  # invisible to the running one - but later tooling needs the name to resolve
-  # normally, .mcp.json included, which launches the MCP server with `uv run`
-  # precisely because that is the one spelling that works on every platform.
-  curl -LsSf "$UV_INSTALLER" | sh \
-    || fail "could not install uv from $UV_INSTALLER" \
-            "Check your internet connection, then re-run. uv is the only thing YBM needs to bootstrap."
-  UV="$(find_uv || true)"
-  [ -n "$UV" ] || fail "uv installed but could not be located" \
-                       "Looked in ~/.local/bin and ~/.cargo/bin."
-  info "uv at $UV"
-fi
-
-# --- 2. Python, provided by uv -------------------------------------------
-if [ "$DRY_RUN" = "1" ]; then
-  plan "would run: uv python install ${PYTHON_VERSION}"
-else
-  log "Ensuring Python ${PYTHON_VERSION} (downloaded by uv, not from your system)"
-  "$UV" python install "$PYTHON_VERSION" \
-    || fail "uv could not provide Python ${PYTHON_VERSION}" \
-            "Re-run, or install Python ${PYTHON_VERSION} yourself and re-run - YBM will use it."
-fi
-
-# --- 3. The code: git if present, tarball if not -------------------------
+# --- 1. The code: git if present, tarball if not -------------------------
+# uv is deliberately NOT bootstrapped here. ./ybm.sh installs it, and that is
+# what makes ybm.sh work on its own from an extracted release. Keeping one
+# implementation per platform is the whole point: install.ps1 hands uv to
+# ybm.ps1 the same way. Nothing above this point needs uv - fetching the source
+# uses git or curl, and `uv sync` provides Python itself, so the old separate
+# `uv python install` step bought nothing.
 if [ -f "backend/pyproject.toml" ] && [ -f "AGENTS.md" ] && [ -f "scripts/ybm.ps1" ]; then
   REPO_DIR="$(pwd)"
   log "Already inside a YBM checkout"
@@ -158,32 +109,24 @@ else
   info "downloaded to $INSTALL_DIR"
 fi
 
-# --- 4. Dependencies and start -------------------------------------------
+# --- 2. Hand off to ybm.sh -----------------------------------------------
 if [ "$DRY_RUN" = "1" ]; then
-  plan "would run: uv sync (runtime extras) in $REPO_DIR/backend"
-  plan "would run: ybm setup && ybm start --open"
+  plan "would run: $REPO_DIR/ybm.sh"
   [ "$VERIFY" = "1" ] && plan "would then run: ybm doctor (--verify)"
   echo ""
   echo "Dry run complete - nothing was installed or changed."
   exit 0
 fi
 
-cd "$REPO_DIR/backend"
-log "Installing dependencies (uv sync)"
-# Keep this extras list identical to scripts/ybm.ps1's Invoke-YbmSetup - these
-# drifted before (this line used to say just "--extra dev", which skips
-# pytest/telethon/voice/desktop entirely, unlike the Windows path).
-"$UV" sync --extra test --extra e2e --extra voice --extra desktop --extra tray --extra dev
-
 cd "$REPO_DIR"
+log "Installing dependencies and starting YBM"
+# Runtime extras only, because ybm.sh is the consumer path. A contributor who
+# wants pytest/ruff/telethon runs the `uv sync --extra test --extra dev` line
+# AGENTS.md documents, exactly as on Windows.
+bash "$REPO_DIR/ybm.sh" \
+  || fail "startup failed" "Run '$REPO_DIR/backend/.venv/bin/ybm doctor' to diagnose. Logs: $REPO_DIR/.agent_control/logs"
+
 YBM_BIN="$REPO_DIR/backend/.venv/bin/ybm"
-log "Setting up config, tokens, and the admin console"
-"$YBM_BIN" setup
-
-log "Starting YBM"
-"$YBM_BIN" start --open \
-  || fail "startup failed" "Run '$YBM_BIN doctor' to diagnose. Logs: $REPO_DIR/.agent_control/logs"
-
 if [ "$VERIFY" = "1" ]; then
   log "Verifying the install"
   "$YBM_BIN" doctor \

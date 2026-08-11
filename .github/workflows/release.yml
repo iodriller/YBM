@@ -1,6 +1,6 @@
 name: Release
 
-# Publishes the Windows installer and source archive for a tag.
+# Publishes the Windows installer and the cross-platform archives for a tag.
 #
 # The reason this workflow exists: a source checkout has no admin console until
 # someone installs Node.js 22.22+ and builds it, which is the one prerequisite a
@@ -32,7 +32,7 @@ concurrency:
 
 jobs:
   windows:
-    name: Windows installer
+    name: Installer and archives
     runs-on: windows-latest
     timeout-minutes: 30
     permissions:
@@ -65,7 +65,7 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      # The console has to exist before packaging; package_release.ps1 refuses
+      # The console has to exist before packaging; package_release.py refuses
       # to build an archive without it rather than shipping a release that
       # serves build instructions.
       - name: Build the admin console
@@ -74,9 +74,16 @@ jobs:
           npm ci
           npm run build
 
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # Produces both archives: the .zip Windows users expect and the .tar.gz
+      # for macOS/Linux. Python rather than PowerShell because only tarfile
+      # lets a Windows host set the executable bit on ybm.sh, and a tarball
+      # whose launcher is not executable is a broken download that looks fine.
       - name: Stage the release payload
-        shell: pwsh
-        run: ./scripts/package_release.ps1 -Version "${{ steps.version.outputs.version }}"
+        run: python scripts/package_release.py --version "${{ steps.version.outputs.version }}"
 
       # Pinned to v5: WiX v6 introduced the Open Source Maintenance Fee, whose
       # EULA must be accepted before the binaries run at all. v5 is the last
@@ -97,7 +104,7 @@ jobs:
         shell: pwsh
         run: |
           $lines = @()
-          foreach ($file in Get-ChildItem dist\*.zip, dist\*.msi) {
+          foreach ($file in Get-ChildItem dist\*.zip, dist\*.tar.gz, dist\*.msi) {
             $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
             $lines += "$hash  $($file.Name)"
             if ($file.Extension -eq ".msi") { "installer_sha256=$hash" >> $env:GITHUB_OUTPUT }
@@ -110,6 +117,7 @@ jobs:
           name: ybm-windows-${{ steps.version.outputs.version }}
           path: |
             dist/*.zip
+            dist/*.tar.gz
             dist/*.msi
             dist/SHA256SUMS.txt
           if-no-files-found: error
@@ -135,6 +143,7 @@ jobs:
           subject-path: |
             dist/YBM-Setup.msi
             dist/*.zip
+            dist/*.tar.gz
 
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -183,6 +192,23 @@ jobs:
           whatever is missing, including uv, then opens the console. No installer, nothing
           written outside the folder you extracted.
 
+          ## macOS and Linux
+
+          ```
+          tar -xzf YBM-__VERSION__-unix.tar.gz
+          cd YBM-__VERSION__ && ./ybm.sh
+          ```
+
+          `ybm.sh` installs whatever is missing, including uv and Python, then starts YBM
+          and opens the console. Run it again any time; it does nothing when there is
+          nothing to do. No Node.js needed - the console ships prebuilt in this archive.
+
+          ## Verify any download
+
+          ```
+          gh attestation verify <file> --repo iodriller/YBM
+          ```
+
           Full checksums are in `SHA256SUMS.txt`.
           '@
           $notes = $notes.Replace("__SHA__", $env:INSTALLER_SHA).Replace("__VERSION__", $env:VERSION)
@@ -190,6 +216,7 @@ jobs:
           gh release create "v$env:VERSION" `
             dist\YBM-Setup.msi `
             "dist\YBM-$env:VERSION-windows.zip" `
+            "dist\YBM-$env:VERSION-unix.tar.gz" `
             dist\SHA256SUMS.txt `
             --title "YBM $env:VERSION" `
             --notes-file release-notes.md `
