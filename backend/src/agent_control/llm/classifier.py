@@ -126,21 +126,21 @@ def _normalized_classification(message: InboundMessage, classification: MessageC
 
 
 def emergency_classification(message: InboundMessage, reason: str) -> MessageClassification:
+    """What to do when the router itself is unreachable.
+
+    This used to guess, by testing the message against ~60 hardcoded markers
+    (verbs, nouns, openings) and routing the whole conversation on the result.
+    A guess made exactly when the system is already degraded, invisible to the
+    user, and wrong in both directions: a chat message treated as a task spawns
+    real work nobody asked for, and a real request treated as chat is silently
+    dropped.
+
+    Not spawning is the safer half of that: work nobody asked for cannot be
+    un-done, while a dropped request can be re-sent. `reply` is deliberately
+    left unset so a working ChatResponder still composes the answer - it is a
+    separate call and may well succeed when the router did not.
+    """
     text = (message.text or "").strip()
-    if text and _looks_actionable_request(text):
-        return MessageClassification(
-            is_task=True,
-            task_type=TaskType.OTHER,
-            normalized_objective=text,
-            confidence=0.2,
-            reason=reason,
-            intent=OrchestrationIntent(
-                route=IntentRoute.UNKNOWN,
-                operation=None,
-                objective=text,
-                reasoning="LLM router was unavailable; the message is actionable but no route was selected.",
-            ),
-        )
     return MessageClassification(
         is_task=False,
         task_type=TaskType.OTHER,
@@ -153,33 +153,3 @@ def emergency_classification(message: InboundMessage, reason: str) -> MessageCla
             reasoning="No task was spawned because the LLM router was unavailable.",
         ),
     )
-
-
-def _looks_actionable_request(text: str) -> bool:
-    """Broad heuristic for whether a message represents an actionable task.
-
-    Used as a last-resort fallback when the LLM classifier fails. Bias toward
-    YES — false positives ("act on this generic chat") get rejected by the
-    planner, while false negatives ("ignore a real task") leave the user
-    waiting with no acknowledgement.
-    """
-    lowered = text.lower()
-    actionable_markers = (
-        # explicit action verbs
-        "inspect", "open", "create", "organize", "send", "schedule", "run",
-        "search", "browse", "check", "fill", "summarize", "rename", "delete",
-        "remove", "save", "download", "upload", "copy", "move", "extract",
-        "scrape", "fetch", "get", "find", "list", "show", "tell me", "give me",
-        "look", "watch", "monitor", "observe", "navigate", "visit", "click",
-        "type", "write", "build", "make", "generate", "produce", "compute",
-        "calculate", "translate", "convert",
-        # natural-language openings for a request
-        "go to", "head to", "i want", "i'd like", "can you", "could you",
-        "please ", "would you",
-        # nouns that almost always imply action context
-        "screenshot", "desktop", "folder", "file", "job", "task", "chrome",
-        "browser", "page", "url", "website", "site", ".com", ".net", ".org",
-        # scheduling hints
-        "every day", "daily", "weekly", "hourly", "remind me",
-    )
-    return any(marker in lowered for marker in actionable_markers)

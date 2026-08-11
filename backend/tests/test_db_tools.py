@@ -164,3 +164,57 @@ def test_db_clean_handles_full_foreign_key_graph(tmp_path, monkeypatch) -> None:
 
     assert exit_code == 0
     assert repositories.tasks.get(task.id) is None
+
+
+def test_retention_sweep_removes_old_tasks_keeps_recent_and_reports_counts(tmp_path, monkeypatch) -> None:
+    """The print-free, programmatic sibling of db_clean() that
+    scheduler.py's automatic sweep calls - same deletion behavior, but
+    returns counts instead of printing, since it runs unattended."""
+    repositories, database = _repositories(tmp_path, monkeypatch)
+    old_task = repositories.tasks.create(objective="old task")
+    recent_task = repositories.tasks.create(objective="recent task")
+    _backdate_task(database, old_task, days_old=60)
+    _backdate_task(database, recent_task, days_old=1)
+
+    deleted_tasks, deleted_orphan_audit = db_tools.retention_sweep(database, days=30)
+
+    assert deleted_tasks == 1
+    assert deleted_orphan_audit == 0
+    assert repositories.tasks.get(old_task.id) is None
+    assert repositories.tasks.get(recent_task.id) is not None
+
+
+def test_retention_sweep_removes_old_orphaned_audit_events(tmp_path, monkeypatch) -> None:
+    repositories, database = _repositories(tmp_path, monkeypatch)
+    audit = AuditLogger(repositories.audit)
+    old_event = audit.append(AuditEventType.CONFIG_UPDATED, actor="admin", payload={"section": "llm"})
+    _backdate_audit_event(database, old_event.id, days_old=60)
+
+    deleted_tasks, deleted_orphan_audit = db_tools.retention_sweep(database, days=30)
+
+    assert deleted_tasks == 0
+    assert deleted_orphan_audit == 1
+    remaining_ids = {event.id for event in repositories.audit.list_recent(100)}
+    assert old_event.id not in remaining_ids
+
+
+def test_retention_sweep_is_a_noop_when_nothing_is_old_enough(tmp_path, monkeypatch) -> None:
+    repositories, database = _repositories(tmp_path, monkeypatch)
+    task = repositories.tasks.create(objective="recent task")
+    _backdate_task(database, task, days_old=1)
+
+    deleted_tasks, deleted_orphan_audit = db_tools.retention_sweep(database, days=30)
+
+    assert (deleted_tasks, deleted_orphan_audit) == (0, 0)
+    assert repositories.tasks.get(task.id) is not None
+
+
+def test_retention_sweep_handles_full_foreign_key_graph(tmp_path, monkeypatch) -> None:
+    repositories, database = _repositories(tmp_path, monkeypatch)
+    task = _full_schema_fixture(repositories)
+    _backdate_task(database, task, days_old=60)
+
+    deleted_tasks, _deleted_orphan_audit = db_tools.retention_sweep(database, days=30)
+
+    assert deleted_tasks == 1
+    assert repositories.tasks.get(task.id) is None

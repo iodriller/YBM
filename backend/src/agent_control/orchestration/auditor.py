@@ -74,6 +74,7 @@ class AuditorService:
         raw_output: str,
         *,
         original_message: str | None = None,
+        deliverable_evidence: str = "",
         response_context: str | None = None,
     ) -> AuditResult:
         """Checks raw_output is grounded evidence for objective, and if so,
@@ -92,6 +93,13 @@ class AuditorService:
             "objective": objective,
             "original_message": (original_message or "(same as normalized objective)").strip()[:1000],
             "raw_output": raw_output.strip()[:6000],
+            # Facts about what the task produced, so the Auditor can judge
+            # whether the request's actual deliverable landed. Empty string
+            # keeps callers that don't supply it (and their recorded fixtures)
+            # rendering exactly as before. render_prompt uses safe_substitute,
+            # so this is harmless on auditor_user_with_context.md, which has
+            # no placeholder for it.
+            "deliverable_evidence": (deliverable_evidence or "(not supplied)").strip()[:2000],
         }
         if response_context and response_context.strip():
             prompt_values["response_context"] = response_context.strip()[:1800]

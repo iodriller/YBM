@@ -647,7 +647,7 @@ def test_telegram_inline_keyboard_reject_denies_approval_and_answers_callback(tm
 
     updated = repos.approvals.list_for_task(task.id)[0]
     assert updated.status == ApprovalStatus.REJECTED
-    assert bot_api.answered == [("cbq1", None)]
+    assert bot_api.answered == [("cbq1", "Rejected.")]
     assert result.authorized is True
     # docs/UI_UX_AUDIT.md Phase 8, second review: a rejection must requeue
     # the task too, not just an approval - it's the worker's next
@@ -696,8 +696,53 @@ def test_telegram_inline_keyboard_approve_grants_approval(tmp_path) -> None:
 
     updated = repos.approvals.list_for_task(task.id)[0]
     assert updated.status == ApprovalStatus.APPROVED
-    assert bot_api.answered == [("cbq2", None)]
+    # The toast text is the only feedback a button press can produce -
+    # _command_response() builds no reply for callbacks. Answering with None
+    # (the previous behavior) just stopped the spinner, so a granted approval
+    # and a dead button were indistinguishable to the operator.
+    assert bot_api.answered == [("cbq2", "Approved - continuing.")]
     assert repos.tasks.get(task.id).status == TaskStatus.RUNNING
+
+
+def test_telegram_inline_keyboard_reports_already_decided_approval(tmp_path) -> None:
+    """A second press on an older message must say why nothing happened."""
+    bot_api = _FakeBotApiForCallbacks()
+    service, repos = _service(
+        tmp_path,
+        TelegramConfig(enabled=True, allowed_user_ids=[42], allowed_chat_ids=[100]),
+        bot_api=bot_api,
+    )
+    conversation_id = repos.conversations.get_or_create(ChannelType.TELEGRAM, "100")
+    task = repos.tasks.create(
+        "Run gated task",
+        conversation_id=conversation_id,
+        metadata={"source_chat_id": "100"},
+    )
+    repos.tasks.update_metadata(task.id, task.metadata, TaskStatus.AWAITING_APPROVAL)
+    approval = repos.approvals.create(
+        ApprovalRequest(
+            task_id=task.id,
+            capability=Capability.DESKTOP_CONTROL,
+            risk_level=RiskLevel.CRITICAL,
+            summary="Approve desktop control",
+            expires_at=utc_now() + timedelta(minutes=15),
+        )
+    )
+    press = {
+        "update_id": 100,
+        "callback_query": {
+            "id": "cbq1",
+            "from": {"id": 42},
+            "message": {"chat": {"id": 100}},
+            "data": f"approval:{approval.id}:approve",
+        },
+    }
+    service.handle_update(press)
+    service.handle_update({**press, "callback_query": {**press["callback_query"], "id": "cbq2"}})
+
+    assert bot_api.answered[0] == ("cbq1", "Approved - continuing.")
+    assert bot_api.answered[1][0] == "cbq2"
+    assert "Already approved" in bot_api.answered[1][1]
 
 
 def test_telegram_updates_conversation_memory(tmp_path) -> None:
@@ -979,7 +1024,13 @@ def test_telegram_screenshot_command_reports_disabled(monkeypatch, tmp_path) -> 
     )
 
     assert result.outbound_message is not None
-    assert result.outbound_message.text == "desktop.screenshot is disabled."
+    # Both switches have to be named. Saying only "desktop.screenshot is
+    # disabled" sent people to the capability of that exact name, which on its
+    # own does not make capture work - adapters.desktop.screenshot_enabled
+    # gates it too, and the message afterwards was word-for-word identical.
+    text = result.outbound_message.text
+    assert "desktop.screenshot" in text
+    assert "adapters.desktop.screenshot_enabled" in text
 
 
 class FakeTelegramClient:

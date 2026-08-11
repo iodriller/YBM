@@ -49,7 +49,7 @@ class OneShotAuditor:
         self.last_started_at = llm_fields.get("started_at", datetime(2026, 1, 1, tzinfo=timezone.utc))
         self.last_latency_ms = llm_fields.get("latency_ms", 50.0)
 
-    async def audit(self, objective, raw_output, *, original_message=None, response_context=None):
+    async def audit(self, objective, raw_output, *, original_message=None, deliverable_evidence="", response_context=None):
         return self.result
 
 
@@ -120,7 +120,10 @@ async def test_auditor_call_is_persisted_as_a_separate_source(tmp_path) -> None:
         )
     )
     auditor = OneShotAuditor(AuditResult(sufficient=True, answer="grounded answer"))
-    worker = TaskWorker(repos, audit, executor=executor, operator=operator, auditor=auditor)
+    # audit_min_tool_calls=1: this asserts an Auditor call is persisted, on a
+    # single-tool task that the production default (2) skips.
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator, auditor=auditor,
+                        audit_min_tool_calls=1)
 
     running = await worker.process_task(task.id)
 

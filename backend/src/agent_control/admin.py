@@ -108,6 +108,14 @@ class AdminTelegramConfigRequest(StrictBaseModel):
     bot_token: str | None = None
 
 
+class AdminTelegramProbeRequest(StrictBaseModel):
+    """Shared by the token test and operator detection. bot_token is optional
+    so both work against an already-saved token, and so the Connect flow can
+    verify a pasted one before it is persisted anywhere."""
+
+    bot_token: str | None = None
+
+
 class AdminLLMVerifyRequest(StrictBaseModel):
     """Setup-time only: the key may not be saved to .env yet."""
 
@@ -630,6 +638,7 @@ def create_admin_router(
                     "allowed_chat_ids": loaded.channels.telegram.allowed_chat_ids,
                     "allowed_user_count": len(loaded.channels.telegram.allowed_user_ids),
                     "allowed_chat_count": len(loaded.channels.telegram.allowed_chat_ids),
+                    "recent_denials": _recent_telegram_denials(repositories),
                 },
                 "llm": {
                     "default_profile": loaded.llm.default_profile,
@@ -1211,6 +1220,197 @@ def create_admin_router(
         _audit_config_update(repositories_loader(), loaded, "telegram", patch)
         return {"config_file": str(CONFIG_FILE_PATH), "telegram": telegram}
 
+    @router.get("/api/persona/suggestions")
+    def admin_list_persona_suggestions(request: Request) -> dict[str, Any]:
+        """Preferences the system has inferred but not applied.
+
+        Nothing here has changed behavior yet - that is the point. An accepted
+        line goes into persona.md and then shapes every future task, so the
+        decision belongs to a person, and this endpoint is where they see what
+        is waiting.
+        """
+        loaded = require_admin(request)
+        from agent_control.persona_learning import SuggestionStore
+
+        store = SuggestionStore.load(loaded.adapters.persona)
+        return {
+            "learning_enabled": loaded.adapters.persona.learning_enabled,
+            "persona_path": loaded.adapters.persona.path,
+            "pending": [s.to_dict() for s in store.pending()],
+            "history": [s.to_dict() for s in store.suggestions if s.status != "pending"][-20:],
+        }
+
+    @router.post("/api/persona/suggestions/{suggestion_id}/decide")
+    def admin_decide_persona_suggestion(
+        request: Request, suggestion_id: str, payload: AdminApprovalDecisionRequest
+    ) -> dict[str, Any]:
+        loaded = require_admin(request)
+        from agent_control.persona_learning import SuggestionStore, apply_to_persona
+
+        store = SuggestionStore.load(loaded.adapters.persona)
+        accept = payload.decision != "reject"
+        decided = store.decide(suggestion_id, accept)
+        if decided is None:
+            raise HTTPException(status_code=404, detail="suggestion not found or already decided")
+        persona = None
+        if accept:
+            persona = apply_to_persona(loaded.adapters.persona, decided)
+        _audit_config_update(
+            repositories_loader(), loaded, "persona_suggestion",
+            {"suggestion_id": suggestion_id, "decision": decided.status, "line": decided.line},
+        )
+        return {"suggestion": decided.to_dict(), "persona": persona}
+
+    @router.get("/api/skills/suggestions")
+    def admin_list_skill_suggestions(request: Request) -> dict[str, Any]:
+        """Procedures learned from successful runs, awaiting review.
+
+        An installed skill is injected into every future Operator prompt and
+        followed as instructions, so this queue is the point at which a person
+        decides what the system is allowed to have learned.
+        """
+        loaded = require_admin(request)
+        from agent_control.skill_learning import SkillSuggestionStore
+
+        store = SkillSuggestionStore.load(loaded.adapters.skills)
+        return {
+            "learning_enabled": loaded.adapters.skills.learning_enabled,
+            "skills_root": loaded.adapters.skills.root_dir,
+            "pending": [s.to_dict() for s in store.pending()],
+            "history": [s.to_dict() for s in store.suggestions if s.status != "pending"][-20:],
+        }
+
+    @router.post("/api/skills/suggestions/{suggestion_id}/decide")
+    def admin_decide_skill_suggestion(
+        request: Request, suggestion_id: str, payload: AdminApprovalDecisionRequest
+    ) -> dict[str, Any]:
+        loaded = require_admin(request)
+        from agent_control.skill_learning import SkillSuggestionStore, install
+
+        store = SkillSuggestionStore.load(loaded.adapters.skills)
+        accept = payload.decision != "reject"
+        decided = store.decide(suggestion_id, accept)
+        if decided is None:
+            raise HTTPException(status_code=404, detail="suggestion not found or already decided")
+        installed = install(loaded.adapters.skills, decided) if accept else None
+        _audit_config_update(
+            repositories_loader(), loaded, "skill_suggestion",
+            {"suggestion_id": suggestion_id, "decision": decided.status, "name": decided.name},
+        )
+        return {
+            "suggestion": decided.to_dict(),
+            "installed": {"name": installed["name"], "path": installed["path"]} if installed else None,
+        }
+
+    @router.post("/api/config/telegram/test")
+    async def admin_test_telegram(request: Request, payload: AdminTelegramProbeRequest) -> dict[str, Any]:
+        """Verify a bot token before anything is written to .env, and report
+        the handle it resolves to.
+
+        Telegram setup previously had no equivalent of the LLM card's "Test"
+        button, which made a wrong or revoked token indistinguishable from an
+        empty allowlist or a stopped poller: all three present as "the bot
+        ignores me." getMe separates the first case from the other two in one
+        round trip, and gives the operator something recognizable (@handle)
+        rather than a silent success.
+        """
+        loaded = require_admin(request)
+        token_env = loaded.channels.telegram.token_env
+        token = payload.bot_token or read_env_value(token_env)
+        if not token:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No bot token to test - paste one, or set {token_env} in .env.",
+            )
+        from agent_control.channels.telegram import TelegramBotApi
+
+        try:
+            bot = await TelegramBotApi(token).get_me()
+        except Exception as exc:  # noqa: BLE001 - reported to the operator, not handled
+            # _safe_telegram_http_error already strips the token-bearing URL;
+            # this must never widen that back out into the response body.
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return {
+            "ok": True,
+            "bot_id": bot.get("id"),
+            "bot_username": bot.get("username"),
+            "bot_name": bot.get("first_name"),
+        }
+
+    @router.post("/api/config/telegram/detect-operator")
+    async def admin_detect_telegram_operator(
+        request: Request, payload: AdminTelegramProbeRequest
+    ) -> dict[str, Any]:
+        """Find who has messaged this bot, so the allowlist can be filled by
+        recognizing a person instead of asking for a number.
+
+        Telegram never shows a user their own numeric id, so "Allowed user
+        IDs" was a field a new operator had no way to answer - and leaving it
+        empty silently denies every message. Two sources, in this order:
+
+        1. The audit trail. Every inbound message already writes a
+           TELEGRAM_ACCESS_DECISION carrying user_id/chat_id *including when
+           it was denied*, which is exactly the state this is meant to rescue.
+           This works while the poller is running.
+        2. getUpdates, for first-run setup before the poller has ever started.
+           Only consulted when the audit trail has nothing, because Telegram
+           allows a single getUpdates consumer at a time - calling it while
+           the poller runs either conflicts or steals that update from it.
+           No offset is passed, so nothing is consumed either way.
+        """
+        loaded = require_admin(request)
+        repositories = repositories_loader()
+
+        candidates: dict[int, dict[str, Any]] = {}
+        for event in repositories.audit.list_by_type_recent(
+            AuditEventType.TELEGRAM_ACCESS_DECISION, limit=100
+        ):
+            user_id = (event.payload or {}).get("user_id")
+            if not isinstance(user_id, int):
+                continue
+            candidates.setdefault(
+                user_id,
+                {
+                    "user_id": user_id,
+                    "chat_id": (event.payload or {}).get("chat_id"),
+                    "last_seen": event.created_at.isoformat(),
+                    "was_allowed": bool((event.payload or {}).get("allowed")),
+                    "source": "audit",
+                },
+            )
+
+        if not candidates:
+            token = payload.bot_token or read_env_value(loaded.channels.telegram.token_env)
+            if not token:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No bot token available - test the token first.",
+                )
+            from agent_control.channels.telegram import TelegramBotApi
+
+            try:
+                updates = await TelegramBotApi(token).get_updates(timeout=0)
+            except Exception as exc:  # noqa: BLE001 - reported to the operator
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
+            for update in updates:
+                message = update.get("message") or update.get("edited_message") or {}
+                sender = message.get("from") or {}
+                chat = message.get("chat") or {}
+                if not isinstance(sender.get("id"), int):
+                    continue
+                candidates.setdefault(
+                    sender["id"],
+                    {
+                        "user_id": sender["id"],
+                        "chat_id": chat.get("id"),
+                        "username": sender.get("username"),
+                        "display_name": sender.get("first_name"),
+                        "was_allowed": False,
+                        "source": "telegram",
+                    },
+                )
+
+        return {"candidates": list(candidates.values())}
     @router.post("/api/setup/telegram/verify")
     async def admin_verify_telegram_token(request: Request, payload: AdminTelegramVerifyRequest) -> dict[str, Any]:
         """Confirm a pasted bot token and name the bot back to the user.
@@ -2447,6 +2647,55 @@ def _path_within_roots(path: Path, roots: list[Path]) -> bool:
     return any(root == path or root in path.parents for root in roots)
 
 
+DENIAL_REASON_TEXT = {
+    "allowlist_empty": "no one is on the allowlist yet",
+    "user_not_allowed": "this user is not on the allowlist",
+    "chat_not_allowed": "this chat is not on the allowlist",
+    "telegram_disabled": "the Telegram channel is turned off",
+}
+
+
+def _recent_telegram_denials(repositories: Repositories, limit: int = 50) -> dict[str, Any]:
+    """Refused Telegram messages, summarized for display.
+
+    These denials were always recorded with the precise reason and the sender's
+    id, and never shown anywhere - so the one failure that looks identical to a
+    crash from the user's side ("I messaged the bot and nothing happened") was
+    also the one the console stayed silent about. The ids returned here are
+    what the operator needs to fix it, which is why they come back whole rather
+    than as a count.
+    """
+    denials = [
+        event
+        for event in repositories.audit.list_by_type_recent(
+            AuditEventType.TELEGRAM_ACCESS_DECISION, limit=limit
+        )
+        if not (event.payload or {}).get("allowed")
+    ]
+    if not denials:
+        return {"count": 0, "latest": None, "user_ids": []}
+    latest = denials[0]
+    reason = (latest.payload or {}).get("reason") or "unknown"
+    user_ids = sorted(
+        {
+            user_id
+            for event in denials
+            if isinstance((user_id := (event.payload or {}).get("user_id")), int)
+        }
+    )
+    return {
+        "count": len(denials),
+        "latest": {
+            "at": latest.created_at.isoformat(),
+            "reason": reason,
+            "explanation": DENIAL_REASON_TEXT.get(reason, reason),
+            "user_id": (latest.payload or {}).get("user_id"),
+            "chat_id": (latest.payload or {}).get("chat_id"),
+        },
+        "user_ids": user_ids,
+    }
+
+
 def _config_warnings(settings: AppSettings) -> list[str]:
     warnings: list[str] = []
     telegram = settings.channels.telegram
@@ -2593,7 +2842,11 @@ _ADMIN_HTML = """
 <body>
   <h1>YBM Control</h1>
   <p>No admin console build was found yet.</p>
-  <p>Run <code>ybm ui-build</code> (or <code>npm run build</code> in <code>frontend/</code>), then reload this page.</p>
+  <p><b>1. Install Node.js 20 or newer</b> if you don't have it &mdash;
+     <a href="https://nodejs.org">nodejs.org</a>, or <code>winget install OpenJS.NodeJS.LTS</code>.
+     The console is a React app, so it cannot be built without it. Open a new terminal afterwards.</p>
+  <p><b>2. Build it:</b> <code>.\\scripts\\ybm.ps1 ui-build</code>
+     (or <code>npm run build</code> in <code>frontend/</code>), then reload this page.</p>
   <p>This page's JSON API (<code>/admin/api/*</code>) is unchanged and works regardless of whether a build exists.</p>
 </body>
 </html>

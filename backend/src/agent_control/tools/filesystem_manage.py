@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 import logging
 from pathlib import Path
 import os
@@ -417,8 +418,13 @@ class FilesystemManageAdapter:
         changed_paths = []
         normalized_manifest = []
         for item in manifest:
-            source = self._safe_path(str(item["source"]))
-            destination = self._safe_path(str(item["destination"]))
+            # A manifest is scoped by `root`, so its relative paths must be
+            # relative to that root. Resolving them from the process cwd made
+            # the most natural model output (`budget.csv` -> `data/budget.csv`)
+            # point at the repository instead and then fail the containment
+            # check as an apparent escape.
+            source = self._manifest_path(root, str(item["source"]))
+            destination = self._manifest_path(root, str(item["destination"]))
             if root not in source.parents and root != source:
                 raise ValueError(f"source is outside requested root: {source}")
             if root not in destination.parents and root != destination:
@@ -470,6 +476,12 @@ class FilesystemManageAdapter:
                 )
             ),
         }
+
+    def _manifest_path(self, root: Path, value: str) -> Path:
+        candidate = Path(value).expanduser()
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        return self._safe_path(str(candidate))
 
     def _safe_path(self, value: str) -> Path:
         if not self.allowed_roots:
@@ -608,9 +620,21 @@ def _walk_limited(root: Path, *, max_depth: int):
 
 def _entry(root: Path, path: Path) -> dict[str, Any]:
     stat = path.stat()
+    resolved = path.resolve()
+    try:
+        relative = str(resolved.relative_to(root.resolve()))
+    except ValueError:
+        # Searches span several allowed roots (see _alias_roots), so an entry
+        # found under one root can be paired with another here. relative_to
+        # then raises, and the raw "'C:\\...' is not in the subpath of
+        # 'C:\\...'" surfaced to the operator as if the tool had broken -
+        # unreachable while only one root was configured, which is why it
+        # went unnoticed. The absolute path is already in "path"; this field
+        # is a display convenience, so degrade instead of failing the call.
+        relative = resolved.name
     return {
-        "path": str(path.resolve()),
-        "relative_path": str(path.resolve().relative_to(root.resolve())),
+        "path": str(resolved),
+        "relative_path": relative,
         "is_dir": path.is_dir(),
         "size_bytes": stat.st_size if path.is_file() else None,
         "modified_at": stat.st_mtime,
@@ -764,6 +788,15 @@ def _human_filesystem_output(operation: str, output: dict[str, Any]) -> str:
         lines.append("")
         lines.append("Content:")
         lines.append(str(text)[:5000])
+    manifest = output.get("manifest")
+    if operation in {"organize_plan", "rename_plan"} and isinstance(manifest, list) and manifest:
+        # The Operator only sees this human output on its next decide() call,
+        # not the raw result object. Omitting the manifest meant it was told
+        # merely "Prepared 3 actions" and then expected to invent those three
+        # actions for apply_manifest. Keep the actionable hand-off bounded.
+        lines.append("")
+        lines.append("Manifest for the next apply_manifest call:")
+        lines.append(json.dumps(manifest[:60], ensure_ascii=False, separators=(",", ":")))
     changed = output.get("changed_paths")
     if isinstance(changed, list) and changed:
         lines.append("")

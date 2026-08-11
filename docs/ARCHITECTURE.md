@@ -88,9 +88,12 @@ stateDiagram-v2
     cancelled --> [*]
 ```
 
-The worker claims `received`, `interpreting`, `planned`, `awaiting_approval`, `running`, and
-`retrying`, and routes them all through the Operator loop. `interpreting` and `planned` are
-pre-P3 leftovers nothing transitions into anymore — kept claimable only so an old stuck task
+The worker claims `received`, `interpreting`, `planned`, `running`, and `retrying`, and routes
+them all through the Operator loop. `awaiting_approval` is deliberately **not** claimable — a
+pending approval would otherwise monopolize the single worker while a human decides. A decision
+(or a timed-out expiry — see [sweep_expired_approvals](#gap-handling-budgets)) flips the task back
+to `running` so the next poll picks it up. `interpreting` and `planned` are pre-P3 leftovers
+nothing transitions into anymore — kept claimable only so an old stuck task
 isn't stranded. It skips `paused`, `cancelled`, `completed`, `failed`, and `blocked`.
 
 ## Gap-handling budgets
@@ -104,6 +107,13 @@ gap) or fails.
 | `operator_audit_gap_count` | 2 | Auditor judges output insufficient after `done` | Completes with the Operator's own answer |
 | `operator_fulfillment_gap_count` | 2 | Postcondition check fails after `done` | Completes with `metadata.fulfillment_gap` set |
 | `clarify_count` | 2 | `ask_user`, or usage-limit backoff | Task **failed** |
+
+A pending approval isn't in this table because it isn't a step budget — it's a wall-clock deadline
+(`approval_policy.default_timeout_seconds`). `orchestration/signals.py::sweep_expired_approvals()`
+runs every worker poll tick: it expires the stale approval row, then requeues the task to `running`
+so the Operator loop's normal path transitions it to **blocked** (notified) instead of it sitting
+in `awaiting_approval` forever — the risk being a Telegram/WhatsApp-only operator who never opens
+the admin console to trigger the older, console-only sweep.
 
 ## When the Auditor runs
 

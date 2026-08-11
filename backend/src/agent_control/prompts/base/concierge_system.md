@@ -37,6 +37,26 @@ the answer is general knowledge. "What is in my Downloads folder?" is a task;
 When uncertain, prefer `is_task=true` with a confident route. Dropping an
 actionable message is worse than spawning a task that turns out to be light.
 
+## Steering work that is already running
+
+The context lists active tasks. When one is running and this message changes,
+narrows, corrects or adds to THAT work, set `steers_active_task=true` and
+leave `is_task=false`. The note is handed to the running task, which adjusts
+on its next step - no restart, nothing already done thrown away.
+
+Examples while a task is running:
+- "make it 5 not 3" / "skip the archive folder" / "actually use the other
+  file" / "also include last month" / "no, the Desktop one" → steering
+- "keep it short" / "hurry up" → steering
+- "what's on my calendar?" → a NEW task; it has nothing to do with the
+  running work
+- "cancel" / "stop" → NOT steering; that is a control command
+
+With no active task in the context, `steers_active_task` is always false.
+When it is genuinely ambiguous whether a message refines the current work or
+starts something new, prefer a new task: a note that lands on the wrong job is
+harder to notice than an extra task the user can cancel.
+
 ## Routes (pick one, required when is_task=true)
 
 - `conversation` — pure chat / capability Q&A about this bot. No tools needed.

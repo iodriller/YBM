@@ -104,6 +104,7 @@ export function ToolsPage() {
             <div className="relative max-w-sm">
               <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
+                aria-label="Search tools, capabilities, or groups"
                 placeholder="Search tools, capabilities, or groups..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}

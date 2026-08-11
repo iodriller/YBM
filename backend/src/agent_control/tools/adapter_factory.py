@@ -81,9 +81,24 @@ class AdapterFactoryAdapter:
         }
 
     def _scaffold(self, request: ToolCallRequest) -> dict[str, Any]:
-        objective = str(request.input.get("objective") or request.input.get("prompt") or "").strip()
+        objective = str(
+            request.input.get("objective")
+            or request.input.get("prompt")
+            or request.input.get("description")
+            or ""
+        ).strip()
         capability = str(request.input.get("capability") or "filesystem.write").strip()
-        tool_name = str(request.input.get("tool_name") or _adapter_name(request)).strip()
+        tool_name = str(
+            request.input.get("tool_name")
+            or request.input.get("adapter_name")
+            or request.input.get("name")
+            or _adapter_name(request)
+        ).strip()
+        requested_operations = [
+            str(item).strip()
+            for item in (request.input.get("operations") or request.input.get("capabilities") or [])
+            if str(item).strip()
+        ]
         root = Path(self.config.root_dir).expanduser().resolve()
         adapter_dir = (root / safe_path_segment(tool_name, fallback="generated_adapter")).resolve()
         if root != adapter_dir and root not in adapter_dir.parents:
@@ -97,9 +112,12 @@ class AdapterFactoryAdapter:
             "status": "proposal",
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "objective": objective,
+            "description": str(request.input.get("description") or objective).strip(),
+            "api_endpoint": request.input.get("api_endpoint"),
+            "auto_load": bool(request.input.get("auto_load", False)),
             "adapter_class": class_name,
-            "operations": [],
-            "default_operation": None,
+            "operations": requested_operations,
+            "default_operation": requested_operations[0] if requested_operations else None,
             "execution_policy": "sandbox_then_hot_register",
             "promotion_steps": [
                 "Implement adapter.py.",
@@ -130,7 +148,11 @@ class AdapterFactoryAdapter:
     def _sandbox_execute_once(self, request: ToolCallRequest) -> dict[str, Any]:
         adapter_dir = str(request.input.get("adapter_dir") or "").strip() or None
         if not adapter_dir:
-            raise ValueError("adapter_dir is required for sandbox_execute_once")
+            adapter_id = str(request.input.get("adapter_id") or "").strip()
+            if adapter_id:
+                adapter_dir = str(Path(self.config.root_dir) / _safe_segment(adapter_id))
+        if not adapter_dir:
+            raise ValueError("adapter_dir (or adapter_id) is required for sandbox_execute_once")
         path = _require_adapter_dir_inside_root(adapter_dir, self.config.root_dir)
         result = _sandbox_import(path)
         return {
@@ -463,6 +485,11 @@ def _terminal_output(operation: str, output: dict[str, Any]) -> dict[str, Any]:
         lines.append(str(output["result"]))
     if output.get("promoted"):
         lines.append("Promoted: true")
+    if operation == "scaffold" and output.get("adapter_dir"):
+        lines.append(
+            "Proposal is cached and NOT loaded. If the request was only for a proposal or said not to load it, "
+            "the task is complete; do not implement, test, or promote it unless explicitly requested."
+        )
     return {
         "instance_id": "local-worker",
         "terminal_id": "adapter-factory",

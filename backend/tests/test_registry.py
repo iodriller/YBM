@@ -84,8 +84,15 @@ def test_registry_context_lists_enabled_and_disabled_tools() -> None:
     )
     registry = ToolRegistry(adapters={}, definitions=(enabled, disabled))
     ctx = registry.context()
-    assert "toy.tool: enabled" in ctx
-    assert "disabled.tool: disabled" in ctx
+    # Enabled tools carry their full description and operations; disabled ones
+    # are named only. The catalog is the largest item in every Operator prompt
+    # and the loop is prefill-bound, so detail the model cannot act on (it
+    # cannot call a disabled tool) is not worth re-sending every step - the
+    # name alone still lets it say "that capability is turned off".
+    assert "toy.tool" in ctx
+    assert "not currently available" not in ctx
+    assert "Disabled (cannot be called" in ctx
+    assert "disabled.tool" in ctx
     # Examples are shown for enabled tools only.
     assert "/tmp/a.txt" in ctx
 

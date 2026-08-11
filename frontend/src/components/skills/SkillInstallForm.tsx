@@ -49,6 +49,7 @@ export function SkillInstallForm({ onDone, bare }: { onDone: () => void; bare?: 
     <>
       <div className="grid gap-2 sm:grid-cols-2">
         <Input
+          aria-label="Skill name"
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="Name (e.g. Invoice Extraction)"
@@ -56,6 +57,7 @@ export function SkillInstallForm({ onDone, bare }: { onDone: () => void; bare?: 
           autoFocus
         />
         <Input
+          aria-label="Description"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           placeholder="One-line description"
@@ -63,12 +65,14 @@ export function SkillInstallForm({ onDone, bare }: { onDone: () => void; bare?: 
         />
       </div>
       <Textarea
+        aria-label="Instructions"
         value={body}
         onChange={(e) => setBody(e.target.value)}
         placeholder="Full instructions - what should YBM do when this skill is relevant?"
         rows={6}
       />
       <Input
+        aria-label="Tools used"
         value={tools}
         onChange={(e) => setTools(e.target.value)}
         placeholder="Tools it uses, comma-separated (optional - inferred if left blank)"

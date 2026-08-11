@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -239,6 +240,44 @@ async def test_adapter_factory_scaffolds_cached_adapter(tmp_path) -> None:
     assert result.output["execution_policy"] == "sandbox_then_hot_register"
     assert (adapter_dir / "manifest.json").exists()
     assert (adapter_dir / "adapter.py").exists()
+
+
+@pytest.mark.asyncio
+async def test_adapter_factory_preserves_natural_scaffold_fields_and_accepts_adapter_id(tmp_path) -> None:
+    root = tmp_path / "adapters"
+    adapter = AdapterFactoryAdapter(AdapterFactoryConfig(root_dir=str(root)))
+    request = ToolCallRequest(
+        task_id="task_adapter",
+        tool_name="adapter.factory",
+        capability=Capability.FILESYSTEM_WRITE,
+        input={
+            "operation": "scaffold",
+            "name": "stock_quotes",
+            "description": "Fetch current quotes from a stock API",
+            "api_endpoint": "https://example.test/quotes/{ticker}",
+            "capabilities": ["get_quote", "get_daily_change"],
+            "auto_load": False,
+        },
+    )
+
+    result = await adapter.execute(request)
+    manifest = json.loads((root / "stock_quotes" / "manifest.json").read_text(encoding="utf-8"))
+    sandbox = await adapter.execute(
+        ToolCallRequest(
+            task_id="task_adapter",
+            tool_name="adapter.factory",
+            capability=Capability.FILESYSTEM_WRITE,
+            input={"operation": "sandbox_execute_once", "adapter_id": "stock_quotes"},
+        )
+    )
+
+    assert result.status == ToolResultStatus.SUCCEEDED
+    assert result.output["adapter_name"] == "stock_quotes"
+    assert manifest["objective"] == "Fetch current quotes from a stock API"
+    assert manifest["operations"] == ["get_quote", "get_daily_change"]
+    assert manifest["api_endpoint"] == "https://example.test/quotes/{ticker}"
+    assert manifest["auto_load"] is False
+    assert sandbox.status == ToolResultStatus.SUCCEEDED
 
 def _stop_process(pid: int) -> None:
     if os.name == "nt":

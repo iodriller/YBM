@@ -6,6 +6,7 @@ import { BrowserRouter } from "react-router"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { Toaster } from "@/components/ui/sonner"
 import { ThemeProvider } from "next-themes"
+import { ErrorBoundary } from "@/components/layout/ErrorBoundary"
 import "./index.css"
 import App from "./App.tsx"
 
@@ -38,7 +39,9 @@ createRoot(document.getElementById("root")!).render(
             renders nothing. Confirmed live via Playwright: that mismatch was
             a real blank-page bug on first load, not a hypothetical. */}
           <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-            <App />
+            <ErrorBoundary variant="root">
+              <App />
+            </ErrorBoundary>
           </BrowserRouter>
         </TooltipProvider>
         <Toaster richColors closeButton />

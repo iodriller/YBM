@@ -20,6 +20,7 @@ from agent_control.channels.memory import ConversationMemoryService, detect_reme
 from agent_control.llm.classifier import MessageClassifier
 from agent_control.orchestration.signals import apply_task_signal, requeue_after_approval_decision
 from agent_control.schemas import (
+    ApprovalRequest,
     ApprovalStatus,
     AuditEventType,
     Artifact,
@@ -78,6 +79,13 @@ class TelegramBotApi:
         self.token = token
         self.base_url = base_url.rstrip("/")
         self.audit = audit
+
+    async def get_me(self) -> dict[str, Any]:
+        """Cheapest possible "is this token real" probe - used by the admin
+        console's Connect flow to verify a pasted token before it is written
+        to .env, and to show the operator the bot handle it resolved to."""
+        data = await self._post("getMe", {})
+        return dict(data.get("result", {}))
 
     async def get_updates(self, offset: int | None = None, timeout: int = 30) -> list[dict[str, Any]]:
         payload: dict[str, Any] = {"timeout": timeout}
@@ -445,6 +453,10 @@ class TelegramIntakeService:
         self.classifier = classifier
         self.responder = responder
         self.memory_service = memory_service or ConversationMemoryService(repositories)
+        # Set per callback by _apply_callback, read once at the answer site.
+        # Updates are handled one at a time by the polling loop, so this never
+        # spans two presses.
+        self._callback_ack: str | None = None
 
     def handle_update(self, update: dict[str, Any]) -> ChannelUpdateResult:
         try:
@@ -514,13 +526,20 @@ class TelegramIntakeService:
                 )
 
         if result.command:
+            self._callback_ack = None
             signal = self._apply_command(result.command)
             outbound = self._command_response(result.command, signal)
             if result.command.type == "telegram.callback" and self.bot_api:
                 callback_query_id = result.command.payload.get("callback_query_id")
                 if callback_query_id:
                     try:
-                        await self.bot_api.answer_callback_query(callback_query_id)
+                        # Pass the note through. Telegram shows this as a toast
+                        # on the button press - the only channel that can tell
+                        # the operator whether the tap did anything, since
+                        # _command_response() never builds a reply for callbacks.
+                        await self.bot_api.answer_callback_query(
+                            callback_query_id, text=self._callback_ack
+                        )
                     except Exception:
                         # The decision was already recorded (_apply_callback already
                         # wrote it); this only stops the button's loading spinner,
@@ -639,9 +658,19 @@ class TelegramIntakeService:
             policy = self.settings.capabilities.get(Capability.DESKTOP_SCREENSHOT) if self.settings else None
             enabled = bool(policy and policy.enabled)
             if not enabled:
-                return self._out(chat_id, "desktop.screenshot is disabled.")
+                return self._out(
+                    chat_id,
+                    "Screenshots are turned off. Enable them in the admin console under "
+                    "Access > desktop.screenshot, and set adapters.desktop.screenshot_enabled: "
+                    "true in config/config.yaml - both are required.",
+                )
             if not self.screenshot_service:
-                return self._out(chat_id, "desktop.screenshot is enabled, but screenshot capture is not configured.")
+                return self._out(
+                    chat_id,
+                    "Screenshots are allowed by policy, but capture is not set up on this "
+                    "machine. Set adapters.desktop.screenshot_enabled: true in "
+                    "config/config.yaml, then restart the stack.",
+                )
             try:
                 artifact = self.screenshot_service.capture()
             except Exception as exc:
@@ -745,6 +774,18 @@ class TelegramIntakeService:
     def _out(chat_id: str, text: str) -> OutboundMessage:
         return OutboundMessage(channel=ChannelType.TELEGRAM, chat_id=chat_id, text=text)
 
+    def _stale_approval_note(self, approval: ApprovalRequest | None) -> str:
+        """Say why a button press did nothing, in the operator's terms."""
+        if approval is None:
+            return "That approval is no longer available."
+        if approval.status in (ApprovalStatus.APPROVED, ApprovalStatus.CONSUMED):
+            return "Already approved - this button was from an earlier step."
+        if approval.status == ApprovalStatus.REJECTED:
+            return "Already rejected - this button was from an earlier step."
+        if approval.status == ApprovalStatus.EXPIRED:
+            return "That approval expired. Send the request again."
+        return f"No longer actionable (status: {approval.status.value})."
+
     def _apply_callback(self, payload: dict[str, Any], actor: str) -> TaskSignal | None:
         if payload.get("kind") == "approval":
             approval_id = str(payload.get("approval_id") or "")
@@ -764,6 +805,16 @@ class TelegramIntakeService:
                     task_id=approval.task_id if approval is not None else None,
                     payload={"approval_id": approval_id, "decision": decision},
                 )
+                self._callback_ack = "Approved - continuing." if decision == "approve" else "Rejected."
+            else:
+                # Every non-decision used to be silent. decide_pending() returns
+                # False for an approval that is already decided, expired, or
+                # unknown, and the only acknowledgement sent was an empty
+                # answerCallbackQuery - which just stops the button spinner. A
+                # successful approve looked exactly like a dead button, so a
+                # stale message from an earlier step read as "I click approve
+                # and nothing happens." Each of these now says which one it was.
+                self._callback_ack = self._stale_approval_note(approval)
             return None
 
         if payload.get("kind") == "task" and payload.get("action") in {"pause", "resume", "cancel"}:

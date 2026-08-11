@@ -70,6 +70,45 @@ def test_desktop_observation_inferred_from_objective_is_unsatisfied_without_evid
     assert validation.first_gap == "expected_desktop_observation_missing"
 
 
+def test_requested_screenshot_requires_the_image_itself_to_be_delivered() -> None:
+    task = TaskRecord(
+        objective="Open the page and send me a screenshot",
+        metadata={
+            "browser_url": "https://example.test",
+            "screenshot_path": "/tmp/page.png",
+            "artifact_delivery": {
+                "delivered": True,
+                "operation": "send_latest",
+                "path": "/tmp/latest-output.txt",
+                "delivery_method": "telegram.sendDocument",
+            },
+        },
+    )
+
+    validation = validate_fulfillment(task)
+
+    assert PostconditionType.SCREENSHOT_DELIVERED in {item.type for item in validation.expected}
+    assert PostconditionType.SCREENSHOT_DELIVERED in validation.missing
+
+
+def test_send_screenshot_satisfies_requested_screenshot_delivery() -> None:
+    task = TaskRecord(
+        objective="Open the page and send me a screenshot",
+        metadata={
+            "browser_url": "https://example.test",
+            "screenshot_path": "/tmp/page.png",
+            "artifact_delivery": {
+                "delivered": True,
+                "operation": "send_screenshot",
+                "path": "/tmp/page.png",
+                "delivery_method": "telegram.sendPhoto",
+            },
+        },
+    )
+
+    assert validate_fulfillment(task).ok
+
+
 def test_run_goal_that_stopped_early_does_not_satisfy_desktop_observation() -> None:
     """A run_goal is a multi-step action loop with a real objective; a
     screenshot existing is not evidence the goal was reached. Only an explicit
@@ -341,6 +380,30 @@ def test_embedded_posix_path_does_not_fabricate_a_postcondition() -> None:
     assert PostconditionType.BROWSER_STATE not in {
         item.type for item in validation.expected
     }
+
+
+def test_daily_change_in_adapter_request_does_not_fabricate_schedule_postcondition() -> None:
+    task = TaskRecord(
+        objective=(
+            "Create an adapter for a stock API that fetches the latest price, "
+            "daily change, and basic quote information."
+        ),
+        metadata={"adapter_dir": "/tmp/adapters/stock_quotes"},
+    )
+
+    validation = validate_fulfillment(task)
+
+    assert PostconditionType.SCHEDULE_CREATED not in {item.type for item in validation.expected}
+    assert validation.ok
+
+
+def test_daily_schedule_still_requires_created_schedule() -> None:
+    task = TaskRecord(objective="Create a daily schedule to check the stock price", metadata={})
+
+    validation = validate_fulfillment(task)
+
+    assert PostconditionType.SCHEDULE_CREATED in {item.type for item in validation.expected}
+    assert validation.first_gap == "expected_schedule_created_missing"
 
 
 def test_adapter_proposal_does_not_also_require_generic_workspace() -> None:

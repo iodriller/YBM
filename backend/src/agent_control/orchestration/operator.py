@@ -109,6 +109,22 @@ class OperatorLoopService:
 
     @staticmethod
     def _prompt(objective: str, config_context: str, history: list[dict], memory_context: str) -> str:
+        # tasks/operator_user.md orders its sections most-stable-first, and
+        # that ordering is load-bearing rather than cosmetic.
+        #
+        # Prefix caching (Ollama/llama.cpp locally, and every hosted cache)
+        # matches tokens from the START of the prompt and stops at the first
+        # difference. The template used to open with the objective, then
+        # memory, then history, and only then the ~2,400-token tool catalog -
+        # so the catalog sat behind history, which changes every step, and was
+        # re-prefilled from scratch on every single call. Measured: 4,738
+        # prompt tokens per call against 93 completion tokens, i.e. the loop
+        # spent its time re-reading text it had already read.
+        #
+        # Catalog and reminders now form a prefix shared by every step of every
+        # task; the objective extends it within one task; history, which only
+        # grows at the end, extends it per step. Anything added to that
+        # template must go BELOW history, never above it.
         bounded_objective = _bounded_text(objective, _MAX_OBJECTIVE_PROMPT_CHARS)
         bounded_memory = _bounded_text(
             memory_context,

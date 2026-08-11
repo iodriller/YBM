@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import TypeVar
 
@@ -59,6 +60,49 @@ async def test_filesystem_manage_inspect_search_plan_and_apply(tmp_path) -> None
     assert sorted(Path(path).parent.name for path in apply_result.output["changed_paths"]) == ["documents", "images"]
     assert not note.exists()
     assert (root / "documents" / "notes.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_apply_manifest_resolves_relative_paths_from_requested_root(tmp_path) -> None:
+    root = tmp_path / "documents"
+    root.mkdir()
+    source = root / "budget.csv"
+    source.write_text("name,amount\nsample,10\n", encoding="utf-8")
+    adapter = FilesystemManageAdapter([str(tmp_path)])
+
+    result = await adapter.execute(
+        _request(
+            root,
+            "apply_manifest",
+            manifest=[
+                {
+                    "operation": "move",
+                    "source": "budget.csv",
+                    "destination": "spreadsheets/budget.csv",
+                }
+            ],
+        )
+    )
+
+    assert result.status.value == "succeeded"
+    assert not source.exists()
+    assert (root / "spreadsheets" / "budget.csv").exists()
+
+
+@pytest.mark.asyncio
+async def test_organize_plan_terminal_output_carries_manifest_for_next_operator_step(tmp_path) -> None:
+    root = tmp_path / "documents"
+    root.mkdir()
+    (root / "notes.txt").write_text("hello", encoding="utf-8")
+    adapter = FilesystemManageAdapter([str(tmp_path)])
+
+    result = await adapter.execute(_request(root, "organize_plan"))
+
+    terminal_text = result.output["terminal_output"][0]["content"]
+    assert "Manifest for the next apply_manifest call" in terminal_text
+    emitted_manifest = json.loads(terminal_text.rsplit("\n", 1)[-1])
+    assert emitted_manifest[0]["source"] == str((root / "notes.txt").resolve())
+    assert emitted_manifest[0]["destination"] == str((root / "documents" / "notes.txt").resolve())
 
 
 @pytest.mark.asyncio

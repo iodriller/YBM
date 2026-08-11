@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+import logging
 import re
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from agent_control.db_tools import retention_sweep
 from agent_control.schemas import AuditEventType, ScheduleRecord, ScheduleStatus, TaskRecord, TaskStatus, utc_now
 from agent_control.storage.audit import AuditLogger
 from agent_control.storage.repositories import Repositories
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_timezone(timezone_name: str | None) -> ZoneInfo | timezone:
@@ -176,9 +180,32 @@ async def run_scheduler_forever(
     *,
     poll_interval_seconds: float = 30.0,
     max_consecutive_failures: int = 5,
+    retention_days: int | None = None,
 ) -> None:
+    # None (the default, config.py's storage.retention_days) means task/audit
+    # history is never automatically deleted - unchanged from before this
+    # existed. Gated to roughly once a day, not every poll tick: unlike
+    # expire_stale()'s single indexed UPDATE, retention_sweep()'s
+    # `WHERE created_at < ?` scan has no index on tasks.created_at to lean
+    # on, so running it on this loop's usual 30s cadence would mean a full
+    # table scan every 30 seconds for no benefit - the cutoff barely moves
+    # between ticks. Runs in a thread since it's blocking sqlite I/O and this
+    # loop is otherwise fully async.
+    last_retention_sweep: datetime | None = None
     while True:
         await run_scheduler_once(repositories, audit, max_consecutive_failures=max_consecutive_failures)
+        if retention_days:
+            now = utc_now()
+            if last_retention_sweep is None or now - last_retention_sweep >= timedelta(days=1):
+                deleted_tasks, deleted_orphan_audit = await asyncio.to_thread(
+                    retention_sweep, repositories.tasks.database, retention_days
+                )
+                if deleted_tasks or deleted_orphan_audit:
+                    logger.info(
+                        "retention sweep: deleted %d task(s) and %d orphaned audit event(s) older than %d day(s)",
+                        deleted_tasks, deleted_orphan_audit, retention_days,
+                    )
+                last_retention_sweep = now
         await asyncio.sleep(poll_interval_seconds)
 
 

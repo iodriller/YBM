@@ -7,6 +7,7 @@ no visibility short of opening it in a SQLite browser (see docs/HISTORY.md P6).
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import sqlite3
 
 from agent_control.config import load_settings
 from agent_control.storage.database import Database
@@ -67,6 +68,45 @@ def db_inspect() -> int:
     return 0
 
 
+def _clean_tables(connection: sqlite3.Connection, tables: set[str], cutoff: str) -> tuple[int, int]:
+    """Deletes rows older than ``cutoff``. Shared by the manual `ybm db-clean`
+    command and scheduler.py's automatic retention_sweep() so the two never
+    drift on which tables to touch or in what order - only db_clean() prints;
+    this returns counts so a caller can decide how to report them.
+
+    Returns (deleted_tasks, deleted_orphan_audit_events).
+    """
+    deleted_tasks = 0
+    # Tasks are the retention anchor: delete tasks older than the cutoff,
+    # then cascade-delete their children by task_id so we never orphan
+    # audit/tool-call history for a task that's kept.
+    if "tasks" in tables:
+        old_task_ids = [
+            row["id"]
+            for row in connection.execute("SELECT id FROM tasks WHERE created_at < ?", (cutoff,))
+        ]
+        if old_task_ids:
+            placeholders = ",".join("?" for _ in old_task_ids)
+            for table in ("task_signals", "subtasks", "tool_invocations", "plans", "artifacts", "approvals", "llm_calls", "audit_events"):
+                if table in tables:
+                    connection.execute(f'DELETE FROM "{table}" WHERE task_id IN ({placeholders})', old_task_ids)
+            connection.execute(f"DELETE FROM tasks WHERE id IN ({placeholders})", old_task_ids)
+            deleted_tasks = len(old_task_ids)
+
+    # audit_events.task_id is nullable (config changes, Telegram access
+    # decisions, and any message logged before a task existed carry no
+    # task_id) - the task-anchored cascade above never reaches these, so
+    # without this they accumulate forever regardless of retention settings
+    # (docs/HISTORY.md N5's retention gap).
+    deleted_orphan_audit = 0
+    if "audit_events" in tables:
+        deleted_orphan_audit = connection.execute(
+            "DELETE FROM audit_events WHERE task_id IS NULL AND created_at < ?", (cutoff,)
+        ).rowcount
+
+    return deleted_tasks, deleted_orphan_audit
+
+
 def db_clean(days: int) -> int:
     if days < 1:
         print("FAIL: --days must be >= 1")
@@ -79,40 +119,29 @@ def db_clean(days: int) -> int:
             row["name"]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
-        deleted_tasks = 0
-        # Tasks are the retention anchor: delete tasks older than the cutoff,
-        # then cascade-delete their children by task_id so we never orphan
-        # audit/tool-call history for a task that's kept.
-        if "tasks" in tables:
-            old_task_ids = [
-                row["id"]
-                for row in connection.execute("SELECT id FROM tasks WHERE created_at < ?", (cutoff,))
-            ]
-            if old_task_ids:
-                placeholders = ",".join("?" for _ in old_task_ids)
-                for table in ("task_signals", "subtasks", "tool_invocations", "plans", "artifacts", "approvals", "llm_calls", "audit_events"):
-                    if table in tables:
-                        connection.execute(f'DELETE FROM "{table}" WHERE task_id IN ({placeholders})', old_task_ids)
-                connection.execute(f"DELETE FROM tasks WHERE id IN ({placeholders})", old_task_ids)
-                deleted_tasks = len(old_task_ids)
-                print(f"deleted {deleted_tasks} task(s) and their child records")
-
-        # audit_events.task_id is nullable (config changes, Telegram access
-        # decisions, and any message logged before a task existed carry no
-        # task_id) - db_clean's task-anchored cascade above never reaches
-        # these, so without this they accumulate forever regardless of --days
-        # (docs/HISTORY.md N5's retention gap).
-        deleted_orphan_audit = 0
-        if "audit_events" in tables:
-            deleted_orphan_audit = connection.execute(
-                "DELETE FROM audit_events WHERE task_id IS NULL AND created_at < ?", (cutoff,)
-            ).rowcount
-            if deleted_orphan_audit:
-                print(f"deleted {deleted_orphan_audit} orphaned audit event(s) (no task_id)")
-
+        deleted_tasks, deleted_orphan_audit = _clean_tables(connection, tables, cutoff)
+        if deleted_tasks:
+            print(f"deleted {deleted_tasks} task(s) and their child records")
+        if deleted_orphan_audit:
+            print(f"deleted {deleted_orphan_audit} orphaned audit event(s) (no task_id)")
         if not deleted_tasks and not deleted_orphan_audit:
             print("nothing to clean")
     return 0
+
+
+def retention_sweep(database: Database, days: int) -> tuple[int, int]:
+    """Programmatic, print-free equivalent of `ybm db-clean --days N` for
+    scheduler.py's automatic sweep (config.py's storage.retention_days).
+    Same deletion logic as db_clean via _clean_tables - see that function's
+    docstring. Returns (deleted_tasks, deleted_orphan_audit_events).
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    with database.connect() as connection:
+        tables = {
+            row["name"]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        return _clean_tables(connection, tables, cutoff)
 
 
 def db_reset(*, yes: bool) -> int:

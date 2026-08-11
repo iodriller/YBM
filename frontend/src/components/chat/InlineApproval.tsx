@@ -1,6 +1,7 @@
 import { useState } from "react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
 import { EvidencePack } from "@/components/approvals/EvidencePack"
 import { ApprovalActions } from "@/components/approvals/ApprovalActions"
 import { ApiError, type PendingApprovalItem } from "@/lib/api"
@@ -32,6 +33,9 @@ export function InlineApproval({ item }: { item: PendingApprovalItem }) {
     )
   }
 
+  const risk = item.approval.risk_level
+  const toolName = (item.approval.action_payload.tool_name as string | undefined) ?? "unknown tool"
+
   if (expanded) {
     return (
       <div className="mt-2.5 rounded-lg border border-warning/30 bg-warning/5 p-3">
@@ -41,6 +45,8 @@ export function InlineApproval({ item }: { item: PendingApprovalItem }) {
             <ApprovalActions
               size="sm"
               deciding={decide.isPending}
+              riskLevel={risk}
+              toolName={toolName}
               onApprove={() => handleDecide("approve")}
               onApproveForTask={() => handleDecide("approve_for_task")}
               onDeny={() => handleDecide("reject")}
@@ -51,42 +57,26 @@ export function InlineApproval({ item }: { item: PendingApprovalItem }) {
     )
   }
 
-  const toolName = (item.approval.action_payload.tool_name as string | undefined) ?? "unknown tool"
-
   return (
     <div className="mt-2.5 flex flex-col gap-2 rounded-lg border border-warning/30 bg-warning/5 p-3">
-      <p className="text-xs">{item.approval.summary}</p>
-      <p className="font-mono text-[11px] text-muted-foreground">{toolName}</p>
       <div className="flex flex-wrap items-center gap-1.5">
-        <Button
-          type="button"
-          variant="outline"
+        {/* Risk is visible before any click, not only after expanding to the
+            full Evidence Pack - a collapsed card with no severity indicator
+            let a critical-risk approval look identical to a low-risk one. */}
+        <Badge variant={risk === "critical" || risk === "high" ? "destructive" : "secondary"}>{risk} risk</Badge>
+        <p className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">{toolName}</p>
+      </div>
+      <p className="text-xs">{item.approval.summary}</p>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <ApprovalActions
           size="sm"
-          className="h-7 px-2.5 text-xs"
-          disabled={decide.isPending}
-          onClick={() => handleDecide("reject")}
-        >
-          Deny
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="h-7 px-2.5 text-xs"
-          disabled={decide.isPending}
-          onClick={() => handleDecide("approve_for_task")}
-        >
-          Allow for this task
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          className="h-7 px-2.5 text-xs"
-          disabled={decide.isPending}
-          onClick={() => handleDecide("approve")}
-        >
-          Approve once
-        </Button>
+          deciding={decide.isPending}
+          riskLevel={risk}
+          toolName={toolName}
+          onApprove={() => handleDecide("approve")}
+          onApproveForTask={() => handleDecide("approve_for_task")}
+          onDeny={() => handleDecide("reject")}
+        />
         <Button
           type="button"
           variant="ghost"

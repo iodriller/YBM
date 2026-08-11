@@ -63,7 +63,23 @@ YBM - local agentic control stack
                                 run the tray icon automatically at login (per-user Startup folder shortcut)
   ybm backup [--out <dir>]     zip the database, config.yaml, .env, and secret vault (default: .agent_control/backups)
   ybm check-updates            compare the installed version against the latest GitHub release (read-only)
+  ybm ui-build                 build the admin console into the backend's static dir (needs Node.js 20+)
+  ybm ui-dev                   run the admin console with hot reload (needs Node.js 20+)
 "@ | Write-Host
+}
+
+function Invoke-YbmUi {
+  # README.md and the "no build found" placeholder page have always told
+  # people to run `ybm ui-build`, and it was never in this script's
+  # ValidateSet - so the single instruction shown to someone with no admin
+  # console failed with a PowerShell parameter error, and the documented way
+  # out of that state did not exist. The implementation itself already lived
+  # in agent_control.cli; only this passthrough was missing, so delegate
+  # rather than keeping a second copy of the npm logic here.
+  param([string]$Mode)
+  $env:PYTHONPATH = "$Script:YbmRoot\backend\src"
+  & (Get-YbmPython) -m agent_control.cli $Mode
+  exit $LASTEXITCODE
 }
 
 function Get-YbmAutostartShortcutPath {
@@ -296,7 +312,14 @@ function Stop-YbmOrphansForName {
     return
   }
   $patterns = switch ($Name) {
-    "backend" { @("run_backend.ps1", "uvicorn agent_control.main:app", "agent_control.serve_backend") }
+    # "uvicorn agent_control.main:app" has not been how the backend starts for
+    # a long time - services/run_backend.ps1 runs `-m agent_control.serve_backend`.
+    # A stale pattern here is silently destructive: `ybm stop` leaves the real
+    # backend alive, the next `ybm start` finds port 8765 answering and reports
+    # "already running (external)" without writing a pid file, and from then on
+    # `ybm status` says "stopped" while the thing serves happily and no longer
+    # responds to `ybm stop` at all. Confirmed live, not hypothetical.
+    "backend" { @("run_backend.ps1", "agent_control.serve_backend", "uvicorn agent_control.main:app") }
     "localdeploy" { @("run_localdeploy.ps1", "api_server.py") }
     "worker" { @("run_worker.ps1", "agent_control.cli run-worker") }
     "coding_session_watcher" { @("run_coding_session_watcher.ps1", "agent_control.cli run-coding-session-watcher") }
@@ -314,9 +337,14 @@ function Stop-YbmOrphansForName {
     if (-not $commandLine) { return $false }
     foreach ($pattern in $patterns) {
       $matchesPattern = $commandLine -like "*$pattern*"
-      $isCliWorker = $pattern -like "agent_control.cli*"
+      # Any `python -m agent_control.*` launch, not just the cli workers: a
+      # module run's command line is just the interpreter and the module name,
+      # so it never contains the repo path the fallback check below looks for.
+      # Before this, `agent_control.serve_backend` could match its pattern and
+      # still be skipped by that guard - the orphan survived either way.
+      $isModuleLaunch = $pattern -like "agent_control.*"
       $isLocalDeploy = $Name -eq "localdeploy" -and $commandLine -like "*LocalDeploy*"
-      if ($matchesPattern -and ($isCliWorker -or $isLocalDeploy -or $commandLine -like "*$rootPath*")) {
+      if ($matchesPattern -and ($isModuleLaunch -or $isLocalDeploy -or $commandLine -like "*$rootPath*")) {
         return $true
       }
     }
@@ -675,6 +703,8 @@ switch ($Command) {
     Invoke-YbmStart -Argv $restartArgv
   }
   "status" { Invoke-YbmStatus }
+  "ui-build" { Invoke-YbmUi -Mode "ui-build" }
+  "ui-dev" { Invoke-YbmUi -Mode "ui-dev" }
   "logs" { Invoke-YbmLogs -Service $Sub -Argv $Rest }
   "test" { Invoke-YbmTest -Argv (@($Sub) + $Rest | Where-Object { $_ }) }
   "e2e" { Invoke-YbmE2e -Argv (@($Sub) + $Rest | Where-Object { $_ }) }

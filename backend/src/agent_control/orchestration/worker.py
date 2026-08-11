@@ -16,9 +16,15 @@ from agent_control.error_text import describe_exception
 from agent_control.logging_setup import bind_task_context
 from agent_control.orchestration.auditor import AuditorService
 from agent_control.orchestration.executor import ToolExecutor
-from agent_control.orchestration.fulfillment import validate_fulfillment
+from agent_control.orchestration.fulfillment import (
+    deliverable_evidence,
+    fulfillment_guidance,
+    validate_fulfillment,
+)
 from agent_control.orchestration.operator import OperatorLoopService
+from agent_control.orchestration.signals import sweep_expired_approvals
 from agent_control.recovery import RetryPolicy
+from agent_control.recovery.usage_limits import describe_wait, next_attempt_at
 from agent_control.schemas import (
     ApprovalStatus,
     AuditEventType,
@@ -145,6 +151,10 @@ class TaskWorker:
         persist_llm_calls: bool = True,
         llm_call_max_chars: int = 8000,
         redact_patterns: list[str] | tuple[str, ...] | None = None,
+        fulfillment_mode: str = "auditor",
+        audit_min_tool_calls: int = 2,
+        persona_config: object | None = None,
+        skills_config: object | None = None,
     ) -> None:
         self.repositories = repositories
         self.audit = audit
@@ -167,6 +177,14 @@ class TaskWorker:
         # worker with no auditor configured skips straight to the
         # fulfillment-gap check, same as before this existed.
         self.auditor = auditor
+        # Only the Auditor can own fulfillment, so a worker built without one
+        # keeps the legacy gate rather than silently losing the check entirely.
+        self._auditor_owns_fulfillment = fulfillment_mode == "auditor" and auditor is not None
+        self.audit_min_tool_calls = max(1, int(audit_min_tool_calls))
+        # None disables the persona learning pass entirely (tests, and any
+        # embedder that never configured a persona file).
+        self.persona_config = persona_config
+        self.skills_config = skills_config
         # LLM-call persistence (docs/UI_UX_AUDIT.md Phase 14d) - the receipts
         # behind the Duration view's real (non-inferred) segments. See
         # _record_llm_call below.
@@ -194,6 +212,8 @@ class TaskWorker:
         try:
             processed = await asyncio.wait_for(self.process_task(task.id), timeout=budget)
             await self._notify_if_needed(processed)
+            await self._maybe_learn_preference(processed)
+            await self._maybe_learn_skill(processed)
             # Once the task is terminal, drop the claim so it can't be
             # accidentally re-claimed by a stale lookup. Best-effort.
             if processed.status in {
@@ -289,6 +309,15 @@ class TaskWorker:
             # is the other half - it flips the task back to RUNNING the
             # moment a decision lands, so it becomes claimable again without
             # needing this same task re-polled.
+            #
+            # That handles a human deciding in time. sweep_expired_approvals()
+            # is the timeout side of the same gap: nothing else calls it, so
+            # without this a task whose approval simply expires - nobody
+            # decided either way - sits in AWAITING_APPROVAL forever for an
+            # operator who never opens the admin console (Telegram/WhatsApp
+            # only). Every tick, not just when a task was actually claimed,
+            # since the tasks it sweeps are never claimable by process_next.
+            sweep_expired_approvals(self.repositories)
             if processed is None:
                 await asyncio.sleep(poll_interval_seconds)
 
@@ -342,12 +371,25 @@ class TaskWorker:
         if latest.status in {TaskStatus.PAUSED, TaskStatus.CANCELLED}:
             return latest
 
+        # This used to dispatch on `status == AWAITING_APPROVAL` alone, which
+        # made the resume unreachable for the one flow that matters: granting
+        # an approval calls requeue_after_approval_decision(), and that flips
+        # the task to RUNNING so the worker will claim it again. By the time
+        # the worker looked, the status was never AWAITING_APPROVAL, so this
+        # branch was skipped and the operator re-planned from scratch instead
+        # of replaying the approved call - producing a *new* approval request
+        # every time. Approving it simply created another one, forever: 14
+        # approvals granted on a single observed task, none consumed, until
+        # the run timed out.
+        #
+        # Keyed on operator_pending_call plus status == RUNNING specifically
+        # (not "any workable status"): requeue_after_approval_decision is the
+        # only path that stashes a pending call and flips to RUNNING for this
+        # reason, so gating on that combination - rather than the pending call
+        # alone - keeps a stale operator_pending_call left over on a RECEIVED,
+        # RETRYING, or otherwise-workable task from being misread as an
+        # approval resume it isn't.
         pending_call = latest.metadata.get("operator_pending_call")
-        # Approval decision handlers requeue AWAITING_APPROVAL as RUNNING so
-        # the task becomes claimable again. Preserve the pending call as the
-        # resume discriminator: replay that exact approved request before
-        # asking the operator for another decision, otherwise it creates an
-        # identical second approval instead of executing the first one.
         if latest.status == TaskStatus.AWAITING_APPROVAL or (
             latest.status == TaskStatus.RUNNING
             and isinstance(pending_call, dict)
@@ -371,7 +413,58 @@ class TaskWorker:
             )
             self.audit.task_state_changed("worker", task.id, task.status, TaskStatus.RUNNING)
 
-        if _tool_call_count(history) >= self.operator_max_steps:
+        tool_call_count = _tool_call_count(history)
+        fulfillment_repair_count = sum(
+            1 for entry in history if entry.get("tool_name") == CHECK_ENTRY_FULFILLMENT
+        )
+        if tool_call_count >= self.operator_max_steps + fulfillment_repair_count:
+            fulfillment = validate_fulfillment(latest)
+            if fulfillment.expected and fulfillment.ok:
+                # The model can keep exploring after it has already produced
+                # every objective-derived deliverable. Failing solely because
+                # that exploration consumed the budget turns successful work
+                # into a red task. Only apply this when there is a non-empty,
+                # fully satisfied contract; an evidence-free loop still fails.
+                metadata = {
+                    **latest.metadata,
+                    "operator_history": history,
+                    "operator_step_budget_completed_after_fulfillment": True,
+                    "synthesized_answer": _fulfilled_step_budget_answer(latest, history),
+                }
+                return self._transition_operator(
+                    latest,
+                    metadata,
+                    TaskStatus.COMPLETED,
+                    "operator_step_budget_completed_after_fulfillment",
+                )
+            gap = fulfillment.first_gap
+            if gap and fulfillment_repair_count < 2:
+                # The normal budget bounds exploration. A concrete unmet
+                # postcondition is different: give the Operator one targeted
+                # call per gap check (at most two) so the final useful action
+                # is not rejected merely because earlier retries consumed all
+                # ordinary slots. CHECK entries increase the effective limit
+                # by exactly one and are themselves excluded from tool calls.
+                history.append({
+                    "tool_name": CHECK_ENTRY_FULFILLMENT,
+                    "input": None,
+                    "status": "fulfillment_gap",
+                    "error": (
+                        f"The normal tool budget was reached, but the objective still expects: {gap}. "
+                        f"One targeted repair is allowed. Next step: {fulfillment_guidance(gap)}"
+                    ),
+                })
+                metadata = {
+                    **latest.metadata,
+                    "operator_history": history,
+                    "operator_fulfillment_gap_count": max(
+                        int(latest.metadata.get("operator_fulfillment_gap_count", 0)),
+                        fulfillment_repair_count + 1,
+                    ),
+                }
+                return self.repositories.tasks.update_metadata(
+                    latest.id, metadata, TaskStatus.RUNNING
+                )
             return self._transition_operator(
                 latest, {**latest.metadata, "operator_history": history},
                 TaskStatus.BLOCKED, "operator_step_budget_exhausted",
@@ -426,10 +519,17 @@ class TaskWorker:
 
         if decision.action == OperatorAction.DONE:
             final_answer = _ground_operator_final_answer(decision.final_answer, history)
+            # Skip the grounding pass on a task that made a single tool call:
+            # the Operator has just read that one result directly and written
+            # final_answer from it, and the Auditor costs ~11s against a whole
+            # request that is often ~12s. Governed by
+            # operator.audit_min_tool_calls (1 restores auditing everything),
+            # because it is a real trade - see that setting's comment.
+            worth_auditing = _tool_call_count(history) >= self.audit_min_tool_calls
             evidence_offset = _post_clarification_history_offset(latest, history)
             content_entry = (
                 _last_content_tool_history_entry(history[evidence_offset:])
-                if self.auditor is not None
+                if self.auditor is not None and worth_auditing
                 else None
             )
             if content_entry is not None:
@@ -455,6 +555,7 @@ class TaskWorker:
                         latest.objective,
                         audit_evidence,
                         original_message=str(latest.metadata.get("original_message_text") or "") or None,
+                        deliverable_evidence=deliverable_evidence(latest) if self._auditor_owns_fulfillment else "",
                         response_context=_auditor_response_context(latest, memory_context),
                     )
                     latest = self._record_llm_usage(latest, "auditor", getattr(self.auditor, "last_usage", None))
@@ -497,9 +598,20 @@ class TaskWorker:
                     )
 
             metadata = {**latest.metadata, "operator_history": history, "synthesized_answer": final_answer}
-            gap = validate_fulfillment(
-                latest.model_copy(update={"metadata": metadata})
-            ).first_gap or _unsupported_write_claim(final_answer, history, metadata)
+            # With the Auditor owning fulfillment, its INSUFFICIENT verdict
+            # above is already the gap check - it saw the user's own words and
+            # the factual deliverable list. Re-running the word-set gate here
+            # would let hardcoded intent inference overrule the judgment we
+            # just paid an LLM call for. _unsupported_write_claim is a
+            # different kind of check - a narrow, deterministic claim-vs-
+            # evidence regex, not an intent-inference heuristic - so it still
+            # runs in both modes; it is what caught "The following files were
+            # created:" against an empty workspace (docs/E2E_FINDINGS.md P0-2).
+            gap = (
+                None
+                if self._auditor_owns_fulfillment
+                else validate_fulfillment(latest.model_copy(update={"metadata": metadata})).first_gap
+            ) or _unsupported_write_claim(final_answer, history, metadata)
             if gap:
                 gap_count = int(latest.metadata.get("operator_fulfillment_gap_count", 0))
                 if gap_count < 2:
@@ -509,8 +621,8 @@ class TaskWorker:
                         "status": "fulfillment_gap",
                         "error": (
                             f"Declared done, but the objective still expects: {gap}. Keep working "
-                            "toward the objective - call another tool, or explain to the user why "
-                            "it can't be met - before declaring done again."
+                            f"toward the objective. Next step: {fulfillment_guidance(gap)} "
+                            "If that cannot run, explain the concrete blocker before declaring done again."
                         ),
                         "step_id": step_id,
                     })
@@ -668,8 +780,16 @@ class TaskWorker:
                 return retry_outcome
         output_text = _tool_output_text(result) if result.status == ToolResultStatus.SUCCEEDED else None
         history.append({
+            # tool_name/tool_input, not decision.tool_name/decision.tool_input:
+            # by this point they may have passed through canonicalization or
+            # stale-read recovery, so they are what actually ran, which can
+            # differ from the model's original request.
             "tool_name": tool_name,
             "input": tool_input,
+            # The model already explains each choice, and it was thrown away
+            # every step - so progress messages could say what ran but never
+            # why, and "see it happening" meant reading a trace afterwards.
+            "reasoning": (decision.reasoning or "").strip()[:400] or None,
             "status": result.status.value,
             "output_summary": output_text[:2000] if output_text else None,
             "error": result.error_message,
@@ -1008,14 +1128,37 @@ class TaskWorker:
         if self.retry_policy is None:
             return None
         if result.error_class == ErrorClass.USAGE_LIMITED:
+            # Wait the quota out instead of escalating. This used to call
+            # _operator_ask_user, which stopped an unattended build dead until
+            # a human happened to reply - for a limit that resolves itself on
+            # a timer, the human adds only delay. Parked as RETRYING with a
+            # future next_retry_at: _process_operator_retrying already returns
+            # the task untouched until that passes, and claim_next skips
+            # not-yet-due tasks so a long wait cannot starve the queue.
+            resume_at, wait_seconds, from_provider = next_attempt_at(result.error_message)
             history.append({
                 "tool_name": decision.tool_name, "input": decision.tool_input,
-                "status": result.status.value, "output_summary": None, "error": result.error_message,
+                "status": result.status.value, "output_summary": None,
+                "error": (
+                    f"{result.error_message or 'usage limit reached'} "
+                    f"- waiting {describe_wait(wait_seconds, from_provider)} and continuing automatically."
+                ),
                 "request_id": result.request_id, "step_id": step_id,
             })
-            latest = self.repositories.tasks.update_metadata(task.id, {**task.metadata, "operator_history": history})
-            return self._operator_ask_user(
-                latest, result.error_message or "This tool hit a usage limit and needs your input to continue."
+            metadata = {
+                **task.metadata,
+                "operator_history": history,
+                "next_retry_at": resume_at.isoformat(),
+                "usage_limit_wait": {
+                    "tool_name": decision.tool_name,
+                    "resume_at": resume_at.isoformat(),
+                    "wait_seconds": wait_seconds,
+                    "reset_time_from_provider": from_provider,
+                },
+            }
+            return self._transition_operator(
+                task, metadata, TaskStatus.RETRYING,
+                f"usage_limited_waiting_{wait_seconds}s",
             )
         retry_count = int(task.metadata.get("operator_retry_count", 0))
         retry_decision = self.retry_policy.evaluate(result, retry_count)
@@ -1176,7 +1319,12 @@ class TaskWorker:
         next_retry_at = task.metadata.get("next_retry_at")
         if next_retry_at and datetime.fromisoformat(next_retry_at) > utc_now():
             return task
-        return self._transition_operator(task, task.metadata, TaskStatus.RUNNING, "retry_due")
+        # Clear both markers on the way back to RUNNING. Leaving next_retry_at
+        # behind would keep claim_next's new not-due filter excluding this task
+        # forever - it only ever moves forward in time otherwise.
+        metadata = {key: value for key, value in task.metadata.items()
+                    if key not in ("next_retry_at", "usage_limit_wait")}
+        return self._transition_operator(task, metadata, TaskStatus.RUNNING, "retry_due")
 
     def _await_operator_approval(
         self,
@@ -1283,6 +1431,48 @@ class TaskWorker:
         final_metadata.pop("operator_pending_call", None)
         final_metadata.pop("pending_approval_preview", None)
         return self.repositories.tasks.update_metadata(task.id, final_metadata, TaskStatus.RUNNING)
+
+    async def _maybe_learn_preference(self, task: TaskRecord) -> None:
+        """Queue a durable preference from the operator's own words, if any.
+
+        Runs after the task is finished and its result already sent, so a slow
+        or failing extraction can never delay or break the actual answer -
+        this is the least important thing happening on this tick.
+        """
+        if self.persona_config is None or self.operator is None:
+            return
+        if task.status not in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
+            return
+        message = str(task.metadata.get("original_message_text") or task.objective or "")
+        try:
+            from agent_control.persona_learning import propose_from_message
+
+            await propose_from_message(
+                getattr(self.operator, "provider", None),
+                self.persona_config,
+                message,
+                task_id=task.id,
+            )
+        except Exception:  # noqa: BLE001 - never surface as a task failure
+            logger.warning("persona learning pass failed", exc_info=True)
+
+    async def _maybe_learn_skill(self, task: TaskRecord) -> None:
+        """Offer to save a successful multi-step run as a reusable procedure.
+
+        After the answer has already gone out, like the persona pass - this is
+        the least important work on the tick and must never delay or break a
+        finished task.
+        """
+        if self.skills_config is None or self.operator is None:
+            return
+        if task.status != TaskStatus.COMPLETED:
+            return
+        try:
+            from agent_control.skill_learning import propose_from_task
+
+            await propose_from_task(getattr(self.operator, "provider", None), self.skills_config, task)
+        except Exception:  # noqa: BLE001 - never surface as a task failure
+            logger.warning("skill learning pass failed", exc_info=True)
 
     def _transition_operator(
         self, task: TaskRecord, metadata: dict[str, Any], status: TaskStatus, reason: str
@@ -2161,6 +2351,23 @@ def _tool_call_count(history: list[dict[str, Any]]) -> int:
     tools. See docs/HISTORY.md §3.1.
     """
     return len([entry for entry in history if entry.get("tool_name") not in CHECK_ENTRY_NAMES])
+
+
+def _fulfilled_step_budget_answer(task: TaskRecord, history: list[dict[str, Any]]) -> str:
+    """Ground a completion that reached the step cap after fulfillment."""
+    adapter_dir = task.metadata.get("adapter_dir")
+    if adapter_dir:
+        return f"Created the adapter proposal in the cache at {adapter_dir}. It was not loaded automatically."
+    workspace_dir = task.metadata.get("workspace_dir")
+    if workspace_dir:
+        return f"Completed the requested work in {workspace_dir}."
+    schedule_id = task.metadata.get("schedule_id")
+    if schedule_id:
+        return f"Created the requested schedule ({schedule_id})."
+    for entry in reversed(history):
+        if entry.get("status") == "succeeded" and entry.get("output_summary"):
+            return str(entry["output_summary"])
+    return "Completed the requested work and recorded the required result."
 
 
 def _repeated_no_progress_call(

@@ -100,7 +100,17 @@ async def test_llm_classifier_returns_concierge_composed_reply_for_chat() -> Non
     assert classification.reply == "I can inspect files, control the browser, and run scheduled jobs."
 
 
-def test_emergency_classification_spawns_unknown_task_for_actionable_text_without_route_guessing() -> None:
+def test_emergency_classification_never_guesses_a_task_from_keywords() -> None:
+    """When the router is unreachable, do not spawn work from a word list.
+
+    This used to run the message past ~60 hardcoded markers ("screenshot",
+    "send", "now", ...) and spawn an UNKNOWN-route task if any matched - a
+    guess made precisely when the system is already degraded. It is wrong in
+    both directions, and the two directions are not symmetric: work started by
+    mistake cannot be un-done, while a request that was merely dropped can be
+    re-sent. So: classify as conversation, spawn nothing, and let a working
+    ChatResponder (a separate call, which may still succeed) do the talking.
+    """
     classification = emergency_classification(
         InboundMessage(
             channel=ChannelType.TELEGRAM,
@@ -112,11 +122,12 @@ def test_emergency_classification_spawns_unknown_task_for_actionable_text_withou
         "LLM down",
     )
 
-    assert classification.is_task is True
+    assert classification.is_task is False
     assert classification.intent is not None
-    assert classification.intent.route == IntentRoute.UNKNOWN
-    assert classification.normalized_objective == "Take a screenshot of my desktop and send it to me now"
+    assert classification.intent.route == IntentRoute.CONVERSATION
     assert classification.reason == "LLM down"
+    # Left for the responder, not pre-empted by a canned string.
+    assert classification.reply is None
 
 
 def test_emergency_classification_keeps_plain_chat_as_conversation() -> None:

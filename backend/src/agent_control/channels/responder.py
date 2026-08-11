@@ -56,7 +56,24 @@ def gateway_context(
 ) -> str:
     tasks = repositories.tasks.list_recent(5)
     active_statuses = {TaskStatus.RECEIVED, TaskStatus.INTERPRETING, TaskStatus.PLANNED, TaskStatus.RUNNING, TaskStatus.RETRYING, TaskStatus.AWAITING_APPROVAL}
-    active_count = len([task for task in tasks if task.status in active_statuses])
+    active_tasks = [task for task in tasks if task.status in active_statuses]
+    active_count = len(active_tasks)
+    # Listed separately from "recent": deciding whether a message steers work
+    # in flight needs to know what is in flight, and a mixed list of finished
+    # and running tasks does not answer that.
+    active_list = "\n".join(
+        f"- {task.id}: {task.status.value} - {task.objective[:120]}" for task in active_tasks
+    ) or "- none"
+    # Schedules were absent from this context entirely, so "change the news job
+    # to every 6 hours" had nothing to resolve against and became a fresh task
+    # groping for which job was meant.
+    try:
+        schedules = repositories.schedules.list_recent(10)
+    except Exception:  # noqa: BLE001 - intake context must never break intake
+        schedules = []
+    schedule_list = "\n".join(
+        f"- {item.id}: {str(getattr(item, 'objective', ''))[:100]}" for item in schedules
+    ) or "- none"
     recent = "\n".join(f"- {task.id}: {task.status.value} - {task.objective[:120]}" for task in tasks) or "- none"
 
     vscode_policy = settings.capabilities.get(Capability.VSCODE_WRITE_FILES)
@@ -88,4 +105,8 @@ Conversation memory:
 Recent tasks: {len(tasks)}
 Active tasks: {active_count}
 Recent task list:
-{recent}"""
+{recent}
+Tasks running right now (a message may be steering one of these):
+{active_list}
+Existing schedules (name one of these when the user changes or stops a job):
+{schedule_list}"""

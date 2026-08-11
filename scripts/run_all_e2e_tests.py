@@ -37,17 +37,21 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import atexit
 import json
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 import time
 import traceback
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib import error as urlerror
 from urllib import request as urlrequest
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -57,6 +61,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ENV_PATH = ROOT / ".env"
 RESULTS_ROOT = ROOT / ".agent_control" / "e2e_results"
 CASES_PATH = ROOT / "e2e" / "all_cases.json"
+CONFIG_PATH = ROOT / "config" / "config.yaml"
 
 ADMIN_BASE = "http://127.0.0.1:8765"
 LOCALDEPLOY_BASE = "http://127.0.0.1:8000"
@@ -136,6 +141,66 @@ def admin_summary() -> dict:
 
 def admin_trace(task_id: str) -> dict:
     return admin_get(f"/admin/api/tasks/{task_id}/trace")
+
+
+def admin_post(path: str, body: dict | None = None, timeout: int = 10) -> Any:
+    url = f"{ADMIN_BASE}{path}"
+    headers = {"Content-Type": "application/json"}
+    admin_token = os.getenv("AGENT_ADMIN_TOKEN")
+    if admin_token:
+        headers["X-Agent-Control-Admin-Token"] = admin_token
+    request = urlrequest.Request(
+        url, data=json.dumps(body or {}).encode("utf-8"), headers=headers, method="POST"
+    )
+    with urlrequest.urlopen(request, timeout=timeout) as r:
+        return json.loads(r.read() or b"{}")
+
+
+async def auto_approve_loop(stop: asyncio.Event, granted: list[str]) -> None:
+    """Grant pending approvals while the suite runs.
+
+    e2e/README.md says the runner works unattended once the Telethon session
+    exists, but nothing here ever answered an approval - and approvals are not
+    optional for these cases. Some are forced by the runtime itself
+    (ToolDefinition.approval_required_operations covers schedule.manage:create,
+    mcp.client:install_server, memory.manage:forget and more), so no config
+    change can make them go away. Every affected case therefore sat in
+    awaiting_approval until it timed out, which reads as the product being
+    broken rather than the harness being incomplete.
+
+    Approving here rather than lowering approval_policy would also be the only
+    honest option: the point of these cases is to exercise the real gate, and a
+    run with the gate switched off proves nothing about it. Each grant is still
+    a normal, audited APPROVAL_DECIDED event, attributed to this harness.
+    """
+    while not stop.is_set():
+        try:
+            # Each item wraps the record: {"approval": {...}, "task_objective": ...}
+            for item in admin_get("/admin/api/approvals").get("approvals", []):
+                approval = item.get("approval") or {}
+                if approval.get("status") != "pending":
+                    continue
+                approval_id = approval.get("id")
+                if not approval_id:
+                    continue
+                try:
+                    admin_post(f"/admin/api/approvals/{approval_id}/decide", {"decision": "approve"})
+                except urlerror.HTTPError as exc:
+                    # 409 = decided between listing it and deciding it, which
+                    # is the normal outcome of polling a queue the worker is
+                    # draining. Reporting it as an error buries the failures
+                    # that actually matter.
+                    if exc.code == 409:
+                        continue
+                    raise
+                granted.append(approval_id)
+                print(f"    [auto-approve] {approval.get('capability') or '?'} ({approval_id})")
+        except Exception as exc:  # noqa: BLE001 - never let this kill the run
+            print(f"    [auto-approve] transient error: {exc}")
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=2.0)
+        except asyncio.TimeoutError:
+            pass
 
 
 def ping(url: str, timeout: float = 2.0) -> bool:
@@ -377,6 +442,145 @@ def required_fixture_names(cases: list[dict]) -> set[str]:
     return names
 
 
+@dataclass
+class TemporaryMCPFixture:
+    """Exact local state needed to restore the operator after an E2E MCP run."""
+
+    config_path: Path
+    original_config: bytes
+    catalog_path: Path
+    original_catalog: bytes | None
+    restart_services: Callable[[], None]
+    active: bool = True
+
+    def restore(self, *, restart: bool = True) -> None:
+        if not self.active:
+            return
+        self.active = False
+        self.config_path.write_bytes(self.original_config)
+        if self.original_catalog is None:
+            self.catalog_path.unlink(missing_ok=True)
+        else:
+            self.catalog_path.parent.mkdir(parents=True, exist_ok=True)
+            self.catalog_path.write_bytes(self.original_catalog)
+        if restart:
+            self.restart_services()
+
+
+def _restart_ybm_services() -> None:
+    if os.name != "nt":
+        raise RuntimeError("automatic E2E fixture reload currently requires Windows/PowerShell")
+    command = [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(ROOT / "scripts" / "ybm.ps1"),
+        "restart",
+        "-SkipDoctor",
+        "-NoLocalDeploy",
+    ]
+    result = subprocess.run(
+        command,
+        cwd=ROOT,
+        text=True,
+        # YBM starts detached supervisors. Capturing a pipe here lets those
+        # grandchildren inherit its write handle, so communicate() waits for
+        # EOF forever even after PowerShell itself exits. They have their own
+        # service logs; discard lifecycle chatter here.
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=180,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"YBM restart failed while loading E2E fixtures (exit {result.returncode})")
+
+
+def provision_fake_mcp_fixture(
+    server_path: Path,
+    *,
+    restart_services: Callable[[], None] | None = None,
+) -> TemporaryMCPFixture:
+    """Temporarily register the catalogue's local fake MCP echo server."""
+    import yaml
+
+    if not server_path.is_file():
+        raise FileNotFoundError(f"fake MCP server fixture was not created: {server_path}")
+    if not CONFIG_PATH.is_file():
+        raise FileNotFoundError(f"YBM config does not exist: {CONFIG_PATH}")
+
+    original_config = CONFIG_PATH.read_bytes()
+    config = yaml.safe_load(original_config.decode("utf-8")) or {}
+    if not isinstance(config, dict):
+        raise TypeError(f"{CONFIG_PATH} must contain a YAML object")
+    mcp = config.setdefault("mcp", {})
+    if not isinstance(mcp, dict):
+        raise TypeError("config mcp section must be an object")
+    servers = mcp.setdefault("servers", {})
+    if not isinstance(servers, dict):
+        raise TypeError("config mcp.servers section must be an object")
+
+    catalog_value = str(mcp.get("catalog_path") or ".agent_control/mcp/tool_catalog.json")
+    catalog_path = Path(catalog_value)
+    if not catalog_path.is_absolute():
+        catalog_path = ROOT / catalog_path
+    original_catalog = catalog_path.read_bytes() if catalog_path.exists() else None
+    restart = restart_services or _restart_ybm_services
+    fixture = TemporaryMCPFixture(
+        config_path=CONFIG_PATH,
+        original_config=original_config,
+        catalog_path=catalog_path,
+        original_catalog=original_catalog,
+        restart_services=restart,
+    )
+
+    mcp["enabled"] = True
+    servers["fake"] = {
+        "enabled": True,
+        "command": sys.executable,
+        "args": [str(server_path.resolve())],
+        "cwd": str(ROOT),
+        "timeout_seconds": 30,
+        "capability": "terminal.run",
+        "risk_level": "high",
+        "disabled_tools": [],
+        "max_output_chars": 20000,
+    }
+    CONFIG_PATH.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8", newline="")
+    catalog_path.parent.mkdir(parents=True, exist_ok=True)
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "servers": [{"name": "fake", "enabled": True, "healthy": True, "tool_count": 1}],
+                "tools": [
+                    {
+                        "server": "fake",
+                        "name": "echo",
+                        "tool": "echo",
+                        "description": "Echo text exactly as received",
+                        "capability": "terminal.run",
+                        "risk_level": "high",
+                        "disabled": False,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    try:
+        restart()
+    except Exception:  # noqa: BLE001 - any reload failure must restore private config
+        fixture.restore(restart=False)
+        raise
+    return fixture
+
+
 def render_text(text: str, fixtures: dict[str, str]) -> str:
     out = text
     for k, v in fixtures.items():
@@ -493,6 +697,9 @@ class TurnResult:
     # don't require grepping audit.json.
     classifier_verdict: dict | None = None
     forced_failed_by_runner: bool = False
+    # True when the runner answered a clarifying question during this turn, so
+    # a reader can tell an unprompted result from an assisted one.
+    clarification_sent: bool = False
 
 
 @dataclass
@@ -536,8 +743,18 @@ async def _send_message(message: str) -> int:
 
 
 async def _find_new_task(
-    known_ids: set[str], spawn_timeout_s: int = TASK_SPAWN_TIMEOUT_S
+    known_ids: set[str],
+    original_message_text: str,
+    spawn_timeout_s: int = TASK_SPAWN_TIMEOUT_S,
 ) -> str | None:
+    """Find the task created for this exact Telegram message.
+
+    Matching only on "not in the initial snapshot" lets a delayed task from
+    an earlier turn steal the next case. Telegram intake persists the exact
+    original text and source channel in task metadata. Use those durable
+    values: Telethon's MTProto sent-message id is not guaranteed to equal the
+    Bot API update id stored by YBM.
+    """
     deadline = time.monotonic() + spawn_timeout_s
     while time.monotonic() < deadline:
         await asyncio.sleep(2)
@@ -546,7 +763,12 @@ async def _find_new_task(
         except Exception:
             continue
         for t in data.get("tasks", []):
-            if t["id"] not in known_ids:
+            metadata = t.get("metadata") if isinstance(t.get("metadata"), dict) else {}
+            if (
+                t["id"] not in known_ids
+                and metadata.get("source_channel") == "telegram"
+                and metadata.get("original_message_text") == original_message_text
+            ):
                 return t["id"]
     return None
 
@@ -1121,7 +1343,11 @@ async def _run_turn(
             return turn
 
         spawn_timeout_s = min(TASK_SPAWN_TIMEOUT_S, max_seconds)
-        task_id = resume_task_id or await _find_new_task(known, spawn_timeout_s=spawn_timeout_s)
+        task_id = resume_task_id or await _find_new_task(
+            known,
+            message,
+            spawn_timeout_s=spawn_timeout_s,
+        )
         if not task_id:
             # Distinguish "classifier said is_task=False" from "polling didn't see the message"
             # so the report can blame the right component. One lookup serves both
@@ -1190,6 +1416,25 @@ async def _run_turn(
             if status in terminal_statuses:
                 reached_terminal = True
                 break
+            # A task that asks a question waits for a human. Nothing here ever
+            # answered one, so any case where the agent chose to clarify sat in
+            # CLARIFYING until the deadline and was force-failed - scoring the
+            # agent's *correct* caution (safe_file_operations exists precisely
+            # to check it asks before destructive work) as a product failure.
+            # One neutral confirmation per turn, echoing the original request
+            # so the answer cannot smuggle in new instructions, and logged
+            # loudly so a pass here is never mistaken for an unprompted one.
+            if status == "clarifying" and not turn.clarification_sent:
+                turn.clarification_sent = True
+                answer = (
+                    "Yes, please go ahead with what you proposed, staying within the "
+                    "constraints in my original message."
+                )
+                print(f"    [clarify] agent asked a question; replying: {answer}")
+                try:
+                    await _send_message(answer)
+                except Exception as exc:  # noqa: BLE001 - keep polling regardless
+                    print(f"    [clarify] could not reply: {exc}")
             await asyncio.sleep(3)
 
         if reached_terminal and last_status:
@@ -1585,8 +1830,24 @@ def _preflight() -> list[str]:
         admin_get("/admin/api/summary?task_limit=1")
     except Exception:
         issues.append(f"YBM admin API not responding at {ADMIN_BASE}")
-    if not ping(f"{LOCALDEPLOY_BASE}/health", timeout=5.0):
-        issues.append(f"LocalDeploy not responding at {LOCALDEPLOY_BASE}")
+    # Check the LLM the stack is actually configured to use, not a fixed port.
+    # This used to ping LocalDeploy's :8000/health unconditionally, so every
+    # case refused to start on a perfectly working install pointed at Ollama or
+    # a cloud endpoint - reporting "LocalDeploy not responding" for a service
+    # that install was never meant to run. check_llm_configured() already
+    # knows the difference between an Ollama tag list, a LocalDeploy health
+    # endpoint and a cloud profile's key; reuse it rather than re-deriving it.
+    from agent_control.bootstrap import check_llm_configured
+    from agent_control.config import load_settings
+
+    settings = load_settings(ROOT / "config" / "config.yaml", _env_file=ENV_PATH)
+    if not check_llm_configured(settings):
+        profile = settings.llm.profiles.get(settings.llm.default_profile)
+        endpoint = (profile.base_url if profile else None) or "not configured"
+        issues.append(
+            f"default LLM profile {settings.llm.default_profile!r} is not reachable "
+            f"({endpoint}) - start it, or point llm.profiles at a working endpoint"
+        )
     return issues
 
 
@@ -1667,6 +1928,9 @@ async def main() -> int:
                         help="include codex/copilot/quota/limit cases (usually need external creds)")
     parser.add_argument("--no-web-fixture", action="store_true",
                         help="skip the local fixture web server (some cases will be skipped/fail)")
+    parser.add_argument("--no-auto-approve", action="store_true",
+                        help="do not grant approval prompts during the run (cases needing "
+                             "approval will stall until they time out)")
     args = parser.parse_args()
 
     _load_env()
@@ -1731,6 +1995,24 @@ async def main() -> int:
         )
         return 1
 
+    mcp_fixture: TemporaryMCPFixture | None = None
+    if any("fake_mcp_server" in (case.get("setup") or []) for case in selected):
+        try:
+            print("  Provisioning temporary fake MCP server and reloading YBM...")
+            mcp_fixture = provision_fake_mcp_fixture(Path(fixtures["fake_mcp_server_path"]))
+            atexit.register(mcp_fixture.restore)
+        except Exception as exc:  # noqa: BLE001 - preflight boundary reports actionable failure
+            print(f"Preflight failed - could not provision fake MCP fixture: {exc}")
+            return 1
+        reload_issues = _preflight()
+        if reload_issues:
+            print("Preflight failed after loading the fake MCP fixture:")
+            for issue in reload_issues:
+                print(f"  - {issue}")
+            atexit.unregister(mcp_fixture.restore)
+            mcp_fixture.restore()
+            return 1
+
     # Browser cases need Chrome with remote debugging on :9222. Warn (and
     # try to auto-launch) before the run rather than after we've burned 20min
     # on a queue full of browser cases that all fail at the adapter.
@@ -1741,6 +2023,16 @@ async def main() -> int:
     )
     if needs_browser:
         _warn_if_chrome_down()
+
+    # Answer approvals for the duration of the run. Without this the suite
+    # cannot complete at all: several tools force approval at the runtime level
+    # regardless of config, and nothing else here ever grants one.
+    approver_stop = asyncio.Event()
+    granted_approvals: list[str] = []
+    approver_task: asyncio.Task | None = None
+    if not args.no_auto_approve:
+        approver_task = asyncio.create_task(auto_approve_loop(approver_stop, granted_approvals))
+        print("  Auto-approving policy prompts for this run (--no-auto-approve to disable).")
 
     results: list[StageResult] = []
     suite_start = time.monotonic()
@@ -1779,13 +2071,31 @@ async def main() -> int:
         status = "PASS" if stage.passed else "FAIL"
         print(f"  --> {status}  ({stage.total_duration_s:.1f}s)  {stage.failure_reason or 'ok'}")
 
+    approver_stop.set()
+    if approver_task is not None:
+        try:
+            await asyncio.wait_for(approver_task, timeout=5.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            approver_task.cancel()
+
     print(f"\n{'=' * 78}")
     passed = sum(1 for r in results if r.passed)
     total_time = _fmt_duration(time.monotonic() - suite_start)
     print(f"{_progress_bar(len(results), total, width=24)} {len(results)}/{total} done")
     print(f"Summary: {run_dir / 'summary.md'}")
+    if granted_approvals:
+        print(f"Approvals granted during the run: {len(granted_approvals)}")
     print(f"Passed {passed} / {len(results)}  |  total {total_time}")
-    return 0 if passed == len(results) else 2
+    exit_code = 0 if passed == len(results) else 2
+    if mcp_fixture is not None:
+        print("  Restoring MCP config/catalog and reloading YBM...")
+        atexit.unregister(mcp_fixture.restore)
+        try:
+            mcp_fixture.restore()
+        except Exception as exc:  # noqa: BLE001 - restoration must convert any failure to exit 1
+            print(f"  [fixtures] ERROR: could not restore YBM after MCP run: {exc}")
+            return 1
+    return exit_code
 
 
 def _progress_bar(done: int, total: int, *, width: int = 24) -> str:

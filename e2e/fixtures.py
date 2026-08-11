@@ -229,6 +229,24 @@ def prepare_fixtures(*, start_web_server: bool) -> Fixtures:
     voice_ogg_path = fixture_root / "voice-command.ogg"
     voice_ogg_path.write_bytes(_fake_ogg_voice_bytes())
 
+    fake_mcp_server_path = fixture_root / "fake_mcp_server.py"
+    fake_mcp_server_path.write_text(
+        """from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("fake")
+
+
+@mcp.tool()
+def echo(text: str) -> str:
+    return text
+
+
+if __name__ == "__main__":
+    mcp.run()
+""",
+        encoding="utf-8",
+    )
+
     values: dict[str, str] = {
         "desktop_folder": str(desktop_folder),
         "resumes_folder": str(resumes_folder),
@@ -251,6 +269,7 @@ def prepare_fixtures(*, start_web_server: bool) -> Fixtures:
         "mixed_content_folder": str(mixed_content_folder),
         "image_folder": str(image_folder),
         "voice_ogg_path": str(voice_ogg_path),
+        "fake_mcp_server_path": str(fake_mcp_server_path),
     }
 
     server: ThreadingHTTPServer | None = None

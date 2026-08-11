@@ -33,10 +33,12 @@ from agent_control.llm import LLMMessageClassifier, build_default_llm_provider
 from agent_control.llm.providers import build_major_llm_provider
 from agent_control.observation import ArtifactService, ScreenshotService
 from agent_control.persona import persona_prompt_section
+from agent_control.tools.skills import skills_context_section
 from agent_control.orchestration import AuditorService, OperatorLoopService, TaskWorker, ToolExecutor, reconcile_orphaned_tasks
 from agent_control.orchestration.worker import TaskNotificationSink
 from agent_control.policy import PolicyEngine
 from agent_control.recovery import RetryPolicy
+from agent_control.heartbeat import run_heartbeat_forever
 from agent_control.scheduler import run_scheduler_forever
 from agent_control.schemas import AuditEventType, ChannelType, TaskRecord, TaskStatus
 from agent_control.storage import ApprovalRepository, AuditLogger, Database, Repositories
@@ -70,37 +72,60 @@ def _frontend_dir() -> Path:
     return Path(__file__).resolve().parents[3] / "frontend"
 
 
-def ui_build() -> int:
-    """`npm run build` for the React console (docs/UI_REWRITE_PLAN.md §12.3) -
-    output lands under agent_control/static/admin per vite.config.ts's
-    build.outDir, where admin.py's SPA route serves it from."""
+def _run_npm_script(script: str) -> int:
+    """Shared front half of `ui-build` and `ui-dev`.
+
+    Both used to bail with "frontend/node_modules is missing - run `npm
+    install` in frontend/ first" and, if npm itself was absent, whatever
+    FileNotFoundError/exit code the shell produced. That mattered because
+    these two commands are the *only* documented way out of an unbuilt admin
+    console: the placeholder page at /admin points here, so failing with a
+    prerequisite the message doesn't name left no next step. Install what's
+    missing, and when the missing thing is Node itself, say so.
+    """
+    import shutil
     import subprocess
 
     frontend_dir = _frontend_dir()
     if not frontend_dir.exists():
         print(f"no frontend/ checkout found at {frontend_dir}")
         return 1
-    if not (frontend_dir / "node_modules").exists():
-        print("frontend/node_modules is missing - run `npm install` in frontend/ first")
+
+    if shutil.which("npm") is None:
+        print("npm was not found on PATH.")
+        print()
+        print("The admin console is a React app, so building it needs Node.js 20 or newer:")
+        print("  https://nodejs.org   (or: winget install OpenJS.NodeJS.LTS)")
+        print()
+        print("Open a NEW terminal after installing, then re-run this command.")
         return 1
-    result = subprocess.run(["npm", "run", "build"], cwd=frontend_dir, shell=(os.name == "nt"))
-    return result.returncode
+
+    use_shell = os.name == "nt"
+    if not (frontend_dir / "node_modules").exists():
+        print("Installing admin console dependencies (npm install)...")
+        installed = subprocess.run(["npm", "install"], cwd=frontend_dir, shell=use_shell)
+        if installed.returncode != 0:
+            print("`npm install` failed - see the output above.")
+            return installed.returncode
+
+    return subprocess.run(["npm", "run", script], cwd=frontend_dir, shell=use_shell).returncode
+
+
+def ui_build() -> int:
+    """`npm run build` for the React console (docs/UI_REWRITE_PLAN.md §12.3) -
+    output lands under agent_control/static/admin per vite.config.ts's
+    build.outDir, where admin.py's SPA route serves it from."""
+    code = _run_npm_script("build")
+    if code == 0:
+        print()
+        print("Admin console built - reload http://127.0.0.1:8765/admin")
+    return code
 
 
 def ui_dev() -> int:
     """`npm run dev` for the React console - the Vite dev server with hot
     reload, proxying /admin/api/* to this backend (vite.config.ts)."""
-    import subprocess
-
-    frontend_dir = _frontend_dir()
-    if not frontend_dir.exists():
-        print(f"no frontend/ checkout found at {frontend_dir}")
-        return 1
-    if not (frontend_dir / "node_modules").exists():
-        print("frontend/node_modules is missing - run `npm install` in frontend/ first")
-        return 1
-    result = subprocess.run(["npm", "run", "dev"], cwd=frontend_dir, shell=(os.name == "nt"))
-    return result.returncode
+    return _run_npm_script("dev")
 
 
 def init_db() -> None:
@@ -207,6 +232,23 @@ async def poll_telegram() -> None:
     runner = TelegramPollingRunner(client, service)
     offset: int | None = None
     while True:
+        # Pick up allowlist/enabled edits without a restart. Everything above
+        # is built once from a startup snapshot, so before this the console
+        # could save a perfectly correct allowlist and the running poller
+        # would go on denying every message from it - with the save toast
+        # saying only "restart polling to reload it" and offering no way to
+        # do that. The authorization check reads adapter.config directly, so
+        # refreshing that one object is enough for those edits to take effect
+        # live. Rotating the *token* still needs a restart: the API client and
+        # its offset cursor are bound to the old bot.
+        try:
+            adapter.config = load_settings().channels.telegram
+        except Exception as exc:  # noqa: BLE001 - a bad edit must not kill the poller
+            audit.append(
+                AuditEventType.ERROR,
+                actor="telegram_polling",
+                payload={"error": "config_reload_failed", "reason": str(exc)},
+            )
         try:
             offset, _ = await runner.poll_once(offset=offset, timeout=30)
         except Exception as exc:
@@ -332,6 +374,10 @@ async def run_worker() -> None:
             task_budget_seconds=float(settings.limits.task_budget_seconds),
             operator=operator,
             operator_max_steps=settings.operator.max_steps,
+            fulfillment_mode=settings.operator.fulfillment_mode,
+            audit_min_tool_calls=settings.operator.audit_min_tool_calls,
+            persona_config=settings.adapters.persona,
+            skills_config=settings.adapters.skills,
             auditor=auditor,
             persist_llm_calls=settings.storage.persist_llm_calls,
             llm_call_max_chars=settings.storage.llm_call_max_chars,
@@ -339,8 +385,19 @@ async def run_worker() -> None:
         )
         for _ in range(max(settings.limits.max_parallel_tasks, 1))
     ]
+    loops = [worker.run_forever() for worker in workers]
+    # Beside the workers, not inside them: a worker awaiting a long subprocess
+    # cannot emit anything, which is exactly when an update matters most.
+    if settings.limits.heartbeat_interval_seconds > 0:
+        loops.append(
+            run_heartbeat_forever(
+                repositories,
+                notifier,
+                interval_seconds=float(settings.limits.heartbeat_interval_seconds),
+            )
+        )
     try:
-        await asyncio.gather(*(worker.run_forever() for worker in workers))
+        await asyncio.gather(*loops)
     except Exception:
         # Structured service logs are append-only, unlike the supervisor's
         # redirected child stderr file which is reopened on a restart. Keep
@@ -357,6 +414,7 @@ async def run_scheduler() -> None:
         audit,
         poll_interval_seconds=settings.scheduler.poll_interval_seconds,
         max_consecutive_failures=settings.scheduler.max_consecutive_failures,
+        retention_days=settings.storage.retention_days,
     )
 
 
@@ -540,11 +598,26 @@ def _screenshot_service(settings, repositories: Repositories) -> ScreenshotServi
 
 def _worker_config_context(registry, settings: AppSettings) -> str:
     persona_section = persona_prompt_section(settings.adapters.persona)
+    # Rebuilt per decide() call via config_context_factory, so installing a
+    # skill takes effect on the next step rather than needing a worker restart.
+    skills_section = (
+        skills_context_section(
+            settings.adapters.skills.root_dir, settings.adapters.skills.max_skills_listed
+        )
+        if settings.adapters.skills.enabled
+        else ""
+    )
+    # registry.vault_summary() used to be rendered here too. It lists the same
+    # 24 tools with the same descriptions as registry.context() above, differing
+    # only in the words "available/known_gap" versus "enabled/disabled" - ~790
+    # tokens of duplication in every single Operator step. Measured: the static
+    # prefix was 4247 tokens against an average completion of 93, so this loop
+    # is prefill-bound and the catalog is the largest single item in it.
     return f"""{registry.context()}
 
-{registry.vault_summary()}
-
 {persona_section}
+
+{skills_section}
 
 Prefer conservative plans. Use registered tool names exactly and include explicit operations when a tool supports them. For exact JSON/REST APIs, prefer http.request when the target is allowlisted. If a needed connector is missing, refresh or install MCP when a matching server is known; otherwise use adapter.factory to scaffold and test a proposal instead of inventing unregistered tool names."""
 

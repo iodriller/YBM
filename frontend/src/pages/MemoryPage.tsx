@@ -70,6 +70,7 @@ export function MemoryPage() {
           <Card className="border-primary/40 shadow-sm ring-1 ring-primary/10">
             <CardContent className="flex flex-col gap-2">
               <Input
+                aria-label="Category"
                 value={category}
                 onChange={(e) => setCategory(e.target.value)}
                 placeholder="Category (e.g. preference, project)"
@@ -78,6 +79,7 @@ export function MemoryPage() {
                 className="max-w-xs font-medium"
               />
               <Textarea
+                aria-label="Fact content"
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
                 placeholder="What should YBM remember?"
@@ -106,6 +108,7 @@ export function MemoryPage() {
         )}
 
         <Input
+          aria-label="Search remembered facts"
           placeholder="Search remembered facts"
           value={q}
           onChange={(e) => setQ(e.target.value)}

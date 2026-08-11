@@ -31,6 +31,8 @@ import {
   sendTaskSignal,
   setSecret,
   testLLM,
+  testTelegram,
+  detectTelegramOperator,
   uninstallSkill,
   updateAccessModes,
   updateComputerUseConfig,
@@ -320,6 +322,15 @@ export function useTestLLM() {
 
 export function useUpdateTelegramConfig() {
   return useSettingsMutation((input: TelegramConfigInput) => updateTelegramConfig(input))
+}
+
+export function useTestTelegram() {
+  // Real call to Telegram, so click-triggered only - same rule as useTestLLM.
+  return useMutation({ mutationFn: (botToken: string | null) => testTelegram(botToken) })
+}
+
+export function useDetectTelegramOperator() {
+  return useMutation({ mutationFn: (botToken: string | null) => detectTelegramOperator(botToken) })
 }
 
 export function useUpdateVSCodeConfig() {

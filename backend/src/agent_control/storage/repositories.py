@@ -327,6 +327,17 @@ class TaskRepository:
                       OR claim_expires_at IS NULL
                       OR claim_expires_at < ?
                   )
+                  -- Skip a task that is deliberately waiting (retry backoff,
+                  -- or a usage limit that resets hours from now). Without
+                  -- this the oldest parked task is re-claimed on every poll
+                  -- and immediately handed back, and with max_parallel_tasks
+                  -- at 1 that starves every newer task behind it for the
+                  -- whole wait. Both sides are datetime.isoformat(), which
+                  -- compares correctly as text.
+                  AND (
+                      json_extract(metadata_json, '$.next_retry_at') IS NULL
+                      OR json_extract(metadata_json, '$.next_retry_at') <= ?
+                  )
                 ORDER BY created_at ASC
                 LIMIT 1
             )
@@ -341,6 +352,7 @@ class TaskRepository:
                     _dt(now),
                     *(status.value for status in statuses),
                     worker_id,
+                    _dt(now),
                     _dt(now),
                 ],
             ).fetchone()
@@ -1245,6 +1257,19 @@ class AuditRepository:
             rows = connection.execute(
                 "SELECT * FROM audit_events WHERE event_type = ? ORDER BY created_at ASC",
                 (event_type.value,),
+            ).fetchall()
+        return [self._row_to_event(row) for row in rows]
+
+    def list_by_type_recent(self, event_type: AuditEventType, limit: int = 50) -> list[AuditEvent]:
+        """Newest-first and bounded, unlike list_by_type() which returns every
+        matching row ascending. Callers that only want "what happened lately"
+        (the admin console's Telegram panel) must not pull an instance's entire
+        history of an event type into memory to look at the tail of it.
+        """
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM audit_events WHERE event_type = ? ORDER BY created_at DESC LIMIT ?",
+                (event_type.value, limit),
             ).fetchall()
         return [self._row_to_event(row) for row in rows]
 

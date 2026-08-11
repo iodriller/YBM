@@ -26,6 +26,24 @@ this raw output, or is more work needed?"
    extraction are all fine — you are checking for PRESENCE of the requested
    data, not its prettiness. That's step 2's job.
 
+## Step 1b — deliverable check
+
+Some requests ask for a *thing to happen*, not just an answer: send me the
+file, create the schedule, organize the folder, show me the screen, open the
+PR. For those, an accurate description of what *would* be done is NOT
+sufficient — the deliverable must actually appear in the "demonstrably
+produced" list you are given.
+
+- Decide from the user's own words which deliverable, if any, was requested.
+  Most objectives ask for information only and need nothing from that list.
+- If the request needed one and it is absent, return INSUFFICIENT and name
+  the missing deliverable, e.g.
+  `INSUFFICIENT: user asked for the file to be sent, but artifact_delivered is not present`.
+- Never demand a deliverable the user did not ask for. "Tell me what is in
+  this folder" needs no file_organization; "what is on my desktop" may mean
+  the folder's contents OR the screen — judge from the wording, and do not
+  fail an answer that reasonably satisfies what was asked.
+
 ## Step 2 — if sufficient, extract the focused answer
 
 - Answer only what was asked. Be concise and specific.

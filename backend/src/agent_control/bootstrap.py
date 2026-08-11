@@ -305,6 +305,26 @@ def _node_version(node: str) -> tuple[int, int, int] | None:
     return tuple(int(part) for part in parts[:3])
 
 
+def _check_admin_console() -> Check:
+    """Whether an admin console actually exists to serve.
+
+    The Node check alone was a misleading signal: it reports a tool, while
+    what the operator experiences is a console that either loads or doesn't.
+    A machine with no Node and no build still passed doctor with "0 failures"
+    while /admin served nothing but build instructions - so the one check that
+    described the situation understated it as an optional dependency.
+    """
+    if (Path("backend/src/agent_control/static/admin") / "index.html").exists():
+        return Check("Admin console", "ok", "built - served at /admin")
+    if shutil.which("npm") is None:
+        return Check(
+            "Admin console", "warn",
+            "NOT BUILT and npm is missing, so /admin has no console at all - install "
+            "Node.js 22.22+ then run `ybm ui-build` (the JSON API at /admin/api/* still works)",
+        )
+    return Check("Admin console", "warn", "not built yet - run `ybm ui-build`")
+
+
 def _check_whatsapp(settings: AppSettings) -> Check:
     if not settings.channels.whatsapp.enabled:
         return Check("WhatsApp", "ok", "disabled in config")
@@ -353,7 +373,9 @@ def _check_vault(settings: AppSettings) -> Check:
 
 
 def collect_checks() -> list[Check]:
-    checks: list[Check] = [_check_python(), _check_venv(), *_check_modules(), _check_node()]
+    checks: list[Check] = [
+        _check_python(), _check_venv(), *_check_modules(), _check_node(), _check_admin_console(),
+    ]
     config_check, settings = _load_settings_checked()
     checks.append(config_check)
     if settings is not None:

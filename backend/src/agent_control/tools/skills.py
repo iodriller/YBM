@@ -85,6 +85,35 @@ class SkillsAdapter:
         }
 
 
+def skills_context_section(root_dir: str, max_skills: int = 50) -> str:
+    """The installed skills, as a block for the Operator's prompt.
+
+    Skills were previously reachable only if the model spontaneously guessed
+    to call `skills:list` - no prompt mentioned them at all, so authored
+    procedures for exactly the jobs this system does (organize a folder,
+    summarize a document) sat unread while the model improvised its own
+    approach. Listing name + description here is cheap and makes the choice
+    an informed one; the full body is still fetched on demand via
+    `skills:read`, so a large catalog does not bloat every step's context.
+    """
+    skills = _load_skills(root_dir)[:max_skills]
+    if not skills:
+        # Deliberately empty, not an empty heading. The instruction below lives
+        # inside this block rather than in operator_user.md so that an install
+        # with no skills produces a byte-identical prompt to before - otherwise
+        # every recorded scenario fixture (keyed on a hash of the rendered
+        # prompt) breaks for a feature that has nothing to offer that install.
+        return ""
+    lines = [f"- {skill['name']}: {skill['description']}" for skill in skills]
+    return (
+        "## Skills available\n"
+        "Authored procedures for jobs like these. If one matches this objective, read it FIRST\n"
+        "with the `skills` tool (operation `read`, `name` exactly as written below), then follow\n"
+        "its steps instead of improvising an approach.\n"
+        + "\n".join(lines)
+    )
+
+
 def _load_skills(root_dir: str) -> list[dict[str, Any]]:
     """Every valid skill file under root_dir, sorted by name.
 
