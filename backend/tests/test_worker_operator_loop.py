@@ -438,7 +438,13 @@ async def test_gap_check_entries_do_not_consume_the_tool_call_budget(tmp_path) -
     model needs to close that gap, and a task could exhaust its whole budget
     having called zero tools."""
     repos, audit = make_repos(tmp_path)
-    task = repos.tasks.create("summarize the report")
+    # Not "summarize the report" - fulfillment.py's SOURCE_CONTENT trigger
+    # matches that wording and grants the operator extra targeted-repair
+    # slots on top of operator_max_steps (see
+    # test_operator_step_budget_allows_targeted_fulfillment_repair), which
+    # would conflate that budget-extension feature with the one under test
+    # here: that CHECK pseudo-entries themselves are excluded from the count.
+    task = repos.tasks.create("endless task")
     settings = _settings()
     executor = _executor(settings, audit, repos, tool_name="filesystem.manage", output={"text": "content"})
 
@@ -596,6 +602,10 @@ async def test_auditor_receives_latest_clarification_as_response_context(tmp_pat
         executor=_executor(_settings(), audit, repos),
         operator=QueueOperator([OperatorDecision(action=OperatorAction.DONE, final_answer="done")]),
         auditor=auditor,
+        # Only one tool call precedes the done - default audit_min_tool_calls
+        # (2) would skip auditing entirely, and this test is about
+        # response_context content, not that threshold.
+        audit_min_tool_calls=1,
     )
 
     result = await worker.process_task(task.id)

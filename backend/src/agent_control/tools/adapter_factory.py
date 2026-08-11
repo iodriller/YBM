@@ -150,7 +150,7 @@ class AdapterFactoryAdapter:
         if not adapter_dir:
             adapter_id = str(request.input.get("adapter_id") or "").strip()
             if adapter_id:
-                adapter_dir = str(Path(self.config.root_dir) / _safe_segment(adapter_id))
+                adapter_dir = str(Path(self.config.root_dir) / _safe_identifier_segment(adapter_id))
         if not adapter_dir:
             raise ValueError("adapter_dir (or adapter_id) is required for sandbox_execute_once")
         path = _require_adapter_dir_inside_root(adapter_dir, self.config.root_dir)
