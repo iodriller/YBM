@@ -8,6 +8,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { ArtifactCard } from "@/components/chat/ArtifactCard"
 import { ChatMarkdown } from "@/components/chat/ChatMarkdown"
 import { ComposerModeChips, ComposerTools, COMPOSER_MODES } from "@/components/chat/ComposerTools"
+import { VoiceRecorder } from "@/components/chat/VoiceRecorder"
 import { FolderPicker } from "@/components/chat/FolderPicker"
 import { InlineApproval } from "@/components/chat/InlineApproval"
 import { TaskReceiptCard } from "@/components/chat/TaskReceiptCard"
@@ -262,6 +263,13 @@ ${instructions}` : trimmed
               <Paperclip className="size-4" />
             </Button>
             <FolderPicker onSelect={handleFolderSelect} />
+            <VoiceRecorder
+              disabled={sendMessage.isPending}
+              // Into the composer, not straight out - the user gets to read
+              // what was heard and fix it before sending.
+              onTranscript={(text) => setDraft((prev) => (prev ? `${prev} ${text}` : text))}
+              onError={(message) => toast.error(message)}
+            />
             <ComposerTools
               selected={modes}
               onToggle={(key) =>
@@ -277,7 +285,10 @@ ${instructions}` : trimmed
                   handleSend(draft)
                 }
               }}
-              placeholder="Ask YBM to do something..."
+              placeholder="Ask YBM anything..."
+              // At 390px the composer buttons leave the textarea narrow
+              // enough to wrap the placeholder, and rows={1} clipped it.
+              style={{ minHeight: "2.75rem" }}
               disabled={sendMessage.isPending}
               autoFocus
               rows={1}

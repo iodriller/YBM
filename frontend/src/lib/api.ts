@@ -975,6 +975,27 @@ export type LLMConfigInput = {
   api_key_value: string | null
 }
 
+const VoiceConfigSchema = z.object({
+  enabled: z.boolean(),
+  provider: z.string(),
+  model: z.string(),
+  installed: z.boolean(),
+  available: z.boolean(),
+  install_hint: z.string(),
+})
+export type VoiceConfig = z.infer<typeof VoiceConfigSchema>
+
+export function fetchVoiceConfig() {
+  return apiFetch("/api/config/voice", VoiceConfigSchema)
+}
+
+export function updateVoiceConfig(enabled: boolean) {
+  return apiFetch("/api/config/voice", ConfigUpdateResponseSchema, {
+    method: "POST",
+    body: JSON.stringify({ enabled }),
+  })
+}
+
 /** The channel catalog. Adding a way to reach YBM is a backend table row. */
 const ChannelSchema = z.object({
   key: z.string(),

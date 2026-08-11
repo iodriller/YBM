@@ -98,6 +98,27 @@ def is_headless_runtime() -> bool:
         return False
 
 
+def _check_voice_modules(settings: AppSettings) -> Check:
+    """Speech-to-text needs an optional extra that nothing checked for.
+
+    Enabling STT without installing it failed at first use - a user sends a
+    voice note and gets an error instead of an answer. Startup is a better
+    place to find out than the first voice message.
+    """
+    stt = settings.adapters.stt
+    if not stt.enabled:
+        return Check("Voice transcription", "ok", "off - voice messages are answered with a note saying so")
+    if stt.provider != "faster_whisper":
+        return Check("Voice transcription", "ok", f"on, using {stt.provider}")
+    if importlib.util.find_spec("faster_whisper") is None:
+        return Check(
+            "Voice transcription",
+            "fail",
+            "enabled but faster-whisper is not installed - run `uv sync --extra voice`, or turn voice off",
+        )
+    return Check("Voice transcription", "ok", f"on, faster-whisper model '{stt.model}'")
+
+
 def _check_desktop_modules(settings: AppSettings) -> list[Check]:
     if not _desktop_capability_requested(settings):
         return [Check("Desktop control modules", "ok", "not requested by config - skipped")]
@@ -300,6 +321,7 @@ def collect_checks() -> list[Check]:
     checks.append(config_check)
     if settings is not None:
         checks.extend(_check_desktop_modules(settings))
+        checks.append(_check_voice_modules(settings))
         checks.append(_check_db(settings))
         checks.append(check_localdeploy(settings))
         checks.append(_check_telegram(settings))

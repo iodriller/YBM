@@ -37,6 +37,16 @@ refusal — to a sentence on what happened and a sentence on what to do.
 
 ---
 
+## Closed since
+
+- **G1** voice recording in the console — mic button, `POST /api/chat/transcribe`.
+- **G2** voice toggle in Settings, so the failure reply's advice is real.
+- **G3** `doctor` checks the voice extra before first use.
+- **G4** worker failures go through `explain_for_user`.
+- **G7** phone and tablet checked: no horizontal overflow; fixed a clipped composer placeholder.
+
+Still open: **G5** (plausibility) and **G6** (starter prompts) — both need live model spend.
+
 ## Open gaps
 
 ### G1 — Voice in web chat does not exist

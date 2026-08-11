@@ -11,6 +11,8 @@ instead of investigated.
 
 from __future__ import annotations
 
+import re
+
 
 def describe_exception(exc: BaseException, *, limit: int = 400) -> str:
     """``TypeName: message``, or just ``TypeName`` when there is no message.
@@ -106,15 +108,40 @@ _USER_FACING_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
 )
 
 
-def explain_for_user(exc: BaseException) -> str:
+def explain_for_user(exc: BaseException | str) -> str:
     """A sentence on what happened and a sentence on what to do next.
 
     Never a class name, a status code, or an internal stage. `describe_exception`
     still produces those for the log and the task trace, which is where someone
     debugging will look; this is for the person who just wanted an answer.
+
+    Accepts a stored string as well as a live exception, because a task's
+    `last_worker_error` is a string by the time anyone reads it - the exception
+    itself is long gone.
     """
-    haystack = f"{type(exc).__name__}: {exc}".lower()
+    haystack = (exc if isinstance(exc, str) else f"{type(exc).__name__}: {exc}").lower()
     for needles, message in _USER_FACING_RULES:
         if any(needle in haystack for needle in needles):
             return message
+    if isinstance(exc, str) and _looks_diagnostic(exc):
+        return "Something went wrong on my side and I couldn't finish that. The details are in the task trace."
+    if isinstance(exc, str) and exc.strip():
+        # Already human - a fulfillment gap or an explicit refusal reason.
+        return exc.strip()
     return "Something went wrong on my side and I couldn't finish that. The details are in the task trace."
+
+
+def _looks_diagnostic(text: str) -> bool:
+    """Whether a stored error reads like a stack trace rather than a sentence.
+
+    The heuristic is deliberately simple: exception strings carry a
+    `TypeName:` prefix or snake_case internal stage names, and sentences
+    written for people do not.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return True
+    head = stripped.split(":", 1)[0]
+    if head and head[:1].isupper() and " " not in head and ("Error" in head or "Exception" in head):
+        return True
+    return bool(re.match(r"^[a-z][a-z0-9]*(_[a-z0-9]+)+", stripped))

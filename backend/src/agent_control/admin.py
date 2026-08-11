@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
+import importlib.util
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -21,7 +22,9 @@ from agent_control.bootstrap import OLLAMA_TAGS_URL, _http_json, check_llm_confi
 from agent_control.config_sync import CONFIG_FILE_PATH, ConfigManager, read_env_value
 from agent_control.config import AppSettings, backend_base_url, is_loopback_host
 from agent_control.config import LLMProfileConfig
+from agent_control.tools.stt import build_stt_adapter
 from agent_control.channels import catalog as channel_catalog
+from agent_control.error_text import explain_voice_failure
 from agent_control.llm import catalog as llm_catalog
 from agent_control.llm import hardware as llm_hardware
 from agent_control.llm.providers import build_provider_for_profile
@@ -87,6 +90,11 @@ class AdminLLMConfigRequest(StrictBaseModel):
 
 class AdminLLMPresetRequest(StrictBaseModel):
     preset: str = Field(min_length=1, max_length=80)
+
+
+class AdminVoiceConfigRequest(StrictBaseModel):
+    enabled: bool
+    model: str | None = Field(default=None, min_length=1, max_length=80)
 
 
 class AdminTelegramConfigRequest(StrictBaseModel):
@@ -1325,6 +1333,84 @@ def create_admin_router(
             "reply": reply.strip()[:500],
             "latency_ms": round((time.monotonic() - started) * 1000),
         }
+
+    @router.get("/api/config/voice")
+    def admin_get_voice_config(request: Request) -> dict[str, Any]:
+        """Whether voice transcription is on, and whether it could be.
+
+        The voice failure reply tells the user to turn voice on in Settings, so
+        Settings has to actually offer it - otherwise the advice is a promise
+        the console cannot keep.
+        """
+        loaded = require_admin(request)
+        stt = loaded.adapters.stt
+        installed = importlib.util.find_spec("faster_whisper") is not None
+        return {
+            "enabled": stt.enabled,
+            "provider": stt.provider,
+            "model": stt.model,
+            "installed": installed,
+            # Turning it on without the package fails at the first voice
+            # message, so say so before the switch is flipped.
+            "available": installed or stt.provider != "faster_whisper",
+            "install_hint": "uv sync --extra voice",
+        }
+
+    @router.post("/api/chat/transcribe")
+    async def admin_transcribe_chat_audio(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
+        """Turn a recording from the console into text.
+
+        Voice worked on Telegram and nowhere else, which is backwards - the
+        console is where someone tries it first. Same STT adapter, so turning
+        transcription on lights up both channels at once.
+
+        Returns the text rather than creating a task: the console puts it in
+        the composer so the user can read it and correct it before sending,
+        which a chat UI can do and a messaging app cannot.
+        """
+        require_admin(request)
+        settings = settings_loader()
+        if not settings.adapters.stt.enabled:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Speech-to-text is turned off in this setup, so I can't transcribe that. "
+                    "Turn on voice under Settings."
+                ),
+            )
+        audio = await file.read()
+        if not audio:
+            raise HTTPException(status_code=400, detail="That recording was empty.")
+        try:
+            transcript = await build_stt_adapter(settings.adapters.stt).transcribe(
+                audio, file_name=file.filename, mime_type=file.content_type
+            )
+        except Exception as exc:  # noqa: BLE001 - normalized for the UI
+            raise HTTPException(status_code=502, detail=explain_voice_failure(exc)) from None
+        text = (transcript.text or "").strip()
+        if not text:
+            raise HTTPException(
+                status_code=422, detail="I could not make out any words in that recording."
+            )
+        return {"text": text}
+
+    @router.post("/api/config/voice")
+    def admin_update_voice_config(request: Request, payload: AdminVoiceConfigRequest) -> dict[str, Any]:
+        loaded = require_admin(request)
+        if payload.enabled and loaded.adapters.stt.provider == "faster_whisper":
+            if importlib.util.find_spec("faster_whisper") is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Voice transcription needs the voice extra installed first: uv sync --extra voice",
+                )
+        config = _read_config_file(config_manager)
+        stt = config.setdefault("adapters", {}).setdefault("stt", {})
+        stt["enabled"] = payload.enabled
+        if payload.model:
+            stt["model"] = payload.model
+        _write_config_file(config_manager, config)
+        _audit_config_update(repositories_loader(), loaded, "voice", {"enabled": payload.enabled})
+        return {"config_file": str(CONFIG_FILE_PATH), "stt": stt}
 
     @router.post("/api/config/vscode")
     def admin_update_vscode_config(request: Request, payload: AdminVSCodeConfigRequest) -> dict[str, Any]:

@@ -75,3 +75,74 @@ def test_every_user_facing_message_is_a_sentence_not_a_token() -> None:
             assert message[0].isupper(), message
             assert " " in message.strip(), message
             assert "_" not in message, f"internal token leaked: {message}"
+
+
+# -- voice in the console ----------------------------------------------------
+
+
+def test_transcribe_refuses_clearly_when_voice_is_off(monkeypatch, tmp_path) -> None:
+    """The console must give the same answer Telegram now does, not a 500."""
+    from tests.test_admin import _admin_client, _repositories
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    response = client.post("/admin/api/chat/transcribe", files={"file": ("a.webm", b"x", "audio/webm")})
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "turned off" in detail and "Settings" in detail
+    assert "STT" not in detail
+
+
+def test_voice_config_reports_whether_it_could_even_be_turned_on(monkeypatch, tmp_path) -> None:
+    """Flipping the switch without the package fails at the first recording,
+    so the console has to know before offering it."""
+    from tests.test_admin import _admin_client, _repositories
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    body = client.get("/admin/api/config/voice").json()
+    assert body["enabled"] is False
+    assert "available" in body and "installed" in body
+    assert body["install_hint"]
+
+
+def test_turning_voice_on_without_the_package_is_refused_with_the_fix(monkeypatch, tmp_path) -> None:
+    from tests.test_admin import _admin_client, _repositories
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
+    client = _admin_client(_repositories(f"sqlite:///{tmp_path / 'admin.db'}"))
+
+    response = client.post("/admin/api/config/voice", json={"enabled": True})
+    if response.status_code == 400:
+        assert "extra voice" in response.json()["detail"]
+    else:
+        # faster-whisper is installed here, so enabling is legitimate.
+        assert response.status_code == 200
+
+
+# -- stored worker errors ----------------------------------------------------
+
+
+def test_a_stored_exception_string_is_rewritten_for_the_user() -> None:
+    """`last_worker_error` is a describe_exception string by the time anyone
+    reads it - the exception is long gone."""
+    assert "HTTPStatusError" not in explain_for_user("HTTPStatusError: Server error '502 Bad Gateway'")
+    assert "minute" in explain_for_user("HTTPStatusError: Server error '502 Bad Gateway'")
+
+
+def test_an_internal_stage_name_does_not_reach_the_user() -> None:
+    message = explain_for_user("operator_decide_failed")
+    assert "operator_decide_failed" not in message
+    assert "task trace" in message
+
+
+def test_a_message_already_written_for_a_person_passes_through() -> None:
+    """A fulfillment gap is prose, not a diagnostic - rewriting it would throw
+    away the only useful thing in it."""
+    human = "I could not find any PDF files on your desktop."
+    assert explain_for_user(human) == human
