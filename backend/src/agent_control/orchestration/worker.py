@@ -2432,7 +2432,7 @@ def _ordered_artifact_delivery_call(
     history: list[dict[str, Any]],
     definitions: dict[str, Any],
 ) -> tuple[str | None, dict[str, Any]]:
-    """Honor an explicit delivery-before-follow-up dependency.
+    """Honor an explicit delivery request before local/open follow-up work.
 
     A model repeatedly tried to create a schedule before sending the file in
     "only after the file is delivered, create a schedule", then fabricated
@@ -2442,6 +2442,31 @@ def _ordered_artifact_delivery_call(
     policy, root, channel, and approval checks still apply; only ordering is
     made deterministic.
     """
+    delivery_definition = definitions.get("artifact.deliver")
+    delivery_operations = set(getattr(delivery_definition, "operations", ()) or ())
+    delivery_missing = PostconditionType.ARTIFACT_DELIVERED in set(
+        validate_fulfillment(task).missing
+    )
+
+    # `filesystem.manage:open_file` means open the file in a local desktop
+    # application. Small models can mistake that for sending an already found
+    # file to the user. When delivery is an explicit unmet postcondition and
+    # the model already supplied the exact path, no semantic choice remains:
+    # route the same path through the delivery adapter. Its normal root,
+    # channel, schema, policy, and approval checks still apply.
+    if (
+        tool_name == "filesystem.manage"
+        and tool_input.get("operation") == "open_file"
+        and tool_input.get("path")
+        and delivery_missing
+        and "send_file" in delivery_operations
+    ):
+        return "artifact.deliver", {
+            "operation": "send_file",
+            "path": tool_input["path"],
+            "caption": "Requested file",
+        }
+
     if tool_name != "schedule.manage":
         return tool_name, tool_input
     request_text = str(task.metadata.get("original_message_text") or task.objective)
@@ -2453,13 +2478,12 @@ def _ordered_artifact_delivery_call(
     )
     if not ordered_request:
         return tool_name, tool_input
-    if PostconditionType.ARTIFACT_DELIVERED not in set(validate_fulfillment(task).missing):
+    if not delivery_missing:
         return tool_name, tool_input
     output_path = _known_written_file_path(task, history)
-    delivery_definition = definitions.get("artifact.deliver")
     if not output_path or delivery_definition is None:
         return tool_name, tool_input
-    if "send_file" not in set(getattr(delivery_definition, "operations", ()) or ()):
+    if "send_file" not in delivery_operations:
         return tool_name, tool_input
     return "artifact.deliver", {
         "operation": "send_file",

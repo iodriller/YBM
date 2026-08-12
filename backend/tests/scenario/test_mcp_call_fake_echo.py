@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import sys
 
-from agent_control.config import MCPConfig, MCPServerConfig
+from agent_control.config import CapabilityPolicy, MCPConfig, MCPServerConfig, default_capability_policies
 from agent_control.schemas import Capability, RiskLevel
 from agent_control.tools.mcp_client import write_mcp_catalog
 import pytest
@@ -126,15 +126,27 @@ async def test_mcp_call_fake_echo_tool_call_succeeds(tmp_path, monkeypatch) -> N
 
 
 @pytest.mark.asyncio
-async def test_mcp_call_fake_echo_disabled_by_capability_policy(tmp_path, monkeypatch) -> None:
+async def test_mcp_call_fake_echo_rejected_by_capability_scope(tmp_path, monkeypatch) -> None:
     workspace = scenario_scratch_dir("mcp_call_fake_echo")
     server_path = workspace / "fake_mcp_server.py"
     _write_fake_mcp_server(server_path)
     catalog_path = workspace / "tool_catalog.json"
 
-    # TERMINAL_RUN left at its secure-by-default disabled state.
+    # Keep the tool visible to the Operator so this scenario exercises the
+    # runtime policy gate instead of depending on a model to call a tool the
+    # catalog explicitly labels disabled. The request carries no matching
+    # scope target, so the configured capability scope must reject it before
+    # the fake server runs.
+    caps = default_capability_policies()
+    caps[Capability.TERMINAL_RUN] = CapabilityPolicy(
+        enabled=True,
+        requires_approval=False,
+        max_risk_level=RiskLevel.HIGH,
+        scopes=["approved-server"],
+    )
     settings = isolated_settings(
         monkeypatch, tmp_path,
+        capabilities=caps,
         mcp=MCPConfig(
             enabled=True,
             catalog_path=str(catalog_path),
@@ -169,10 +181,9 @@ async def test_mcp_call_fake_echo_disabled_by_capability_policy(tmp_path, monkey
 
     task = await run_task_to_completion(scenario, 'Use the fake MCP echo tool to echo the exact text "hello from E2E".')
 
-    # Distinct from the success case above: the Operator still reasonably
-    # decides to try mcp.client, and the policy gate is what refuses it -
-    # recorded as a denied attempt in the audit trail, not as the call never
-    # being attempted at all.
+    # Distinct from the success case above: the Operator sees an enabled tool
+    # and tries it, while the policy scope refuses the request before the MCP
+    # adapter can dispatch it.
     assert_rejected(task)
     tool_calls = scenario.repositories.tool_invocations.list_for_task(task.id)
     mcp_calls = [call for call in tool_calls if call["tool_name"] == "mcp.client"]
@@ -181,7 +192,7 @@ async def test_mcp_call_fake_echo_disabled_by_capability_policy(tmp_path, monkey
     # confuse with the unrelated, list-typed `args` field on the same
     # contract (install_server's command-line args) - a first attempt using
     # the wrong one fails input validation before ever reaching the policy
-    # engine's capability check, and the model may retry several times
+    # engine's capability-scope check, and the model may retry several times
     # before it (or doesn't) get the shape right. Reproduced live: one
     # recording had the model repeat the `args` mistake for 7 consecutive
     # retries with zero self-correction, so every one of that run's calls
@@ -191,4 +202,4 @@ async def test_mcp_call_fake_echo_disabled_by_capability_policy(tmp_path, monkey
     # policy gate firing at least once is what this test is about.
     denied_calls = [call for call in mcp_calls if call["result"]["status"] == "denied"]
     assert denied_calls
-    assert all(call["result"].get("error_message") == "capability_disabled" for call in denied_calls)
+    assert all(call["result"].get("error_message") == "scope_not_allowed" for call in denied_calls)

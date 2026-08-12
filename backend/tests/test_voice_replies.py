@@ -82,7 +82,7 @@ def test_every_user_facing_message_is_a_sentence_not_a_token() -> None:
 
 def test_transcribe_refuses_clearly_when_voice_is_off(monkeypatch, tmp_path) -> None:
     """The console must give the same answer Telegram now does, not a 500."""
-    from tests.test_admin import _admin_client, _repositories
+    from test_admin import _admin_client, _repositories
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
@@ -98,7 +98,7 @@ def test_transcribe_refuses_clearly_when_voice_is_off(monkeypatch, tmp_path) -> 
 def test_voice_config_reports_whether_it_could_even_be_turned_on(monkeypatch, tmp_path) -> None:
     """Flipping the switch without the package fails at the first recording,
     so the console has to know before offering it."""
-    from tests.test_admin import _admin_client, _repositories
+    from test_admin import _admin_client, _repositories
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)
@@ -111,7 +111,7 @@ def test_voice_config_reports_whether_it_could_even_be_turned_on(monkeypatch, tm
 
 
 def test_turning_voice_on_without_the_package_is_refused_with_the_fix(monkeypatch, tmp_path) -> None:
-    from tests.test_admin import _admin_client, _repositories
+    from test_admin import _admin_client, _repositories
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("AGENT_ADMIN_TOKEN", raising=False)

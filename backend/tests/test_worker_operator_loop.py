@@ -1090,6 +1090,34 @@ def test_explicit_delivery_before_schedule_reorders_the_tool_call() -> None:
     assert tool_input["path"] == "C:/output/brief.md"
 
 
+def test_explicit_delivery_replaces_local_open_with_send() -> None:
+    task = TaskRecord(objective="Find the file at C:/output/brief.md and send it to me.")
+    definitions = {
+        "artifact.deliver": ToolDefinition(
+            name="artifact.deliver",
+            capability=Capability.TELEGRAM_SEND,
+            enabled=True,
+            description="test",
+            operations=("send_file",),
+        )
+    }
+
+    tool_name, tool_input = _ordered_artifact_delivery_call(
+        task,
+        "filesystem.manage",
+        {"operation": "open_file", "path": "C:/output/brief.md"},
+        [],
+        definitions,
+    )
+
+    assert tool_name == "artifact.deliver"
+    assert tool_input == {
+        "operation": "send_file",
+        "path": "C:/output/brief.md",
+        "caption": "Requested file",
+    }
+
+
 def test_named_cache_only_adapter_rejects_premature_clarification() -> None:
     task = TaskRecord(
         objective="Create the adapter proposal.",
