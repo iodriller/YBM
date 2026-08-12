@@ -87,6 +87,16 @@ printf '\033[36mYBM\033[0m\n'
 echo "==========="
 echo ""
 
+# A first run downloads uv, a Python runtime, and a few hundred MB of
+# dependencies. An unexplained multi-minute pause reads as a hang rather than
+# as progress, so say what is happening and roughly how long before it starts.
+if [ ! -x "backend/.venv/bin/python" ]; then
+  printf '\033[33mFirst run - setting things up.\033[0m\n'
+  echo "This downloads Python and YBM's dependencies, and usually takes 2-5 minutes."
+  echo "You only wait once; after this YBM starts in a few seconds."
+  echo ""
+fi
+
 UV="$(ensure_uv)"
 
 # Runtime extras only. Keep this list in step with Get-YbmRuntimeExtraArgs in
@@ -102,9 +112,9 @@ STORED_FP=""
 [ -f "$FINGERPRINT_FILE" ] && STORED_FP="$(cat "$FINGERPRINT_FILE")"
 
 if [ -x "$VENV_PY" ] && [ -n "$CURRENT_FP" ] && [ "$CURRENT_FP" = "$STORED_FP" ]; then
-  info "Dependencies up to date - skipping sync."
+  info "[1/3] Dependencies up to date - skipping sync."
 else
-  log "Checking install (first run can take a few minutes)"
+  log "[1/3] Installing dependencies (the long part on a first run)"
   ( cd backend && "$UV" sync "${EXTRAS[@]}" ) \
     || fail "dependency install failed" "See the message above."
   [ -n "$CURRENT_FP" ] && printf '%s' "$CURRENT_FP" > "$FINGERPRINT_FILE"
@@ -116,9 +126,9 @@ YBM_BIN="$HERE/backend/.venv/bin/ybm"
 
 # Idempotent: creates config.yaml and tokens the first time, leaves them alone
 # afterwards.
-log "Setting up config and tokens"
+log "[2/3] Setting up config and tokens"
 "$YBM_BIN" setup
 
-log "Starting YBM"
+log "[3/3] Starting YBM and opening the console"
 "$YBM_BIN" start --open \
   || fail "startup failed" "Run '$YBM_BIN doctor' to diagnose. Logs: $HERE/.agent_control/logs"

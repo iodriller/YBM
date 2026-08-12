@@ -243,7 +243,21 @@ function Invoke-YbmRun {
   Write-Host "==========="
   Write-Host ""
 
-  Write-Host "Checking install..." -ForegroundColor Cyan
+  # A first run downloads uv, a Python runtime, and a few hundred MB of
+  # dependencies. That is minutes of a console window doing something the
+  # person watching cannot identify, and an unexplained pause reads as a hang,
+  # not as progress. Say what is happening and roughly how long before it
+  # starts, and number the stages so the window is legibly moving.
+  $firstRun = -not (Test-Path -LiteralPath $Script:YbmVenvPython)
+  if ($firstRun) {
+    Write-Host "First run - setting things up." -ForegroundColor Yellow
+    Write-Host "This downloads Python and YBM's dependencies, and usually takes 2-5 minutes."
+    Write-Host "You only wait once; after this YBM starts in a few seconds."
+    Write-Host "Leave this window open - it opens your browser when it is ready."
+    Write-Host ""
+  }
+
+  Write-Host "[1/4] Checking install..." -ForegroundColor Cyan
   # -RuntimeOnly: a person double-clicking their way to a running console
   # has no use for pytest, ruff, or the Telethon E2E client - those stay
   # behind the bare `ybm setup` a developer types themselves.
@@ -263,9 +277,9 @@ function Invoke-YbmRun {
     $currentFingerprint = Get-YbmLockFingerprint
     $storedFingerprint = if (Test-Path -LiteralPath $fingerprintPath) { Get-Content -LiteralPath $fingerprintPath -Raw } else { $null }
     if ($currentFingerprint -and $storedFingerprint -eq $currentFingerprint) {
-      Write-Host "Dependencies up to date - skipping sync." -ForegroundColor DarkGray
+      Write-Host "[2/4] Dependencies up to date - skipping sync." -ForegroundColor DarkGray
     } else {
-      Write-Host "Syncing dependencies..." -ForegroundColor Cyan
+      Write-Host "[2/4] Installing dependencies (the long part on a first run)..." -ForegroundColor Cyan
       Push-Location (Join-Path $Script:YbmRoot "backend")
       try {
         # No output redirection here on purpose: uv writes routine progress
@@ -290,7 +304,7 @@ function Invoke-YbmRun {
   }
 
   Write-Host ""
-  Write-Host "Checking for updates..." -ForegroundColor Cyan
+  Write-Host "[3/4] Checking for updates..." -ForegroundColor Cyan
   $env:PYTHONPATH = "$Script:YbmRoot\backend\src"
   & (Get-YbmPython) -m agent_control.cli check-updates
   # Deliberately informational only, never auto-applied: pulling and
@@ -299,7 +313,7 @@ function Invoke-YbmRun {
   # reasoning as `ybm check-updates` itself (docs/UI_UX_AUDIT.md Phase 6).
 
   Write-Host ""
-  Write-Host "Starting..." -ForegroundColor Cyan
+  Write-Host "[4/4] Starting YBM and opening the console..." -ForegroundColor Cyan
   Invoke-YbmStart -Argv @("-Open")
 }
 

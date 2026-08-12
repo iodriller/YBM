@@ -70,6 +70,28 @@
     <StandardDirectory Id="ProgramMenuFolder">
       <Directory Id="ShortcutFolder" Name="YBM" />
     </StandardDirectory>
+    <StandardDirectory Id="StartupFolder" />
+
+    <!-- Off by default: a local agent that puts itself in Startup without
+         being asked is exactly the behaviour this product argues against.
+         Pass STARTATLOGIN=1 (or tick the box in the UI) to opt in. -->
+    <Property Id="STARTATLOGIN" Value="0" />
+    <SetProperty Id="StartAtLoginChosen" Value="1" After="AppSearch" Condition="STARTATLOGIN = &quot;1&quot;" />
+
+    <!-- Launch after install so "installed" means "running", instead of
+         leaving the user to find a Start Menu entry for something that then
+         needs several minutes of first-run setup anyway. -->
+    <!-- Set at runtime rather than declared as a literal Property:
+         INSTALLFOLDER is not resolved until costing, so a Property whose value
+         embeds it would ship the unexpanded string. -->
+    <SetProperty Id="WixShellExecTarget" Value="[INSTALLFOLDER]YBM.bat" After="CostFinalize" Sequence="execute" />
+    <CustomAction Id="LaunchYbm" DllEntry="WixShellExec" Impersonate="yes"
+                  BinaryRef="Wix4UtilCA_X86" Return="ignore" />
+    <InstallExecuteSequence>
+      <Custom Action="LaunchYbm" After="InstallFinalize"
+              Condition="NOT Installed AND NOT REMOVE AND LAUNCHAFTERINSTALL = &quot;1&quot;" />
+    </InstallExecuteSequence>
+    <Property Id="LAUNCHAFTERINSTALL" Value="1" />
 
     <Feature Id="Main" Title="YBM" Level="1">
       <ComponentGroupRef Id="PayloadFiles" />
@@ -98,6 +120,17 @@
         <!-- A per-user component needs a per-user keypath, and HKCU is the only
              hive this install is allowed to write. -->
         <RegistryValue Root="HKCU" Key="Software\iodriller\YBM" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+
+      <Component Id="StartupShortcut" Directory="StartupFolder" Guid="C51E7A38-6B04-4D2F-9A17-2E8D3F60B4C9"
+                 Condition="StartAtLoginChosen">
+        <Shortcut Id="YbmStartup"
+                  Name="YBM"
+                  Description="Start YBM at login"
+                  Target="[INSTALLFOLDER]YBM.bat"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="YbmIcon" />
+        <RegistryValue Root="HKCU" Key="Software\iodriller\YBM" Name="startAtLogin" Type="integer" Value="1" KeyPath="yes" />
       </Component>
     </ComponentGroup>
   </Fragment>

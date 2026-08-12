@@ -62,8 +62,14 @@ New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 Write-Host "Building $output" -ForegroundColor Cyan
 Write-Host "  product version $productVersion (from $Version)" -ForegroundColor DarkGray
 
+# WixToolset.Util supplies WixShellExec, which is what launches YBM once the
+# install finishes. Added per-build rather than assumed present so a clean
+# machine (and the release runner) resolves it the same way.
+& $wix extension add -g WixToolset.Util.wixext/5.0.2 2>&1 | Out-Null
+
 & $wix build `
     -arch x64 `
+    -ext WixToolset.Util.wixext `
     -d "Version=$productVersion" `
     -d "PayloadDir=$PayloadDir" `
     -d "IconFile=$icon" `
