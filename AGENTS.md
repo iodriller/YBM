@@ -30,7 +30,8 @@ installed Python CLI lives inside the virtualenv it has to create and so cannot
 bootstrap it. Keep the runtime extras in `ybm.sh` in step with
 `Get-YbmRuntimeExtraArgs` in `scripts/ybm.ps1`. `scripts/install.sh` and
 `scripts/install.ps1` download the complete latest release, including the
-prebuilt admin console, and hand off to those launchers.
+prebuilt admin console, verify its checksum, and hand off to those launchers.
+`Install-YBM.bat` is the public double-click bootstrap for the PowerShell path.
 
 For development, use `scripts/ybm.ps1` instead of assembling service commands by hand:
 

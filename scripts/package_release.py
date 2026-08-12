@@ -32,7 +32,7 @@ import zipfile
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Single files copied to the payload root.
-ROOT_FILES = ("YBM.bat", "ybm.sh", "README.md", "LICENSE", "CHANGELOG.md")
+ROOT_FILES = ("YBM.bat", "Install-YBM.bat", "ybm.sh", "README.md", "LICENSE", "CHANGELOG.md")
 
 # Directory trees. backend/tests and the VS Code extension are not runtime.
 TREES = ("backend/src", "scripts", "whatsapp-bridge/src")

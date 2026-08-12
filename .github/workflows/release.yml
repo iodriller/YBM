@@ -1,6 +1,6 @@
 name: Release
 
-# Publishes the Windows installer and the cross-platform archives for a tag.
+# Publishes the Windows installers, cross-platform archives, and container for a tag.
 #
 # The reason this workflow exists: a source checkout has no admin console until
 # someone installs Node.js 22.22+ and builds it, which is the one prerequisite a
@@ -36,14 +36,41 @@ jobs:
       contents: read
     uses: ./.github/workflows/ci.yml
 
+  container-test:
+    name: Release container
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build and inspect release image
+        env:
+          VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.version }}
+        run: |
+          set -euo pipefail
+          version="${VERSION#v}"
+          docker build --build-arg "YBM_VERSION=$version" --tag ybm-release:test .
+          docker run --rm --entrypoint sh ybm-release:test -c '
+            node --version &&
+            test -f /app/backend/src/agent_control/static/admin/index.html &&
+            test -f /app/whatsapp-bridge/src/index.js &&
+            test -f /app/skills/starter/repo-review.md &&
+            ybm --help >/dev/null
+          '
+
   windows:
     name: Installer and archives
-    needs: validate
+    needs: [validate, container-test]
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     permissions:
-      # Only the publish step needs this, and only on a tag.
-      contents: write
+      contents: read
       # For the build provenance attestation below.
       id-token: write
       attestations: write
@@ -103,17 +130,81 @@ jobs:
         shell: pwsh
         run: ./scripts/build_msi.ps1 -Version "${{ steps.version.outputs.version }}"
 
-      # winget's manifest needs the exact SHA256 of the published installer, and
-      # a user verifying a download needs it published beside the file.
+      - name: Test MSI install, runtime setup, health, and uninstall
+        shell: pwsh
+        run: |
+          $msi = (Resolve-Path "dist\YBM-Setup.msi").Path
+          # Exercise the default per-user location used by an actual
+          # double-click install. This also proves uninstall resolves the same
+          # directory without relying on an out-of-band path override.
+          $installDir = Join-Path $env:LOCALAPPDATA "YBM"
+          $installLog = Join-Path $env:RUNNER_TEMP "ybm-msi-install.log"
+          $uninstallLog = Join-Path $env:RUNNER_TEMP "ybm-msi-uninstall.log"
+
+          function Invoke-Msi([string[]]$Arguments, [string]$Log) {
+            $process = Start-Process msiexec.exe -Wait -PassThru -ArgumentList $Arguments
+            if ($process.ExitCode -ne 0) {
+              if (Test-Path -LiteralPath $Log) { Get-Content -LiteralPath $Log -Tail 200 }
+              throw "msiexec failed with exit $($process.ExitCode)"
+            }
+          }
+
+          Invoke-Msi @("/i", "`"$msi`"", "/qn", "/norestart", "/L*V", "`"$installLog`"") $installLog
+          foreach ($relative in @(
+            "YBM.bat",
+            "Install-YBM.bat",
+            "scripts\ybm.ps1",
+            "backend\src\agent_control\static\admin\index.html"
+          )) {
+            $path = Join-Path $installDir $relative
+            if (-not (Test-Path -LiteralPath $path)) { throw "MSI did not install $relative" }
+          }
+
+          # Exercise the installed application, not the checkout. This is the
+          # first-run work users were previously left to discover themselves.
+          & "$installDir\scripts\ybm.ps1" setup --runtime-only --no-desktop
+          if ($LASTEXITCODE -ne 0) { throw "installed runtime setup failed (exit $LASTEXITCODE)" }
+          & "$installDir\scripts\ybm.ps1" doctor
+          if ($LASTEXITCODE -ne 0) { throw "installed runtime doctor failed (exit $LASTEXITCODE)" }
+          try {
+            & "$installDir\scripts\ybm.ps1" start -NoTelegram -NoWhatsApp -NoWorker -NoScheduler -NoLocalDeploy -SkipDoctor
+            if ($LASTEXITCODE -ne 0) { throw "installed backend start failed (exit $LASTEXITCODE)" }
+            $health = Invoke-RestMethod -Uri "http://127.0.0.1:8765/health" -TimeoutSec 10
+            if ($health.status -ne "ok") { throw "installed backend health was not ok" }
+          } finally {
+            & "$installDir\scripts\ybm.ps1" stop
+          }
+
+          Invoke-Msi @("/x", "`"$msi`"", "/qn", "/norestart", "/L*V", "`"$uninstallLog`"") $uninstallLog
+          if (Test-Path -LiteralPath (Join-Path $installDir "YBM.bat")) {
+            throw "MSI uninstall left package-owned files behind"
+          }
+
+      - name: Stage double-click and PowerShell installers
+        shell: pwsh
+        run: |
+          Copy-Item -LiteralPath Install-YBM.bat -Destination dist\Install-YBM.bat
+          Copy-Item -LiteralPath scripts\install.ps1 -Destination dist\Install-YBM.ps1
+
+      - name: Test double-click installer entry point
+        shell: cmd
+        env:
+          YBM_INSTALLER_PS1_PATH: ${{ github.workspace }}\scripts\install.ps1
+          YBM_INSTALL_DIR: ${{ runner.temp }}\ybm-batch-smoke
+          YBM_DRY_RUN: "1"
+          YBM_NO_PAUSE: "1"
+        run: |
+          cd /d "%RUNNER_TEMP%"
+          call "%GITHUB_WORKSPACE%\Install-YBM.bat"
+
+      # Publish exact hashes beside the downloads for independent verification.
       - name: Checksums
-        id: checksums
         shell: pwsh
         run: |
           $lines = @()
-          foreach ($file in Get-ChildItem dist\*.zip, dist\*.tar.gz, dist\*.msi) {
+          foreach ($file in Get-ChildItem dist\*.zip, dist\*.tar.gz, dist\*.msi, dist\*.bat, dist\*.ps1) {
             $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
             $lines += "$hash  $($file.Name)"
-            if ($file.Extension -eq ".msi") { "installer_sha256=$hash" >> $env:GITHUB_OUTPUT }
           }
           $lines | Set-Content -LiteralPath dist\SHA256SUMS.txt -Encoding ascii
           $lines | ForEach-Object { Write-Host $_ }
@@ -125,6 +216,8 @@ jobs:
             dist/*.zip
             dist/*.tar.gz
             dist/*.msi
+            dist/*.bat
+            dist/*.ps1
             dist/SHA256SUMS.txt
           if-no-files-found: error
 
@@ -150,25 +243,73 @@ jobs:
             dist/YBM-Setup.msi
             dist/*.zip
             dist/*.tar.gz
+            dist/*.bat
+            dist/*.ps1
 
-      - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
+  container-publish:
+    name: Publish container
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build and publish GHCR image
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.version.outputs.version }}
-          INSTALLER_SHA: ${{ steps.checksums.outputs.installer_sha256 }}
+          IMAGE: ghcr.io/iodriller/ybm
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${VERSION#v}"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker build --build-arg "YBM_VERSION=$version" \
+            --tag "$IMAGE:$version" \
+            --tag "$IMAGE:latest" \
+            .
+          docker push "$IMAGE:$version"
+          docker push "$IMAGE:latest"
+
+  publish-release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, container-publish]
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: ybm-windows-${{ needs.windows.outputs.version }}
+          path: dist
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.ref_name }}
         shell: pwsh
         run: |
+          $version = $env:VERSION -replace "^v", ""
+          $installerSha = (Get-FileHash -LiteralPath dist\YBM-Setup.msi -Algorithm SHA256).Hash
           # Single-quoted here-string: the notes are full of backticks (code
           # fences and inline code), and inside a double-quoted here-string
           # PowerShell reads a backtick as an escape character. Placeholders are
-          # substituted afterwards, and the result goes to gh via --notes-file
-          # so no quoting of a multi-line string is involved either.
+          # substituted afterwards, and the result goes to gh via --notes-file.
           $notes = @'
           ## Install on Windows
 
-          Download `YBM-Setup.msi` below. It is a per-user install, needs no administrator rights,
-          and needs no Node.js - the admin console ships prebuilt.
+          **Installer:** Download `YBM-Setup.msi`, open it, and leave **Launch YBM now** selected.
+          It is a per-user install, needs no administrator rights, and includes the web console.
+
+          **No MSI:** Download `Install-YBM.bat` and double-click it. The window shows each
+          download, verification, setup, and launch step. It needs no signature or administrator
+          account. `Install-YBM.ps1` is provided beside it for people who prefer PowerShell.
 
           Windows will warn that the publisher is unrecognised, because the installer is not
           code signed. That warning is expected and it is not evidence of anything either
@@ -208,14 +349,25 @@ jobs:
           ```
 
           Full checksums are in `SHA256SUMS.txt`.
+
+          ## Docker
+
+          ```
+          docker pull ghcr.io/iodriller/ybm:__VERSION__
+          ```
+
+          The image is also published as `ghcr.io/iodriller/ybm:latest`. It is the headless
+          profile: desktop control, visible Chrome, and the VS Code bridge require a host install.
           '@
-          $notes = $notes.Replace("__SHA__", $env:INSTALLER_SHA).Replace("__VERSION__", $env:VERSION)
+          $notes = $notes.Replace("__SHA__", $installerSha).Replace("__VERSION__", $version)
           Set-Content -LiteralPath release-notes.md -Value $notes -Encoding utf8
-          gh release create "v$env:VERSION" `
+          gh release create "v$version" `
             dist\YBM-Setup.msi `
             dist\YBM-windows.zip `
             dist\YBM-unix.tar.gz `
+            dist\Install-YBM.bat `
+            dist\Install-YBM.ps1 `
             dist\SHA256SUMS.txt `
-            --title "YBM $env:VERSION" `
+            --title "YBM $version" `
             --notes-file release-notes.md `
             --verify-tag

@@ -19,23 +19,23 @@
     No services, no file associations, no PATH edits - installing YBM changes
       nothing about the machine except adding a folder and a shortcut.
 
-  Built by .github/workflows/release.yml. Locally:
-    wix build -arch x64 -d Version=0.1.0 -d PayloadDir=dist\payload `
-      -o dist\YBM-Setup.msi packaging\windows\ybm.wxs
+  Built by .github/workflows/release.yml. Locally, use scripts\build_msi.ps1;
+  it stages the payload, generates validated per-user component authoring, and
+  loads the pinned WiX extensions.
 -->
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <!-- PayloadDir and IconFile are resolved relative to THIS file, not to the
-       working directory, so the build passes them as absolute paths.
-       scripts/build_msi.ps1 does that; the defaults only keep the file
-       openable in an editor. -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <!-- Asset paths are resolved relative to THIS file, not to the working
+       directory, so scripts/build_msi.ps1 passes absolute paths. The defaults
+       only keep this authoring convenient to inspect and edit. -->
   <?ifndef Version?>
   <?define Version = "0.0.0" ?>
   <?endif?>
-  <?ifndef PayloadDir?>
-  <?define PayloadDir = "..\..\dist\payload" ?>
-  <?endif?>
   <?ifndef IconFile?>
   <?define IconFile = "..\..\scripts\assets\logo.ico" ?>
+  <?endif?>
+  <?ifndef LicenseFile?>
+  <?define LicenseFile = "license.rtf" ?>
   <?endif?>
 
   <Package
@@ -64,6 +64,17 @@
     <Icon Id="YbmIcon" SourceFile="$(IconFile)" />
     <Property Id="ARPPRODUCTICON" Value="YbmIcon" />
 
+    <!-- A real internal UI gives a double-clicking user visible install,
+         progress, failure, and completion states. The previous package had
+         no dialog set, then conditioned its launch action on full UI, so it
+         copied the files and appeared to do nothing. -->
+    <ui:WixUI Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(LicenseFile)" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALTEXT"
+              Value="YBM is installed. The first launch downloads its Python runtime and can take 2-5 minutes." />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch YBM now" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+
     <StandardDirectory Id="LocalAppDataFolder">
       <Directory Id="INSTALLFOLDER" Name="YBM" />
     </StandardDirectory>
@@ -74,42 +85,32 @@
 
     <!-- Off by default: a local agent that puts itself in Startup without
          being asked is exactly the behaviour this product argues against.
-         Pass STARTATLOGIN=1 (or tick the box in the UI) to opt in. -->
+         Pass STARTATLOGIN=1 to opt in during a managed install, or enable it
+         later through YBM's documented autostart command. -->
     <Property Id="STARTATLOGIN" Value="0" />
     <SetProperty Id="StartAtLoginChosen" Value="1" After="AppSearch" Condition="STARTATLOGIN = &quot;1&quot;" />
 
-    <!-- Launch after install so "installed" means "running", instead of
-         leaving the user to find a Start Menu entry for something that then
-         needs several minutes of first-run setup anyway. -->
     <!-- Set at runtime rather than declared as a literal Property:
-         INSTALLFOLDER is not resolved until costing, so a Property whose value
-         embeds it would ship the unexpanded string. -->
-    <SetProperty Id="WixShellExecTarget" Value="[INSTALLFOLDER]YBM.bat" After="CostFinalize" Sequence="execute" />
+         INSTALLFOLDER is not resolved until costing. Sequence="both" makes
+         the value available to the Exit dialog's launch action as well as the
+         execute sequence. -->
+    <SetProperty Id="WixShellExecTarget" Value="[INSTALLFOLDER]YBM.bat"
+                 After="CostFinalize" Sequence="both" />
     <CustomAction Id="LaunchYbm" DllEntry="WixShellExec" Impersonate="yes"
                   BinaryRef="Wix4UtilCA_X86" Return="ignore" />
-    <InstallExecuteSequence>
-      <!-- UILevel = 5 restricts this to a full interactive install. winget,
-           Intune, and Group Policy all install with /qn (UILevel 2), where
-           launching a long-running app nobody is watching is wrong - and it
-           would hang winget's own validation, which installs unattended. -->
-      <Custom Action="LaunchYbm" After="InstallFinalize"
-              Condition="NOT Installed AND NOT REMOVE AND LAUNCHAFTERINSTALL = &quot;1&quot; AND UILevel = 5" />
-    </InstallExecuteSequence>
-    <Property Id="LAUNCHAFTERINSTALL" Value="1" />
+    <UI>
+      <!-- Silent deployment remains silent. Interactive users choose this on
+           the final page, where the option is selected by default. -->
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction"
+               Value="LaunchYbm"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
+    </UI>
 
     <Feature Id="Main" Title="YBM" Level="1">
       <ComponentGroupRef Id="PayloadFiles" />
       <ComponentGroupRef Id="Shortcuts" />
     </Feature>
   </Package>
-
-  <Fragment>
-    <!-- Harvests the tree scripts/package_release.py staged, so the file list
-         is never maintained by hand and cannot drift from what actually ships. -->
-    <ComponentGroup Id="PayloadFiles" Directory="INSTALLFOLDER">
-      <Files Include="$(PayloadDir)\**" />
-    </ComponentGroup>
-  </Fragment>
 
   <Fragment>
     <ComponentGroup Id="Shortcuts">

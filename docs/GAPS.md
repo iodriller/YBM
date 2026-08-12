@@ -58,6 +58,8 @@ operator documentation.
 
 ## Release validation
 
-- The release archives and MSI are built and tested in CI. A fully interactive
-  first install should still be exercised on clean Windows, macOS, and Linux
-  machines before calling the onboarding experience stable.
+- CI now installs the MSI on a clean Windows runner, provisions the packaged
+  runtime, checks backend health, stops it, and uninstalls it. The final visual
+  interaction with the MSI dialogs and first-run browser wizard still needs a
+  human clean-machine pass on Windows, macOS, and Linux before onboarding is
+  called stable.

@@ -154,6 +154,8 @@ function Get-YbmRuntimeExtraArgs {
 function Invoke-YbmSetup {
   param([string[]]$Argv)
 
+  $runtimeOnly = ($Argv -contains "-RuntimeOnly") -or ($Argv -contains "--runtime-only")
+
   if (-not (Test-Path -LiteralPath $Script:YbmVenvPython)) {
     # Installs uv when it is missing rather than refusing to continue. That
     # refusal is what forced a separate first-run entry point to exist at all;
@@ -166,7 +168,7 @@ function Invoke-YbmSetup {
     Write-Host "Creating backend\.venv via uv sync (first run can take a minute)..."
     Push-Location (Join-Path $Script:YbmRoot "backend")
     try {
-      if ($Argv -contains "-RuntimeOnly") {
+      if ($runtimeOnly) {
         # The consumer path (YBM.bat / `ybm run` / install.ps1, which now
         # just calls `ybm run` - docs/UI_UX_AUDIT.md Phase 10, second
         # review): a person double-clicking their way to a running console

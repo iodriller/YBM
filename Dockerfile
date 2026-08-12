@@ -64,6 +64,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # --- runtime ---------------------------------------------------------------
 FROM python:3.12-slim-bookworm@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2 AS runtime
 
+ARG YBM_VERSION=dev
+LABEL org.opencontainers.image.title="YBM" \
+      org.opencontainers.image.description="Local agent-control system, headless container profile" \
+      org.opencontainers.image.source="https://github.com/iodriller/YBM" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="$YBM_VERSION"
+
 # curl is used by the HEALTHCHECK below; git lets the coding-agent tools work
 # against a mounted repository. Both are small and deliberate - nothing else is
 # installed, because every extra package is attack surface for a process that

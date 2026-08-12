@@ -15,8 +15,18 @@ versions follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
   local state.
 - Release archives use stable `YBM-windows.zip` and `YBM-unix.tar.gz` names so
   installers and people can download the latest build directly.
-- Installation is presented as one three-step path per platform; advanced and
-  development routes moved out of the README's critical path.
+- Installation is presented as two three-step Windows choices and one
+  three-step macOS/Linux path; advanced and development routes moved out of
+  the README's critical path.
+- The MSI now has a visible minimal install UI and a final **Launch YBM now**
+  action. Release CI installs the MSI, provisions its runtime, checks backend
+  health, stops it, and uninstalls it instead of treating a successful build as
+  proof that installation works.
+- Windows releases include `Install-YBM.bat` for a no-MSI double-click path and
+  `Install-YBM.ps1` for direct inspection or terminal use. Downloaded archives
+  are checked against the release's SHA256 list before extraction.
+- Tagged releases publish the tested headless image as
+  `ghcr.io/iodriller/ybm:<version>` and `ghcr.io/iodriller/ybm:latest`.
 
 ### Removed
 

@@ -14,6 +14,7 @@ set -euo pipefail
 
 # The pinned uv version lives in ./ybm.sh now, which is what installs it.
 RELEASE_URL="https://github.com/iodriller/YBM/releases/latest/download/YBM-unix.tar.gz"
+CHECKSUMS_URL="https://github.com/iodriller/YBM/releases/latest/download/SHA256SUMS.txt"
 INSTALL_DIR="${YBM_INSTALL_DIR:-$HOME/ybm}"
 
 DRY_RUN="${YBM_DRY_RUN:-0}"
@@ -65,6 +66,24 @@ else
          "Open https://github.com/iodriller/YBM/releases/latest and check that YBM-unix.tar.gz exists."
   fi
   [ "$status" = "200" ] || { rm -rf "$tmp"; fail "download failed (HTTP $status)" "Check your internet connection and re-run."; }
+  log "Verifying the downloaded release"
+  if ! checksum_status="$(curl -sL -o "$tmp/SHA256SUMS.txt" -w '%{http_code}' "$CHECKSUMS_URL")"; then
+    rm -rf "$tmp"
+    fail "checksum download failed" "Check your internet connection and re-run."
+  fi
+  [ "$checksum_status" = "200" ] || { rm -rf "$tmp"; fail "checksum download failed (HTTP $checksum_status)" "Open the latest YBM release and report the broken checksum file."; }
+  expected="$(awk '$2 == "YBM-unix.tar.gz" || $2 ~ /^YBM-[^[:space:]]+-unix\.tar\.gz$/ { print tolower($1); exit }' "$tmp/SHA256SUMS.txt")"
+  [ -n "$expected" ] || { rm -rf "$tmp"; fail "the release checksum file has no Unix archive entry" "Open the latest YBM release and report the broken release."; }
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual="$(sha256sum "$tmp/ybm.tar.gz" | awk '{ print tolower($1) }')"
+  elif command -v shasum >/dev/null 2>&1; then
+    actual="$(shasum -a 256 "$tmp/ybm.tar.gz" | awk '{ print tolower($1) }')"
+  else
+    rm -rf "$tmp"
+    fail "no SHA256 tool is available" "Install coreutils (sha256sum) or use macOS shasum, then re-run."
+  fi
+  [ "$actual" = "$expected" ] || { rm -rf "$tmp"; fail "the downloaded release failed its SHA256 check" "Delete the download and try again."; }
+  info "release checksum matches"
   tar -xzf "$tmp/ybm.tar.gz" -C "$tmp"
   extracted="$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
   [ -n "$extracted" ] || { rm -rf "$tmp"; fail "the downloaded release was empty" "Re-run the installer."; }

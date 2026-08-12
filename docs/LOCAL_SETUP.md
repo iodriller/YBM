@@ -8,28 +8,38 @@ Git, Node.js, and a system Python are not required.
 
 The first start downloads the runtime and usually takes 2-5 minutes. Later starts take seconds.
 
-## Windows: install in three steps
+## Windows option 1: MSI
 
 1. **[Download YBM for Windows](https://github.com/iodriller/YBM/releases/latest/download/YBM-Setup.msi).**
-2. Open the file and select **Install**.
+2. Open the file, install, and leave **Launch YBM now** selected.
 3. In the browser page that opens, choose a model and start chatting.
 
 Open **YBM** from the Start Menu next time. The per-user install lives in `%LOCALAPPDATA%\YBM`,
 needs no administrator account, and can be removed from **Add or remove programs**. Start-at-login
 is optional and off by default.
 
-Windows shows an unknown-publisher warning because the MSI is not yet code signed. The release page
-provides checksums and signed build provenance. To verify a downloaded installer with GitHub CLI:
+Windows shows an unknown-publisher warning because the MSI is not yet code signed. The MSI now has
+a visible install/progress/completion flow and is installed, started, health-checked, stopped, and
+uninstalled on a clean Windows CI runner before a release can publish. The release page also provides
+checksums and signed build provenance. To verify a downloaded installer with GitHub CLI:
 
 ```powershell
 gh attestation verify .\YBM-Setup.msi --repo iodriller/YBM
 ```
 
-### Windows without MSI
+## Windows option 2: double-click script
 
-This command downloads the complete latest release, installs it to `%USERPROFILE%\ybm`, starts YBM,
-and opens the browser. Re-running it refreshes the application while preserving local settings and
-task data.
+1. **[Download Install-YBM.bat](https://github.com/iodriller/YBM/releases/latest/download/Install-YBM.bat).**
+2. Double-click it and leave the progress window open for 2-5 minutes.
+3. Configure a model in the browser page that opens.
+
+The batch file downloads the plain-text `Install-YBM.ps1` from the same release. The PowerShell
+installer downloads the complete release, verifies its SHA256 checksum, installs to
+`%USERPROFILE%\ybm`, starts YBM, runs its health checks, and reports the failed step if anything goes
+wrong. It needs no administrator account or script signature. Re-running it refreshes application
+files while preserving settings and task data.
+
+For a terminal instead of a double-click:
 
 ```powershell
 irm https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.ps1 | iex
@@ -58,13 +68,15 @@ From a checkout, `install.sh` also accepts `--dry-run`, `--verify`, `--no-prompt
 
 ## Docker for a headless server
 
-Docker runs the headless profile. It bundles the admin console and WhatsApp dependencies, but it
-cannot attach to the host desktop, Chrome display, or VS Code session.
+Docker runs the published `ghcr.io/iodriller/ybm:latest` headless image. It bundles the admin
+console and WhatsApp dependencies, but it cannot attach to the host desktop, Chrome display, or
+VS Code session.
 
 ```bash
 cp .env.example .env
 # Edit .env and set AGENT_ADMIN_TOKEN to a long random value.
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
 
 Open `http://127.0.0.1:8765/admin` and enter the admin token. The first-run wizard writes settings
@@ -75,8 +87,14 @@ Compose publishes the console only on host loopback, keeps runtime state in the 
 and exposes `./workspace` as the allowed host workspace. To add the optional Ollama service:
 
 ```bash
-docker compose --profile ollama up -d --build
+docker compose --profile ollama up -d
 docker compose exec ollama ollama pull qwen3:8b
+```
+
+To build the same image from a source checkout instead of pulling it:
+
+```bash
+docker build --tag ybm-control:local .
 ```
 
 ## What installation creates

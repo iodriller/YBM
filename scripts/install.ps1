@@ -1,7 +1,9 @@
 # One-command bootstrap for YBM on Windows:
 #   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.ps1 | iex"
 #
-# Or, with no terminal at all, use YBM-Setup.msi from the latest release.
+# With no terminal, download Install-YBM.bat from the latest release and
+# double-click it. That wrapper downloads this script, verifies the release,
+# starts YBM, and leaves readable feedback on screen if a step fails.
 #
 # Git, Python, Node.js, and uv do not need to be preinstalled. This downloads
 # the latest release archive, which contains the prebuilt admin console, then
@@ -33,6 +35,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $ReleaseZipUrl = "https://github.com/iodriller/YBM/releases/latest/download/YBM-windows.zip"
+$ChecksumsUrl = "https://github.com/iodriller/YBM/releases/latest/download/SHA256SUMS.txt"
 
 if (-not $InstallDir) {
     $InstallDir = if ($env:YBM_INSTALL_DIR) { $env:YBM_INSTALL_DIR } else { Join-Path $HOME "ybm" }
@@ -68,9 +71,26 @@ if ($inRepo) {
 } else {
     Write-Step "Downloading the latest YBM release"
     $tempZip = Join-Path ([IO.Path]::GetTempPath()) "ybm-$([guid]::NewGuid().ToString('N')).zip"
+    $tempSums = Join-Path ([IO.Path]::GetTempPath()) "ybm-$([guid]::NewGuid().ToString('N'))-SHA256SUMS.txt"
     $tempDir = Join-Path ([IO.Path]::GetTempPath()) "ybm-$([guid]::NewGuid().ToString('N'))"
     try {
         Invoke-WebRequest -Uri $ReleaseZipUrl -OutFile $tempZip -UseBasicParsing
+        Write-Step "Verifying the downloaded release"
+        Invoke-WebRequest -Uri $ChecksumsUrl -OutFile $tempSums -UseBasicParsing
+        $checksumLine = Get-Content -LiteralPath $tempSums | Where-Object {
+            $_ -match '^[0-9A-Fa-f]{64}\s+(YBM-windows\.zip|YBM-[^\s]+-windows\.zip)$'
+        } | Select-Object -First 1
+        if (-not $checksumLine) {
+            Fail "the release checksum file has no Windows archive entry" `
+                 "Open https://github.com/iodriller/YBM/releases/latest and report the broken release."
+        }
+        $expectedHash = ($checksumLine -split '\s+')[0].ToUpperInvariant()
+        $actualHash = (Get-FileHash -LiteralPath $tempZip -Algorithm SHA256).Hash
+        if ($actualHash -ne $expectedHash) {
+            Fail "the downloaded release failed its SHA256 check" `
+                 "Delete the download and try again. Expected $expectedHash but received $actualHash."
+        }
+        Write-Good "release checksum matches"
         Expand-Archive -LiteralPath $tempZip -DestinationPath $tempDir -Force
         $extracted = Get-ChildItem $tempDir -Directory | Select-Object -First 1
         if (-not $extracted) { Fail "the downloaded release was empty" "Re-run the installer." }
@@ -93,6 +113,7 @@ if ($inRepo) {
              "Check your internet connection and re-run."
     } finally {
         Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
+        Remove-Item $tempSums -Force -ErrorAction SilentlyContinue
         Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
     }
     $RepoDir = $InstallDir
