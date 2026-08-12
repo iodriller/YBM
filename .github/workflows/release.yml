@@ -134,7 +134,10 @@ jobs:
         shell: pwsh
         run: |
           $msi = (Resolve-Path "dist\YBM-Setup.msi").Path
-          $installDir = Join-Path $env:RUNNER_TEMP "ybm-msi-smoke"
+          # Exercise the default per-user location used by an actual
+          # double-click install. This also proves uninstall resolves the same
+          # directory without relying on an out-of-band path override.
+          $installDir = Join-Path $env:LOCALAPPDATA "YBM"
           $installLog = Join-Path $env:RUNNER_TEMP "ybm-msi-install.log"
           $uninstallLog = Join-Path $env:RUNNER_TEMP "ybm-msi-uninstall.log"
 
@@ -146,7 +149,7 @@ jobs:
             }
           }
 
-          Invoke-Msi @("/i", "`"$msi`"", "/qn", "/norestart", "INSTALLFOLDER=`"$installDir`"", "/L*V", "`"$installLog`"") $installLog
+          Invoke-Msi @("/i", "`"$msi`"", "/qn", "/norestart", "/L*V", "`"$installLog`"") $installLog
           foreach ($relative in @(
             "YBM.bat",
             "Install-YBM.bat",
