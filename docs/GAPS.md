@@ -1,8 +1,8 @@
 # Known gaps
 
 This is the current list of product and engineering limitations. Completed
-plans and earlier review snapshots live under [`archive/`](archive/); they are
-useful design history, not current status.
+plans and review snapshots remain available in Git history, not in the current
+operator documentation.
 
 ## Security boundaries
 
@@ -56,8 +56,8 @@ useful design history, not current status.
   but decomposing these files should be incremental and contract-tested rather
   than a release-blocking rewrite.
 
-## Release-state items
+## Release validation
 
-Repository visibility, GitHub Actions billing/availability, release tags, and
-clean-machine anonymous installation are external release steps, not code
-gaps. They are tracked in [PUBLIC_RELEASE.md](PUBLIC_RELEASE.md).
+- The release archives and MSI are built and tested in CI. A fully interactive
+  first install should still be exercised on clean Windows, macOS, and Linux
+  machines before calling the onboarding experience stable.

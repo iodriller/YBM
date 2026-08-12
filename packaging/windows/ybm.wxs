@@ -7,7 +7,7 @@
   and reputation, not container format. What MSI does buy is that msiexec.exe -
   a Microsoft-signed component of Windows - performs the install, the package is
   declarative and inspectable before it runs, Add or remove programs gets a real
-  entry, and it can be deployed centrally later. See docs/INSTALL_PROPOSAL.md.
+  entry, and it can be deployed centrally later.
 
   Two deliberate choices:
 

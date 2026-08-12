@@ -3,11 +3,27 @@
 Notable changes to YBM. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-`ybm check-updates` currently compares against the default branch. Once tagged
-releases exist it should compare against the latest tag instead - see
-`docs/GAPS.md`.
-
 ## [Unreleased]
+
+## [0.1.2] - 2026-08-11
+
+### Changed
+
+- The one-command Windows and macOS/Linux installers now download the complete
+  latest release instead of source archives, so the admin console works without
+  Node.js. Re-running an installer refreshes application files while preserving
+  local state.
+- Release archives use stable `YBM-windows.zip` and `YBM-unix.tar.gz` names so
+  installers and people can download the latest build directly.
+- Installation is presented as one three-step path per platform; advanced and
+  development routes moved out of the README's critical path.
+
+### Removed
+
+- Superseded planning archives, stale first-run screenshots, and unused logo
+  explorations. Git history remains the record for those design iterations.
+
+## [0.1.1] - 2026-08-11
 
 ### Added
 
@@ -119,5 +135,4 @@ releases exist it should compare against the latest tag instead - see
 
 ### Known issues
 
-See `docs/GAPS.md`. Release-time GitHub and clean-machine checks are tracked in
-`docs/PUBLIC_RELEASE.md`.
+See `docs/GAPS.md`.

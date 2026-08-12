@@ -26,7 +26,7 @@ The three files here carry placeholders (`__VERSION__`, `__SHA256__`,
 `__RELEASE_DATE__`). Render them for a published release with:
 
 ```powershell
-$version = "0.1.1"
+$version = "0.1.2"
 .\scripts\render_winget_manifests.ps1 -Version $version
 ```
 
@@ -41,7 +41,7 @@ a build log is exactly how that happens.
 Validate locally first, against the real machine:
 
 ```powershell
-$version = "0.1.1"
+$version = "0.1.2"
 winget validate --manifest "dist\winget\manifests\i\iodriller\YBM\$version"
 winget install --manifest "dist\winget\manifests\i\iodriller\YBM\$version"
 ```

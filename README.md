@@ -50,105 +50,35 @@ particular:
 
 ## Install
 
-Nothing needs to be preinstalled. The install provides Python 3.12 through `uv`, creates the project
-environment, initializes local config and tokens, and starts YBM. The first run takes a few minutes
-while it downloads those; every start after that takes seconds.
+The installer gets everything YBM needs, starts it, and opens the setup page. The first start takes
+2-5 minutes while Python and the runtime are downloaded. Later starts take seconds.
 
 ### Windows
 
-Download **[`YBM-Setup.msi`](https://github.com/iodriller/YBM/releases/latest)** and run it. It is a
-per-user install needing no administrator rights: it goes to `%LOCALAPPDATA%\YBM`, adds a Start Menu
-entry, uninstalls from Add or remove programs, and starts YBM when it finishes. It carries a prebuilt
-console, so no Node.js is needed.
+1. **[Download YBM for Windows](https://github.com/iodriller/YBM/releases/latest/download/YBM-Setup.msi).**
+2. Open the downloaded file and select **Install**.
+3. When YBM opens in your browser, choose a model and start chatting.
 
-Windows will say the publisher is unrecognised, because the installer is not code signed. Each
-release is built in the open by [a GitHub Actions workflow](.github/workflows/release.yml) and
-carries signed build provenance, so you can check where the file came from instead of trusting the
-dialog:
+Open **YBM** from the Start Menu next time. It installs per user, needs no administrator account,
+and can be removed from **Add or remove programs**.
 
-```powershell
-gh attestation verify .\YBM-Setup.msi --repo iodriller/YBM
-```
-
-**Prefer not to run an installer?** Either pipe the script (nothing is written to disk before it
-runs - swap `iex` for `more` to read it first):
-
-```powershell
-irm https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.ps1 | iex
-```
-
-...or download the repository as a ZIP, extract the whole folder, and double-click
-[`YBM.bat`](YBM.bat). It installs whatever is missing and writes nothing outside that folder. The
-same file handles the first run and every run after it.
-
-**The first run takes 2-5 minutes** whichever route you pick: it downloads a Python runtime and
-YBM's dependencies. It says so while it works, and opens your browser when it is ready. Later starts
-take seconds.
-
-Node.js 22.22 or newer is needed only to build the console **from a source checkout**, or for the
-optional WhatsApp bridge. The MSI and the archives ship the console already built.
+> Windows shows an unknown-publisher warning because the installer is not yet code signed. Releases
+> include [verifiable GitHub build provenance](.github/workflows/release.yml).
 
 ### macOS and Linux
 
-Download `YBM-<version>-unix.tar.gz` from the
-[latest release](https://github.com/iodriller/YBM/releases/latest) - it carries a prebuilt console,
-so no Node.js is needed:
-
-```bash
-tar -xzf YBM-*-unix.tar.gz
-cd YBM-*/ && ./ybm.sh
-```
-
-Or bootstrap from source in one line:
+1. Open Terminal.
+2. Paste this command:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.sh | bash
 ```
 
-Needs Bash and `curl`. It uses Git when available and falls back to a source archive when it is not,
-then hands off to `./ybm.sh`.
+3. When YBM opens in your browser, choose a model and start chatting.
 
-From a checkout you already have:
-
-```bash
-./ybm.sh                        # install anything missing, start, open the console
-bash ./scripts/install.sh --verify   # same, plus a post-install check
-```
-
-`./ybm.sh` is the counterpart to `YBM.bat`: it installs `uv`, Python 3.12, and dependencies, then
-starts YBM. Run it again any time; it does nothing when there is nothing to do. Pass `--no-desktop`
-to skip the desktop-control extras on a headless box.
-
-As on Windows, only a **source** checkout needs Node.js 22.22+; the release tarball does not. The
-first run takes 2-5 minutes while it downloads Python and dependencies, then seconds after that.
-
-If the machine has no browser, configure the model and Telegram interactively with:
-
-```bash
-./backend/.venv/bin/ybm onboard
-```
-
-### Docker
-
-Docker is the headless profile. It includes the admin console and WhatsApp runtime, but it cannot
-control the host desktop, attach to the host VS Code session, or use display-dependent browser
-automation.
-
-```bash
-cp .env.example .env
-# Edit .env and set AGENT_ADMIN_TOKEN to a long random value.
-docker compose up -d --build
-# Open http://127.0.0.1:8765/admin and enter the token when prompted.
-```
-
-The compose file stores runtime state in the `ybm-state` volume, writes settings to
-`config/config.yaml`, and exposes only `./workspace` to filesystem tools. Put durable cloud API keys
-in the host `.env` file. To run an Ollama container too:
-
-```bash
-docker compose --profile ollama up -d --build
-docker compose exec ollama ollama pull qwen3:8b
-```
+Run `~/ybm/ybm.sh` next time. The installer needs Bash, `curl`, and `tar`; it provides Python and
+everything else. Docker, source-checkout, headless, and verification instructions are in
+[Local setup](docs/LOCAL_SETUP.md).
 
 ## First run
 

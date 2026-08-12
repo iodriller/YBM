@@ -1,7 +1,6 @@
 # Screenshots
 
-`demo.gif` is the README's opening demo. `first-run/` is the setup walkthrough -
-see [first-run/README.md](first-run/README.md) for those.
+`demo.gif` is the README's opening demo.
 
 ## Regenerating demo.gif
 
