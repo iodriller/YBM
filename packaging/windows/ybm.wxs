@@ -88,8 +88,12 @@
     <CustomAction Id="LaunchYbm" DllEntry="WixShellExec" Impersonate="yes"
                   BinaryRef="Wix4UtilCA_X86" Return="ignore" />
     <InstallExecuteSequence>
+      <!-- UILevel = 5 restricts this to a full interactive install. winget,
+           Intune, and Group Policy all install with /qn (UILevel 2), where
+           launching a long-running app nobody is watching is wrong - and it
+           would hang winget's own validation, which installs unattended. -->
       <Custom Action="LaunchYbm" After="InstallFinalize"
-              Condition="NOT Installed AND NOT REMOVE AND LAUNCHAFTERINSTALL = &quot;1&quot;" />
+              Condition="NOT Installed AND NOT REMOVE AND LAUNCHAFTERINSTALL = &quot;1&quot; AND UILevel = 5" />
     </InstallExecuteSequence>
     <Property Id="LAUNCHAFTERINSTALL" Value="1" />
 
