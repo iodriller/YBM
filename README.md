@@ -50,41 +50,56 @@ particular:
 
 ## Install
 
-Python, Git, and `uv` do not need to be preinstalled: the install bootstraps `uv`, uses it to provide
-Python 3.12, creates the project environment, initializes local config and tokens, and starts YBM.
-Node.js 22.22+ does need to be present for the admin console to be built - see below.
-
-> **No release has been published yet.** YBM installs from source today. There is no installer to
-> download, no `winget` package, and no release archive; the packaging for those exists in this
-> repository but has never been run against a tag. Everything below is the source install, which is
-> tested and works.
+Nothing needs to be preinstalled. The install provides Python 3.12 through `uv`, creates the project
+environment, initializes local config and tokens, and starts YBM. The first run takes a few minutes
+while it downloads those; every start after that takes seconds.
 
 ### Windows
 
-**Either** run this in PowerShell:
+Download **[`YBM-Setup.msi`](https://github.com/iodriller/YBM/releases/latest)** and run it. It is a
+per-user install needing no administrator rights: it goes to `%LOCALAPPDATA%\YBM`, adds a Start Menu
+entry, uninstalls from Add or remove programs, and starts YBM when it finishes. It carries a prebuilt
+console, so no Node.js is needed.
+
+Windows will say the publisher is unrecognised, because the installer is not code signed. Each
+release is built in the open by [a GitHub Actions workflow](.github/workflows/release.yml) and
+carries signed build provenance, so you can check where the file came from instead of trusting the
+dialog:
+
+```powershell
+gh attestation verify .\YBM-Setup.msi --repo iodriller/YBM
+```
+
+**Prefer not to run an installer?** Either pipe the script (nothing is written to disk before it
+runs - swap `iex` for `more` to read it first):
 
 ```powershell
 irm https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.ps1 | iex
 ```
 
-Nothing is written to disk before it runs. Swap `iex` for `more` to read it first.
-
-**Or** download the repository as a ZIP, extract the whole folder, and double-click
+...or download the repository as a ZIP, extract the whole folder, and double-click
 [`YBM.bat`](YBM.bat). It installs whatever is missing and writes nothing outside that folder. The
 same file handles the first run and every run after it.
 
-For visible output and a post-install check, from an extracted copy:
+**The first run takes 2-5 minutes** whichever route you pick: it downloads a Python runtime and
+YBM's dependencies. It says so while it works, and opens your browser when it is ready. Later starts
+take seconds.
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Verify
-```
-
-**Node.js 22.22 or newer is required** for a source install to have a usable console. The console is
-a React app that is built during setup; without Node.js the backend still runs, but `/admin` serves
-build instructions instead of the console. The optional WhatsApp bridge needs Node.js as well. (The
-unreleased packaging ships the console prebuilt, which is what will remove this requirement.)
+Node.js 22.22 or newer is needed only to build the console **from a source checkout**, or for the
+optional WhatsApp bridge. The MSI and the archives ship the console already built.
 
 ### macOS and Linux
+
+Download `YBM-<version>-unix.tar.gz` from the
+[latest release](https://github.com/iodriller/YBM/releases/latest) - it carries a prebuilt console,
+so no Node.js is needed:
+
+```bash
+tar -xzf YBM-*-unix.tar.gz
+cd YBM-*/ && ./ybm.sh
+```
+
+Or bootstrap from source in one line:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.sh | bash
@@ -104,7 +119,8 @@ bash ./scripts/install.sh --verify   # same, plus a post-install check
 starts YBM. Run it again any time; it does nothing when there is nothing to do. Pass `--no-desktop`
 to skip the desktop-control extras on a headless box.
 
-As on Windows, a source install needs **Node.js 22.22+** for the console to be built.
+As on Windows, only a **source** checkout needs Node.js 22.22+; the release tarball does not. The
+first run takes 2-5 minutes while it downloads Python and dependencies, then seconds after that.
 
 If the machine has no browser, configure the model and Telegram interactively with:
 

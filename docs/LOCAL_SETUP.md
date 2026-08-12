@@ -9,31 +9,29 @@ You do need:
 
 - An internet connection for the first dependency install.
 - Bash and `curl` for the macOS/Linux installer.
-- **Node.js 22.22 or newer**, to build the admin console. Every install today is a source install,
-  and a source install builds the console itself.
+- Node.js 22.22 or newer **only** to build the console from a source checkout, or for the optional
+  WhatsApp bridge. The MSI, the archives, and the Docker image all ship it prebuilt.
 - Docker Desktop or Docker Engine with Compose only if you choose the container path.
 
-Without Node.js, setup still completes and the backend runs, but `/admin` shows build instructions
-instead of the console until you install Node.js and run the `ui-build` command for your platform.
-The Docker image builds the console inside the image, so the container path needs nothing on the
-host. The unbuilt release artifacts would also carry it prebuilt, which is what will make Node.js
-optional for everyone else.
+In a source checkout without Node.js, setup still completes and the backend runs, but `/admin` shows
+build instructions instead of the console until you install Node.js and run the `ui-build` command
+for your platform.
 
 ## Recommended install
 
-> **No release has been published yet**, so there is no installer, no `winget` package, and no
-> release archive to download. `packaging/` and `.github/workflows/release.yml` contain the
-> packaging for those, but it has never been run against a tag. Everything below installs from
-> source and is tested.
-
 ### Windows
 
-Two routes, neither needing administrator rights.
+Three routes, none needing administrator rights.
 
 | Route | Command or file | Downloads a file? |
 |---|---|---|
+| Installer | `YBM-Setup.msi` from the [latest release](https://github.com/iodriller/YBM/releases/latest) | Yes |
 | PowerShell | `irm https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.ps1 \| iex` | No |
 | Plain folder | Repository ZIP, then double-click `YBM.bat` | Yes |
+
+The MSI installs into `%LOCALAPPDATA%\YBM`, registers an uninstall entry, starts YBM when it
+finishes, and carries a prebuilt console so Node.js is not required. Start-at-login is offered but
+off by default; pass `STARTATLOGIN=1` to opt in from the command line.
 
 Finish the browser wizard that opens afterwards.
 
@@ -58,6 +56,8 @@ After setup, double-click `YBM.bat`. It runs the idempotent Windows lifecycle co
 dependencies when the lock files change, starts YBM, and opens the console.
 
 ### macOS and Linux
+
+Download `YBM-<version>-unix.tar.gz` from the [latest release](https://github.com/iodriller/YBM/releases/latest), extract it, and run `./ybm.sh` inside. It carries a prebuilt console, so no Node.js is needed.
 
 From a checkout, `./ybm.sh` is the counterpart to `YBM.bat`: it installs whatever is missing,
 including `uv` and Python 3.12, then starts YBM and opens the console. It is idempotent, so it is
