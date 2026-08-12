@@ -53,17 +53,25 @@ particular:
 The installer gets everything YBM needs, starts it, and opens the setup page. The first start takes
 2-5 minutes while Python and the runtime are downloaded. Later starts take seconds.
 
-### Windows
+### Windows: choose either installer
 
-1. **[Download YBM for Windows](https://github.com/iodriller/YBM/releases/latest/download/YBM-Setup.msi).**
-2. Open the downloaded file and select **Install**.
-3. When YBM opens in your browser, choose a model and start chatting.
+**Option 1 - guided installer**
 
-Open **YBM** from the Start Menu next time. It installs per user, needs no administrator account,
-and can be removed from **Add or remove programs**.
+1. **[Download YBM-Setup.msi](https://github.com/iodriller/YBM/releases/latest/download/YBM-Setup.msi).**
+2. Open it, install, and leave **Launch YBM now** selected.
+3. In the browser, choose a model and start chatting.
 
-> Windows shows an unknown-publisher warning because the installer is not yet code signed. Releases
-> include [verifiable GitHub build provenance](.github/workflows/release.yml).
+**Option 2 - no MSI**
+
+1. **[Download Install-YBM.bat](https://github.com/iodriller/YBM/releases/latest/download/Install-YBM.bat).**
+2. Double-click it and leave the progress window open for 2-5 minutes.
+3. In the browser, choose a model and start chatting.
+
+The second option is a plain-text wrapper around
+[`Install-YBM.ps1`](https://github.com/iodriller/YBM/releases/latest/download/Install-YBM.ps1),
+does not require administrator access or script signing, verifies the downloaded release, and shows
+which step failed if setup cannot finish. Open **YBM** from the Start Menu after an MSI install, or
+double-click `YBM.bat` in `%USERPROFILE%\ybm` after a script install.
 
 ### macOS and Linux
 
@@ -79,6 +87,14 @@ curl -fsSL https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.
 Run `~/ybm/ybm.sh` next time. The installer needs Bash, `curl`, and `tar`; it provides Python and
 everything else. Docker, source-checkout, headless, and verification instructions are in
 [Local setup](docs/LOCAL_SETUP.md).
+
+### Docker (headless)
+
+The release image is
+[`ghcr.io/iodriller/ybm:latest`](https://github.com/iodriller/YBM/pkgs/container/ybm). It includes
+the web console and is intended for Telegram, WhatsApp, API, and server workflows. See
+[Local setup](docs/LOCAL_SETUP.md#docker-for-a-headless-server) for the required admin token,
+volumes, and loopback-only port mapping.
 
 ## First run
 

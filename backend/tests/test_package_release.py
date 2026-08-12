@@ -52,6 +52,7 @@ def test_release_archives_have_stable_download_names_and_versioned_roots(tmp_pat
 
     with zipfile.ZipFile(output / "YBM-windows.zip") as archive:
         assert "YBM-1.2.3/backend/src/agent_control/static/admin/index.html" in archive.namelist()
+        assert "YBM-1.2.3/Install-YBM.bat" in archive.namelist()
         assert archive.read("YBM-1.2.3/.ybm-release-version") == b"1.2.3"
 
     with tarfile.open(output / "YBM-unix.tar.gz") as archive:

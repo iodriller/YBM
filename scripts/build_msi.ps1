@@ -54,28 +54,46 @@ if ($productVersion -notmatch '^\d+(\.\d+){0,3}$') {
 }
 
 $icon = Join-Path $RepoRoot "scripts\assets\logo.ico"
+$license = Join-Path $RepoRoot "packaging\windows\license.rtf"
 $wxs = Join-Path $RepoRoot "packaging\windows\ybm.wxs"
 $output = Join-Path $OutputDir "YBM-Setup.msi"
+$generatedWxs = Join-Path $OutputDir "payload.generated.wxs"
 
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
 Write-Host "Building $output" -ForegroundColor Cyan
 Write-Host "  product version $productVersion (from $Version)" -ForegroundColor DarkGray
 
+& python "$RepoRoot\scripts\generate_wix_payload.py" `
+    --payload-dir $PayloadDir `
+    --output $generatedWxs
+if ($LASTEXITCODE -ne 0) { throw "MSI payload generation failed (exit $LASTEXITCODE)" }
+
 # WixToolset.Util supplies WixShellExec, which is what launches YBM once the
 # install finishes. Added per-build rather than assumed present so a clean
 # machine (and the release runner) resolves it the same way.
 & $wix extension add -g WixToolset.Util.wixext/5.0.2 2>&1 | Out-Null
+& $wix extension add -g WixToolset.UI.wixext/5.0.2 2>&1 | Out-Null
 
 & $wix build `
     -arch x64 `
     -ext WixToolset.Util.wixext `
+    -ext WixToolset.UI.wixext `
+    -culture en-US `
     -d "Version=$productVersion" `
-    -d "PayloadDir=$PayloadDir" `
     -d "IconFile=$icon" `
+    -d "LicenseFile=$license" `
     -o $output `
-    $wxs
+    $wxs `
+    $generatedWxs
 if ($LASTEXITCODE -ne 0) { throw "wix build failed (exit $LASTEXITCODE)" }
+
+# ICE91 assumes a package might switch to per-machine installation. YBM is
+# intentionally per-user and always targets LocalAppData, so that warning is
+# inapplicable. ICE61 warns about AllowSameVersionUpgrades, which is deliberate
+# for rebuilding an alpha installer. Every other standard ICE remains active.
+& $wix msi validate -sice ICE61 -sice ICE91 $output
+if ($LASTEXITCODE -ne 0) { throw "MSI validation failed (exit $LASTEXITCODE)" }
 
 $hash = (Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash
 $sizeMb = (Get-Item -LiteralPath $output).Length / 1MB
