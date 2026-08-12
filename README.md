@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](backend/pyproject.toml)
 [![Docker ready](https://img.shields.io/badge/docker-ready-2496ED.svg)](docker-compose.yml)
-[![13 model providers](https://img.shields.io/badge/models-13%20providers-6E56CF.svg)](#choose-a-model)
+[![12 model providers](https://img.shields.io/badge/models-12%20providers-6E56CF.svg)](#choose-a-model)
 
 ![Asking YBM to organize a Downloads folder: it plans the work, asks for approval before moving any file, then reports exactly what it moved](docs/screenshots/demo.gif)
 
@@ -34,7 +34,7 @@ Plan  ->  Approve  ->  Execute  ->  Verify  ->  Receipt
  |         |            |                not just asserted
  |         |            +-- policy is enforced per tool call, not once at the start
  |         +-- anything consequential stops and asks, showing its blast radius first
- +-- what it intends to do, before it does any of it
+ +-- related changes are grouped and shown as one list, before any of them run
 ```
 
 High-impact capabilities are off until you turn them on, filesystem access is limited to roots you
@@ -50,93 +50,61 @@ particular:
 
 ## Install
 
-Nothing needs to be preinstalled: no Python, no Git, no `uv`. The install bootstraps `uv`, uses it to
-provide Python 3.12, creates the project environment, initializes local config and tokens, and starts
-YBM.
+Python, Git, and `uv` do not need to be preinstalled: the install bootstraps `uv`, uses it to provide
+Python 3.12, creates the project environment, initializes local config and tokens, and starts YBM.
+Node.js 22.22+ does need to be present for the admin console to be built - see below.
+
+> **No release has been published yet.** YBM installs from source today. There is no installer to
+> download, no `winget` package, and no release archive; the packaging for those exists in this
+> repository but has never been run against a tag. Everything below is the source install, which is
+> tested and works.
 
 ### Windows
 
-Four ways in. They install the same thing; pick whichever you are comfortable running.
-
-| | Best if you want | Downloads a file? |
-|---|---|---|
-| **1. winget** | The shortest path, and no security prompt | No |
-| **2. PowerShell** | To read the installer before it runs | No |
-| **3. MSI** | A normal Windows install with an uninstall entry | Yes |
-| **4. ZIP** | No installer and no terminal at all | Yes |
-
-**1. winget**
+**Either** run this in PowerShell:
 
 ```powershell
-winget install YBM
-```
-
-**2. PowerShell.** Nothing is written to disk before it runs, so there is no downloaded file for
-Windows to flag. Read it first if you like - it is the same URL either way:
-
-```powershell
-# Look at exactly what it will do
-irm https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.ps1 | more
-
-# Run it
 irm https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.ps1 | iex
 ```
 
-**3. MSI.** Get `YBM-Setup.msi` from the
-[latest release](https://github.com/iodriller/YBM/releases/latest). Per-user, no administrator
-rights: it goes to `%LOCALAPPDATA%\YBM`, adds a Start Menu entry, and uninstalls from Add or remove
-programs.
+Nothing is written to disk before it runs. Swap `iex` for `more` to read it first.
 
-Windows will say the publisher is unrecognised, because the installer is not code signed. Every
-release is built in public by [a GitHub Actions workflow](.github/workflows/release.yml) and carries
-signed build provenance, so you can check where it came from rather than trusting the dialog:
-
-```powershell
-gh attestation verify .\YBM-Setup.msi --repo iodriller/YBM
-```
-
-**4. ZIP.** Download the repository as a ZIP, extract the whole folder, and double-click
+**Or** download the repository as a ZIP, extract the whole folder, and double-click
 [`YBM.bat`](YBM.bat). It installs whatever is missing and writes nothing outside that folder. The
-same file handles the first run and every run after it. For visible output and a post-install check:
+same file handles the first run and every run after it.
+
+For visible output and a post-install check, from an extracted copy:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Verify
 ```
 
-Whichever you pick, finish the two-step browser wizard that opens to choose a model and optionally
-connect Telegram.
-
-Node.js 22.22 or newer is only needed to build the admin console **from source**. Release builds and
-the Docker image ship it prebuilt, so an installed copy needs no Node.js. The optional WhatsApp
-bridge needs Node.js on any install. Without it, the backend still runs, but a source checkout serves
-build instructions at `/admin` instead of the console.
+**Node.js 22.22 or newer is required** for a source install to have a usable console. The console is
+a React app that is built during setup; without Node.js the backend still runs, but `/admin` serves
+build instructions instead of the console. The optional WhatsApp bridge needs Node.js as well. (The
+unreleased packaging ships the console prebuilt, which is what will remove this requirement.)
 
 ### macOS and Linux
-
-Download `YBM-<version>-unix.tar.gz` from the
-[latest release](https://github.com/iodriller/YBM/releases/latest):
-
-```bash
-tar -xzf YBM-*-unix.tar.gz
-cd YBM-*/ && ./ybm.sh
-```
-
-`./ybm.sh` installs whatever is missing - `uv`, Python 3.12, dependencies - then starts YBM and
-opens the console. Run it again any time; it does nothing when there is nothing to do. The admin
-console ships prebuilt in this archive, so no Node.js is needed.
-
-Prefer a one-liner, or want a git checkout you can update in place?
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.sh | bash
 ```
 
-That needs Bash and `curl`, uses Git when available, and falls back to a source archive when it is
-not. It fetches the code and then runs the same `./ybm.sh`. From a checkout you already have, run
-`bash ./scripts/install.sh --verify` to install and prove it works.
+Needs Bash and `curl`. It uses Git when available and falls back to a source archive when it is not,
+then hands off to `./ybm.sh`.
 
-Note that a **source** checkout builds the console itself and so needs Node.js 22.22+; the release
-tarball above does not. After the first run, `./ybm.sh` is all you need.
+From a checkout you already have:
+
+```bash
+./ybm.sh                        # install anything missing, start, open the console
+bash ./scripts/install.sh --verify   # same, plus a post-install check
+```
+
+`./ybm.sh` is the counterpart to `YBM.bat`: it installs `uv`, Python 3.12, and dependencies, then
+starts YBM. Run it again any time; it does nothing when there is nothing to do. Pass `--no-desktop`
+to skip the desktop-control extras on a headless box.
+
+As on Windows, a source install needs **Node.js 22.22+** for the console to be built.
 
 If the machine has no browser, configure the model and Telegram interactively with:
 
