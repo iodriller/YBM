@@ -88,12 +88,54 @@ def test_reconcile_orphaned_tasks_fails_running_and_interpreting_tasks(tmp_path)
 
     count = reconcile_orphaned_tasks(repos, audit)
 
+    # Nothing was in flight for either, so both resume rather than being lost.
     assert count == 2
-    assert repos.tasks.get(running.id).status == TaskStatus.FAILED
-    assert repos.tasks.get(interpreting.id).status == TaskStatus.FAILED
-    assert "failed explicitly rather than silently resumed" in repos.tasks.get(running.id).metadata["last_worker_error"]
+    assert repos.tasks.get(running.id).status == TaskStatus.RUNNING
+    assert repos.tasks.get(interpreting.id).status == TaskStatus.RUNNING
     assert repos.tasks.get(received.id).status == TaskStatus.RECEIVED
     assert repos.tasks.get(clarifying.id).status == TaskStatus.CLARIFYING
+
+
+def test_reconcile_asks_the_user_when_a_write_was_interrupted(tmp_path) -> None:
+    """A write caught mid-dispatch may have half-happened. Retrying could do it
+    twice and skipping could leave the job undone, so the user is asked."""
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("move the files")
+    repos.tasks.update_metadata(task.id, {
+        "operator_in_flight": {
+            "tool_name": "filesystem.manage",
+            "capability": "filesystem.write",
+            "risk_level": "high",
+            "input": {"operation": "apply_manifest"},
+        },
+    }, TaskStatus.RUNNING)
+
+    assert reconcile_orphaned_tasks(repos, audit) == 1
+
+    reloaded = repos.tasks.get(task.id)
+    assert reloaded.status == TaskStatus.CLARIFYING
+    assert "filesystem.manage" in reloaded.metadata["clarifying_question"]
+    assert "operator_in_flight" not in reloaded.metadata
+
+
+def test_reconcile_resumes_when_only_a_read_was_interrupted(tmp_path) -> None:
+    """Re-running a read is harmless, so it does not need a human."""
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("read the file")
+    repos.tasks.update_metadata(task.id, {
+        "operator_in_flight": {
+            "tool_name": "knowledge.search",
+            "capability": "telegram.receive",
+            "risk_level": "low",
+            "input": {"operation": "search"},
+        },
+    }, TaskStatus.RUNNING)
+
+    assert reconcile_orphaned_tasks(repos, audit) == 1
+
+    reloaded = repos.tasks.get(task.id)
+    assert reloaded.status == TaskStatus.RUNNING
+    assert reloaded.metadata["resumed_after_interrupt"] == "knowledge.search"
 
 
 def test_reconcile_orphaned_tasks_releases_claim_and_writes_audit_trail(tmp_path) -> None:
@@ -105,10 +147,12 @@ def test_reconcile_orphaned_tasks_releases_claim_and_writes_audit_trail(tmp_path
     reconcile_orphaned_tasks(repos, audit)
 
     reloaded = repos.tasks.get(task.id)
-    assert reloaded.status == TaskStatus.FAILED
+    assert reloaded.status == TaskStatus.RUNNING
     events = repos.audit.list_for_task(task.id)
-    assert any(event.type == AuditEventType.ERROR for event in events)
+    # A resume is a state change, not an error - nothing went wrong, the task
+    # just outlived the process that was running it.
     assert any(event.type == AuditEventType.TASK_STATE_CHANGED for event in events)
+    assert not any(event.type == AuditEventType.ERROR for event in events)
     with repos.tasks.database.connect() as connection:
         row = connection.execute(
             "SELECT claimed_by, claim_expires_at FROM tasks WHERE id = ?", (task.id,)

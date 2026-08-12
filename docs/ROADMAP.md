@@ -39,7 +39,7 @@ Worth remembering: a child approval's `action_payload` **is** the serialized
 model forbids extra keys. Marking children there made every approved call deny
 itself. The batch/child link lives on the parent instead.
 
-## 2. Continuity - NEXT
+## 2. Continuity - DONE
 
 **Goal:** if the session is killed, the machine reboots, or the process dies,
 the task continues later instead of being lost.
@@ -59,20 +59,22 @@ from the top - the operator can see what is already done.
 **The real hazard is the in-flight call**: one dispatched but not yet recorded
 when the process died. It may or may not have happened.
 
-**Design:**
+**Built:**
 
-- Record a step as *dispatched* before executing and *recorded* after, so a
-  resume can tell the two apart.
-- On resume, a completed history is replayed as context and the loop continues.
-- A dispatched-but-unrecorded call is **not** silently retried. If it is a read,
-  re-run it. If it is consequential, surface it: "this was interrupted midway,
-  it may or may not have moved these files - check and tell me how to continue."
-  Guessing either way is worse than asking.
-- Flip `reconcile_orphaned_tasks` from fail to resume once that distinction
-  exists.
+- `operator_in_flight` is written before a call is dispatched and cleared once
+  its result is recorded, so a dead worker leaves evidence of which call was in
+  the air.
+- `reconcile_orphaned_tasks` now resumes instead of failing, choosing between
+  three cases: nothing in flight (resume), a read in flight (resume, re-running
+  it is harmless), a write in flight (ask the user).
+- The ambiguous write is never silently retried and never silently skipped.
+  The task moves to CLARIFYING with a question naming the tool, because
+  retrying can do a thing twice and skipping can leave the job half done.
 
-**Success:** kill the process mid-task, start YBM again, and the task carries on
-- with the receipt showing the interruption rather than hiding it.
+**Interrupts, already working and left alone:** pause, resume, and cancel are
+checked at the top of every operator step, so a long task stops between steps
+rather than at the end. Cancelled and paused tasks are not in
+`ORPHANABLE_STATUSES`, so a restart never resurrects one.
 
 ## 3. Proof
 

@@ -97,29 +97,86 @@ CHECK_ENTRY_NAMES = frozenset(
     {CHECK_ENTRY_FULFILLMENT, CHECK_ENTRY_AUDIT, CHECK_ENTRY_CLARIFICATION}
 )
 
+def _in_flight_is_ambiguous(in_flight: dict[str, Any]) -> bool:
+    """Whether a call caught mid-dispatch might have changed something.
+
+    A read that never returned can simply be run again. A write might have
+    half-happened, and nobody can tell from here - not the worker, and not the
+    user unless they are told. Risk level is the signal the policy engine
+    already uses for "consequential", so it is the signal used here.
+    """
+    if str(in_flight.get("risk_level") or "low") in {"high", "critical"}:
+        return True
+    capability = str(in_flight.get("capability") or "")
+    return any(
+        capability.startswith(prefix)
+        for prefix in ("filesystem.write", "terminal", "desktop", "browser.control", "vscode")
+    )
+
+
 def reconcile_orphaned_tasks(repositories: Repositories, audit: AuditLogger) -> int:
-    """Explicitly fail any task left RUNNING/INTERPRETING by a worker that
-    never got to finish it. Call once, before a worker starts polling -
-    never silently resumed. Returns the number of tasks reconciled."""
+    """Recover tasks left RUNNING/INTERPRETING by a worker that never finished.
+
+    This used to fail every one of them, because "re-running from the top could
+    duplicate side effects and there's no checkpoint to resume from mid-flight".
+    There is one now: operator_history records every completed call, and
+    operator_in_flight names the single call that was dispatched but had not
+    returned. That turns one unanswerable question into three answerable ones:
+
+      - nothing was in flight -> resume; the history says what is already done
+      - a read was in flight   -> resume; running it again is harmless
+      - a write was in flight  -> ask the user, because it may have half-run
+
+    Only the third case interrupts anyone, and guessing there is worse than
+    asking: silently retrying can do a thing twice, silently skipping can leave
+    the job half done. Returns the number of tasks reconciled.
+    """
     total = 0
+    seen: set[str] = set()
     while True:
-        orphaned = repositories.tasks.list_by_statuses(list(ORPHANABLE_STATUSES), limit=100)
+        orphaned = [
+            task
+            for task in repositories.tasks.list_by_statuses(list(ORPHANABLE_STATUSES), limit=100)
+            if task.id not in seen
+        ]
         if not orphaned:
             break
         for task in orphaned:
-            reason = (
-                f"worker restarted while task was {task.status.value}; "
-                "failed explicitly rather than silently resumed"
-            )
-            metadata = {**task.metadata, "last_worker_error": reason}
-            failed = repositories.tasks.update_metadata(task.id, metadata, TaskStatus.FAILED)
-            repositories.tasks.release_claim(failed.id)
-            audit.task_state_changed("worker", task.id, task.status, failed.status)
+            seen.add(task.id)
+            in_flight = task.metadata.get("operator_in_flight")
+            in_flight = in_flight if isinstance(in_flight, dict) else None
+
+            if in_flight is not None and _in_flight_is_ambiguous(in_flight):
+                question = (
+                    f"I was interrupted part-way through `{in_flight.get('tool_name')}` "
+                    f"and cannot tell whether it finished. Check whether it took effect, "
+                    f"then tell me to continue or to redo that step."
+                )
+                metadata = {
+                    **{k: v for k, v in task.metadata.items() if k != "operator_in_flight"},
+                    "clarifying_question": question,
+                    "interrupted_step": in_flight,
+                }
+                updated = repositories.tasks.update_metadata(task.id, metadata, TaskStatus.CLARIFYING)
+                reason = "interrupted mid-write; asking the user before continuing"
+            else:
+                metadata = {
+                    k: v for k, v in task.metadata.items()
+                    if k not in {"operator_in_flight", "last_worker_error"}
+                }
+                if in_flight is not None:
+                    # Harmless to repeat, so the loop simply runs it again.
+                    metadata["resumed_after_interrupt"] = in_flight.get("tool_name")
+                updated = repositories.tasks.update_metadata(task.id, metadata, TaskStatus.RUNNING)
+                reason = "resumed after an interrupted run"
+
+            repositories.tasks.release_claim(updated.id)
+            audit.task_state_changed("worker", task.id, task.status, updated.status)
             audit.append(
-                AuditEventType.ERROR,
+                AuditEventType.ERROR if updated.status == TaskStatus.CLARIFYING else AuditEventType.TASK_STATE_CHANGED,
                 actor="worker",
                 task_id=task.id,
-                payload={"error": reason, "status": failed.status.value},
+                payload={"error": reason, "status": updated.status.value},
             )
             total += 1
     return total
@@ -779,7 +836,14 @@ class TaskWorker:
         )
         if request.risk_level != decision.risk_level:
             decision = decision.model_copy(update={"risk_level": request.risk_level})
+        # Written before dispatch and cleared after the result is recorded, so
+        # a worker that dies here leaves evidence of WHICH call was in the air.
+        # Without it, a restarted worker cannot tell "the move finished" from
+        # "the move was halfway through", and the only safe response to that
+        # ambiguity was to fail the whole task.
+        self._mark_in_flight(latest.id, request, step_id=step_id)
         result = await self.executor.execute(request)
+        self._clear_in_flight(latest.id)
 
         if result.status == ToolResultStatus.NEEDS_APPROVAL:
             return self._await_operator_approval(
@@ -843,6 +907,31 @@ class TaskWorker:
                 "operator_repeated_no_progress",
             )
         return self.repositories.tasks.update_metadata(recorded.id, {**recorded.metadata, "operator_history": history})
+
+    def _mark_in_flight(self, task_id: str, request: ToolCallRequest, *, step_id: str) -> None:
+        """Record that this exact call was dispatched but has not returned."""
+        task = self.repositories.tasks.get(task_id)
+        if task is None:
+            return
+        self.repositories.tasks.update_metadata(task_id, {
+            **task.metadata,
+            "operator_in_flight": {
+                "tool_name": request.tool_name,
+                "capability": request.capability.value,
+                "risk_level": request.risk_level.value,
+                "input": request.input,
+                "step_id": step_id,
+                "dispatched_at": utc_now().isoformat(),
+            },
+        })
+
+    def _clear_in_flight(self, task_id: str) -> None:
+        task = self.repositories.tasks.get(task_id)
+        if task is None or "operator_in_flight" not in task.metadata:
+            return
+        self.repositories.tasks.update_metadata(
+            task_id, {k: v for k, v in task.metadata.items() if k != "operator_in_flight"}
+        )
 
     def _batch_requests(
         self, task_id: str, calls: list[ParallelToolCall], step_id: str
