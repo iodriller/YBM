@@ -35,6 +35,12 @@ export function InlineApproval({ item }: { item: PendingApprovalItem }) {
 
   const risk = item.approval.risk_level
   const toolName = (item.approval.action_payload.tool_name as string | undefined) ?? "unknown tool"
+  // A batch approval stands for several calls. Showing the count without the
+  // calls would be asking someone to approve a number, so the list is rendered
+  // inline rather than hidden behind "Review details".
+  const batch = Array.isArray(item.approval.action_payload.batch)
+    ? (item.approval.action_payload.batch as { tool_name?: string; risk_level?: string; input?: unknown }[])
+    : []
 
   if (expanded) {
     return (
@@ -67,6 +73,27 @@ export function InlineApproval({ item }: { item: PendingApprovalItem }) {
         <p className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">{toolName}</p>
       </div>
       <p className="text-xs">{item.approval.summary}</p>
+      {batch.length > 0 && (
+        <ol className="max-h-52 overflow-y-auto rounded-md border border-border/60 bg-background/60 text-[11px]">
+          {batch.map((call, index) => (
+            <li
+              key={index}
+              className="flex items-start gap-2 border-b border-border/40 px-2 py-1.5 last:border-b-0"
+            >
+              <span className="shrink-0 tabular-nums text-muted-foreground">{index + 1}.</span>
+              <span className="min-w-0 flex-1">
+                <span className="font-mono">{call.tool_name}</span>
+                <span className="ml-1.5 break-all text-muted-foreground">
+                  {JSON.stringify(call.input)}
+                </span>
+              </span>
+              {(call.risk_level === "high" || call.risk_level === "critical") && (
+                <span className="shrink-0 text-destructive">{call.risk_level}</span>
+              )}
+            </li>
+          ))}
+        </ol>
+      )}
       <div className="flex flex-wrap items-center gap-1.5">
         <ApprovalActions
           size="sm"
