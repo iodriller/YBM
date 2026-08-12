@@ -17,7 +17,33 @@
 
 YBM runs on your machine and turns a message into either a direct reply or a traceable task. Tasks
 can use the tools you enable, including files, terminal commands, Chrome, VS Code, desktop control,
-scheduled work, MCP servers, and coding agents. Every tool call passes through policy before it runs.
+scheduled work, MCP servers, and coding agents.
+
+## The question YBM answers
+
+Plenty of agents can write you a paragraph. The hard question is whether you can let one **touch your
+actual computer**. Every task runs the same five stages, and you can stop it at any of them:
+
+```text
+Plan  ->  Approve  ->  Execute  ->  Verify  ->  Receipt
+ |         |            |            |           |
+ |         |            |            |           +-- every file it touched, every
+ |         |            |            |               command it ran, what left the
+ |         |            |            |               machine, and what it is unsure of
+ |         |            |            +-- the answer is checked against the evidence,
+ |         |            |                not just asserted
+ |         |            +-- policy is enforced per tool call, not once at the start
+ |         +-- anything consequential stops and asks, showing its blast radius first
+ +-- what it intends to do, before it does any of it
+```
+
+High-impact capabilities are off until you turn them on, filesystem access is limited to roots you
+choose, and approvals are short-lived rather than standing grants. It is built for three jobs in
+particular:
+
+1. **Safely organise and change files on your actual computer.**
+2. **Do browser and desktop work for you, asking before anything consequential.**
+3. **Run a long multi-step task and prove afterwards exactly what happened.**
 
 > YBM is alpha software. Start with a test directory, review the access settings, and keep the admin
 > console bound to localhost unless you understand the authentication and network implications.
