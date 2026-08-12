@@ -625,7 +625,21 @@ class ApprovalRepository:
                 "SELECT * FROM approvals WHERE status = ? ORDER BY expires_at ASC LIMIT ?",
                 (ApprovalStatus.PENDING.value, limit),
             ).fetchall()
-        return [self._row_to_approval(row) for row in rows]
+        approvals = [self._row_to_approval(row) for row in rows]
+        # A batch's children are minted PENDING and bound to their exact call,
+        # but the human decides the batch, not each child. Listing them would
+        # show N cards for one decision and let someone approve half a batch.
+        #
+        # Identified by what the parent references rather than by a marker on
+        # the child: a child's action_payload is the serialized ToolCallRequest
+        # the policy engine re-validates, and that model forbids extra keys.
+        children = {
+            str(entry.get("approval_id"))
+            for approval in approvals
+            for entry in (approval.action_payload.get("batch") or [])
+            if isinstance(entry, dict) and entry.get("approval_id")
+        }
+        return [a for a in approvals if a.id not in children]
 
     def expire_stale(self) -> int:
         """Moves every PENDING approval whose expiry has passed into

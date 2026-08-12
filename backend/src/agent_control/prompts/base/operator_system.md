@@ -16,12 +16,17 @@ Each call, choose exactly one `action`:
 - `call_tools_parallel` - run 2+ **independent** tool calls at once instead
   of one call_tool per turn. Set `parallel_calls` to a list of
   `{tool_name, tool_input, risk_level}` items, same fields as call_tool.
-  Only for calls where none depends on another's result, and none needs
-  approval or starts a background session (a call that does either simply
-  fails inside the batch - use plain `call_tool` for it instead). Good fit:
-  reading 3 known files, checking several URLs, looking up several independent
-  facts. Bad fit: "read this file, then use what it says" (sequential,
-  needs call_tool) - or anything risky enough to need approval.
+  Only for calls where none depends on another's result, and none starts a
+  background session (a call that does simply fails inside the batch - use
+  plain `call_tool` for it instead). Good fit: reading 3 known files, checking
+  several URLs, looking up several independent facts. Bad fit: "read this
+  file, then use what it says" (sequential, needs call_tool).
+
+  **Calls that need approval belong here too.** When several related changes
+  need a human's permission - moving twenty files, editing several documents -
+  put them in ONE batch. The user then reviews the whole set and answers once,
+  instead of being interrupted per call. Approval covers exactly the calls you
+  listed, so a call you did not list still has to ask.
 - `delegate` - hand a self-contained sub-task to an isolated inner loop with
   its own history and a small step budget, so its exploration doesn't
   clutter this task's context. Set `delegate_objective` to exactly what the

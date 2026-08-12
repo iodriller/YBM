@@ -14,11 +14,13 @@ from agent_control.config import ApprovalPolicyConfig, AppSettings, CapabilityPo
 from agent_control.orchestration import TaskWorker, ToolExecutor
 from agent_control.policy import PolicyEngine
 from agent_control.schemas import (
+    ApprovalStatus,
     Capability,
     OperatorAction,
     OperatorDecision,
     ParallelToolCall,
     RiskLevel,
+    TaskStatus,
     ToolCallRequest,
     ToolCallResult,
     ToolResultStatus,
@@ -241,7 +243,7 @@ async def test_call_tools_parallel_counts_as_n_steps_toward_the_budget(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_call_tools_parallel_call_needing_approval_fails_that_call_only(tmp_path) -> None:
+async def test_call_tools_parallel_needing_approval_asks_once_for_the_whole_batch(tmp_path) -> None:
     repos, audit = make_repos(tmp_path)
     task = repos.tasks.create("do two things, one risky")
     settings = AppSettings(
@@ -272,15 +274,81 @@ async def test_call_tools_parallel_call_needing_approval_fails_that_call_only(tm
     ])
     worker = TaskWorker(repos, audit, executor=executor, operator=operator)
 
+    paused = await worker.process_task(task.id)
+
+    # Nothing ran: the batch is atomic from the user's side, so the safe call
+    # does not sneak through before the human has seen the risky one.
+    assert paused.status == TaskStatus.AWAITING_APPROVAL
+    assert safe_adapter.started_at == []
+    assert risky_adapter.started_at == []
+
+    # One decision to make, not one per call.
+    pending = repos.approvals.list_pending()
+    assert len(pending) == 1
+    batch = pending[0]
+    listed = batch.action_payload["batch"]
+    assert [entry["tool_name"] for entry in listed] == ["risky_write"]
+
+    # The child exists and is bound to its exact call, but is not listed as a
+    # separate decision. Its payload must stay a clean ToolCallRequest, because
+    # that is what the policy engine re-validates to bind the approval.
+    child_id = listed[0]["approval_id"]
+    child = repos.approvals.get(child_id)
+    assert child is not None
+    assert ToolCallRequest.model_validate(child.action_payload).tool_name == "risky_write"
+
+    # Approving the batch approves exactly the calls it listed, and the resume
+    # replays them.
+    repos.approvals.decide_pending(batch.id, ApprovalStatus.APPROVED)
+    repos.approvals.decide_pending(child_id, ApprovalStatus.APPROVED)
+    resumed = await worker.process_task(task.id)
+
+    history = {entry["tool_name"]: entry for entry in resumed.metadata["operator_history"]}
+    assert history["safe_read"]["status"] == "succeeded"
+    assert history["risky_write"]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_parallel_batch_without_approvals_still_runs_straight_through(tmp_path) -> None:
+    """The pre-flight must not add a round trip to the common case."""
+    repos, audit = make_repos(tmp_path)
+    task = repos.tasks.create("do two safe things")
+    settings = AppSettings(
+        _env_file=None,
+        capabilities={
+            Capability.LLM_GENERATE: CapabilityPolicy(
+                enabled=True, requires_approval=False, max_risk_level=RiskLevel.HIGH
+            ),
+        },
+    )
+    first = RecordingAdapter("first", delay=0.0)
+    second = RecordingAdapter("second", delay=0.0)
+    executor = ToolExecutor(
+        PolicyEngine(settings, audit), repos, audit,
+        adapters={"first": first, "second": second},
+        tool_definitions={
+            "first": ToolDefinition(name="first", capability=Capability.LLM_GENERATE, enabled=True, description="x"),
+            "second": ToolDefinition(name="second", capability=Capability.LLM_GENERATE, enabled=True, description="x"),
+        },
+    )
+    operator = QueueOperator([
+        OperatorDecision(
+            action=OperatorAction.CALL_TOOLS_PARALLEL,
+            parallel_calls=[
+                ParallelToolCall(tool_name="first", tool_input={}, risk_level=RiskLevel.LOW),
+                ParallelToolCall(tool_name="second", tool_input={}, risk_level=RiskLevel.LOW),
+            ],
+        ),
+    ])
+    worker = TaskWorker(repos, audit, executor=executor, operator=operator)
+
     running = await worker.process_task(task.id)
 
+    assert running.status == TaskStatus.RUNNING
+    assert repos.approvals.list_pending() == []
     history = {entry["tool_name"]: entry for entry in running.metadata["operator_history"]}
-    assert history["safe_read"]["status"] == "succeeded"
-    assert history["risky_write"]["status"] == "failed"
-    assert "needs approval" in history["risky_write"]["error"]
-    # The task itself does not pause for approval - parallel calls that need
-    # it fail cleanly instead, per the module docstring.
-    assert running.status.value == "running"
+    assert history["first"]["status"] == "succeeded"
+    assert history["second"]["status"] == "succeeded"
 
 
 @pytest.mark.asyncio

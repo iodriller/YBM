@@ -866,6 +866,17 @@ def create_admin_router(
             updated = repositories.approvals.get(approval_id)
             state = updated.status.value if updated is not None else "unavailable"
             raise HTTPException(status_code=409, detail=f"approval could not be decided; current status is {state}")
+        # A batch approval is the decision a human makes; its children are the
+        # per-call authority that decision stands for. Cascade so the resumed
+        # batch finds each call already approved, and so a rejected batch
+        # cannot leave approved children behind for a later call to reuse.
+        for entry in (approval.action_payload.get("batch") or []):
+            if not isinstance(entry, dict):
+                continue
+            child_id = str(entry.get("approval_id") or "")
+            if child_id:
+                repositories.approvals.decide_pending(child_id, new_status)
+
         requeue_after_approval_decision(repositories, approval.task_id)
         audit = AuditLogger(repositories.audit, loaded.logging.redact_patterns)
         audit.append(

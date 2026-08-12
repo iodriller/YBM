@@ -26,6 +26,7 @@ from agent_control.orchestration.signals import sweep_expired_approvals
 from agent_control.recovery import RetryPolicy
 from agent_control.recovery.usage_limits import describe_wait, next_attempt_at
 from agent_control.schemas import (
+    ApprovalRequest,
     ApprovalStatus,
     AuditEventType,
     ErrorClass,
@@ -390,6 +391,13 @@ class TaskWorker:
         # RETRYING, or otherwise-workable task from being misread as an
         # approval resume it isn't.
         pending_call = latest.metadata.get("operator_pending_call")
+        pending_batch = latest.metadata.get("operator_pending_batch")
+        # Checked before the single-call resume: a batch stores its own key and
+        # would otherwise fall through to a path that expects one pending call.
+        if isinstance(pending_batch, dict) and pending_batch.get("approval_id") and (
+            latest.status in {TaskStatus.AWAITING_APPROVAL, TaskStatus.RUNNING}
+        ):
+            return await self._process_operator_batch_awaiting_approval(latest)
         if latest.status == TaskStatus.AWAITING_APPROVAL or (
             latest.status == TaskStatus.RUNNING
             and isinstance(pending_call, dict)
@@ -689,6 +697,17 @@ class TaskWorker:
             return self._transition_operator(latest, metadata, TaskStatus.BLOCKED, reason)
 
         if decision.action == OperatorAction.CALL_TOOLS_PARALLEL:
+            # One approval for the whole batch, before anything runs. Without
+            # this, every call needing approval failed inside the batch with
+            # "reissue it alone via call_tool", which is what turned "organise
+            # 128 files" into one prompt per file: the operator was pushed onto
+            # the one-call-one-approval path by the only batching primitive it
+            # had. The user now sees the whole batch and answers once.
+            batch_approval = self._request_batch_approval(
+                latest, decision.parallel_calls, history, step_id=step_id
+            )
+            if batch_approval is not None:
+                return batch_approval
             entries = await self._run_parallel_calls(latest.id, decision.parallel_calls, step_id=step_id)
             history.extend(entries)
             # Each call promotes its result into task metadata. Reload after
@@ -825,8 +844,147 @@ class TaskWorker:
             )
         return self.repositories.tasks.update_metadata(recorded.id, {**recorded.metadata, "operator_history": history})
 
+    def _batch_requests(
+        self, task_id: str, calls: list[ParallelToolCall], step_id: str
+    ) -> list[tuple[ParallelToolCall, ToolCallRequest | None]]:
+        """The exact ToolCallRequests a batch would dispatch.
+
+        Built once and reused for both the policy pre-flight and the approval
+        binding, so the call a human approves is byte-for-byte the call that
+        later runs - the property PolicyEngine._approval_binding enforces.
+        """
+        built: list[tuple[ParallelToolCall, ToolCallRequest | None]] = []
+        for call in calls:
+            tool_name, tool_input = _canonical_operator_tool_call(
+                call.tool_name, call.tool_input, self.executor.tool_definitions
+            )
+            tool_def = self.executor.tool_definitions.get(tool_name)
+            if tool_def is None:
+                built.append((call, None))
+                continue
+            built.append((
+                call,
+                ToolCallRequest(
+                    task_id=task_id, tool_name=tool_name, capability=tool_def.capability,
+                    risk_level=_effective_operator_risk(tool_def, tool_input, call.risk_level),
+                    input=tool_input, parent_step_id=step_id,
+                ),
+            ))
+        return built
+
+    def _request_batch_approval(
+        self,
+        task: TaskRecord,
+        calls: list[ParallelToolCall],
+        history: list[dict[str, Any]],
+        *,
+        step_id: str,
+    ) -> TaskRecord | None:
+        """One approval covering every call in a batch that needs one.
+
+        Returns None when nothing in the batch needs approval, so the common
+        case keeps running without a round trip to a human.
+
+        Each call that needs approval gets its own PENDING ApprovalRequest,
+        bound to its exact request; the batch approval the human actually sees
+        carries the list and the ids of those children. Approving the batch
+        approves exactly those calls and nothing else - a later call the human
+        never saw still has to ask, because there is no grant widening the
+        tool or capability.
+        """
+        if not calls:
+            return None
+        built = self._batch_requests(task.id, calls, step_id)
+        needing: list[ToolCallRequest] = []
+        for _call, request in built:
+            if request is None:
+                continue
+            decision = self.executor.policy.evaluate(request, approval=None, has_grant=False)
+            if decision.needs_approval:
+                needing.append(request)
+
+        if not needing:
+            return None
+
+        first = needing[0]
+        preview_lines = [
+            f"- {request.tool_name} ({request.risk_level.value}): "
+            f"{json.dumps(request.input, ensure_ascii=False)[:200]}"
+            for request in needing
+        ]
+        # The batch is created first so each child can name its parent, which
+        # is what keeps the console's pending list showing one decision
+        # instead of N that each look separate.
+        batch = self.executor.policy.approval_request(
+            first,
+            summary=f"Run {len(needing)} actions in one batch. Nothing runs until you approve.",
+        )
+        children: list[ApprovalRequest] = []
+        for request in needing:
+            definition = self.executor.tool_definitions.get(request.tool_name)
+            reason = definition.approval_reason(request.input) if definition else None
+            child = self.executor.policy.approval_request(
+                request,
+                summary=(f"{request.tool_name}: {reason}" if reason else None),
+            )
+            # action_payload is left exactly as the policy engine built it: it
+            # IS the serialized ToolCallRequest that _approval_binding
+            # re-validates, and ToolCallRequest forbids extra keys, so adding
+            # a marker here silently breaks the binding check and denies the
+            # call the human just approved. The batch/child link lives on the
+            # parent instead.
+            children.append(child)
+        batch = batch.model_copy(update={"action_payload": {
+            "tool_name": first.tool_name,
+            "batch": [
+                {
+                    "tool_name": request.tool_name,
+                    "risk_level": request.risk_level.value,
+                    "input": request.input,
+                    "approval_id": child.id,
+                }
+                for request, child in zip(needing, children)
+            ],
+        }})
+        self.repositories.approvals.create(batch)
+        for child in children:
+            self.repositories.approvals.create(child)
+        self.audit.append(
+            AuditEventType.APPROVAL_REQUESTED,
+            actor="policy",
+            task_id=task.id,
+            payload={"approval_id": batch.id, "batch_size": len(needing)},
+        )
+
+        metadata = {
+            **task.metadata,
+            "operator_history": history,
+            "operator_pending_batch": {
+                "approval_id": batch.id,
+                "step_id": step_id,
+                "calls": [
+                    {
+                        "tool_name": call.tool_name,
+                        "tool_input": call.tool_input,
+                        "risk_level": call.risk_level.value,
+                    }
+                    for call in calls
+                ],
+            },
+            "pending_approval_preview": "\n".join(preview_lines),
+        }
+        return self._transition_operator(
+            task, metadata, TaskStatus.AWAITING_APPROVAL, "operator_batch_approval_required"
+        )
+
     async def _run_parallel_calls(
-        self, task_id: str, calls: list[ParallelToolCall], *, origin_prefix: str = "", step_id: str
+        self,
+        task_id: str,
+        calls: list[ParallelToolCall],
+        *,
+        origin_prefix: str = "",
+        step_id: str,
+        approvals_by_call: dict[tuple[str, str], str] | None = None,
     ) -> list[dict[str, Any]]:
         """Execute independent tool calls concurrently (docs/HISTORY.md Part 3
         T1.1) and return one history-entry dict per call, same shape as a
@@ -885,14 +1043,19 @@ class TaskWorker:
                 risk_level=_effective_operator_risk(tool_def, tool_input, call.risk_level),
                 input=tool_input, origin=batch_origin, parent_step_id=step_id,
             )
-            result = await self.executor.execute(request)
+            # On a resumed batch each call carries the approval minted for it,
+            # keyed by exactly what was shown to the human.
+            approval_id = (approvals_by_call or {}).get(
+                (tool_name, json.dumps(tool_input, sort_keys=True))
+            )
+            result = await self.executor.execute(request, approval_id=approval_id)
             if result.status == ToolResultStatus.NEEDS_APPROVAL:
                 return {
                     "tool_name": tool_name, "input": tool_input,
                     "status": "failed",
                     "error": (
-                        "this call needs approval, which call_tools_parallel does not support - "
-                        "reissue it alone via call_tool if it actually needs to run"
+                        "this call still needs approval after the batch was decided - "
+                        "it was not one of the calls the batch listed"
                     ),
                     "parallel": True, "origin": batch_origin, "step_id": step_id,
                     **normalization,
@@ -1360,6 +1523,69 @@ class TaskWorker:
             "pending_approval_preview": preview,
         }
         return self._transition_operator(task, metadata, TaskStatus.AWAITING_APPROVAL, "operator_approval_required")
+
+    async def _process_operator_batch_awaiting_approval(self, task: TaskRecord) -> TaskRecord:
+        """Resume a batch once its single approval is decided.
+
+        Children were minted bound to their exact requests, so replay passes
+        each call its own approval id and PolicyEngine._approval_matches still
+        does the byte-for-byte check. Approving the batch never widens
+        authority beyond the calls that were listed.
+        """
+        history: list[dict[str, Any]] = list(task.metadata.get("operator_history") or [])
+        pending = task.metadata.get("operator_pending_batch")
+        if not isinstance(pending, dict):
+            return self._transition_operator(
+                task, {**task.metadata, "operator_history": history}, TaskStatus.BLOCKED,
+                "operator_pending_batch_missing",
+            )
+        approval = self.repositories.approvals.get(str(pending.get("approval_id") or ""))
+        if approval is None or approval.task_id != task.id:
+            return self._transition_operator(
+                task, {**task.metadata, "operator_history": history}, TaskStatus.BLOCKED, "approval_not_granted",
+            )
+        if approval.status == ApprovalStatus.PENDING:
+            return task
+        if approval.status != ApprovalStatus.APPROVED or approval.expires_at <= utc_now():
+            history.append({
+                "tool_name": "call_tools_parallel", "input": None, "status": "failed",
+                "error": "the batch was not approved", "step_id": pending.get("step_id"),
+            })
+            metadata = {
+                k: v for k, v in task.metadata.items()
+                if k not in {"operator_pending_batch", "pending_approval_preview"}
+            }
+            return self._transition_operator(
+                task,
+                {**metadata, "operator_history": history},
+                TaskStatus.RUNNING,
+                "operator_batch_rejected",
+            )
+
+        calls = [
+            ParallelToolCall(
+                tool_name=str(item.get("tool_name") or ""),
+                tool_input=dict(item.get("tool_input") or {}),
+                risk_level=RiskLevel(str(item.get("risk_level") or "low")),
+            )
+            for item in (pending.get("calls") or [])
+            if isinstance(item, dict)
+        ]
+        approvals_by_call = {
+            (str(entry.get("tool_name")), json.dumps(entry.get("input"), sort_keys=True)): str(entry.get("approval_id"))
+            for entry in (approval.action_payload.get("batch") or [])
+            if isinstance(entry, dict)
+        }
+        step_id = str(pending.get("step_id") or "")
+        entries = await self._run_parallel_calls(
+            task.id, calls, step_id=step_id, approvals_by_call=approvals_by_call
+        )
+        history.extend(entries)
+        recorded = self.repositories.tasks.get(task.id) or task
+        metadata = {k: v for k, v in recorded.metadata.items() if k not in {"operator_pending_batch", "pending_approval_preview"}}
+        return self._transition_operator(
+            recorded, {**metadata, "operator_history": history}, TaskStatus.RUNNING, "operator_batch_approved",
+        )
 
     async def _process_operator_awaiting_approval(self, task: TaskRecord) -> TaskRecord:
         """Resume path for _request_operator_approval above: mirrors
