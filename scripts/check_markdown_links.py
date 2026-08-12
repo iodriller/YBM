@@ -20,13 +20,7 @@ def markdown_files() -> list[Path]:
         text=True,
         check=True,
     )
-    paths = []
-    for value in result.stdout.splitlines():
-        path = REPO_ROOT / value
-        if "docs/archive" in path.as_posix() and path.name != "README.md":
-            continue
-        paths.append(path)
-    return sorted(set(paths))
+    return sorted({REPO_ROOT / value for value in result.stdout.splitlines()})
 
 
 def link_target(raw: str) -> str:

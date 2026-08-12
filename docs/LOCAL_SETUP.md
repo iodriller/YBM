@@ -2,105 +2,61 @@
 
 ## Before you start
 
-YBM source installs use `uv` to provide Python 3.12 and create an isolated environment. You do not
-need to install Python or Git first.
+The normal installers provide Python, YBM, and the built web console. Windows needs only an internet
+connection. macOS and Linux also need Bash, `curl`, and `tar`, which are normally preinstalled.
+Git, Node.js, and a system Python are not required.
 
-You do need:
+The first start downloads the runtime and usually takes 2-5 minutes. Later starts take seconds.
 
-- An internet connection for the first dependency install.
-- Bash and `curl` for the macOS/Linux installer.
-- Node.js 22.22 or newer **only** to build the console from a source checkout, or for the optional
-  WhatsApp bridge. The MSI, the archives, and the Docker image all ship it prebuilt.
-- Docker Desktop or Docker Engine with Compose only if you choose the container path.
+## Windows: install in three steps
 
-In a source checkout without Node.js, setup still completes and the backend runs, but `/admin` shows
-build instructions instead of the console until you install Node.js and run the `ui-build` command
-for your platform.
+1. **[Download YBM for Windows](https://github.com/iodriller/YBM/releases/latest/download/YBM-Setup.msi).**
+2. Open the file and select **Install**.
+3. In the browser page that opens, choose a model and start chatting.
 
-## Recommended install
+Open **YBM** from the Start Menu next time. The per-user install lives in `%LOCALAPPDATA%\YBM`,
+needs no administrator account, and can be removed from **Add or remove programs**. Start-at-login
+is optional and off by default.
 
-### Windows
-
-Three routes, none needing administrator rights.
-
-| Route | Command or file | Downloads a file? |
-|---|---|---|
-| Installer | `YBM-Setup.msi` from the [latest release](https://github.com/iodriller/YBM/releases/latest) | Yes |
-| PowerShell | `irm https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.ps1 \| iex` | No |
-| Plain folder | Repository ZIP, then double-click `YBM.bat` | Yes |
-
-The MSI installs into `%LOCALAPPDATA%\YBM`, registers an uninstall entry, starts YBM when it
-finishes, and carries a prebuilt console so Node.js is not required. Start-at-login is offered but
-off by default; pass `STARTATLOGIN=1` to opt in from the command line.
-
-Finish the browser wizard that opens afterwards.
-
-The PowerShell route writes nothing to disk before running, so there is no downloaded file for
-Windows to flag. Pipe it to `more` instead of `iex` to read it first.
-
-From a source checkout, double-click `YBM.bat` in the extracted folder. It installs anything missing,
-including `uv` itself, then starts YBM and opens the console. The same file serves the first run and
-every run after it; there is no separate setup step.
-
-For visible PowerShell output and the complete installer option set:
+Windows shows an unknown-publisher warning because the MSI is not yet code signed. The release page
+provides checksums and signed build provenance. To verify a downloaded installer with GitHub CLI:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Verify
+gh attestation verify .\YBM-Setup.msi --repo iodriller/YBM
 ```
 
-Available PowerShell parameters are `-DryRun`, `-Verify`, `-NoPrompt`, and
-`-InstallDir C:\path\to\ybm`. `YBM_INSTALL_DIR`, `YBM_DRY_RUN`, and `YBM_NO_PROMPT` provide the
-corresponding environment settings.
+### Windows without MSI
 
-After setup, double-click `YBM.bat`. It runs the idempotent Windows lifecycle command, syncs runtime
-dependencies when the lock files change, starts YBM, and opens the console.
+This command downloads the complete latest release, installs it to `%USERPROFILE%\ybm`, starts YBM,
+and opens the browser. Re-running it refreshes the application while preserving local settings and
+task data.
 
-### macOS and Linux
-
-Download `YBM-<version>-unix.tar.gz` from the [latest release](https://github.com/iodriller/YBM/releases/latest), extract it, and run `./ybm.sh` inside. It carries a prebuilt console, so no Node.js is needed.
-
-From a checkout, `./ybm.sh` is the counterpart to `YBM.bat`: it installs whatever is missing,
-including `uv` and Python 3.12, then starts YBM and opens the console. It is idempotent, so it is
-also the command for every launch afterwards. Pass `--no-desktop` to skip the desktop-control extras
-on a headless box.
-
-Or bootstrap from source in one line:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.sh | bash
+```powershell
+irm https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.ps1 | iex
 ```
 
-From a checkout you already have:
+Use `irm <url> | more` instead to inspect the script. From a checkout, the same bootstrap supports
+`-DryRun`, `-Verify`, `-NoPrompt`, and `-InstallDir C:\path\to\ybm`. The corresponding environment
+variables are `YBM_DRY_RUN`, `YBM_NO_PROMPT`, and `YBM_INSTALL_DIR`.
 
-```bash
-bash ./scripts/install.sh --verify
-```
+## macOS and Linux: install in three steps
 
-`install.sh` only fetches the code and then runs `./ybm.sh`. Available options:
+1. Open Terminal.
+2. Paste this command:
 
-```text
---dry-run
---verify
---no-prompt
---install-dir DIR
-```
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.sh | bash
+   ```
 
-The script uses Git when it is available. If Git is absent and the script needs to fetch the code,
-it downloads a source archive instead. `YBM_INSTALL_DIR` changes the default install path, and
-`YBM_DRY_RUN=1` enables the dry run.
+3. In the browser page that opens, choose a model and start chatting.
 
-After setup, `./ybm.sh` starts YBM and opens the console. The equivalent CLI call, if you want the
-individual command rather than the launcher, is:
+Run `~/ybm/ybm.sh` next time. Re-running the installer refreshes the application while preserving
+local settings and task data. Use `--no-desktop` with `ybm.sh` on a headless machine.
 
-```bash
-./backend/.venv/bin/ybm start --open
-```
+From a checkout, `install.sh` also accepts `--dry-run`, `--verify`, `--no-prompt`, and
+`--install-dir DIR`. `YBM_INSTALL_DIR` and `YBM_DRY_RUN=1` provide environment equivalents.
 
-The installer does not add that virtual-environment directory to your shell `PATH`. The full path
-above works without activating the environment. If you do activate `backend/.venv`, the shorter
-`ybm start --open` form is available.
-
-### Docker
+## Docker for a headless server
 
 Docker runs the headless profile. It bundles the admin console and WhatsApp dependencies, but it
 cannot attach to the host desktop, Chrome display, or VS Code session.
@@ -123,22 +79,16 @@ docker compose --profile ollama up -d --build
 docker compose exec ollama ollama pull qwen3:8b
 ```
 
-## What setup creates
+## What installation creates
 
-The source installers:
+1. The bootstrap downloads the latest release, including the prebuilt web console.
+2. `uv` provides Python 3.12 and creates `backend/.venv`.
+3. YBM creates ignored local config and secret files when they do not exist.
+4. YBM initializes its local database, starts the services, and opens the console.
 
-1. Locate or install the pinned `uv` release.
-2. Ask `uv` to provide Python 3.12.
-3. Create `backend/.venv` and install YBM dependencies.
-4. Copy `config/config.example.yaml` to ignored `config/config.yaml` if it is missing.
-5. Generate `AGENT_ADMIN_TOKEN` and `AGENT_SECRET_VAULT_KEY` in ignored `.env` if they are missing.
-6. Initialize `.agent_control/agent_control.db`.
-7. Build the admin console and install WhatsApp dependencies when Node.js is available.
-8. Start the stack and open the local console.
-
-Existing config, tokens, and local state are retained. On Windows, `YBM.bat` also checks whether
-Python dependency inputs changed before syncing again. It checks for updates but does not apply
-source updates automatically.
+Existing config, tokens, task history, and other local state are retained. A source checkout is for
+development: double-click `YBM.bat` on Windows or run `./ybm.sh` on macOS/Linux. Source UI changes
+require Node.js 22.22 or newer and `ybm ui-build`; release installs do not.
 
 ## First-run configuration
 

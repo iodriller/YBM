@@ -29,7 +29,7 @@ for arg in "$@"; do
 done
 
 # Pinned deliberately, and kept in step with scripts/lib/common.ps1's
-# $Script:YbmUvVersion and scripts/install.sh's UV_VERSION. An unpinned
+# $Script:YbmUvVersion. An unpinned
 # installer means two machines a week apart get different uv versions.
 UV_VERSION="0.9.7"
 UV_INSTALLER="https://astral.sh/uv/${UV_VERSION}/install.sh"

@@ -7,9 +7,8 @@ name: Release
 # non-developer cannot reasonably be asked to satisfy. Building the console here
 # and shipping it inside the payload turns Node.js back into a contributor tool.
 #
-# It also gives backend/src/agent_control/updates.py something to find. That
-# module polls the GitHub releases API on every `ybm run`; with no releases ever
-# published it could only ever answer "no_releases".
+# It also gives backend/src/agent_control/updates.py a stable release to find
+# when `ybm run` performs its read-only update check.
 
 on:
   push:
@@ -132,9 +131,9 @@ jobs:
       # Cryptographic proof that this exact installer was built by this
       # workflow from this repository, verifiable with `gh attestation verify`.
       # Signed through Sigstore with a short-lived certificate, so it costs
-      # nothing and needs no code-signing certificate - which matters because
-      # Azure Trusted Signing is restricted to US/Canada organisations with
-      # three years of history (docs/INSTALL_PROPOSAL.md).
+      # nothing and needs no code-signing certificate. It is the available
+      # verification path until a conventional publisher certificate is in
+      # place.
       #
       # It does not remove the SmartScreen prompt; nothing free does. It gives
       # a careful user something better than a hash on the same page that
@@ -185,16 +184,16 @@ jobs:
           # expect: __SHA__
           ```
 
-          ### Or run it without installing anything
+          ### Or run it from a folder
 
-          Extract `YBM-__VERSION__-windows.zip` and double-click `YBM.bat`. It installs
-          whatever is missing, including uv, then opens the console. No installer, nothing
-          written outside the folder you extracted.
+          Extract `YBM-windows.zip` and double-click `YBM.bat`. It installs
+          whatever is missing, including uv, then opens the console. This avoids the MSI;
+          runtime caches and the uv launcher still use normal per-user locations.
 
           ## macOS and Linux
 
           ```
-          tar -xzf YBM-__VERSION__-unix.tar.gz
+          tar -xzf YBM-unix.tar.gz
           cd YBM-__VERSION__ && ./ybm.sh
           ```
 
@@ -214,8 +213,8 @@ jobs:
           Set-Content -LiteralPath release-notes.md -Value $notes -Encoding utf8
           gh release create "v$env:VERSION" `
             dist\YBM-Setup.msi `
-            "dist\YBM-$env:VERSION-windows.zip" `
-            "dist\YBM-$env:VERSION-unix.tar.gz" `
+            dist\YBM-windows.zip `
+            dist\YBM-unix.tar.gz `
             dist\SHA256SUMS.txt `
             --title "YBM $env:VERSION" `
             --notes-file release-notes.md `

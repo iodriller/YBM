@@ -6,7 +6,7 @@
 > [CAPABILITIES.md](CAPABILITIES.md).
 
 > Historical implementation record: current limitations and release priorities live in
-> [GAPS.md](GAPS.md) and [PUBLIC_RELEASE.md](PUBLIC_RELEASE.md). Statements below such as
+> [GAPS.md](GAPS.md) and [ROADMAP.md](ROADMAP.md). Statements below such as
 > “nothing is currently open” describe the audit at that time, not the current release state.
 
 ## Outcome

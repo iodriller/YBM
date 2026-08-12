@@ -13,8 +13,9 @@ looks fine until the user runs it.
 
     python scripts/package_release.py --version 0.1.0
 
-Writes dist/YBM-<version>-windows.zip, dist/YBM-<version>-unix.tar.gz, and the
-staged tree at dist/payload that the MSI build consumes.
+Writes dist/YBM-windows.zip, dist/YBM-unix.tar.gz, and the staged tree at
+dist/payload that the MSI build consumes. Stable asset names make the latest
+release directly downloadable without first discovering its version number.
 """
 
 from __future__ import annotations
@@ -174,8 +175,8 @@ def main() -> int:
     # folder produces `YBM-1.2.3/` rather than scattering backend/, scripts/,
     # and a loose ybm.sh across whatever was already there.
     prefix = f"YBM-{args.version}"
-    zip_path = out_dir / f"{prefix}-windows.zip"
-    tar_path = out_dir / f"{prefix}-unix.tar.gz"
+    zip_path = out_dir / "YBM-windows.zip"
+    tar_path = out_dir / "YBM-unix.tar.gz"
     write_zip(stage_dir, zip_path, prefix)
     write_tar(stage_dir, tar_path, prefix)
 

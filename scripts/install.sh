@@ -2,27 +2,18 @@
 # One-command bootstrap for YBM on Linux/macOS:
 #   curl -fsSL https://raw.githubusercontent.com/iodriller/YBM/main/scripts/install.sh | bash
 #
-# Git and Python do not need to be preinstalled. This script requires Bash and
-# curl; its no-git source fallback also uses tar. Node.js 22.22+ is required to
-# build the admin console; the optional WhatsApp bridge also needs Node.js.
-#
-#   - uv is a standalone binary that needs no Python, and `uv python install`
-#     provides the interpreter. An earlier version of this script hunted for
-#     python3.12/python3/python and refused to continue without one, then never
-#     used it: `uv sync` builds the venv against a uv-managed interpreter, and
-#     that venv is what every later command runs.
-#   - git is used when present, and a source tarball is downloaded when it is
-#     not.
+# Git, Python, Node.js, and uv do not need to be preinstalled. This script
+# requires Bash, curl, and tar. It downloads the latest release archive, which
+# already contains the built admin console, then hands off to ./ybm.sh.
 #
 # Keep this in step with scripts/install.ps1 - the two have drifted before.
-# Both now do the same small job: get the code onto the machine, then hand off
+# Both now do the same small job: get the release onto the machine, then hand off
 # to the platform's launcher (./ybm.sh here, scripts\ybm.ps1 run there), which
 # owns uv, the virtualenv, setup, and starting the stack.
 set -euo pipefail
 
 # The pinned uv version lives in ./ybm.sh now, which is what installs it.
-REPO_URL="https://github.com/iodriller/YBM.git"
-TARBALL_URL="https://codeload.github.com/iodriller/YBM/tar.gz/refs/heads/main"
+RELEASE_URL="https://github.com/iodriller/YBM/releases/latest/download/YBM-unix.tar.gz"
 INSTALL_DIR="${YBM_INSTALL_DIR:-$HOME/ybm}"
 
 DRY_RUN="${YBM_DRY_RUN:-0}"
@@ -51,62 +42,42 @@ fail() {
   exit 1
 }
 
-# --- 1. The code: git if present, tarball if not -------------------------
-# uv is deliberately NOT bootstrapped here. ./ybm.sh installs it, and that is
-# what makes ybm.sh work on its own from an extracted release. Keeping one
-# implementation per platform is the whole point: install.ps1 hands uv to
-# ybm.ps1 the same way. Nothing above this point needs uv - fetching the source
-# uses git or curl, and `uv sync` provides Python itself, so the old separate
-# `uv python install` step bought nothing.
+# --- 1. Get the complete release -----------------------------------------
+# Source archives intentionally omit the generated admin console. The public
+# installer therefore downloads the release archive, not the main branch.
 if [ -f "backend/pyproject.toml" ] && [ -f "AGENTS.md" ] && [ -f "scripts/ybm.ps1" ]; then
   REPO_DIR="$(pwd)"
   log "Already inside a YBM checkout"
   info "$REPO_DIR"
 elif [ "$DRY_RUN" = "1" ]; then
   REPO_DIR="$INSTALL_DIR"
-  if command -v git >/dev/null 2>&1; then
-    plan "would clone $REPO_URL into $INSTALL_DIR (git found)"
-  else
-    plan "would download $TARBALL_URL into $INSTALL_DIR (no git; tarball fallback)"
-  fi
-elif command -v git >/dev/null 2>&1; then
-  if [ -d "$INSTALL_DIR/.git" ]; then
-    log "Updating existing checkout at $INSTALL_DIR"
-    git -C "$INSTALL_DIR" pull --ff-only || info "pull failed (local changes?) - continuing as-is"
-  else
-    log "Cloning into $INSTALL_DIR"
-    git clone --depth 1 "$REPO_URL" "$INSTALL_DIR" \
-      || fail "git clone failed" "Delete $INSTALL_DIR and re-run."
-  fi
-  REPO_DIR="$INSTALL_DIR"
-elif [ -f "$INSTALL_DIR/backend/pyproject.toml" ]; then
-  log "git not found - using the existing install at $INSTALL_DIR"
-  info "install git if you want in-place updates"
-  REPO_DIR="$INSTALL_DIR"
+  plan "would download and extract $RELEASE_URL into $INSTALL_DIR"
 else
-  log "git not found - downloading the source tarball instead"
+  log "Downloading the latest YBM release"
   tmp="$(mktemp -d)"
-  # A private repository answers 404, not 401/403, to an anonymous request, so
-  # "not found" here almost always means "not public". Say that, rather than
-  # sending someone to check their connection.
-  status="$(curl -sL -o "$tmp/src.tar.gz" -w '%{http_code}' "$TARBALL_URL" || echo 000)"
+  if ! status="$(curl -sL -o "$tmp/ybm.tar.gz" -w '%{http_code}' "$RELEASE_URL")"; then
+    rm -rf "$tmp"
+    fail "download failed" "Check your internet connection and re-run."
+  fi
   if [ "$status" = "404" ]; then
     rm -rf "$tmp"
-    fail "the source archive is not publicly downloadable (HTTP 404)" \
-"The repository is private, so anonymous download cannot work. Either:
-  - make the repository public, or
-  - install git and authenticate (gh auth login, or a credential helper), then re-run, or
-  - copy an existing checkout onto this machine and run bash ./scripts/install.sh inside it."
+    fail "the latest release archive is not available (HTTP 404)" \
+         "Open https://github.com/iodriller/YBM/releases/latest and check that YBM-unix.tar.gz exists."
   fi
   [ "$status" = "200" ] || { rm -rf "$tmp"; fail "download failed (HTTP $status)" "Check your internet connection and re-run."; }
-  tar -xzf "$tmp/src.tar.gz" -C "$tmp"
+  tar -xzf "$tmp/ybm.tar.gz" -C "$tmp"
   extracted="$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
-  [ -n "$extracted" ] || { rm -rf "$tmp"; fail "the downloaded archive was empty" "Re-run, or install git and re-run."; }
+  [ -n "$extracted" ] || { rm -rf "$tmp"; fail "the downloaded release was empty" "Re-run the installer."; }
   mkdir -p "$(dirname "$INSTALL_DIR")"
-  mv "$extracted" "$INSTALL_DIR"
+  if [ -d "$INSTALL_DIR" ]; then
+    info "refreshing the existing install and preserving local state"
+    cp -R "$extracted"/. "$INSTALL_DIR"/
+  else
+    mv "$extracted" "$INSTALL_DIR"
+  fi
   rm -rf "$tmp"
   REPO_DIR="$INSTALL_DIR"
-  info "downloaded to $INSTALL_DIR"
+  info "ready at $INSTALL_DIR"
 fi
 
 # --- 2. Hand off to ybm.sh -----------------------------------------------
