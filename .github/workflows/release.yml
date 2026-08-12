@@ -31,8 +31,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate:
+    name: Full CI
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
   windows:
     name: Installer and archives
+    needs: validate
     runs-on: windows-latest
     timeout-minutes: 30
     permissions:
