@@ -31,8 +31,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate:
+    name: Full CI
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
   windows:
     name: Installer and archives
+    needs: validate
     runs-on: windows-latest
     timeout-minutes: 30
     permissions:
@@ -159,18 +166,10 @@ jobs:
           # substituted afterwards, and the result goes to gh via --notes-file
           # so no quoting of a multi-line string is involved either.
           $notes = @'
-          ## Install
+          ## Install on Windows
 
-          ```
-          winget install YBM
-          ```
-
-          Nothing to download and no security prompt. This is the recommended way.
-
-          ### Or download the installer
-
-          `YBM-Setup.msi` below. Per-user install, no administrator rights, and no Node.js
-          required - the admin console ships prebuilt.
+          Download `YBM-Setup.msi` below. It is a per-user install, needs no administrator rights,
+          and needs no Node.js - the admin console ships prebuilt.
 
           Windows will warn that the publisher is unrecognised, because the installer is not
           code signed. That warning is expected and it is not evidence of anything either
