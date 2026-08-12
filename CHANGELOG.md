@@ -5,6 +5,14 @@ versions follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- The publish-only release job now targets `iodriller/YBM` explicitly after
+  downloading artifacts, so it does not require a local Git checkout to create
+  the release page.
+- Artifact upload/download actions use their current Node.js 24-based releases,
+  removing the hosted-runner Node.js 20 deprecation warning.
+
 ## [0.1.2] - 2026-08-11
 
 ### Changed
