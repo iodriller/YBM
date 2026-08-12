@@ -26,7 +26,8 @@ The three files here carry placeholders (`__VERSION__`, `__SHA256__`,
 `__RELEASE_DATE__`). Render them for a published release with:
 
 ```powershell
-.\scripts\render_winget_manifests.ps1 -Version 0.1.0
+$version = "0.1.1"
+.\scripts\render_winget_manifests.ps1 -Version $version
 ```
 
 That downloads the published `YBM-Setup.msi`, hashes it, and writes the
@@ -40,20 +41,23 @@ a build log is exactly how that happens.
 Validate locally first, against the real machine:
 
 ```powershell
-winget validate --manifest dist\winget\manifests\i\iodriller\YBM\0.1.0
-winget install --manifest dist\winget\manifests\i\iodriller\YBM\0.1.0
+$version = "0.1.1"
+winget validate --manifest "dist\winget\manifests\i\iodriller\YBM\$version"
+winget install --manifest "dist\winget\manifests\i\iodriller\YBM\$version"
 ```
 
 Then open a pull request against [microsoft/winget-pkgs][winget-pkgs] with the
 directory placed at the same path inside that repository. Submission is free and
 needs no code-signing certificate.
 
-[wingetcreate][wingetcreate] can do the fork, commit, and PR in one step, and is
-the easier route for subsequent version bumps:
+For the first submission, use the rendered manifests and pull-request flow above.
+Alternatively, run `wingetcreate new` and answer its interactive prompts; its final
+prompt can submit the new package. After `iodriller.YBM` has been accepted,
+[wingetcreate][wingetcreate] is the easier route for subsequent version bumps:
 
 ```powershell
-wingetcreate update iodriller.YBM --version 0.1.0 `
-  --urls https://github.com/iodriller/YBM/releases/download/v0.1.0/YBM-Setup.msi `
+wingetcreate update iodriller.YBM --version 0.1.2 `
+  --urls https://github.com/iodriller/YBM/releases/download/v0.1.2/YBM-Setup.msi `
   --submit
 ```
 
